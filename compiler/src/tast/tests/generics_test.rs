@@ -5,39 +5,27 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::tast::core::TypeKind;
-use crate::tast::core::TypeTable;
-use crate::tast::type_checker::ConstraintKind;
-use crate::tast::type_checker::ConstraintPriority;
-use crate::tast::type_checker::ConstraintSet;
-use crate::tast::type_checker::TypeConstraint;
-use crate::tast::ScopeId;
-
-use super::constraint_solver::*;
-use super::generic_instantiation::*;
-use super::generics::*;
-
-// Mock core types for testing
-type TypeId = super::TypeId;
-type SymbolId = super::SymbolId;
-type InternedString = super::InternedString;
-type SourceLocation = super::SourceLocation;
+use crate::tast::core::{TypeKind, TypeTable};
+use crate::tast::generics::{ConstraintKind, ConstraintPriority, ConstraintSet, TypeConstraint, GenericsEngine, ConstraintValidationResult, GenericError};
+use crate::tast::constraint_solver::*;
+use crate::tast::generic_instantiation::*;
+use crate::tast::{ScopeId, TypeId, SymbolId, InternedString, SourceLocation, SymbolTable, ScopeTree, StringInterner};
 
 /// Comprehensive test suite for the generics system
 pub struct GenericsTestSuite<'a> {
     engine: GenericsEngine<'a>,
-    symbol_table: super::SymbolTable,
-    scope_tree: super::ScopeTree,
-    string_interner: super::StringInterner,
+    symbol_table: SymbolTable,
+    scope_tree: ScopeTree,
+    string_interner: StringInterner,
 }
 
 impl<'a> GenericsTestSuite<'a> {
     pub fn new(type_table: &'a RefCell<TypeTable>) -> Self {
         Self {
             engine: GenericsEngine::with_defaults(&type_table),
-            symbol_table: super::SymbolTable::new(),
-            scope_tree: super::ScopeTree::new(ScopeId::first()),
-            string_interner: super::StringInterner::new(),
+            symbol_table: SymbolTable::new(),
+            scope_tree: ScopeTree::new(),
+            string_interner: StringInterner::new(),
         }
     }
 

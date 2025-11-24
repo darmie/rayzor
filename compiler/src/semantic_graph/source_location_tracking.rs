@@ -8,7 +8,7 @@ use crate::tast::{SourceLocation, SymbolId, DataFlowNodeId, BlockId, CallSiteId}
 use std::collections::HashMap;
 
 /// Source location tracker for semantic graph construction
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SourceLocationTracker {
     /// Symbol to source location mapping
     symbol_locations: HashMap<SymbolId, SourceLocation>,

@@ -16,6 +16,7 @@ use nom::{
 
 use crate::haxe_ast::*;
 use crate::haxe_parser::{ws, symbol, keyword, identifier, function_name, PResult, position, metadata_list, access, modifiers};
+use crate::custom_error::ContextualError;
 use crate::haxe_parser_types::{type_expr, type_params};
 use crate::haxe_parser_expr::expression;
 use crate::haxe_parser_expr2::block_expr;
@@ -46,28 +47,28 @@ pub fn class_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, ClassDecl> {
     let (input, modifiers) = modifiers(input)?;
     
     // class keyword and name
-    let (input, _) = context("expected 'class' keyword", keyword("class")).parse(input)?;
-    let (input, name) = context("expected class name", identifier).parse(input)?;
+    let (input, _) = context("[E0110] expected 'class' keyword", keyword("class")).parse(input)?;
+    let (input, name) = context("[E0111] expected class name | help: provide a valid class name starting with uppercase", identifier).parse(input)?;
     
     // Type parameters
     let (input, type_params) = type_params(full, input)?;
     
     // Extends clause
     let (input, extends) = opt(preceded(
-        context("expected 'extends' keyword", keyword("extends")),
-        context("expected parent class type", |i| type_expr(full, i))
+        context("[E0112] expected 'extends' keyword", keyword("extends")),
+        context("[E0113] expected parent class type | help: provide the class to extend from", |i| type_expr(full, i))
     )).parse(input)?;
     
     // Implements clause
     let (input, implements) = opt(preceded(
-        context("expected 'implements' keyword", keyword("implements")),
-        context("expected comma-separated list of interface types", separated_list1(symbol(","), |i| type_expr(full, i)))
+        context("[E0114] expected 'implements' keyword", keyword("implements")),
+        context("[E0115] expected comma-separated list of interface types | help: provide one or more interfaces to implement", separated_list1(symbol(","), |i| type_expr(full, i)))
     )).parse(input)?;
     
     // Class body
-    let (input, _) = context("expected '{' to start class body", symbol("{")).parse(input)?;
-    let (input, fields) = context("expected class members (fields, methods, properties)", |i| class_fields(full, i)).parse(input)?;
-    let (input, _) = context("expected '}' to close class body", symbol("}")).parse(input)?;
+    let (input, _) = context("[E0116] expected '{' to start class body | help: class body must be enclosed in braces", symbol("{")).parse(input)?;
+    let (input, fields) = context("[E0117] expected class members | help: provide fields, methods, or properties inside the class body", |i| class_fields(full, i)).parse(input)?;
+    let (input, _) = context("[E0118] expected '}' to close class body", symbol("}")).parse(input)?;
     
     let end = position(full, input);
     
@@ -405,16 +406,16 @@ fn interface_field<'a>(full: &'a str, input: &'a str) -> PResult<'a, ClassField>
 
 /// Parse function field
 fn field_function<'a>(full: &'a str, input: &'a str) -> PResult<'a, ClassFieldKind> {
-    let (input, _) = context("expected 'function' keyword", keyword("function")).parse(input)?;
-    let (input, name) = context("expected function name", function_name).parse(input)?;
+    let (input, _) = context("[E0120] expected 'function' keyword", keyword("function")).parse(input)?;
+    let (input, name) = context("[E0121] expected function name | help: provide a valid function name", function_name).parse(input)?;
     let (input, type_params) = type_params(full, input)?;
     
-    let (input, _) = context("expected '(' to start parameter list", symbol("(")).parse(input)?;
-    let (input, params) = context("expected function parameters", separated_list0(symbol(","), |i| function_param(full, i))).parse(input)?;
+    let (input, _) = context("[E0122] expected '(' to start parameter list | help: function parameters must be enclosed in parentheses", symbol("(")).parse(input)?;
+    let (input, params) = context("[E0123] expected function parameters | help: provide parameter list or leave empty", separated_list0(symbol(","), |i| function_param(full, i))).parse(input)?;
     let (input, _) = opt(symbol(",")).parse(input)?; // Trailing comma
-    let (input, _) = context("expected ')' to close parameter list", symbol(")")).parse(input)?;
+    let (input, _) = context("[E0124] expected ')' to close parameter list", symbol(")")).parse(input)?;
     
-    let (input, return_type) = opt(preceded(context("expected ':' before return type", symbol(":")), |i| type_expr(full, i))).parse(input)?;
+    let (input, return_type) = opt(preceded(context("[E0125] expected ':' before return type", symbol(":")), |i| type_expr(full, i))).parse(input)?;
     
     // Body is optional (for interfaces and extern functions)
     let (input, body) = opt(|i| function_body(full, i)).parse(input)?;
@@ -427,13 +428,13 @@ fn field_function<'a>(full: &'a str, input: &'a str) -> PResult<'a, ClassFieldKi
                 input
             } else {
                 // Single expression body needs semicolon
-                let (input, _) = context("expected ';' after function expression", symbol(";")).parse(input)?;
+                let (input, _) = context("[E0126] expected ';' after function expression | help: function expressions must end with semicolon", symbol(";")).parse(input)?;
                 input
             }
         }
         None => {
             // No body, semicolon required (interface/extern functions)
-            let (input, _) = context("expected ';' after function declaration", symbol(";")).parse(input)?;
+            let (input, _) = context("[E0127] expected ';' after function declaration | help: function declarations without body must end with semicolon", symbol(";")).parse(input)?;
             input
         }
     };
@@ -456,10 +457,10 @@ fn field_var_or_final<'a>(full: &'a str, input: &'a str, has_final_modifier: boo
         // If final was already parsed as a modifier, expect an identifier (no keyword)
         map(
             tuple((
-                context("expected field name", identifier),
-                opt(preceded(context("expected ':' before type annotation", symbol(":")), |i| type_expr(full, i))),
-                opt(preceded(context("expected '=' before initializer", symbol("=")), |i| expression(full, i))),
-                context("expected ';' after final field declaration", symbol(";"))
+                context("[E0128] expected field name | help: provide a valid field name", identifier),
+                opt(preceded(context("[E0129] expected ':' before type annotation", symbol(":")), |i| type_expr(full, i))),
+                opt(preceded(context("[E0130] expected '=' before initializer", symbol("=")), |i| expression(full, i))),
+                context("[E0131] expected ';' after final field declaration | help: field declarations must end with semicolon", symbol(";"))
             )),
             |(name, type_hint, expr, _)| ClassFieldKind::Final {
                 name,
@@ -472,11 +473,11 @@ fn field_var_or_final<'a>(full: &'a str, input: &'a str, has_final_modifier: boo
             // var field
             map(
                 tuple((
-                    context("expected 'var' keyword", keyword("var")),
-                    context("expected field name", identifier),
-                    opt(preceded(context("expected ':' before type annotation", symbol(":")), |i| type_expr(full, i))),
-                    opt(preceded(context("expected '=' before initializer", symbol("=")), |i| expression(full, i))),
-                    context("expected ';' after variable field declaration", symbol(";"))
+                    context("[E0132] expected 'var' keyword", keyword("var")),
+                    context("[E0133] expected field name | help: provide a valid field name", identifier),
+                    opt(preceded(context("[E0134] expected ':' before type annotation", symbol(":")), |i| type_expr(full, i))),
+                    opt(preceded(context("[E0135] expected '=' before initializer", symbol("=")), |i| expression(full, i))),
+                    context("[E0136] expected ';' after variable field declaration | help: field declarations must end with semicolon", symbol(";"))
                 )),
                 |(_, name, type_hint, expr, _)| ClassFieldKind::Var {
                     name,
@@ -487,11 +488,11 @@ fn field_var_or_final<'a>(full: &'a str, input: &'a str, has_final_modifier: boo
             // final field (standalone)
             map(
                 tuple((
-                    context("expected 'final' keyword", keyword("final")),
-                    context("expected field name", identifier),
-                    opt(preceded(context("expected ':' before type annotation", symbol(":")), |i| type_expr(full, i))),
-                    opt(preceded(context("expected '=' before initializer", symbol("=")), |i| expression(full, i))),
-                    context("expected ';' after final field declaration", symbol(";"))
+                    context("[E0137] expected 'final' keyword", keyword("final")),
+                    context("[E0138] expected field name | help: provide a valid field name", identifier),
+                    opt(preceded(context("[E0139] expected ':' before type annotation", symbol(":")), |i| type_expr(full, i))),
+                    opt(preceded(context("[E0140] expected '=' before initializer", symbol("=")), |i| expression(full, i))),
+                    context("[E0141] expected ';' after final field declaration | help: field declarations must end with semicolon", symbol(";"))
                 )),
                 |(_, name, type_hint, expr, _)| ClassFieldKind::Final {
                     name,

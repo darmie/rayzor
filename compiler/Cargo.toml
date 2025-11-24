@@ -5,55 +5,33 @@ edition = "2021"
 description = "Rayzor Haxe Language Compiler"
 
 [dependencies]
-parser ={ path = "../parser"}
+parser = { path = "../parser" }
 source_map = { path = "../source_map" }
 diagnostics = { path = "../diagnostics" }
 serde = "1"
 serde_json = "1"
-fxhash="0.2.1"
+fxhash = "0.2.1"
+log = "0.4"
+env_logger = "0.11"
 
 [[bin]]
 name = "validate_pipeline"
 path = "src/bin/validate_pipeline.rs"
 
 [[bin]]
-name = "test_switch_assign"
-path = "test_switch_assign.rs"
+name = "simple_test"
+path = "src/bin/simple_test.rs"
 
 [[bin]]
-name = "test_minimal_switch"
-path = "test_minimal_switch.rs"
+name = "test_undefined"
+path = "src/bin/test_undefined.rs"
 
-[[bin]]
-name = "test_switch_no_var"
-path = "test_switch_no_var.rs"
+[[example]]
+name = "test_integration_gaps"
+path = "examples/test_integration_gaps.rs"
 
-[[bin]]
-name = "debug_switch_ast"
-path = "debug_switch_ast.rs"
-
-[[bin]]
-name = "test_enum_simple"
-path = "test_enum_simple.rs"
-
-[[bin]]
-name = "test_enum_direct"
-path = "test_enum_direct.rs"
-
-[[bin]]
-name = "test_enum_no_generics"
-path = "test_enum_no_generics.rs"
-
-[[bin]]
-name = "test_object_pattern"
-path = "test_object_pattern.rs"
-
-[[bin]]
-name = "test_array_rest_pattern"
-path = "test_array_rest_pattern.rs"
-
-[[bin]]
-name = "test_type_pattern"
-path = "test_type_pattern.rs"
+[[example]]
+name = "test_null_safety"
+path = "examples/test_null_safety.rs"
 
 

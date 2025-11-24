@@ -65,6 +65,9 @@ pub struct TypedFile {
 pub struct FileMetadata {
     /// File path
     pub file_path: String,
+    
+    /// File name (interned)
+    pub file_name: Option<InternedString>,
 
     /// Package/module name
     pub package_name: Option<String>,
@@ -178,14 +181,75 @@ pub struct FunctionEffects {
     /// Can throw exceptions
     pub can_throw: bool,
 
-    /// Is async function
-    pub is_async: bool,
+    /// Async nature of the function
+    pub async_kind: AsyncKind,
 
     /// Is pure function (no side effects)
     pub is_pure: bool,
 
     /// Is inline function
     pub is_inline: bool,
+    
+    /// Types of exceptions that can be thrown (if any)
+    pub exception_types: Vec<TypeId>,
+    
+    /// Memory effects (mutations, borrows, etc.)
+    pub memory_effects: MemoryEffects,
+    
+    /// Resource effects (I/O, network, etc.)
+    pub resource_effects: ResourceEffects,
+}
+
+/// Async function classification
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum AsyncKind {
+    /// Synchronous function
+    #[default]
+    Sync,
+    
+    /// Async function (returns Promise/Future)
+    Async,
+    
+    /// Generator function
+    Generator,
+    
+    /// Async generator function
+    AsyncGenerator,
+}
+
+/// Memory effects tracking
+#[derive(Debug, Clone, Default)]
+pub struct MemoryEffects {
+    /// Variables that are mutated
+    pub mutations: Vec<SymbolId>,
+    
+    /// Objects that are moved/consumed
+    pub moves: Vec<SymbolId>,
+    
+    /// Whether the function can escape references
+    pub escapes_references: bool,
+    
+    /// Global state access
+    pub accesses_global_state: bool,
+}
+
+/// Resource effects tracking
+#[derive(Debug, Clone, Default)]
+pub struct ResourceEffects {
+    /// File I/O operations
+    pub performs_file_io: bool,
+    
+    /// Network I/O operations
+    pub performs_network_io: bool,
+    
+    /// Database operations
+    pub performs_database_ops: bool,
+    
+    /// System calls
+    pub performs_system_calls: bool,
+    
+    /// Other I/O operations
+    pub performs_other_io: bool,
 }
 
 /// Method overload signature information
@@ -563,8 +627,8 @@ pub enum TypedModuleFieldKind {
 /// Using statement for extension methods
 #[derive(Debug, Clone)]
 pub struct TypedUsing {
-    /// Module path being used
-    pub module_path: String,
+    /// Module path being used (interned for efficiency)
+    pub module_path: InternedString,
     /// Target type for using (if specified)
     pub target_type: Option<TypeId>,
     /// Source location
@@ -865,6 +929,28 @@ pub enum TypedExpressionKind {
         pattern: parser::Pattern,
         source_location: SourceLocation,
     },
+    
+    /// Array comprehension: [for (i in 0...10) i * 2]
+    ArrayComprehension {
+        for_parts: Vec<TypedComprehensionFor>,
+        expression: Box<TypedExpression>,
+        element_type: TypeId,
+    },
+    
+    /// Map comprehension: [for (i in 0...10) i => i * 2]
+    MapComprehension {
+        for_parts: Vec<TypedComprehensionFor>,
+        key_expr: Box<TypedExpression>,
+        value_expr: Box<TypedExpression>,
+        key_type: TypeId,
+        value_type: TypeId,
+    },
+    
+    /// Await expression: `await someAsyncFunction()`
+    Await {
+        expression: Box<TypedExpression>,
+        await_type: TypeId,
+    },
 }
 
 
@@ -918,6 +1004,31 @@ pub struct TypedMapEntry {
     /// Value expression
     pub value: TypedExpression,
 
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+/// Comprehension for clause (for array/map comprehensions)
+#[derive(Debug, Clone)]
+pub struct TypedComprehensionFor {
+    /// Loop variable binding
+    pub var_symbol: SymbolId,
+    
+    /// Optional key variable (for key => value iteration)
+    pub key_var_symbol: Option<SymbolId>,
+    
+    /// Iterator expression (what we're iterating over)
+    pub iterator: TypedExpression,
+    
+    /// Type of the loop variable
+    pub var_type: TypeId,
+    
+    /// Type of the key variable (if present)
+    pub key_type: Option<TypeId>,
+    
+    /// Scope for the comprehension variables
+    pub scope_id: ScopeId,
+    
     /// Source location
     pub source_location: SourceLocation,
 }
@@ -1177,14 +1288,14 @@ pub struct TypedTypeAlias {
 /// Import statement
 #[derive(Debug, Clone)]
 pub struct TypedImport {
-    /// Imported module path
-    pub module_path: String,
+    /// Imported module path (interned for efficiency)
+    pub module_path: InternedString,
 
-    /// Imported symbols (None = import all)
-    pub imported_symbols: Option<Vec<String>>,
+    /// Imported symbols (None = import all, interned for efficiency)
+    pub imported_symbols: Option<Vec<InternedString>>,
 
-    /// Alias for import
-    pub alias: Option<String>,
+    /// Alias for import (interned for efficiency)
+    pub alias: Option<InternedString>,
 
     /// Source location
     pub source_location: SourceLocation,
@@ -1302,13 +1413,16 @@ mod tests {
     fn test_function_effects() {
         let effects = FunctionEffects {
             can_throw: true,
-            is_async: false,
+            async_kind: AsyncKind::Sync,
             is_pure: false,
             is_inline: true,
+            exception_types:vec![],
+            memory_effects: MemoryEffects::default(),
+            resource_effects: ResourceEffects::default(),
         };
 
         assert!(effects.can_throw);
-        assert!(!effects.is_async);
+        assert!(!matches!(effects.async_kind, AsyncKind::Sync));
         assert!(effects.is_inline);
     }
 }

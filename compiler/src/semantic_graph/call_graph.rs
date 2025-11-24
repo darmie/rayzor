@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 
 /// Complete call graph for a program or module
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CallGraph {
     /// All call sites indexed by ID
     pub call_sites: IdMap<CallSiteId, CallSite>,
@@ -185,7 +185,7 @@ impl Default for InliningHint {
 }
 
 /// Virtual method call resolution information
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct VirtualCallResolution {
     /// Virtual method table information
     pub vtables: IdMap<TypeId, VirtualMethodTable>,
@@ -227,7 +227,7 @@ pub struct VTableEntry {
 }
 
 /// Recursion analysis information
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct RecursionInfo {
     /// Strongly connected components (recursive function groups)
     pub scc_components: Vec<StronglyConnectedComponent>,

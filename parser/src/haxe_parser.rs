@@ -16,10 +16,11 @@ use nom::{
 };
 
 use crate::haxe_ast::*;
+use crate::custom_error::ContextualError;
 use diagnostics;
 
-/// Parser result type
-pub type PResult<'a, T> = IResult<&'a str, T>;
+/// Parser result type with contextual errors to capture context strings
+pub type PResult<'a, T> = IResult<&'a str, T, ContextualError<&'a str>>;
 
 /// Result of parsing that includes diagnostics
 #[derive(Debug)]
@@ -243,12 +244,13 @@ pub fn parse_haxe_file_with_diagnostics(file_name: &str, input: &str) -> Result<
         }
         Err(e) => {
             // If we have diagnostics, format them nicely
-            if !diagnostics.is_empty() {
-                let formatter = diagnostics::ErrorFormatter::with_colors();
-                Err(formatter.format_diagnostics(&diagnostics, &source_map))
-            } else {
-                Err(e)
-            }
+            // if !diagnostics.is_empty() {
+            //     let formatter = diagnostics::ErrorFormatter::with_colors();
+            //     Err(formatter.format_diagnostics(&diagnostics, &source_map))
+            // } else {
+                
+            // }
+            Err(e)
         }
     }
 }
@@ -295,7 +297,7 @@ pub fn import_hx_file<'a>(file_name: &str, full: &'a str, input: &'a str) -> PRe
 }
 
 pub fn import_hx_file_with_debug<'a>(file_name: &str, full: &'a str, input: &'a str, debug: bool) -> PResult<'a, HaxeFile> {
-    context("import.hx file", |input| {
+    context("import.hx file", |input: &'a str| -> PResult<'a, HaxeFile> {
     let start = position(full, input);
     
     // Skip leading whitespace/comments
@@ -351,7 +353,7 @@ pub fn import_hx_file_with_debug<'a>(file_name: &str, full: &'a str, input: &'a 
     // import.hx files should not have any other content
     // If there's remaining content, it's an error
     if !input.is_empty() {
-        return Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)));
+        return Err(nom::Err::Error(ContextualError::new(input, nom::error::ErrorKind::Tag)));
     }
     
     let end = position(full, input);
@@ -403,7 +405,7 @@ pub fn haxe_file_with_debug<'a>(file_name: &str, full: &'a str, input: &'a str, 
         
         if peek_result.is_ok() {
             // Stop parsing imports/using
-            Err(nom::Err::Error(nom::error::Error::new(i, nom::error::ErrorKind::Eof)))
+            Err(nom::Err::Error(ContextualError::new(i, nom::error::ErrorKind::Eof)))
         } else {
             // Try to parse conditional compilation containing imports, or regular imports/using
             alt((
@@ -459,7 +461,7 @@ pub fn haxe_file_with_debug<'a>(file_name: &str, full: &'a str, input: &'a str, 
         
         if peek_result.is_ok() {
             // Stop parsing module fields
-            Err(nom::Err::Error(nom::error::Error::new(i, nom::error::ErrorKind::Eof)))
+            Err(nom::Err::Error(ContextualError::new(i, nom::error::ErrorKind::Eof)))
         } else {
             // Try to parse module field
             module_field(full, i)
@@ -535,10 +537,10 @@ fn module_field_function<'a>(full: &'a str, input: &'a str) -> PResult<'a, Modul
     let (input, name) = context("expected function name", function_name).parse(input)?;
     let (input, type_params) = type_params(full, input)?;
     
-    let (input, _) = context("expected '(' to start parameter list", symbol("(")).parse(input)?;
-    let (input, params) = context("expected function parameters", separated_list0(symbol(","), |i| function_param(full, i))).parse(input)?;
+    let (input, _) = context("[E0082] expected '(' to start parameter list | help: function parameters must be enclosed in parentheses", symbol("(")).parse(input)?;
+    let (input, params) = context("[E0083] expected function parameters | help: provide parameter list or leave empty for no parameters", separated_list0(symbol(","), |i| function_param(full, i))).parse(input)?;
     let (input, _) = opt(symbol(",")).parse(input)?; // Trailing comma
-    let (input, _) = context("expected ')' to close parameter list", symbol(")")).parse(input)?;
+    let (input, _) = context("[E0084] expected ')' to close parameter list", symbol(")")).parse(input)?;
     
     let (input, return_type) = opt(preceded(context("expected ':' before return type", symbol(":")), |i| type_expr(full, i))).parse(input)?;
     
@@ -747,19 +749,19 @@ pub fn package_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, Package> {
 pub fn import_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, Import> {
     context("import declaration", |input| {
     let start = position(full, input);
-    let (input, _) = context("expected 'import' keyword", keyword("import")).parse(input)?;
+    let (input, _) = context("[E0095] expected 'import' keyword", keyword("import")).parse(input)?;
     
     // Parse the import path and mode
-    let (input, (path, mode)) = context("expected import path (e.g., 'haxe.ds.StringMap')", alt((
+    let (input, (path, mode)) = context("[E0096] expected import path | help: provide a valid import path like 'haxe.ds.StringMap'", alt((
         // import path.* or import path.* except ...
         |input| {
             let (input, path) = import_path_until_wildcard(input)?;
-            let (input, _) = context("expected '.*' for wildcard import", symbol(".*")).parse(input)?;
+            let (input, _) = context("[E0097] expected '.*' for wildcard import | help: use '.*' to import all items from a module", symbol(".*")).parse(input)?;
             
             // Check if there's an "except" clause
             if let Ok((input_after_except, _)) = keyword("except")(input) {
                 // Parse the exclusion list
-                let (input, exclusions) = context("expected comma-separated list of excluded identifiers", separated_list1(
+                let (input, exclusions) = context("[E0098] expected comma-separated list of excluded identifiers | help: list the items to exclude from the wildcard import", separated_list1(
                     symbol(","),
                     identifier
                 )).parse(input_after_except)?;
@@ -776,7 +778,7 @@ pub fn import_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, Import> {
             // Check what comes after the path
             if let Ok((input_after_as, _)) = keyword("as")(input_after_path) {
                 // This is an alias import
-                let (input, alias) = context("expected alias identifier after 'as'", identifier).parse(input_after_as)?;
+                let (input, alias) = context("[E0099] expected alias identifier after 'as' | help: provide an alias name for the import", identifier).parse(input_after_as)?;
                 Ok((input, (full_path, ImportMode::Alias(alias))))
             } else if let Ok((input_before_semicolon, _)) = symbol(";")(input_after_path) {
                 // If we can see a semicolon, check if the last part might be a field
@@ -803,7 +805,7 @@ pub fn import_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, Import> {
         }
     ))).parse(input)?;
     
-    let (input, _) = context("expected ';' after import statement", symbol(";")).parse(input)?;
+    let (input, _) = context("[E0100] expected ';' after import statement | help: import statements must end with semicolon", symbol(";")).parse(input)?;
     let end = position(full, input);
     
     Ok((input, Import {
@@ -818,9 +820,9 @@ pub fn import_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, Import> {
 pub fn using_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, Using> {
     context("using declaration", |input| {
     let start = position(full, input);
-    let (input, _) = context("expected 'using' keyword", keyword("using")).parse(input)?;
-    let (input, path) = context("expected type path (e.g., 'StringTools')", import_path).parse(input)?;
-    let (input, _) = context("expected ';' after using statement", symbol(";")).parse(input)?;
+    let (input, _) = context("[E0101] expected 'using' keyword", keyword("using")).parse(input)?;
+    let (input, path) = context("[E0102] expected type path | help: provide a type to use, like 'StringTools'", import_path).parse(input)?;
+    let (input, _) = context("[E0103] expected ';' after using statement | help: using statements must end with semicolon", symbol(";")).parse(input)?;
     let end = position(full, input);
     
     Ok((input, Using {
@@ -897,41 +899,45 @@ fn import_path_until_wildcard(input: &str) -> PResult<Vec<String>> {
 
 /// Any type declaration
 pub fn type_declaration<'a>(full: &'a str, input: &'a str) -> PResult<'a, TypeDeclaration> {
-    context("type declaration", alt((
-        // Check for conditional compilation first
-        |i| {
-            let peek_result: Result<_, nom::Err<nom::error::Error<_>>> = peek(tag("#if")).parse(i);
-            if peek_result.is_ok() {
-                map(
-                    |i| conditional_compilation(full, i, type_declaration),
-                    TypeDeclaration::Conditional
-                ).parse(i)
-            } else {
-                Err(nom::Err::Error(nom::error::Error::new(i, nom::error::ErrorKind::Tag)))
-            }
-        },
-        // Check for metadata-prefixed declarations
-        |i| {
-            let peek_result: Result<_, nom::Err<nom::error::Error<_>>> = peek(tag("@")).parse(i);
-            if peek_result.is_ok() {
-                // Try parsing each type with metadata
-                alt((
-                    map(|i| class_decl(full, i), TypeDeclaration::Class),
-                    map(|i| interface_decl(full, i), TypeDeclaration::Interface),
-                    map(|i| enum_decl(full, i), TypeDeclaration::Enum),
-                    map(|i| typedef_decl(full, i), TypeDeclaration::Typedef),
-                    map(|i| abstract_decl(full, i), TypeDeclaration::Abstract),
-                )).parse(i)
-            } else {
-                Err(nom::Err::Error(nom::error::Error::new(i, nom::error::ErrorKind::Tag)))
-            }
-        },
-        map(|i| class_decl(full, i), TypeDeclaration::Class),
-        map(|i| interface_decl(full, i), TypeDeclaration::Interface),
-        map(|i| enum_decl(full, i), TypeDeclaration::Enum),
-        map(|i| typedef_decl(full, i), TypeDeclaration::Typedef),
-        map(|i| abstract_decl(full, i), TypeDeclaration::Abstract),
-    ))).parse(input)
+    // Add context to help identify what failed
+    context(
+        "expected type declaration (class, interface, enum, typedef, or abstract)",
+        alt((
+            // Check for conditional compilation first
+            |i| {
+                let peek_result: Result<_, nom::Err<nom::error::Error<_>>> = peek(tag("#if")).parse(i);
+                if peek_result.is_ok() {
+                    map(
+                        |i| conditional_compilation(full, i, type_declaration),
+                        TypeDeclaration::Conditional
+                    ).parse(i)
+                } else {
+                    Err(nom::Err::Error(ContextualError::new(i, nom::error::ErrorKind::Tag)))
+                }
+            },
+            // Check for metadata-prefixed declarations
+            |i| {
+                let peek_result: Result<_, nom::Err<nom::error::Error<_>>> = peek(tag("@")).parse(i);
+                if peek_result.is_ok() {
+                    // Try parsing each type with metadata
+                    alt((
+                        context("class declaration", map(|i| class_decl(full, i), TypeDeclaration::Class)),
+                        context("interface declaration", map(|i| interface_decl(full, i), TypeDeclaration::Interface)),
+                        context("enum declaration", map(|i| enum_decl(full, i), TypeDeclaration::Enum)),
+                        context("typedef declaration", map(|i| typedef_decl(full, i), TypeDeclaration::Typedef)),
+                        context("abstract declaration", map(|i| abstract_decl(full, i), TypeDeclaration::Abstract)),
+                    )).parse(i)
+                } else {
+                    Err(nom::Err::Error(ContextualError::new(i, nom::error::ErrorKind::Tag)))
+                }
+            },
+            context("class declaration", map(|i| class_decl(full, i), TypeDeclaration::Class)),
+            context("interface declaration", map(|i| interface_decl(full, i), TypeDeclaration::Interface)),
+            context("enum declaration", map(|i| enum_decl(full, i), TypeDeclaration::Enum)),
+            context("typedef declaration", map(|i| typedef_decl(full, i), TypeDeclaration::Typedef)),
+            context("abstract declaration", map(|i| abstract_decl(full, i), TypeDeclaration::Abstract)),
+        ))
+    ).parse(input)
 }
 
 /// Parse metadata attributes
@@ -1059,7 +1065,7 @@ where
         let peek_result: Result<_, nom::Err<nom::error::Error<_>>> = peek(alt((tag("#elseif"), tag("#else"), tag("#end")))).parse(i);
         if peek_result.is_ok() {
             // Stop parsing content
-            Err(nom::Err::Error(nom::error::Error::new(i, nom::error::ErrorKind::Eof)))
+            Err(nom::Err::Error(ContextualError::new(i, nom::error::ErrorKind::Eof)))
         } else {
             content_parser(full, i)
         }
@@ -1093,7 +1099,7 @@ where
     let (input, content) = many0(|i| {
         let peek_result: Result<_, nom::Err<nom::error::Error<_>>> = peek(alt((tag("#elseif"), tag("#else"), tag("#end")))).parse(i);
         if peek_result.is_ok() {
-            Err(nom::Err::Error(nom::error::Error::new(i, nom::error::ErrorKind::Eof)))
+            Err(nom::Err::Error(ContextualError::new(i, nom::error::ErrorKind::Eof)))
         } else {
             content_parser(full, i)
         }
@@ -1124,7 +1130,7 @@ where
     many0(|i| {
         let peek_result: Result<_, nom::Err<nom::error::Error<_>>> = peek(tag("#end")).parse(i);
         if peek_result.is_ok() {
-            Err(nom::Err::Error(nom::error::Error::new(i, nom::error::ErrorKind::Eof)))
+            Err(nom::Err::Error(ContextualError::new(i, nom::error::ErrorKind::Eof)))
         } else {
             content_parser(full, i)
         }

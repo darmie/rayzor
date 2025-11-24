@@ -10,9 +10,10 @@
 
 use crate::tast::type_checker::{ClassHierarchyInfo, ClassHierarchyRegistry};
 
-use super::{InternedString, LifetimeId, ScopeId, StringInterner, SymbolId, TypeId, TypedArena};
+use super::{InternedString, LifetimeId, ScopeId, StringInterner, SymbolId, TypeId, TypedArena, symbol_cache::SymbolResolutionCache};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
+use std::rc::Rc;
 
 /// The kind of symbol (variable, function, class, etc.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -470,6 +471,8 @@ pub struct SymbolTable {
     supertype_cache: HashMap<SymbolId, HashSet<TypeId>>,
     /// Map from enum symbol to its variants
     enum_variants: HashMap<SymbolId, Vec<SymbolId>>,
+    /// Enhanced symbol resolution cache
+    symbol_cache: Rc<SymbolResolutionCache>,
 }
 
 impl SymbolTable {
@@ -488,6 +491,7 @@ impl SymbolTable {
             symbol_to_type: HashMap::new(),
             supertype_cache: HashMap::new(),
             enum_variants: HashMap::new(),
+            symbol_cache: Rc::new(SymbolResolutionCache::new(1000)),
         }
     }
 
@@ -506,6 +510,7 @@ impl SymbolTable {
             symbol_to_type: HashMap::with_capacity(capacity),
             supertype_cache: HashMap::with_capacity(capacity),
             enum_variants: HashMap::with_capacity(capacity / 20), // Estimate fewer enums
+            symbol_cache: Rc::new(SymbolResolutionCache::with_sizes(capacity, capacity / 2)),
         }
     }
 
@@ -539,6 +544,15 @@ impl SymbolTable {
 
         self.total_symbols += 1;
 
+        // Invalidate relevant cache entries
+        self.symbol_cache.invalidate_scope(scope_id);
+        self.symbol_cache.invalidate_name(name);
+        
+        // Invalidate cache entries for this symbol kind
+        use super::symbol_cache::SymbolCacheKey;
+        let kind_key = SymbolCacheKey::SymbolsByKind(kind);
+        // Note: We could implement specific invalidation for single keys, but clearing is simpler for now
+        
         static_ref
     }
 
@@ -570,7 +584,7 @@ impl SymbolTable {
         })
     }
     
-    /// Update a symbol's type
+    
     pub fn update_symbol_type(&mut self, id: SymbolId, type_id: TypeId) -> bool {
         // We need to find the symbol and update it
         // Since we use an arena, we can't directly mutate, but we can use unsafe code
@@ -588,26 +602,66 @@ impl SymbolTable {
         false
     }
 
-    /// Look up a symbol by name in a specific scope
+    /// Look up a symbol by name in a specific scope (with caching)
     pub fn lookup_symbol(&self, scope_id: ScopeId, name: InternedString) -> Option<&Symbol> {
-        let symbol_id = self.symbols_by_name.get(&(scope_id, name))?;
-        self.get_symbol(*symbol_id)
+        // Check cache first
+        if let Some(cached_result) = self.symbol_cache.get(scope_id, name) {
+            return cached_result.and_then(|id| self.get_symbol(id));
+        }
+        
+        // Cache miss, perform lookup
+        let symbol_id = self.symbols_by_name.get(&(scope_id, name)).copied();
+        
+        // Store result in cache (including None results to avoid repeated misses)
+        self.symbol_cache.insert(scope_id, name, symbol_id);
+        
+        symbol_id.and_then(|id| self.get_symbol(id))
     }
 
-    /// Get all symbols in a scope
+    /// Get all symbols in a scope (with caching)
     pub fn symbols_in_scope(&self, scope_id: ScopeId) -> Vec<&Symbol> {
-        self.symbols_by_scope
+        use super::symbol_cache::SymbolCacheKey;
+        
+        let cache_key = SymbolCacheKey::SymbolsInScope(scope_id);
+        
+        // Check cache first
+        if let Some(cached_ids) = self.symbol_cache.get_symbols(&cache_key) {
+            return cached_ids.iter().filter_map(|&id| self.get_symbol(id)).collect();
+        }
+        
+        // Cache miss, perform lookup
+        let symbol_ids = self.symbols_by_scope
             .get(&scope_id)
-            .map(|ids| ids.iter().filter_map(|&id| self.get_symbol(id)).collect())
-            .unwrap_or_default()
+            .cloned()
+            .unwrap_or_default();
+        
+        // Store result in cache
+        self.symbol_cache.insert_symbols(cache_key, symbol_ids.clone());
+        
+        symbol_ids.iter().filter_map(|&id| self.get_symbol(id)).collect()
     }
 
-    /// Get all symbols of a specific kind
+    /// Get all symbols of a specific kind (with caching)
     pub fn symbols_of_kind(&self, kind: SymbolKind) -> Vec<&Symbol> {
-        self.symbols_by_kind
+        use super::symbol_cache::SymbolCacheKey;
+        
+        let cache_key = SymbolCacheKey::SymbolsByKind(kind);
+        
+        // Check cache first
+        if let Some(cached_ids) = self.symbol_cache.get_symbols(&cache_key) {
+            return cached_ids.iter().filter_map(|&id| self.get_symbol(id)).collect();
+        }
+        
+        // Cache miss, perform lookup
+        let symbol_ids = self.symbols_by_kind
             .get(&kind)
-            .map(|ids| ids.iter().filter_map(|&id| self.get_symbol(id)).collect())
-            .unwrap_or_default()
+            .cloned()
+            .unwrap_or_default();
+        
+        // Store result in cache
+        self.symbol_cache.insert_symbols(cache_key, symbol_ids.clone());
+        
+        symbol_ids.iter().filter_map(|&id| self.get_symbol(id)).collect()
     }
 
     /// Check if a name is already used in a scope
@@ -748,7 +802,7 @@ impl SymbolTable {
     }
 
     /// Create a interface symbol
-    pub fn create_interfce(&mut self, name: InternedString) -> SymbolId {
+    pub fn create_interface(&mut self, name: InternedString) -> SymbolId {
         self.create_interface_in_scope(name, ScopeId::invalid())
     }
 
@@ -783,6 +837,11 @@ impl SymbolTable {
 
     /// Create a function symbol
     pub fn create_function(&mut self, name: InternedString) -> SymbolId {
+        self.create_function_in_scope(name, ScopeId::invalid())
+    }
+    
+    /// Create a function symbol in a specific scope
+    pub fn create_function_in_scope(&mut self, name: InternedString, scope_id: ScopeId) -> SymbolId {
         let symbol_id = SymbolId::from_raw(self.total_symbols as u32);
         
         let symbol = Symbol {
@@ -790,7 +849,7 @@ impl SymbolTable {
             name,
             kind: SymbolKind::Function,
             type_id: TypeId::invalid(),
-            scope_id: ScopeId::invalid(),
+            scope_id,
             lifetime_id: LifetimeId::invalid(),
             visibility: Visibility::Public,
             mutability: Mutability::Immutable,
@@ -1122,6 +1181,11 @@ impl SymbolTable {
         false
     }
 
+    /// Get class hierarchy info (crate-visible for HIR lowering)
+    pub(crate) fn get_class_hierarchy(&self, class_id: SymbolId) -> Option<&ClassHierarchyInfo> {
+        self.class_hierarchies.get(&class_id)
+    }
+    
     /// Get class hierarchy info for TypeChecker
     pub fn get_class_info_for_type_checking(&self, class_id: SymbolId) -> Option<ClassTypeInfo> {
         let hierarchy = self.get_class_hierarchy(class_id)?;
@@ -1136,6 +1200,33 @@ impl SymbolTable {
             all_supertypes: self.compute_all_supertypes(class_id),
             depth: hierarchy.depth,
         })
+    }
+    
+    // === Cache Management Methods ===
+    
+    /// Get symbol cache statistics
+    pub fn cache_stats(&self) -> super::symbol_cache::CacheStats {
+        self.symbol_cache.stats()
+    }
+    
+    /// Get current cache sizes (symbol cache, multi-symbol cache)
+    pub fn cache_sizes(&self) -> (usize, usize) {
+        self.symbol_cache.sizes()
+    }
+    
+    /// Clear the symbol cache (useful for testing or memory management)
+    pub fn clear_cache(&self) {
+        self.symbol_cache.clear();
+    }
+    
+    /// Invalidate cache entries for a specific scope
+    pub fn invalidate_scope_cache(&self, scope_id: ScopeId) {
+        self.symbol_cache.invalidate_scope(scope_id);
+    }
+    
+    /// Invalidate cache entries for a specific symbol name
+    pub fn invalidate_name_cache(&self, name: InternedString) {
+        self.symbol_cache.invalidate_name(name);
     }
 }
 
@@ -1724,6 +1815,11 @@ mod tests {
             interfaces: vec![],
             all_supertypes: HashSet::new(),
             depth: 0,
+            is_final: false,
+            is_abstract: false,
+            is_extern: false,
+            is_interface: false,
+            sealed_to: None,
         });
         
         symbol_table.register_class_hierarchy(animal_sym, ClassHierarchyInfo {
@@ -1731,6 +1827,11 @@ mod tests {
             interfaces: vec![],
             all_supertypes: [object_type].into_iter().collect(),
             depth: 1,
+            is_final: false,
+            is_abstract: false,
+            is_extern: false,
+            is_interface: false,
+            sealed_to: None,
         });
         
         symbol_table.register_class_hierarchy(dog_sym, ClassHierarchyInfo {
@@ -1738,6 +1839,11 @@ mod tests {
             interfaces: vec![],
             all_supertypes: [object_type, animal_type].into_iter().collect(),
             depth: 2,
+            is_final: false,
+            is_abstract: false,
+            is_extern: false,
+            is_interface: false,
+            sealed_to: None,
         });
         
         // Test hierarchy queries

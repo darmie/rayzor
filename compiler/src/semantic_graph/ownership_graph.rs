@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 
 /// Complete ownership and lifetime tracking graph
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 pub struct OwnershipGraph {
     /// All variables and their ownership information
     pub variables: IdMap<SymbolId, OwnershipNode>,

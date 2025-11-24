@@ -123,6 +123,16 @@ pub enum TypeErrorKind {
         member_name: InternedString,
         class_name: InternedString,
     },
+    
+    /// Import-related errors
+    ImportError {
+        message: String,
+    },
+    
+    /// Unknown symbol reference
+    UnknownSymbol {
+        name: String,
+    },
 }
 
 /// Access levels for visibility checking
@@ -969,6 +979,21 @@ pub struct ClassHierarchyInfo {
 
     /// Depth in hierarchy (Object = 0, direct subclasses = 1, etc.)
     pub depth: usize,
+    
+    /// Whether the class is final (cannot be extended)
+    pub is_final: bool,
+    
+    /// Whether the class is abstract (cannot be instantiated)
+    pub is_abstract: bool,
+    
+    /// Whether the class is extern (defined externally)
+    pub is_extern: bool,
+    
+    /// Whether this is an interface (not a class)
+    pub is_interface: bool,
+    
+    /// Types this abstract/enum is sealed to (if any)
+    pub sealed_to: Option<Vec<TypeId>>,
 }
 
 /// Extension to SymbolTable for class hierarchy
@@ -2011,8 +2036,9 @@ impl<'a> TypeChecker<'a> {
                 // Drop the borrow before doing more work
                 drop(type_table);
                 
+                let len = expected_params.len();
                 // Check parameter count
-                if expected_params.len() != arg_types.len() {
+                if len != arg_types.len() {
                     return Err(TypeCheckError {
                         kind: TypeErrorKind::SignatureMismatch {
                             expected_params,
@@ -2023,7 +2049,7 @@ impl<'a> TypeChecker<'a> {
                         location: call_location,
                         context: format!(
                             "Expected {} arguments, got {}",
-                            expected_params.len(),
+                            len,
                             arg_types.len()
                         ),
                         suggestion: Some("Check the function signature".to_string()),

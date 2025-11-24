@@ -19,7 +19,7 @@ use std::collections::{HashMap,  VecDeque};
 use std::fmt;
 
 /// A data flow graph representing value flow in SSA form
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DataFlowGraph {
     /// All data flow nodes indexed by ID
     pub nodes: IdMap<DataFlowNodeId, DataFlowNode>,
@@ -340,7 +340,7 @@ pub struct LivenessInfo {
 }
 
 /// Def-use chains for efficient analysis
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct DefUseChains {
     /// Map from definition to all uses
     pub def_to_uses: IdMap<DataFlowNodeId, Vec<DataFlowNodeId>>,
@@ -356,7 +356,7 @@ pub struct DefUseChains {
 }
 
 /// Value numbering for optimization
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ValueNumbering {
     /// Map from value number to canonical expression
     pub value_to_expr: HashMap<ValueNumber, CanonicalExpression>,

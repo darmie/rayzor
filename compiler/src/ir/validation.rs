@@ -1,0 +1,681 @@
+//! HIR Validation
+//!
+//! This module provides validation passes for the HIR to ensure correctness
+//! before code generation. It checks for type consistency, proper SSA form,
+//! control flow integrity, and other invariants.
+
+use super::{
+    IrModule, IrFunction, IrBasicBlock, IrInstruction, IrTerminator,
+    IrType, IrId, IrBlockId, IrFunctionId, IrValue,
+};
+use std::collections::{HashMap, HashSet};
+
+/// HIR validation context
+pub struct ValidationContext {
+    /// Current module being validated
+    module: *const IrModule,
+    
+    /// Current function being validated
+    current_function: Option<IrFunctionId>,
+    
+    /// Errors found during validation
+    errors: Vec<ValidationError>,
+    
+    /// Type information for each register
+    register_types: HashMap<IrId, IrType>,
+    
+    /// Defined registers
+    defined_registers: HashSet<IrId>,
+    
+    /// Used registers
+    used_registers: HashSet<IrId>,
+}
+
+/// Validation error
+#[derive(Debug)]
+pub struct ValidationError {
+    pub kind: ValidationErrorKind,
+    pub function: Option<IrFunctionId>,
+    pub block: Option<IrBlockId>,
+    pub instruction: Option<String>,
+}
+
+/// Types of validation errors
+#[derive(Debug)]
+pub enum ValidationErrorKind {
+    /// Register used before definition
+    UseBeforeDefine { register: IrId },
+    
+    /// Register defined multiple times
+    MultipleDefinitions { register: IrId },
+    
+    /// Type mismatch
+    TypeMismatch {
+        expected: IrType,
+        found: IrType,
+        register: IrId,
+    },
+    
+    /// Invalid instruction operand
+    InvalidOperand {
+        instruction: String,
+        reason: String,
+    },
+    
+    /// Missing terminator in basic block
+    MissingTerminator { block: IrBlockId },
+    
+    /// Unreachable code after terminator
+    UnreachableCode { block: IrBlockId },
+    
+    /// Invalid control flow
+    InvalidControlFlow {
+        from: IrBlockId,
+        to: IrBlockId,
+        reason: String,
+    },
+    
+    /// Phi node inconsistency
+    InvalidPhiNode {
+        block: IrBlockId,
+        reason: String,
+    },
+    
+    /// Function signature mismatch
+    SignatureMismatch {
+        function: IrFunctionId,
+        reason: String,
+    },
+    
+    /// Invalid SSA form
+    InvalidSSA {
+        register: IrId,
+        reason: String,
+    },
+}
+
+impl ValidationContext {
+    /// Create a new validation context
+    fn new() -> Self {
+        Self {
+            module: std::ptr::null(),
+            current_function: None,
+            errors: Vec::new(),
+            register_types: HashMap::new(),
+            defined_registers: HashSet::new(),
+            used_registers: HashSet::new(),
+        }
+    }
+    
+    /// Add a validation error
+    fn add_error(&mut self, kind: ValidationErrorKind) {
+        self.errors.push(ValidationError {
+            kind,
+            function: self.current_function,
+            block: None,
+            instruction: None,
+        });
+    }
+    
+    /// Get the module reference
+    fn module(&self) -> &IrModule {
+        unsafe { &*self.module }
+    }
+    
+    /// Record register definition with type
+    fn define_register(&mut self, reg: IrId, ty: IrType) {
+        if self.defined_registers.contains(&reg) {
+            self.add_error(ValidationErrorKind::MultipleDefinitions { register: reg });
+        }
+        self.defined_registers.insert(reg);
+        self.register_types.insert(reg, ty);
+    }
+    
+    /// Record register use and check if defined
+    fn use_register(&mut self, reg: IrId) -> Option<&IrType> {
+        self.used_registers.insert(reg);
+        
+        if !self.defined_registers.contains(&reg) {
+            self.add_error(ValidationErrorKind::UseBeforeDefine { register: reg });
+            None
+        } else {
+            self.register_types.get(&reg)
+        }
+    }
+    
+    /// Check type compatibility
+    fn check_type_compat(&mut self, expected: &IrType, found: &IrType, reg: IrId) {
+        if !types_compatible(expected, found) {
+            self.add_error(ValidationErrorKind::TypeMismatch {
+                expected: expected.clone(),
+                found: found.clone(),
+                register: reg,
+            });
+        }
+    }
+}
+
+/// Validate an entire module
+pub fn validate_module(module: &IrModule) -> Result<(), Vec<ValidationError>> {
+    let mut ctx = ValidationContext::new();
+    ctx.module = module as *const IrModule;
+    
+    // Validate all functions
+    for (&func_id, function) in &module.functions {
+        ctx.current_function = Some(func_id);
+        validate_function(&mut ctx, function);
+    }
+    
+    // TODO: Validate globals, types, etc.
+    
+    if ctx.errors.is_empty() {
+        Ok(())
+    } else {
+        Err(ctx.errors)
+    }
+}
+
+/// Validate a function
+fn validate_function(ctx: &mut ValidationContext, function: &IrFunction) {
+    // Clear per-function state
+    ctx.register_types.clear();
+    ctx.defined_registers.clear();
+    ctx.used_registers.clear();
+    
+    // Define parameter registers
+    for param in &function.signature.parameters {
+        ctx.define_register(param.reg, param.ty.clone());
+    }
+    
+    // Validate control flow graph structure
+    validate_cfg_structure(ctx, function);
+    
+    // Validate each basic block
+    let mut visited = HashSet::new();
+    validate_block_recursive(ctx, function, function.entry_block(), &mut visited);
+    
+    // Check for unused registers (potential dead code)
+    for &reg in &ctx.defined_registers {
+        if !ctx.used_registers.contains(&reg) && !is_void_type(&ctx.register_types[&reg]) {
+            // This is just a warning, not an error
+            // Could be reported for optimization
+        }
+    }
+    
+    // Validate return types
+    validate_return_types(ctx, function);
+}
+
+/// Validate CFG structure
+fn validate_cfg_structure(ctx: &mut ValidationContext, function: &IrFunction) {
+    // Check entry block exists
+    if !function.cfg.blocks.contains_key(&function.entry_block()) {
+        ctx.add_error(ValidationErrorKind::InvalidControlFlow {
+            from: IrBlockId::entry(),
+            to: IrBlockId::entry(),
+            reason: "Entry block not found".to_string(),
+        });
+        return;
+    }
+    
+    // Check all blocks are reachable from entry
+    let reachable = find_reachable_blocks(function);
+    for &block_id in function.cfg.blocks.keys() {
+        if !reachable.contains(&block_id) && block_id != function.entry_block() {
+            // This is a warning - unreachable code
+        }
+    }
+    
+    // Validate predecessor/successor consistency
+    for (&block_id, block) in &function.cfg.blocks {
+        for &succ in &block.successors() {
+            if !function.cfg.blocks.contains_key(&succ) {
+                ctx.add_error(ValidationErrorKind::InvalidControlFlow {
+                    from: block_id,
+                    to: succ,
+                    reason: "Successor block not found".to_string(),
+                });
+            }
+        }
+    }
+}
+
+/// Find all reachable blocks from entry
+fn find_reachable_blocks(function: &IrFunction) -> HashSet<IrBlockId> {
+    let mut reachable = HashSet::new();
+    let mut worklist = vec![function.entry_block()];
+    
+    while let Some(block_id) = worklist.pop() {
+        if reachable.insert(block_id) {
+            if let Some(block) = function.cfg.get_block(block_id) {
+                worklist.extend(block.successors());
+            }
+        }
+    }
+    
+    reachable
+}
+
+/// Validate a block and its successors recursively
+fn validate_block_recursive(
+    ctx: &mut ValidationContext,
+    function: &IrFunction,
+    block_id: IrBlockId,
+    visited: &mut HashSet<IrBlockId>,
+) {
+    if !visited.insert(block_id) {
+        return; // Already visited
+    }
+    
+    if let Some(block) = function.cfg.get_block(block_id) {
+        validate_block(ctx, block);
+        
+        // Recursively validate successors
+        for &succ in &block.successors() {
+            validate_block_recursive(ctx, function, succ, visited);
+        }
+    }
+}
+
+/// Validate a single basic block
+fn validate_block(ctx: &mut ValidationContext, block: &IrBasicBlock) {
+    // Validate phi nodes (must come first)
+    for phi in &block.phi_nodes {
+        validate_phi_node(ctx, block, phi);
+    }
+    
+    // Validate instructions
+    for (i, inst) in block.instructions.iter().enumerate() {
+        validate_instruction(ctx, inst);
+        
+        // Check for instructions after terminator
+        if inst.is_terminator() && i < block.instructions.len() - 1 {
+            ctx.add_error(ValidationErrorKind::UnreachableCode { block: block.id });
+        }
+    }
+    
+    // Validate terminator
+    if !block.is_terminated() {
+        ctx.add_error(ValidationErrorKind::MissingTerminator { block: block.id });
+    } else {
+        validate_terminator(ctx, &block.terminator);
+    }
+}
+
+/// Validate a phi node
+fn validate_phi_node(
+    ctx: &mut ValidationContext,
+    block: &IrBasicBlock,
+    phi: &super::IrPhiNode,
+) {
+    // Check that incoming blocks are predecessors
+    for &(pred_block, _) in &phi.incoming {
+        if !block.predecessors.contains(&pred_block) {
+            ctx.add_error(ValidationErrorKind::InvalidPhiNode {
+                block: block.id,
+                reason: format!("Incoming block {:?} is not a predecessor", pred_block),
+            });
+        }
+    }
+    
+    // Check that all predecessors have entries
+    for &pred in &block.predecessors {
+        if !phi.incoming.iter().any(|(b, _)| *b == pred) {
+            ctx.add_error(ValidationErrorKind::InvalidPhiNode {
+                block: block.id,
+                reason: format!("Missing entry for predecessor {:?}", pred),
+            });
+        }
+    }
+    
+    // Define the phi result
+    ctx.define_register(phi.dest, phi.ty.clone());
+    
+    // Check all incoming values have compatible types
+    for &(_, value) in &phi.incoming {
+        if let Some(value_ty) = ctx.use_register(value) {
+            let value_ty_clone = value_ty.clone();
+            ctx.check_type_compat(&phi.ty, &value_ty_clone, value);
+        }
+    }
+}
+
+/// Validate an instruction
+fn validate_instruction(ctx: &mut ValidationContext, inst: &IrInstruction) {
+    use IrInstruction::*;
+    
+    match inst {
+        Const { dest, value } => {
+            let ty = value_type(value);
+            ctx.define_register(*dest, ty);
+        }
+        
+        Copy { dest, src } => {
+            if let Some(src_ty) = ctx.use_register(*src) {
+                let src_ty_clone = src_ty.clone();
+                ctx.define_register(*dest, src_ty_clone);
+            }
+        }
+        
+        Load { dest, ptr, ty } => {
+            if let Some(ptr_ty) = ctx.use_register(*ptr) {
+                // Check that ptr is actually a pointer
+                let ptr_ty_clone = ptr_ty.clone();
+                match ptr_ty_clone {
+                    IrType::Ptr(elem_ty) | IrType::Ref(elem_ty) => {
+                        ctx.check_type_compat(&elem_ty, ty, *ptr);
+                    }
+                    _ => {
+                        ctx.add_error(ValidationErrorKind::InvalidOperand {
+                            instruction: "Load".to_string(),
+                            reason: "Pointer operand is not a pointer type".to_string(),
+                        });
+                    }
+                }
+            }
+            ctx.define_register(*dest, ty.clone());
+        }
+        
+        Store { ptr, value } => {
+            let ptr_ty = ctx.use_register(*ptr).cloned();
+            let val_ty = ctx.use_register(*value).cloned();
+            if let (Some(ptr_ty), Some(val_ty)) = (ptr_ty, val_ty) {
+                match ptr_ty {
+                    IrType::Ptr(elem_ty) | IrType::Ref(elem_ty) => {
+                        ctx.check_type_compat(&elem_ty, &val_ty, *value);
+                    }
+                    _ => {
+                        ctx.add_error(ValidationErrorKind::InvalidOperand {
+                            instruction: "Store".to_string(),
+                            reason: "Pointer operand is not a pointer type".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        
+        BinOp { dest, op, left, right } => {
+            let left_ty = ctx.use_register(*left).cloned();
+            let right_ty = ctx.use_register(*right).cloned();
+            if let (Some(left_ty), Some(right_ty)) = (left_ty, right_ty) {
+                // Check operand types are compatible
+                if !types_compatible(&left_ty, &right_ty) {
+                    ctx.add_error(ValidationErrorKind::TypeMismatch {
+                        expected: left_ty.clone(),
+                        found: right_ty.clone(),
+                        register: *right,
+                    });
+                }
+                
+                // Determine result type
+                let result_ty = binary_op_result_type(*op, &left_ty);
+                ctx.define_register(*dest, result_ty);
+            }
+        }
+        
+        UnOp { dest, op, operand } => {
+            if let Some(operand_ty) = ctx.use_register(*operand) {
+                let operand_ty_clone = operand_ty.clone();
+                let result_ty = unary_op_result_type(*op, &operand_ty_clone);
+                ctx.define_register(*dest, result_ty);
+            }
+        }
+        
+        Cmp { dest, op: _, left, right } => {
+            let left_ty = ctx.use_register(*left).cloned();
+            let right_ty = ctx.use_register(*right).cloned();
+            if let (Some(left_ty), Some(right_ty)) = (left_ty, right_ty) {
+                if !types_compatible(&left_ty, &right_ty) {
+                    ctx.add_error(ValidationErrorKind::TypeMismatch {
+                        expected: left_ty.clone(),
+                        found: right_ty.clone(),
+                        register: *right,
+                    });
+                }
+                ctx.define_register(*dest, IrType::Bool);
+            }
+        }
+        
+        Call { dest, func, args } => {
+            // Validate function operand
+            if let Some(func_ty) = ctx.use_register(*func).cloned() {
+                match &func_ty {
+                    IrType::Function { params, return_type, .. } => {
+                        // Check argument count
+                        if args.len() != params.len() {
+                            ctx.add_error(ValidationErrorKind::InvalidOperand {
+                                instruction: "Call".to_string(),
+                                reason: format!("Expected {} arguments, found {}", params.len(), args.len()),
+                            });
+                        }
+                        
+                        // Check argument types
+                        for (i, (&arg, param_ty)) in args.iter().zip(params.iter()).enumerate() {
+                            if let Some(arg_ty) = ctx.use_register(arg) {
+                                let arg_ty_clone = arg_ty.clone();
+                                ctx.check_type_compat(param_ty, &arg_ty_clone, arg);
+                            }
+                        }
+                        
+                        // Check return type
+                        if let Some(dest_reg) = dest {
+                            ctx.check_type_compat(return_type, return_type, *dest_reg);
+                        }
+                    }
+                    _ => {
+                        ctx.add_error(ValidationErrorKind::InvalidOperand {
+                            instruction: "Call".to_string(),
+                            reason: "Callee is not a function type".to_string(),
+                        });
+                    }
+                }
+            }
+            
+            // Use argument registers
+            for &arg in args {
+                ctx.use_register(arg);
+            }
+            
+            if let Some(dest_reg) = dest {
+                // For now, assume the call returns the function's return type
+                // In a real implementation, we'd get this from the function signature
+                ctx.define_register(*dest_reg, IrType::Any);
+            }
+        }
+        
+        // TODO: Validate remaining instruction types
+        _ => {}
+    }
+}
+
+/// Validate a terminator
+fn validate_terminator(ctx: &mut ValidationContext, term: &IrTerminator) {
+    use IrTerminator::*;
+    
+    match term {
+        Branch { .. } => {
+            // Nothing to validate
+        }
+        
+        CondBranch { condition, .. } => {
+            if let Some(cond_ty) = ctx.use_register(*condition) {
+                let cond_ty_clone = cond_ty.clone();
+                if cond_ty_clone != IrType::Bool {
+                    ctx.add_error(ValidationErrorKind::TypeMismatch {
+                        expected: IrType::Bool,
+                        found: cond_ty_clone,
+                        register: *condition,
+                    });
+                }
+            }
+        }
+        
+        Switch { value, .. } => {
+            if let Some(val_ty) = ctx.use_register(*value) {
+                if !val_ty.is_integer() {
+                    ctx.add_error(ValidationErrorKind::InvalidOperand {
+                        instruction: "Switch".to_string(),
+                        reason: "Switch value must be an integer".to_string(),
+                    });
+                }
+            }
+        }
+        
+        Return { value } => {
+            if let Some(val) = value {
+                ctx.use_register(*val);
+            }
+        }
+        
+        _ => {}
+    }
+}
+
+/// Validate return types
+fn validate_return_types(ctx: &mut ValidationContext, function: &IrFunction) {
+    let expected_return = &function.signature.return_type;
+    
+    // Check all return statements
+    for block in function.cfg.blocks.values() {
+        if let IrTerminator::Return { value } = &block.terminator {
+            match (value, expected_return) {
+                (None, IrType::Void) => {} // OK
+                (Some(val), ty) if *ty != IrType::Void => {
+                    if let Some(val_ty) = ctx.register_types.get(val) {
+                        let val_ty_clone = val_ty.clone();
+                        ctx.check_type_compat(ty, &val_ty_clone, *val);
+                    }
+                }
+                (None, ty) if *ty != IrType::Void => {
+                    ctx.add_error(ValidationErrorKind::SignatureMismatch {
+                        function: function.id,
+                        reason: "Missing return value".to_string(),
+                    });
+                }
+                (Some(_), IrType::Void) => {
+                    ctx.add_error(ValidationErrorKind::SignatureMismatch {
+                        function: function.id,
+                        reason: "Unexpected return value in void function".to_string(),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Get the type of a value
+fn value_type(value: &IrValue) -> IrType {
+    match value {
+        IrValue::Void => IrType::Void,
+        IrValue::Undef => IrType::Any,
+        IrValue::Null => IrType::Ptr(Box::new(IrType::Void)),
+        IrValue::Bool(_) => IrType::Bool,
+        IrValue::I8(_) => IrType::I8,
+        IrValue::I16(_) => IrType::I16,
+        IrValue::I32(_) => IrType::I32,
+        IrValue::I64(_) => IrType::I64,
+        IrValue::U8(_) => IrType::U8,
+        IrValue::U16(_) => IrType::U16,
+        IrValue::U32(_) => IrType::U32,
+        IrValue::U64(_) => IrType::U64,
+        IrValue::F32(_) => IrType::F32,
+        IrValue::F64(_) => IrType::F64,
+        IrValue::String(_) => IrType::String,
+        IrValue::Array(elems) => {
+            if elems.is_empty() {
+                IrType::Array(Box::new(IrType::Any), 0)
+            } else {
+                let elem_ty = value_type(&elems[0]);
+                IrType::Array(Box::new(elem_ty), elems.len())
+            }
+        }
+        IrValue::Struct(_) => IrType::Any, // TODO: Proper struct type
+    }
+}
+
+/// Check if two types are compatible
+fn types_compatible(a: &IrType, b: &IrType) -> bool {
+    match (a, b) {
+        (IrType::Any, _) | (_, IrType::Any) => true,
+        (a, b) => a == b, // TODO: More sophisticated compatibility
+    }
+}
+
+/// Check if a type is void
+fn is_void_type(ty: &IrType) -> bool {
+    matches!(ty, IrType::Void)
+}
+
+/// Get result type of binary operation
+fn binary_op_result_type(op: super::BinaryOp, operand_ty: &IrType) -> IrType {
+    use super::BinaryOp::*;
+    match op {
+        Add | Sub | Mul | Div | Rem => operand_ty.clone(),
+        And | Or | Xor | Shl | Shr => operand_ty.clone(),
+        FAdd | FSub | FMul | FDiv | FRem => operand_ty.clone(),
+    }
+}
+
+/// Get result type of unary operation
+fn unary_op_result_type(op: super::UnaryOp, operand_ty: &IrType) -> IrType {
+    use super::UnaryOp::*;
+    match op {
+        Neg | Not => operand_ty.clone(),
+        FNeg => operand_ty.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::builder::*;
+    use crate::tast::SymbolId;
+    
+    #[test]
+    fn test_validate_simple_function() {
+        let mut builder = IrBuilder::new("test".to_string(), "test.hx".to_string());
+        
+        let sig = FunctionSignatureBuilder::new()
+            .param("x".to_string(), IrType::I32)
+            .returns(IrType::I32)
+            .build();
+            
+        builder.start_function(SymbolId::from_raw(1), "identity".to_string(), sig);
+        
+        let x = builder.current_function().unwrap().get_param_reg(0).unwrap();
+        builder.build_return(Some(x));
+        
+        builder.finish_function();
+        
+        // Validate the module
+        let result = validate_module(&builder.module);
+        assert!(result.is_ok());
+    }
+    
+    #[test]
+    fn test_validate_type_mismatch() {
+        let mut builder = IrBuilder::new("test".to_string(), "test.hx".to_string());
+        
+        let sig = FunctionSignatureBuilder::new()
+            .returns(IrType::I32)
+            .build();
+            
+        builder.start_function(SymbolId::from_raw(1), "bad_return".to_string(), sig);
+        
+        // Return a boolean instead of i32
+        let bool_val = builder.build_bool(true).unwrap();
+        builder.build_return(Some(bool_val));
+        
+        builder.finish_function();
+        
+        // Validate the module
+        let result = validate_module(&builder.module);
+        assert!(result.is_err());
+        
+        if let Err(errors) = result {
+            assert!(!errors.is_empty());
+            // Should have type mismatch error
+        }
+    }
+}

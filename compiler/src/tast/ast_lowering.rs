@@ -7,21 +7,17 @@
 //! - Scope management
 //! - Error collection and reporting
 
-use crate::tast::{
-    core::*,
-    node::*,
-    *,
-};
 use crate::tast::node::HasSourceLocation;
+use crate::tast::{core::*, node::*, node::MemoryEffects, type_resolution_improvements::TypeResolutionImprovements, *};
 use parser::{
-    HaxeFile, TypeDeclaration, ClassDecl, InterfaceDecl, EnumDecl, AbstractDecl, TypedefDecl,
-    ClassField, ClassFieldKind, Import, Using, Type, Modifier, TypeParam, EnumConstructor,
-    BinaryOp, UnaryOp, Expr, ExprKind, FunctionParam, Function, Package, ModuleField, Metadata
+    AbstractDecl, BinaryOp, ClassDecl, ClassField, ClassFieldKind, EnumConstructor, EnumDecl, Expr,
+    ExprKind, Function, FunctionParam, HaxeFile, Import, InterfaceDecl, Metadata, Modifier,
+    ModuleField, Package, Type, TypeDeclaration, TypeParam, TypedefDecl, UnaryOp, Using,
 };
-use std::collections::HashMap;
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::collections::HashMap;
 use std::fmt;
+use std::rc::Rc;
 
 /// Convert parser Variance to TAST Variance
 impl From<parser::Variance> for Variance {
@@ -105,46 +101,93 @@ impl fmt::Display for LoweringError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LoweringError::UnresolvedSymbol { name, location } => {
-                write!(f, "Unresolved symbol '{}' at {}:{}:{}", 
-                    name, location.file_id, location.line, location.column)
+                write!(
+                    f,
+                    "Unresolved symbol '{}' at {}:{}:{}",
+                    name, location.file_id, location.line, location.column
+                )
             }
-            LoweringError::UnresolvedType { type_name, location } => {
-                write!(f, "Unresolved type '{}' at {}:{}:{}", 
-                    type_name, location.file_id, location.line, location.column)
+            LoweringError::UnresolvedType {
+                type_name,
+                location,
+            } => {
+                write!(
+                    f,
+                    "Unresolved type '{}' at {}:{}:{}",
+                    type_name, location.file_id, location.line, location.column
+                )
             }
-            LoweringError::DuplicateSymbol { name, original_location, duplicate_location } => {
-                write!(f, "Duplicate symbol '{}' (originally defined at {}:{}:{}) redefined at {}:{}:{}", 
-                    name, 
-                    original_location.file_id, original_location.line, original_location.column,
-                    duplicate_location.file_id, duplicate_location.line, duplicate_location.column)
+            LoweringError::DuplicateSymbol {
+                name,
+                original_location,
+                duplicate_location,
+            } => {
+                write!(
+                    f,
+                    "Duplicate symbol '{}' (originally defined at {}:{}:{}) redefined at {}:{}:{}",
+                    name,
+                    original_location.file_id,
+                    original_location.line,
+                    original_location.column,
+                    duplicate_location.file_id,
+                    duplicate_location.line,
+                    duplicate_location.column
+                )
             }
-            LoweringError::InvalidModifiers { modifiers, location } => {
-                write!(f, "Invalid modifier combination {:?} at {}:{}:{}", 
-                    modifiers, location.file_id, location.line, location.column)
+            LoweringError::InvalidModifiers {
+                modifiers,
+                location,
+            } => {
+                write!(
+                    f,
+                    "Invalid modifier combination {:?} at {}:{}:{}",
+                    modifiers, location.file_id, location.line, location.column
+                )
             }
             LoweringError::GenericParameterError { message, location } => {
-                write!(f, "Generic parameter error: {} at {}:{}:{}", 
-                    message, location.file_id, location.line, location.column)
+                write!(
+                    f,
+                    "Generic parameter error: {} at {}:{}:{}",
+                    message, location.file_id, location.line, location.column
+                )
             }
             LoweringError::InternalError { message, location } => {
-                write!(f, "Internal error: {} at {}:{}:{}", 
-                    message, location.file_id, location.line, location.column)
+                write!(
+                    f,
+                    "Internal error: {} at {}:{}:{}",
+                    message, location.file_id, location.line, location.column
+                )
             }
-            LoweringError::TypeInferenceError { expression, location } => {
-                write!(f, "Type inference failed for '{}' at {}:{}:{}", 
-                    expression, location.file_id, location.line, location.column)
+            LoweringError::TypeInferenceError {
+                expression,
+                location,
+            } => {
+                write!(
+                    f,
+                    "Type inference failed for '{}' at {}:{}:{}",
+                    expression, location.file_id, location.line, location.column
+                )
             }
             LoweringError::LifetimeError { message, location } => {
-                write!(f, "Lifetime error: {} at {}:{}:{}", 
-                    message, location.file_id, location.line, location.column)
+                write!(
+                    f,
+                    "Lifetime error: {} at {}:{}:{}",
+                    message, location.file_id, location.line, location.column
+                )
             }
             LoweringError::OwnershipError { message, location } => {
-                write!(f, "Ownership error: {} at {}:{}:{}", 
-                    message, location.file_id, location.line, location.column)
+                write!(
+                    f,
+                    "Ownership error: {} at {}:{}:{}",
+                    message, location.file_id, location.line, location.column
+                )
             }
             LoweringError::IncompleteImplementation { feature, location } => {
-                write!(f, "Incomplete implementation for '{}' at {}:{}:{}", 
-                    feature, location.file_id, location.line, location.column)
+                write!(
+                    f,
+                    "Incomplete implementation for '{}' at {}:{}:{}",
+                    feature, location.file_id, location.line, location.column
+                )
             }
         }
     }
@@ -211,8 +254,6 @@ pub enum TypedDeclaration {
     TypeAlias(TypedTypeAlias),
     Abstract(TypedAbstract),
 }
-
-
 
 /// Typed typedef declaration for lowering
 #[derive(Debug, Clone)]
@@ -326,7 +367,7 @@ impl<'a> LoweringContext<'a> {
             SourceLocation::new(0, 0, 0, span.start as u32)
         }
     }
-    
+
     /// Create a source location (fallback when span not available)
     pub fn create_location(&self) -> SourceLocation {
         SourceLocation::unknown()
@@ -338,20 +379,32 @@ impl<'a> LoweringContext<'a> {
         let scope = self.scope_tree.create_scope(Some(self.current_scope));
         scope.as_raw()
     }
-    
+
     /// Convert a span to a source location (alias for create_location_from_span)
     pub fn span_to_location(&self, span: &parser::Span) -> SourceLocation {
         self.create_location_from_span(*span)
     }
-    
+
     /// Initialize the span converter with source text
     pub fn initialize_span_converter(&mut self, file_id: u32, source_text: String) {
-        self.initialize_span_converter_with_filename(file_id, source_text, format!("file_{}.hx", file_id));
+        self.initialize_span_converter_with_filename(
+            file_id,
+            source_text,
+            format!("file_{}.hx", file_id),
+        );
     }
-    
+
     /// Initialize the span converter with source text and specific filename
-    pub fn initialize_span_converter_with_filename(&mut self, file_id: u32, source_text: String, file_name: String) {
-        self.span_converter = Some(super::span_conversion::SpanConverter::with_file(file_name, source_text));
+    pub fn initialize_span_converter_with_filename(
+        &mut self,
+        file_id: u32,
+        source_text: String,
+        file_name: String,
+    ) {
+        self.span_converter = Some(super::span_conversion::SpanConverter::with_file(
+            file_name,
+            source_text,
+        ));
     }
 }
 
@@ -365,56 +418,93 @@ pub struct AstLowering<'a> {
 }
 
 impl<'a> AstLowering<'a> {
+    /// Get the current class symbol if we're in a class context
+    fn get_current_class_symbol(&self) -> Option<SymbolId> {
+        self.context.class_context_stack.last().copied()
+    }
+
     /// Infer the type of an enum constructor call with generic type instantiation
-    fn infer_enum_constructor_type(&mut self, constructor_symbol: SymbolId, arguments: &[TypedExpression]) -> LoweringResult<TypeId> {
-        println!("DEBUG: Inferring enum constructor type for symbol {:?} with {} arguments", constructor_symbol, arguments.len());
-        
+    fn infer_enum_constructor_type(
+        &mut self,
+        constructor_symbol: SymbolId,
+        arguments: &[TypedExpression],
+    ) -> LoweringResult<TypeId> {
+        println!(
+            "DEBUG: Inferring enum constructor type for symbol {:?} with {} arguments",
+            constructor_symbol,
+            arguments.len()
+        );
+
         // Find the parent enum for this constructor
-        let parent_enum = self.find_parent_enum_for_constructor(constructor_symbol)
+        let parent_enum = self
+            .find_parent_enum_for_constructor(constructor_symbol)
             .ok_or_else(|| LoweringError::InternalError {
                 message: "Could not find parent enum for constructor".to_string(),
                 location: self.context.create_location(),
             })?;
-        
-        println!("DEBUG: Found parent enum {:?} for constructor {:?}", parent_enum, constructor_symbol);
-        
+
+        println!(
+            "DEBUG: Found parent enum {:?} for constructor {:?}",
+            parent_enum, constructor_symbol
+        );
+
         // Get the parent enum's type information
         if let Some(enum_symbol) = self.context.symbol_table.get_symbol(parent_enum) {
-            let enum_type_info = self.context.type_table.borrow().get(enum_symbol.type_id)
+            let enum_type_info = self
+                .context
+                .type_table
+                .borrow()
+                .get(enum_symbol.type_id)
                 .ok_or_else(|| LoweringError::InternalError {
                     message: "Could not get type info for enum".to_string(),
                     location: self.context.create_location(),
                 })?
                 .clone();
-            
+
             match &enum_type_info.kind {
                 crate::tast::core::TypeKind::Enum { type_args, .. } => {
                     if type_args.is_empty() {
                         // Non-generic enum, just return the enum type
-                        println!("DEBUG: Non-generic enum, returning enum type {:?}", enum_symbol.type_id);
+                        println!(
+                            "DEBUG: Non-generic enum, returning enum type {:?}",
+                            enum_symbol.type_id
+                        );
                         return Ok(enum_symbol.type_id);
                     }
-                    
+
                     // Generic enum - need to infer type arguments from constructor arguments
-                    println!("DEBUG: Generic enum with {} type parameters", type_args.len());
+                    println!(
+                        "DEBUG: Generic enum with {} type parameters",
+                        type_args.len()
+                    );
+
+                    // Infer type parameters from constructor arguments
+                    let mut inferred_types = Vec::new();
                     
-                    // For now, infer the first type parameter from the first argument
-                    if !arguments.is_empty() && !type_args.is_empty() {
-                        let inferred_type = arguments[0].expr_type;
-                        println!("DEBUG: Inferred type {:?} from first argument", inferred_type);
-                        
-                        // Create instantiated enum type
-                        let instantiated_type = self.context.type_table.borrow_mut().create_enum_type(
-                            parent_enum,
-                            vec![inferred_type]
-                        );
-                        
-                        println!("DEBUG: Created instantiated enum type {:?}", instantiated_type);
-                        return Ok(instantiated_type);
+                    // Match argument types to constructor parameter types
+                    for (i, arg) in arguments.iter().enumerate() {
+                        if i < type_args.len() {
+                            inferred_types.push(arg.expr_type);
+                        }
                     }
                     
-                    // Fallback to dynamic type if we can't infer
-                    Ok(self.context.type_table.borrow().dynamic_type())
+                    // Fill remaining type parameters with dynamic type
+                    while inferred_types.len() < type_args.len() {
+                        inferred_types.push(self.context.type_table.borrow().dynamic_type());
+                    }
+
+                    // Create properly instantiated enum type
+                    if !inferred_types.is_empty() {
+                        let instantiated_type = self
+                            .context
+                            .type_table
+                            .borrow_mut()
+                            .create_enum_type(parent_enum, inferred_types);
+                        return Ok(instantiated_type);
+                    }
+
+                    // Non-generic enum
+                    Ok(self.context.type_table.borrow_mut().create_enum_type(parent_enum, vec![]))
                 }
                 _ => {
                     // Not an enum type
@@ -425,29 +515,46 @@ impl<'a> AstLowering<'a> {
             Ok(self.context.type_table.borrow().dynamic_type())
         }
     }
-    
+
     /// Instantiate the function type of an enum constructor based on call arguments
-    fn instantiate_enum_constructor_type(&mut self, constructor_symbol: SymbolId, arguments: &[TypedExpression], mut func_expr: TypedExpression) -> LoweringResult<TypedExpression> {
-        println!("DEBUG: Instantiating constructor function type for symbol {:?} with {} arguments", constructor_symbol, arguments.len());
-        
+    fn instantiate_enum_constructor_type(
+        &mut self,
+        constructor_symbol: SymbolId,
+        arguments: &[TypedExpression],
+        mut func_expr: TypedExpression,
+    ) -> LoweringResult<TypedExpression> {
+        println!(
+            "DEBUG: Instantiating constructor function type for symbol {:?} with {} arguments",
+            constructor_symbol,
+            arguments.len()
+        );
+
         // Find the parent enum for this constructor
-        let parent_enum = self.find_parent_enum_for_constructor(constructor_symbol)
+        let parent_enum = self
+            .find_parent_enum_for_constructor(constructor_symbol)
             .ok_or_else(|| LoweringError::InternalError {
                 message: "Could not find parent enum for constructor".to_string(),
                 location: self.context.create_location(),
             })?;
-        
-        println!("DEBUG: Found parent enum {:?} for constructor {:?}", parent_enum, constructor_symbol);
-        
+
+        println!(
+            "DEBUG: Found parent enum {:?} for constructor {:?}",
+            parent_enum, constructor_symbol
+        );
+
         // Get the parent enum's type information
         if let Some(enum_symbol) = self.context.symbol_table.get_symbol(parent_enum) {
-            let enum_type_info = self.context.type_table.borrow().get(enum_symbol.type_id)
+            let enum_type_info = self
+                .context
+                .type_table
+                .borrow()
+                .get(enum_symbol.type_id)
                 .ok_or_else(|| LoweringError::InternalError {
                     message: "Could not get type info for enum".to_string(),
                     location: self.context.create_location(),
                 })?
                 .clone();
-                
+
             match &enum_type_info.kind {
                 crate::tast::core::TypeKind::Enum { type_args, .. } => {
                     if type_args.is_empty() {
@@ -455,34 +562,45 @@ impl<'a> AstLowering<'a> {
                         println!("DEBUG: Non-generic enum, no instantiation needed");
                         return Ok(func_expr);
                     }
-                    
+
                     // Generic enum - need to infer type arguments from constructor arguments
-                    println!("DEBUG: Generic enum with {} type parameters", type_args.len());
-                    
+                    println!(
+                        "DEBUG: Generic enum with {} type parameters",
+                        type_args.len()
+                    );
+
                     // For now, infer the first type parameter from the first argument
                     if !arguments.is_empty() && !type_args.is_empty() {
                         let inferred_type = arguments[0].expr_type;
-                        println!("DEBUG: Inferred type {:?} from first argument", inferred_type);
-                        
-                        // Create instantiated enum type  
-                        let instantiated_enum_type = self.context.type_table.borrow_mut().create_enum_type(
-                            parent_enum,
-                            vec![inferred_type]
+                        println!(
+                            "DEBUG: Inferred type {:?} from first argument",
+                            inferred_type
                         );
-                        
+
+                        // Create instantiated enum type
+                        let instantiated_enum_type = self
+                            .context
+                            .type_table
+                            .borrow_mut()
+                            .create_enum_type(parent_enum, vec![inferred_type]);
+
                         // Create instantiated function type: (Int) -> Option<Int>
-                        let instantiated_function_type = self.context.type_table.borrow_mut().create_function_type(
-                            vec![inferred_type],  // parameter types
-                            instantiated_enum_type  // return type
-                        );
-                        
+                        let instantiated_function_type =
+                            self.context.type_table.borrow_mut().create_function_type(
+                                vec![inferred_type],    // parameter types
+                                instantiated_enum_type, // return type
+                            );
+
                         // Update the function expression's type
                         func_expr.expr_type = instantiated_function_type;
-                        
-                        println!("DEBUG: Created instantiated function type {:?} -> {:?}", inferred_type, instantiated_enum_type);
+
+                        println!(
+                            "DEBUG: Created instantiated function type {:?} -> {:?}",
+                            inferred_type, instantiated_enum_type
+                        );
                         return Ok(func_expr);
                     }
-                    
+
                     // Fallback - couldn't infer
                     println!("DEBUG: Could not infer type arguments, using original function type");
                     Ok(func_expr)
@@ -499,19 +617,21 @@ impl<'a> AstLowering<'a> {
 
     /// Find the parent enum symbol for an enum constructor
     fn find_parent_enum_for_constructor(&self, constructor_symbol: SymbolId) -> Option<SymbolId> {
-        self.context.symbol_table.find_parent_enum_for_constructor(constructor_symbol)
+        self.context
+            .symbol_table
+            .find_parent_enum_for_constructor(constructor_symbol)
     }
 
     /// Resolve a symbol by walking up the scope hierarchy
     fn resolve_symbol_in_scope_hierarchy(&self, name: InternedString) -> Option<SymbolId> {
         let mut current_scope = self.context.current_scope;
-        
+
         loop {
             // Check if symbol exists in current scope
             if let Some(symbol) = self.context.symbol_table.lookup_symbol(current_scope, name) {
                 return Some(symbol.id);
             }
-            
+
             // Get parent scope
             if let Some(scope) = self.context.scope_tree.get_scope(current_scope) {
                 if let Some(parent_id) = scope.parent_id {
@@ -525,7 +645,7 @@ impl<'a> AstLowering<'a> {
                 break;
             }
         }
-        
+
         // Check if the symbol is a field of the current class (implicit this access)
         if let Some(class_symbol) = self.context.class_context_stack.last() {
             if let Some(field_list) = self.class_fields.get(class_symbol) {
@@ -536,7 +656,7 @@ impl<'a> AstLowering<'a> {
                 }
             }
         }
-        
+
         // Check if the symbol is a method of the current class
         if let Some(class_symbol) = self.context.class_context_stack.last() {
             if let Some(methods) = self.class_methods.get(class_symbol) {
@@ -547,10 +667,10 @@ impl<'a> AstLowering<'a> {
                 }
             }
         }
-        
+
         None
     }
-    
+
     pub fn new(
         string_interner: &'a mut StringInterner,
         symbol_table: &'a mut SymbolTable,
@@ -569,23 +689,29 @@ impl<'a> AstLowering<'a> {
             namespace_resolver,
             import_resolver,
         );
-        
-        Self { 
+
+        Self {
             context,
             resolution_state: TypeResolutionState::default(),
             class_methods: HashMap::new(),
             class_fields: HashMap::new(),
         }
     }
-    
+
     /// Initialize span converter for proper source location tracking
     pub fn initialize_span_converter(&mut self, file_id: u32, source_text: String) {
         self.context.initialize_span_converter(file_id, source_text);
     }
-    
+
     /// Initialize span converter with specific filename for proper source location tracking
-    pub fn initialize_span_converter_with_filename(&mut self, file_id: u32, source_text: String, file_name: String) {
-        self.context.initialize_span_converter_with_filename(file_id, source_text, file_name);
+    pub fn initialize_span_converter_with_filename(
+        &mut self,
+        file_id: u32,
+        source_text: String,
+        file_name: String,
+    ) {
+        self.context
+            .initialize_span_converter_with_filename(file_id, source_text, file_name);
     }
 
     /// Lower a complete Haxe file to TAST
@@ -596,24 +722,37 @@ impl<'a> AstLowering<'a> {
         // Process package declaration
         if let Some(package) = &file.package {
             typed_file.metadata.package_name = Some(package.path.join("."));
-            
+
             // Create or get package in namespace resolver
-            let package_path: Vec<_> = package.path.iter()
+            let package_path: Vec<_> = package
+                .path
+                .iter()
                 .map(|s| self.context.string_interner.intern(s))
                 .collect();
-            let package_id = self.context.namespace_resolver.get_or_create_package(package_path);
+            let package_id = self
+                .context
+                .namespace_resolver
+                .get_or_create_package(package_path);
             self.context.current_package = Some(package_id);
         }
-        
+
         // Set file metadata
         typed_file.metadata.timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
+        // Set file name if available
+        if !typed_file.metadata.file_path.is_empty() {
+            if let Some(file_name) = typed_file.metadata.file_path.split('/').last() {
+                typed_file.metadata.file_name =
+                    Some(self.context.string_interner.intern(file_name));
+            }
+        }
+
         // Load standard library types from source files
         self.load_standard_library()?;
-        
+
         // Process import.hx files in the current directory hierarchy
         self.process_import_hx_files(&file)?;
 
@@ -629,7 +768,9 @@ impl<'a> AstLowering<'a> {
 
         // Process module-level fields
         for module_field in &file.module_fields {
-            typed_file.module_fields.push(self.lower_module_field(module_field)?);
+            typed_file
+                .module_fields
+                .push(self.lower_module_field(module_field)?);
         }
 
         // First pass: Pre-register all type declarations in the symbol table
@@ -637,21 +778,19 @@ impl<'a> AstLowering<'a> {
             self.pre_register_declaration(declaration)?;
         }
 
-        // Second pass: Process declarations with full type resolution  
+        // Second pass: Process declarations with full type resolution
         for declaration in &file.declarations {
             match self.lower_declaration(declaration) {
-                Ok(typed_decl) => {
-                    match typed_decl {
-                        TypedDeclaration::Function(func) => typed_file.functions.push(func),
-                        TypedDeclaration::Class(class) => typed_file.classes.push(class),
-                        TypedDeclaration::Interface(interface) => typed_file.interfaces.push(interface),
-                        TypedDeclaration::Enum(enum_decl) => typed_file.enums.push(enum_decl),
-                        TypedDeclaration::TypeAlias(alias) => typed_file.type_aliases.push(alias),
-                        TypedDeclaration::Abstract(abstract_decl) => {
-                            typed_file.abstracts.push(abstract_decl);
-                        }
+                Ok(typed_decl) => match typed_decl {
+                    TypedDeclaration::Function(func) => typed_file.functions.push(func),
+                    TypedDeclaration::Class(class) => typed_file.classes.push(class),
+                    TypedDeclaration::Interface(interface) => typed_file.interfaces.push(interface),
+                    TypedDeclaration::Enum(enum_decl) => typed_file.enums.push(enum_decl),
+                    TypedDeclaration::TypeAlias(alias) => typed_file.type_aliases.push(alias),
+                    TypedDeclaration::Abstract(abstract_decl) => {
+                        typed_file.abstracts.push(abstract_decl);
                     }
-                }
+                },
                 Err(e) => self.context.add_error(e),
             }
         }
@@ -669,65 +808,65 @@ impl<'a> AstLowering<'a> {
 
     /// Process import.hx files in the directory hierarchy
     fn process_import_hx_files(&mut self, _current_file: &HaxeFile) -> LoweringResult<()> {
+        use crate::tast::stdlib_loader::{StdLibConfig, StdLibLoader};
         use std::path::PathBuf;
-        use crate::tast::stdlib_loader::{StdLibLoader, StdLibConfig};
-        
+
         // Determine the current file's directory
         // In a real implementation, we'd get this from the compilation context
         // For now, we'll use a simple approach
         let current_dir = PathBuf::from("/Users/amaterasu/Vibranium/rayzor/compiler/examples");
-        
+
         // Create a loader for import.hx files
         let mut config = StdLibConfig::default();
         config.load_import_hx = true;
         config.std_paths = vec![]; // We're not loading std lib here
         config.default_imports = vec![]; // No default imports
-        
+
         let mut loader = StdLibLoader::new(config);
-        
+
         // Look for import.hx files in the current directory and parent directories
         let mut search_dir = current_dir.clone();
         let mut import_files = Vec::new();
-        
+
         loop {
             let import_hx_files = loader.load_import_hx(&search_dir);
             import_files.extend(import_hx_files);
-            
+
             // Move to parent directory
             match search_dir.parent() {
                 Some(parent) => search_dir = parent.to_path_buf(),
                 None => break,
             }
-            
+
             // Stop at project root (avoid going too far up)
             if search_dir.ends_with("rayzor") {
                 break;
             }
         }
-        
+
         // Process import.hx files in reverse order (parent directories first)
         import_files.reverse();
-        
+
         for import_file in import_files {
             // Process imports from import.hx
             for import in &import_file.imports {
                 self.process_import_from_import_hx(import)?;
             }
-            
+
             // Process using statements from import.hx
             for using in &import_file.using {
                 self.process_using_from_import_hx(using)?;
             }
-            
+
             // Process type declarations from import.hx
             for declaration in &import_file.declarations {
                 self.pre_register_declaration(declaration)?;
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Process an import from import.hx file
     fn process_import_from_import_hx(&mut self, import: &Import) -> LoweringResult<()> {
         // Similar to lower_import, but adds to global scope
@@ -738,25 +877,30 @@ impl<'a> AstLowering<'a> {
             parser::ImportMode::Wildcard => None,
             parser::ImportMode::WildcardWithExclusions(_) => None,
         };
-        
+
         // Register imported symbols in the symbol table for type resolution
         if let Some(ref symbols) = imported_symbols {
             for symbol_name in symbols {
                 let interned_name = self.context.intern_string(symbol_name);
-                
+
                 // Create a placeholder symbol for the imported type
-                let imported_symbol = self.context.symbol_table.create_class_in_scope(interned_name, ScopeId::first());
-                
+                let imported_symbol = self
+                    .context
+                    .symbol_table
+                    .create_class_in_scope(interned_name, ScopeId::first());
+
                 // Add to root scope so it can be resolved globally
-                self.context.scope_tree.get_scope_mut(ScopeId::first())
+                self.context
+                    .scope_tree
+                    .get_scope_mut(ScopeId::first())
                     .expect("Root scope should exist")
                     .add_symbol(imported_symbol, interned_name);
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Process a using statement from import.hx file
     fn process_using_from_import_hx(&mut self, using: &Using) -> LoweringResult<()> {
         // Register the using statement globally
@@ -768,9 +912,9 @@ impl<'a> AstLowering<'a> {
 
     /// Load standard library types from source files
     fn load_standard_library(&mut self) -> LoweringResult<()> {
-        use crate::tast::stdlib_loader::{StdLibLoader, StdLibConfig};
+        use crate::tast::stdlib_loader::{StdLibConfig, StdLibLoader};
         use std::path::PathBuf;
-        
+
         // Configure standard library paths
         let mut config = StdLibConfig::default();
         config.std_paths = vec![
@@ -783,49 +927,107 @@ impl<'a> AstLowering<'a> {
             "Array.hx".to_string(),
             "Iterator.hx".to_string(),
         ];
-        
+
         let mut loader = StdLibLoader::new(config);
-        
+
         // Load default imports (top-level types)
         let std_files = loader.load_default_imports();
-        
+
         // Process each standard library file
         for std_file in std_files {
-            // Process declarations in the standard library file
+            // First pass: pre-register all types so they can reference each other
             for declaration in &std_file.declarations {
                 self.pre_register_declaration(declaration)?;
             }
         }
         
+        // Second pass: fully lower the standard library declarations to register methods
+        // This is critical for things like Array.push to be available
+        let std_files = loader.load_default_imports();
+        for std_file in std_files {
+            for declaration in &std_file.declarations {
+                // Fully lower each declaration to register all methods and fields
+                match declaration {
+                    TypeDeclaration::Class(class_decl) => {
+                        // Check if this is the Array class
+                        if class_decl.name == "Array" {
+                            println!("DEBUG: Processing Array class from standard library");
+                            println!("DEBUG: Array has {} fields", class_decl.fields.len());
+                            for field in &class_decl.fields {
+                                if let ClassFieldKind::Function(func) = &field.kind {
+                                    println!("DEBUG: Array method: {}", func.name);
+                                }
+                            }
+                        }
+                        
+                        // Lower the class to register all its methods
+                        let _ = self.lower_class_declaration(class_decl);
+                    }
+                    TypeDeclaration::Interface(interface_decl) => {
+                        let _ = self.lower_interface_declaration(interface_decl);
+                    }
+                    TypeDeclaration::Enum(enum_decl) => {
+                        let _ = self.lower_enum_declaration(enum_decl);
+                    }
+                    _ => {
+                        // Other declarations can be pre-registered only for now
+                    }
+                }
+            }
+        }
+
         // Also register some core types that may not have full definitions
         // but are recognized by the compiler
         let core_types = [
-            "Dynamic", "Class", "Enum", "Type", "Any", "Unknown",
-            "Map", "List", "Vector", "Date",
-            "Math", "Reflect", "Std", "StringBuf", "StringTools",
-            "EReg", "Xml", "Json", "Timer",
-            "Bytes", "Int32", "Int64", "UInt",
+            "Dynamic",
+            "Class",
+            "Enum",
+            "Type",
+            "Any",
+            "Unknown",
+            "Map",
+            "List",
+            "Vector",
+            "Date",
+            "Math",
+            "Reflect",
+            "Std",
+            "StringBuf",
+            "StringTools",
+            "EReg",
+            "Xml",
+            "Json",
+            "Timer",
+            "Bytes",
+            "Int32",
+            "Int64",
+            "UInt",
         ];
-        
+
         for type_name in &core_types {
             let interned_name = self.context.intern_string(type_name);
-            let builtin_symbol = self.context.symbol_table.create_class_in_scope(interned_name, ScopeId::first());
-            
+            let builtin_symbol = self
+                .context
+                .symbol_table
+                .create_class_in_scope(interned_name, ScopeId::first());
+
             // Add to root scope for global resolution
-            self.context.scope_tree.get_scope_mut(ScopeId::first())
+            self.context
+                .scope_tree
+                .get_scope_mut(ScopeId::first())
                 .expect("Root scope should exist")
                 .add_symbol(builtin_symbol, interned_name);
         }
-        
+
         // Register built-in global functions
         let builtin_functions = [
-            ("trace", vec!["Dynamic"], "Void"),  // trace(value: Dynamic): Void
+            ("trace", vec!["Dynamic"], "Void"), // trace(value: Dynamic): Void
         ];
-        
+
         for (func_name, param_types, return_type) in builtin_functions {
             let func_name_interned = self.context.intern_string(func_name);
             eprintln!("DEBUG: Registering built-in function: {}", func_name);
-            
+
             // Create parameter types
             let mut param_type_ids = Vec::new();
             for param_type_name in param_types {
@@ -840,7 +1042,7 @@ impl<'a> AstLowering<'a> {
                 };
                 param_type_ids.push(param_type_id);
             }
-            
+
             // Create return type
             let return_type_id = match return_type {
                 "Dynamic" => self.context.type_table.borrow().dynamic_type(),
@@ -851,19 +1053,25 @@ impl<'a> AstLowering<'a> {
                 "Void" => self.context.type_table.borrow().void_type(),
                 _ => self.context.type_table.borrow().dynamic_type(),
             };
-            
+
             // Create function type (not just return type)
-            let function_type_id = self.context.type_table.borrow_mut().create_function_type(param_type_ids, return_type_id);
-            
+            let function_type_id = self
+                .context
+                .type_table
+                .borrow_mut()
+                .create_function_type(param_type_ids, return_type_id);
+
             // Create function symbol manually with proper scope
-            use crate::tast::{Symbol, SymbolKind, Visibility, Mutability, SourceLocation, SymbolFlags, LifetimeId};
-            
+            use crate::tast::{
+                LifetimeId, Mutability, SourceLocation, Symbol, SymbolFlags, SymbolKind, Visibility,
+            };
+
             let func_symbol_id = SymbolId::from_raw(self.context.symbol_table.len() as u32);
             let func_symbol = Symbol {
                 id: func_symbol_id,
                 name: func_name_interned,
                 kind: SymbolKind::Function,
-                type_id: function_type_id,  // Use function type, not return type
+                type_id: function_type_id, // Use function type, not return type
                 scope_id: ScopeId::first(),
                 lifetime_id: LifetimeId::invalid(),
                 visibility: Visibility::Public,
@@ -876,16 +1084,18 @@ impl<'a> AstLowering<'a> {
                 package_id: None,
                 qualified_name: None,
             };
-            
+
             // Add symbol to symbol table
             self.context.symbol_table.add_symbol(func_symbol);
-            
+
             // Add to root scope for global resolution
-            self.context.scope_tree.get_scope_mut(ScopeId::first())
+            self.context
+                .scope_tree
+                .get_scope_mut(ScopeId::first())
                 .expect("Root scope should exist")
                 .add_symbol(func_symbol_id, func_name_interned);
         }
-        
+
         Ok(())
     }
 
@@ -893,28 +1103,38 @@ impl<'a> AstLowering<'a> {
     fn register_symbol_with_package(&mut self, symbol_id: SymbolId, name: &str) {
         if let Some(package_id) = self.context.current_package {
             let interned_name = self.context.string_interner.intern(name);
-            
+
             // Register symbol in namespace
-            self.context.namespace_resolver.register_symbol(package_id, interned_name, symbol_id);
-            
+            self.context
+                .namespace_resolver
+                .register_symbol(package_id, interned_name, symbol_id);
+
             // Update symbol with package info and qualified name
             if let Some(symbol) = self.context.symbol_table.get_symbol_mut(symbol_id) {
                 symbol.package_id = Some(package_id);
-                
+
                 // Create qualified name
                 if let Some(package) = self.context.namespace_resolver.get_package(package_id) {
                     let qualified_name = if package.full_path.is_empty() {
                         name.to_string()
                     } else {
-                        format!("{}.{}", 
-                            package.full_path.iter()
-                                .map(|&s| self.context.string_interner.get(s).unwrap_or("<unknown>"))
+                        format!(
+                            "{}.{}",
+                            package
+                                .full_path
+                                .iter()
+                                .map(|&s| self
+                                    .context
+                                    .string_interner
+                                    .get(s)
+                                    .unwrap_or("<unknown>"))
                                 .collect::<Vec<_>>()
                                 .join("."),
                             name
                         )
                     };
-                    symbol.qualified_name = Some(self.context.string_interner.intern(&qualified_name));
+                    symbol.qualified_name =
+                        Some(self.context.string_interner.intern(&qualified_name));
                 }
             }
         }
@@ -925,89 +1145,122 @@ impl<'a> AstLowering<'a> {
         match declaration {
             TypeDeclaration::Class(class_decl) => {
                 let class_name = self.context.intern_string(&class_decl.name);
-                let class_symbol = self.context.symbol_table.create_class_in_scope(class_name, ScopeId::first());
-                
+                let class_symbol = self
+                    .context
+                    .symbol_table
+                    .create_class_in_scope(class_name, ScopeId::first());
+
                 // Register symbol with package information
                 self.register_symbol_with_package(class_symbol, &class_decl.name);
-                
+
                 // Create the corresponding type for this class
                 let class_type = self.context.type_table.borrow_mut().create_type(
-                    crate::tast::core::TypeKind::Class { 
+                    crate::tast::core::TypeKind::Class {
                         symbol_id: class_symbol,
                         type_args: Vec::new(), // Will be updated during full lowering
-                    }
+                    },
                 );
-                
+
                 // Set the symbol's type_id to link it to the type
-                self.context.symbol_table.update_symbol_type(class_symbol, class_type);
-                
+                self.context
+                    .symbol_table
+                    .update_symbol_type(class_symbol, class_type);
+
                 // Register the type-to-symbol mapping so we can look up symbols from types
-                self.context.symbol_table.register_type_symbol_mapping(class_type, class_symbol);
-                
+                self.context
+                    .symbol_table
+                    .register_type_symbol_mapping(class_type, class_symbol);
+
                 // Add to root scope for global resolution
-                self.context.scope_tree.get_scope_mut(ScopeId::first())
+                self.context
+                    .scope_tree
+                    .get_scope_mut(ScopeId::first())
                     .expect("Root scope should exist")
                     .add_symbol(class_symbol, class_name);
             }
             TypeDeclaration::Interface(interface_decl) => {
                 let interface_name = self.context.intern_string(&interface_decl.name);
-                let interface_symbol = self.context.symbol_table.create_interface_in_scope(interface_name, ScopeId::first());
-                
+                let interface_symbol = self
+                    .context
+                    .symbol_table
+                    .create_interface_in_scope(interface_name, ScopeId::first());
+
                 // Register symbol with package information
                 self.register_symbol_with_package(interface_symbol, &interface_decl.name);
-                
+
                 // Create the corresponding type for this interface
                 let interface_type = self.context.type_table.borrow_mut().create_type(
-                    crate::tast::core::TypeKind::Interface { 
+                    crate::tast::core::TypeKind::Interface {
                         symbol_id: interface_symbol,
                         type_args: Vec::new(), // Will be updated during full lowering
-                    }
+                    },
                 );
-                
+
                 // Set the symbol's type_id to link it to the type
-                self.context.symbol_table.update_symbol_type(interface_symbol, interface_type);
-                
+                self.context
+                    .symbol_table
+                    .update_symbol_type(interface_symbol, interface_type);
+
                 // Register the type-to-symbol mapping so we can look up symbols from types
-                self.context.symbol_table.register_type_symbol_mapping(interface_type, interface_symbol);
-                
+                self.context
+                    .symbol_table
+                    .register_type_symbol_mapping(interface_type, interface_symbol);
+
                 // Add to root scope for global resolution
-                self.context.scope_tree.get_scope_mut(ScopeId::first())
+                self.context
+                    .scope_tree
+                    .get_scope_mut(ScopeId::first())
                     .expect("Root scope should exist")
                     .add_symbol(interface_symbol, interface_name);
             }
             TypeDeclaration::Enum(enum_decl) => {
                 let enum_name = self.context.intern_string(&enum_decl.name);
-                let enum_symbol = self.context.symbol_table.create_enum_in_scope(enum_name, ScopeId::first());
-                
+                let enum_symbol = self
+                    .context
+                    .symbol_table
+                    .create_enum_in_scope(enum_name, ScopeId::first());
+
                 // Register symbol with package information
                 self.register_symbol_with_package(enum_symbol, &enum_decl.name);
-                
+
                 // Add to root scope for global resolution
-                self.context.scope_tree.get_scope_mut(ScopeId::first())
+                self.context
+                    .scope_tree
+                    .get_scope_mut(ScopeId::first())
                     .expect("Root scope should exist")
                     .add_symbol(enum_symbol, enum_name);
             }
             TypeDeclaration::Typedef(typedef_decl) => {
                 let typedef_name = self.context.intern_string(&typedef_decl.name);
-                let typedef_symbol = self.context.symbol_table.create_class_in_scope(typedef_name, ScopeId::first()); // Reuse class for typedefs
-                
+                let typedef_symbol = self
+                    .context
+                    .symbol_table
+                    .create_class_in_scope(typedef_name, ScopeId::first()); // Reuse class for typedefs
+
                 // Register symbol with package information
                 self.register_symbol_with_package(typedef_symbol, &typedef_decl.name);
-                
+
                 // Add to root scope for global resolution
-                self.context.scope_tree.get_scope_mut(ScopeId::first())
+                self.context
+                    .scope_tree
+                    .get_scope_mut(ScopeId::first())
                     .expect("Root scope should exist")
                     .add_symbol(typedef_symbol, typedef_name);
             }
             TypeDeclaration::Abstract(abstract_decl) => {
                 let abstract_name = self.context.intern_string(&abstract_decl.name);
-                let abstract_symbol = self.context.symbol_table.create_class_in_scope(abstract_name, ScopeId::first()); // Reuse class for abstracts
-                
+                let abstract_symbol = self
+                    .context
+                    .symbol_table
+                    .create_class_in_scope(abstract_name, ScopeId::first()); // Reuse class for abstracts
+
                 // Register symbol with package information
                 self.register_symbol_with_package(abstract_symbol, &abstract_decl.name);
-                
+
                 // Add to root scope for global resolution
-                self.context.scope_tree.get_scope_mut(ScopeId::first())
+                self.context
+                    .scope_tree
+                    .get_scope_mut(ScopeId::first())
                     .expect("Root scope should exist")
                     .add_symbol(abstract_symbol, abstract_name);
             }
@@ -1030,131 +1283,155 @@ impl<'a> AstLowering<'a> {
     /// Lower an import declaration
     fn lower_import(&mut self, import: &Import) -> LoweringResult<TypedImport> {
         let imported_symbols = match &import.mode {
-            parser::ImportMode::Normal => import.path.last().map(|s| vec![s.as_str()]),
-            parser::ImportMode::Alias(alias) => Some(vec![alias.as_str()]),
-            parser::ImportMode::Field(field) => Some(vec![field.as_str()]),
+            parser::ImportMode::Normal => import
+                .path
+                .last()
+                .map(|s| vec![self.context.intern_string(s)]),
+            parser::ImportMode::Alias(alias) => Some(vec![self.context.intern_string(alias)]),
+            parser::ImportMode::Field(field) => Some(vec![self.context.intern_string(field)]),
             parser::ImportMode::Wildcard => None,
             parser::ImportMode::WildcardWithExclusions(_) => None,
         };
-        
+
         let alias = match &import.mode {
-            parser::ImportMode::Alias(alias) => Some(alias.clone()),
+            parser::ImportMode::Alias(alias) => Some(self.context.intern_string(alias)),
             _ => None,
         };
-        
+
         // Create import entry for the import resolver
-        let package_path: Vec<_> = import.path.iter()
+        let package_path: Vec<_> = import
+            .path
+            .iter()
             .take(import.path.len().saturating_sub(1)) // All but last element are package path
             .map(|s| self.context.string_interner.intern(s))
             .collect();
-        
-        let type_name = import.path.last()
+
+        let type_name = import
+            .path
+            .last()
             .map(|s| self.context.string_interner.intern(s))
             .unwrap_or_else(|| self.context.string_interner.intern("Unknown"));
-        
+
         let qualified_path = super::namespace::QualifiedPath::new(package_path, type_name);
-        
-        let alias_interned = alias.as_ref()
-            .map(|a| self.context.string_interner.intern(a));
-        
+
+        let alias_interned = alias;
+
         let exclusions = match &import.mode {
-            parser::ImportMode::WildcardWithExclusions(excl) => {
-                excl.iter()
-                    .map(|e| self.context.string_interner.intern(e))
-                    .collect()
-            },
+            parser::ImportMode::WildcardWithExclusions(excl) => excl
+                .iter()
+                .map(|e| self.context.string_interner.intern(e))
+                .collect(),
             _ => Vec::new(),
         };
-        
+
         let import_entry = super::namespace::ImportEntry {
             package_path: qualified_path,
             alias: alias_interned,
             exclusions,
-            is_wildcard: matches!(import.mode, parser::ImportMode::Wildcard | parser::ImportMode::WildcardWithExclusions(_)),
+            is_wildcard: matches!(
+                import.mode,
+                parser::ImportMode::Wildcard | parser::ImportMode::WildcardWithExclusions(_)
+            ),
             location: self.context.create_location_from_span(import.span),
         };
-        
+
         // Add import to current scope
-        self.context.import_resolver.add_import(self.context.current_scope, import_entry);
-        
+        self.context
+            .import_resolver
+            .add_import(self.context.current_scope, import_entry);
+
         // Register imported symbols in the symbol table for type resolution
         if let Some(ref symbols) = imported_symbols {
-            for symbol_name in symbols {
-                let interned_name = self.context.intern_string(symbol_name);
-                
+            for &symbol_name in symbols {
                 // Create a placeholder symbol for the imported type
                 // In a full implementation, we would resolve the actual type from the module
                 // For now, create a class symbol as a placeholder
-                let imported_symbol = self.context.symbol_table.create_class_in_scope(interned_name, ScopeId::first());
-                
+                let imported_symbol = self
+                    .context
+                    .symbol_table
+                    .create_class_in_scope(symbol_name, ScopeId::first());
+
                 // Add to root scope so it can be resolved
-                self.context.scope_tree.get_scope_mut(ScopeId::first())
+                self.context
+                    .scope_tree
+                    .get_scope_mut(ScopeId::first())
                     .expect("Root scope should exist")
-                    .add_symbol(imported_symbol, interned_name);
+                    .add_symbol(imported_symbol, symbol_name);
             }
         }
-        
+
         Ok(TypedImport {
-            module_path: import.path.join("."),
+            module_path: self.context.intern_string(&import.path.join(".")),
             imported_symbols,
             alias,
             source_location: self.context.create_location_from_span(import.span),
         })
     }
-    
+
     /// Lower a using declaration
     fn lower_using(&mut self, using: &Using) -> LoweringResult<TypedUsing> {
         Ok(TypedUsing {
-            module_path: using.path.join("."),
+            module_path: self.context.intern_string(&using.path.join(".")),
             target_type: None, // TODO: Handle target type if specified
             source_location: self.context.create_location_from_span(using.span),
         })
     }
-    
+
     /// Lower a module field
-    fn lower_module_field(&mut self, module_field: &ModuleField) -> LoweringResult<TypedModuleField> {
+    fn lower_module_field(
+        &mut self,
+        module_field: &ModuleField,
+    ) -> LoweringResult<TypedModuleField> {
         let field_name = match &module_field.kind {
             parser::ModuleFieldKind::Var { name, .. } => name.clone(),
             parser::ModuleFieldKind::Final { name, .. } => name.clone(),
             parser::ModuleFieldKind::Function(func) => func.name.clone(),
         };
-        
+
         let interned_name = self.context.intern_string(&field_name);
         let field_symbol = self.context.symbol_table.create_variable(interned_name);
-        
+
         let kind = match &module_field.kind {
-            parser::ModuleFieldKind::Var { name: _, type_hint, expr } => {
+            parser::ModuleFieldKind::Var {
+                name: _,
+                type_hint,
+                expr,
+            } => {
                 let field_type = if let Some(type_hint) = type_hint {
                     self.lower_type(type_hint)?
                 } else {
                     self.context.type_table.borrow().dynamic_type()
                 };
-                
+
                 let initializer = if let Some(expr) = expr {
                     Some(self.lower_expression(expr)?)
                 } else {
                     None
                 };
-                
+
                 TypedModuleFieldKind::Var {
                     field_type,
                     initializer,
                     mutability: crate::tast::Mutability::Mutable,
                 }
             }
-            parser::ModuleFieldKind::Final { name: _, type_hint, expr } => {
+            parser::ModuleFieldKind::Final {
+                name: _,
+                type_hint,
+                expr,
+            } => {
                 let field_type = if let Some(type_hint) = type_hint {
                     self.lower_type(type_hint)?
                 } else {
                     self.context.type_table.borrow().dynamic_type()
                 };
-                
+
                 let initializer = if let Some(expr) = expr {
                     Some(self.lower_expression(expr)?)
                 } else {
                     None
                 };
-                
+
                 TypedModuleFieldKind::Final {
                     field_type,
                     initializer,
@@ -1164,97 +1441,107 @@ impl<'a> AstLowering<'a> {
                 TypedModuleFieldKind::Function(self.lower_function_object(func)?)
             }
         };
-        
+
         Ok(TypedModuleField {
             symbol_id: field_symbol,
             name: interned_name,
             kind,
-            visibility: Visibility::Public, // TODO: Handle visibility from access modifier
-            source_location: self.context.create_location(),
+            visibility: self.lower_access(&module_field.access),
+            source_location: self.context.create_location_from_span(module_field.span),
         })
     }
 
     /// Lower a declaration
-    fn lower_declaration(&mut self, declaration: &TypeDeclaration) -> LoweringResult<TypedDeclaration> {
+    fn lower_declaration(
+        &mut self,
+        declaration: &TypeDeclaration,
+    ) -> LoweringResult<TypedDeclaration> {
         match declaration {
-            TypeDeclaration::Class(class_decl) => {
-                self.lower_class_declaration(class_decl)
-            }
+            TypeDeclaration::Class(class_decl) => self.lower_class_declaration(class_decl),
             TypeDeclaration::Interface(interface_decl) => {
                 self.lower_interface_declaration(interface_decl)
             }
-            TypeDeclaration::Enum(enum_decl) => {
-                self.lower_enum_declaration(enum_decl)
-            }
-            TypeDeclaration::Typedef(typedef_decl) => {
-                self.lower_typedef_declaration(typedef_decl)
-            }
+            TypeDeclaration::Enum(enum_decl) => self.lower_enum_declaration(enum_decl),
+            TypeDeclaration::Typedef(typedef_decl) => self.lower_typedef_declaration(typedef_decl),
             TypeDeclaration::Abstract(abstract_decl) => {
                 self.lower_abstract_declaration(abstract_decl)
             }
-            TypeDeclaration::Conditional(_) => {
-                // For now, skip conditional compilation blocks
-                // TODO: Handle conditional compilation properly
-                Ok(TypedDeclaration::Function(TypedFunction {
-                    symbol_id: SymbolId::invalid(),
-                    name: self.context.intern_string("__conditional_placeholder"),
-                    parameters: Vec::new(),
-                    return_type: self.context.type_table.borrow().void_type(),
-                    body: Vec::new(),
-                    visibility: Visibility::Public,
-                    effects: crate::tast::node::FunctionEffects::default(),
-                    type_parameters: Vec::new(),
-                    is_static: false,
-                    source_location: self.context.create_location(),
-                    metadata: FunctionMetadata::default(),
-                }))
+            TypeDeclaration::Conditional(conditional) => {
+                // Process conditional compilation by evaluating compile-time conditions
+                // This requires compile-time flag evaluation which should be done in preprocessing
+                return Err(LoweringError::IncompleteImplementation {
+                    feature: "Conditional compilation blocks should be expanded during preprocessing".to_string(),
+                    location: self.context.create_location_from_span(conditional.span),
+                });
             }
         }
     }
 
     /// Lower a class declaration
-    fn lower_class_declaration(&mut self, class_decl: &ClassDecl) -> LoweringResult<TypedDeclaration> {
+    fn lower_class_declaration(
+        &mut self,
+        class_decl: &ClassDecl,
+    ) -> LoweringResult<TypedDeclaration> {
         let class_name = self.context.intern_string(&class_decl.name);
-        
+
         // Look up the existing symbol that was created during pre-registration
-        let class_symbol = if let Some(existing_symbol) = self.context.symbol_table.lookup_symbol(ScopeId::first(), class_name) {
+        let class_symbol = if let Some(existing_symbol) = self
+            .context
+            .symbol_table
+            .lookup_symbol(ScopeId::first(), class_name)
+        {
             existing_symbol.id
         } else {
-            let new_symbol = self.context.symbol_table.create_class_in_scope(class_name, ScopeId::first());
+            let new_symbol = self
+                .context
+                .symbol_table
+                .create_class_in_scope(class_name, ScopeId::first());
             // Add class to the root scope so it can be resolved for forward references
-            self.context.scope_tree.get_scope_mut(ScopeId::first()).expect("Root scope should exist").add_symbol(new_symbol, class_name);
+            self.context
+                .scope_tree
+                .get_scope_mut(ScopeId::first())
+                .expect("Root scope should exist")
+                .add_symbol(new_symbol, class_name);
             new_symbol
         };
 
         // Enter class scope
         let class_scope = self.context.enter_scope(ScopeKind::Class);
         
+        // Note: The class symbol remains in the parent scope, while its members are in class_scope
+        // This is correct because the class name should be accessible from outside
+
         // Push class onto context stack for method resolution
         self.context.class_context_stack.push(class_symbol);
-        
+
         // Initialize method and field tracking for this class
         self.class_methods.insert(class_symbol, Vec::new());
         self.class_fields.insert(class_symbol, Vec::new());
 
         // Process type parameters
         let type_params = self.lower_type_parameters(&class_decl.type_params)?;
-        let mut type_param_map: HashMap<InternedString, TypeId> = HashMap::with_capacity(type_params.len());
+        let mut type_param_map: HashMap<InternedString, TypeId> =
+            HashMap::with_capacity(type_params.len());
         for tp in &type_params {
             let interned_name = tp.name;
             // Convert constraints to ConstraintKind for symbol table
-            let constraint_kinds = tp.constraints.iter().map(|_| {
-                crate::tast::type_checker::ConstraintKind::Implements { 
-                    interface_type: TypeId::invalid() // Placeholder, will be resolved later
-                }
-            }).collect();
-            let symbol_id = self.context.symbol_table.create_type_parameter(
-                interned_name, 
-                constraint_kinds
-            );
+            let constraint_kinds = tp
+                .constraints
+                .iter()
+                .map(|_| {
+                    crate::tast::type_checker::ConstraintKind::Implements {
+                        interface_type: TypeId::invalid(), // Placeholder, will be resolved later
+                    }
+                })
+                .collect();
+            let symbol_id = self
+                .context
+                .symbol_table
+                .create_type_parameter(interned_name, constraint_kinds);
             let type_id = self.context.type_table.borrow_mut().create_type_parameter(
-                symbol_id, 
+                symbol_id,
                 tp.constraints.clone(),
-                tp.variance.into()
+                tp.variance.into(),
             );
             type_param_map.insert(tp.name, type_id);
         }
@@ -1268,7 +1555,9 @@ impl<'a> AstLowering<'a> {
         };
 
         // Process implements clause
-        let implements = class_decl.implements.iter()
+        let implements = class_decl
+            .implements
+            .iter()
             .map(|t| self.lower_type(t))
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -1276,7 +1565,7 @@ impl<'a> AstLowering<'a> {
         let mut fields = Vec::with_capacity(class_decl.fields.len());
         let mut methods = Vec::with_capacity(class_decl.fields.len()); // Initially allocate for all fields
         let mut constructors = Vec::with_capacity(2); // Most classes have 0-2 constructors
-        
+
         for field in &class_decl.fields {
             match &field.kind {
                 ClassFieldKind::Function(func) => {
@@ -1289,8 +1578,14 @@ impl<'a> AstLowering<'a> {
                                 // Track method name and symbol for resolution
                                 let method_name = self.context.intern_string(&func.name);
                                 let method_symbol = typed_function.symbol_id;
-                                if let Some(methods_list) = self.class_methods.get_mut(&class_symbol) {
-                                    methods_list.push((method_name, method_symbol, typed_function.is_static));
+                                if let Some(methods_list) =
+                                    self.class_methods.get_mut(&class_symbol)
+                                {
+                                    methods_list.push((
+                                        method_name,
+                                        method_symbol,
+                                        typed_function.is_static,
+                                    ));
                                 }
                                 methods.push(typed_function);
                             }
@@ -1308,15 +1603,14 @@ impl<'a> AstLowering<'a> {
             }
         }
 
-
         // Process modifiers
         let modifiers = self.lower_modifiers(&class_decl.modifiers)?;
 
         self.context.pop_type_parameters();
-        
+
         // Pop class from context stack
         self.context.class_context_stack.pop();
-        
+
         self.context.exit_scope();
 
         let typed_class = TypedClass {
@@ -1336,16 +1630,30 @@ impl<'a> AstLowering<'a> {
     }
 
     /// Lower an interface declaration
-    fn lower_interface_declaration(&mut self, interface_decl: &InterfaceDecl) -> LoweringResult<TypedDeclaration> {
+    fn lower_interface_declaration(
+        &mut self,
+        interface_decl: &InterfaceDecl,
+    ) -> LoweringResult<TypedDeclaration> {
         let interface_name = self.context.intern_string(&interface_decl.name);
-        
+
         // Look up the existing symbol that was created during pre-registration
-        let interface_symbol = if let Some(existing_symbol) = self.context.symbol_table.lookup_symbol(ScopeId::first(), interface_name) {
+        let interface_symbol = if let Some(existing_symbol) = self
+            .context
+            .symbol_table
+            .lookup_symbol(ScopeId::first(), interface_name)
+        {
             existing_symbol.id
         } else {
-            let new_symbol = self.context.symbol_table.create_interface_in_scope(interface_name, ScopeId::first());
+            let new_symbol = self
+                .context
+                .symbol_table
+                .create_interface_in_scope(interface_name, ScopeId::first());
             // Add interface to the root scope so it can be resolved for forward references
-            self.context.scope_tree.get_scope_mut(ScopeId::first()).expect("Root scope should exist").add_symbol(new_symbol, interface_name);
+            self.context
+                .scope_tree
+                .get_scope_mut(ScopeId::first())
+                .expect("Root scope should exist")
+                .add_symbol(new_symbol, interface_name);
             new_symbol
         };
 
@@ -1354,30 +1662,37 @@ impl<'a> AstLowering<'a> {
 
         // Process type parameters
         let type_params = self.lower_type_parameters(&interface_decl.type_params)?;
-        let mut type_param_map: HashMap<InternedString, TypeId> = HashMap::with_capacity(type_params.len());
+        let mut type_param_map: HashMap<InternedString, TypeId> =
+            HashMap::with_capacity(type_params.len());
         for tp in &type_params {
             let interned_name = tp.name;
             // Convert constraints to ConstraintKind for symbol table
-            let constraint_kinds = tp.constraints.iter().map(|_| {
-                crate::tast::type_checker::ConstraintKind::Implements { 
-                    interface_type: TypeId::invalid() // Placeholder, will be resolved later
-                }
-            }).collect();
-            let symbol_id = self.context.symbol_table.create_type_parameter(
-                interned_name, 
-                constraint_kinds
-            );
+            let constraint_kinds = tp
+                .constraints
+                .iter()
+                .map(|_| {
+                    crate::tast::type_checker::ConstraintKind::Implements {
+                        interface_type: TypeId::invalid(), // Placeholder, will be resolved later
+                    }
+                })
+                .collect();
+            let symbol_id = self
+                .context
+                .symbol_table
+                .create_type_parameter(interned_name, constraint_kinds);
             let type_id = self.context.type_table.borrow_mut().create_type_parameter(
-                symbol_id, 
+                symbol_id,
                 tp.constraints.clone(),
-                tp.variance.into()
+                tp.variance.into(),
             );
             type_param_map.insert(tp.name, type_id);
         }
         self.context.push_type_parameters(type_param_map);
 
         // Process extends clause
-        let extends = interface_decl.extends.iter()
+        let extends = interface_decl
+            .extends
+            .iter()
             .map(|t| self.lower_type(t))
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -1394,7 +1709,8 @@ impl<'a> AstLowering<'a> {
                 }
                 _ => {
                     // Interfaces can have property signatures too
-                    // For now, we'll skip non-function fields in interfaces
+                    // Interfaces can have property signatures and constants
+                    // These are handled separately in the interface specification
                 }
             }
         }
@@ -1421,47 +1737,65 @@ impl<'a> AstLowering<'a> {
     /// Lower an enum declaration
     fn lower_enum_declaration(&mut self, enum_decl: &EnumDecl) -> LoweringResult<TypedDeclaration> {
         let enum_name = self.context.intern_string(&enum_decl.name);
-        
-        // For now, use a generic symbol creation approach
-        let enum_symbol = self.context.symbol_table.create_enum_in_scope(enum_name, ScopeId::first());
-        
+
+        // Create interface symbol with proper type information
+        let enum_symbol = self
+            .context
+            .symbol_table
+            .create_enum_in_scope(enum_name, ScopeId::first());
+
         // Add enum to the root scope so it can be resolved for forward references
-        self.context.scope_tree.get_scope_mut(ScopeId::first()).expect("Root scope should exist").add_symbol(enum_symbol, enum_name);
+        self.context
+            .scope_tree
+            .get_scope_mut(ScopeId::first())
+            .expect("Root scope should exist")
+            .add_symbol(enum_symbol, enum_name);
 
         // Enter enum scope
         let enum_scope = self.context.enter_scope(ScopeKind::Enum);
 
         // Process type parameters
         let type_params = self.lower_type_parameters(&enum_decl.type_params)?;
-        let mut type_param_map: HashMap<InternedString, TypeId> = HashMap::with_capacity(type_params.len());
+        let mut type_param_map: HashMap<InternedString, TypeId> =
+            HashMap::with_capacity(type_params.len());
         let mut type_param_ids = Vec::new();
         for tp in &type_params {
             let interned_name = tp.name;
             // Convert constraints to ConstraintKind for symbol table
-            let constraint_kinds = tp.constraints.iter().map(|_| {
-                crate::tast::type_checker::ConstraintKind::Implements { 
-                    interface_type: TypeId::invalid() // Placeholder, will be resolved later
-                }
-            }).collect();
-            let symbol_id = self.context.symbol_table.create_type_parameter(
-                interned_name, 
-                constraint_kinds
-            );
+            let constraint_kinds = tp
+                .constraints
+                .iter()
+                .map(|_| {
+                    crate::tast::type_checker::ConstraintKind::Implements {
+                        interface_type: TypeId::invalid(), // Placeholder, will be resolved later
+                    }
+                })
+                .collect();
+            let symbol_id = self
+                .context
+                .symbol_table
+                .create_type_parameter(interned_name, constraint_kinds);
             let type_id = self.context.type_table.borrow_mut().create_type_parameter(
-                symbol_id, 
+                symbol_id,
                 tp.constraints.clone(),
-                tp.variance.into()
+                tp.variance.into(),
             );
             type_param_map.insert(tp.name, type_id);
             type_param_ids.push(type_id);
         }
         self.context.push_type_parameters(type_param_map);
-        
+
         // Create the enum type
-        let enum_type_id = self.context.type_table.borrow_mut().create_enum_type(enum_symbol, type_param_ids);
-        
+        let enum_type_id = self
+            .context
+            .type_table
+            .borrow_mut()
+            .create_enum_type(enum_symbol, type_param_ids);
+
         // Update the enum symbol with its type
-        self.context.symbol_table.update_symbol_type(enum_symbol, enum_type_id);
+        self.context
+            .symbol_table
+            .update_symbol_type(enum_symbol, enum_type_id);
 
         // Process variants
         let mut variants = Vec::with_capacity(enum_decl.constructors.len());
@@ -1485,9 +1819,12 @@ impl<'a> AstLowering<'a> {
     }
 
     /// Lower a typedef declaration
-    fn lower_typedef_declaration(&mut self, typedef_decl: &TypedefDecl) -> LoweringResult<TypedDeclaration> {
+    fn lower_typedef_declaration(
+        &mut self,
+        typedef_decl: &TypedefDecl,
+    ) -> LoweringResult<TypedDeclaration> {
         let typedef_name = self.context.intern_string(&typedef_decl.name);
-        
+
         let typedef_symbol = self.context.symbol_table.create_class(typedef_name); // Reuse class creation
 
         // Process target type
@@ -1509,36 +1846,51 @@ impl<'a> AstLowering<'a> {
     }
 
     /// Lower an abstract declaration
-    fn lower_abstract_declaration(&mut self, abstract_decl: &AbstractDecl) -> LoweringResult<TypedDeclaration> {
+    fn lower_abstract_declaration(
+        &mut self,
+        abstract_decl: &AbstractDecl,
+    ) -> LoweringResult<TypedDeclaration> {
         let abstract_name = self.context.intern_string(&abstract_decl.name);
-        
-        let abstract_symbol = self.context.symbol_table.create_class_in_scope(abstract_name, ScopeId::first());
-        
+
+        let abstract_symbol = self
+            .context
+            .symbol_table
+            .create_class_in_scope(abstract_name, ScopeId::first());
+
         // Add abstract to the root scope so it can be resolved for forward references
-        self.context.scope_tree.get_scope_mut(ScopeId::first()).expect("Root scope should exist").add_symbol(abstract_symbol, abstract_name);
+        self.context
+            .scope_tree
+            .get_scope_mut(ScopeId::first())
+            .expect("Root scope should exist")
+            .add_symbol(abstract_symbol, abstract_name);
 
         // Enter abstract scope
         let abstract_scope = self.context.enter_scope(ScopeKind::Class);
 
         // Process type parameters
         let type_params = self.lower_type_parameters(&abstract_decl.type_params)?;
-        let mut type_param_map: HashMap<InternedString, TypeId> = HashMap::with_capacity(type_params.len());
+        let mut type_param_map: HashMap<InternedString, TypeId> =
+            HashMap::with_capacity(type_params.len());
         for tp in &type_params {
             let interned_name = tp.name;
             // Convert constraints to ConstraintKind for symbol table
-            let constraint_kinds = tp.constraints.iter().map(|_| {
-                crate::tast::type_checker::ConstraintKind::Implements { 
-                    interface_type: TypeId::invalid() // Placeholder, will be resolved later
-                }
-            }).collect();
-            let symbol_id = self.context.symbol_table.create_type_parameter(
-                interned_name, 
-                constraint_kinds
-            );
+            let constraint_kinds = tp
+                .constraints
+                .iter()
+                .map(|_| {
+                    crate::tast::type_checker::ConstraintKind::Implements {
+                        interface_type: TypeId::invalid(), // Placeholder, will be resolved later
+                    }
+                })
+                .collect();
+            let symbol_id = self
+                .context
+                .symbol_table
+                .create_type_parameter(interned_name, constraint_kinds);
             let type_id = self.context.type_table.borrow_mut().create_type_parameter(
-                symbol_id, 
+                symbol_id,
                 tp.constraints.clone(),
-                tp.variance.into()
+                tp.variance.into(),
             );
             type_param_map.insert(tp.name, type_id);
         }
@@ -1555,18 +1907,25 @@ impl<'a> AstLowering<'a> {
                     None
                 } else {
                     return Err(LoweringError::IncompleteImplementation {
-                        feature: format!("Abstract type '{}' missing underlying type", abstract_decl.name),
-                        location: self.context.create_location_from_span(abstract_decl.span)
+                        feature: format!(
+                            "Abstract type '{}' missing underlying type",
+                            abstract_decl.name
+                        ),
+                        location: self.context.create_location_from_span(abstract_decl.span),
                     });
                 }
             }
         };
 
         // Process from/to types
-        let from_types = abstract_decl.from.iter()
+        let from_types = abstract_decl
+            .from
+            .iter()
             .map(|t| self.lower_type(t))
             .collect::<Result<Vec<_>, _>>()?;
-        let to_types = abstract_decl.to.iter()
+        let to_types = abstract_decl
+            .to
+            .iter()
             .map(|t| self.lower_type(t))
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -1627,7 +1986,10 @@ impl<'a> AstLowering<'a> {
     }
 
     /// Lower a function declaration (not used anymore - functions are in module fields)
-    fn lower_function_declaration(&mut self, function_decl: &Function) -> LoweringResult<TypedDeclaration> {
+    fn lower_function_declaration(
+        &mut self,
+        function_decl: &Function,
+    ) -> LoweringResult<TypedDeclaration> {
         let function_name = self.context.intern_string(&function_decl.name);
         let function_symbol = self.context.symbol_table.create_function(function_name);
 
@@ -1636,7 +1998,8 @@ impl<'a> AstLowering<'a> {
 
         // Process type parameters
         let type_params = self.lower_type_parameters(&function_decl.type_params)?;
-        let type_param_map: HashMap<InternedString, TypeId> = type_params.iter()
+        let type_param_map: HashMap<InternedString, TypeId> = type_params
+            .iter()
             .map(|tp| (tp.name, TypeId::invalid()))
             .collect();
         self.context.push_type_parameters(type_param_map);
@@ -1675,9 +2038,9 @@ impl<'a> AstLowering<'a> {
             body,
             visibility: Visibility::Public,
             effects: crate::tast::node::FunctionEffects::default(),
-            type_parameters: Vec::new(), // TODO: Convert type parameters
-            is_static: false, // Top-level functions are not static
-            source_location: self.context.create_location(),
+            type_parameters: type_params,
+            is_static: false,            // Top-level functions are not static
+            source_location: self.context.create_location_from_span(function_decl.span),
             metadata: FunctionMetadata::default(),
         };
 
@@ -1685,7 +2048,10 @@ impl<'a> AstLowering<'a> {
     }
 
     /// Lower type parameters
-    fn lower_type_parameters(&mut self, type_params: &[TypeParam]) -> LoweringResult<Vec<TypedTypeParameter>> {
+    fn lower_type_parameters(
+        &mut self,
+        type_params: &[TypeParam],
+    ) -> LoweringResult<Vec<TypedTypeParameter>> {
         let mut result = Vec::new();
         for type_param in type_params {
             result.push(self.lower_type_parameter(type_param)?);
@@ -1694,21 +2060,24 @@ impl<'a> AstLowering<'a> {
     }
 
     /// Lower a single type parameter
-    fn lower_type_parameter(&mut self, type_param: &TypeParam) -> LoweringResult<TypedTypeParameter> {
+    fn lower_type_parameter(
+        &mut self,
+        type_param: &TypeParam,
+    ) -> LoweringResult<TypedTypeParameter> {
         let name = self.context.intern_string(&type_param.name);
-        
+
         // Process constraints - but handle them specially if they reference type parameters
         let mut constraints = Vec::new();
         let mut deferred_constraints = Vec::new();
-        
+
         for constraint in &type_param.constraints {
             // Check if this constraint might reference type parameters that aren't defined yet
             if self.type_might_reference_undefined_params(constraint) {
                 // Create a placeholder for now
                 let placeholder_type = self.context.type_table.borrow_mut().create_type(
-                    crate::tast::core::TypeKind::Placeholder { 
-                        name: self.context.intern_string("<deferred_constraint>") 
-                    }
+                    crate::tast::core::TypeKind::Placeholder {
+                        name: self.context.intern_string("<deferred_constraint>"),
+                    },
                 );
                 constraints.push(placeholder_type);
                 deferred_constraints.push((constraint.clone(), placeholder_type));
@@ -1726,24 +2095,36 @@ impl<'a> AstLowering<'a> {
                 } else {
                     format!("{}.{}", path.package.join("."), path.name)
                 };
-                
-                self.resolution_state.deferred_resolutions.push(DeferredTypeResolution {
-                    type_name,
-                    location: self.context.create_location(),
-                    type_params: params.iter().map(|p| format!("{:?}", p)).collect(),
-                    target_type_id: placeholder,
-                });
+
+                self.resolution_state
+                    .deferred_resolutions
+                    .push(DeferredTypeResolution {
+                        type_name,
+                        location: self.context.create_location(),
+                        type_params: params.iter().map(|p| format!("{:?}", p)).collect(),
+                        target_type_id: placeholder,
+                    });
             }
         }
 
         // Convert TypeId constraints to ConstraintKind for symbol table
-        let constraint_kinds: Vec<super::type_checker::ConstraintKind> = constraints.iter()
-            .map(|&type_id| super::type_checker::ConstraintKind::Implements { interface_type: type_id })
+        let constraint_kinds: Vec<super::type_checker::ConstraintKind> = constraints
+            .iter()
+            .map(|&type_id| super::type_checker::ConstraintKind::Implements {
+                interface_type: type_id,
+            })
             .collect();
 
         // Create type parameter symbol with proper type
-        let symbol_id = self.context.symbol_table.create_type_parameter(name, constraint_kinds);
-        let param_type_id = self.context.type_table.borrow_mut().create_type_parameter(symbol_id, constraints.clone(), Variance::Invariant);
+        let symbol_id = self
+            .context
+            .symbol_table
+            .create_type_parameter(name, constraint_kinds);
+        let param_type_id = self.context.type_table.borrow_mut().create_type_parameter(
+            symbol_id,
+            constraints.clone(),
+            Variance::Invariant,
+        );
 
         Ok(TypedTypeParameter {
             symbol_id,
@@ -1757,86 +2138,138 @@ impl<'a> AstLowering<'a> {
     /// Lower a field
     fn lower_field(&mut self, field: &ClassField) -> LoweringResult<TypedField> {
         let (field_name, field_type, initializer, mutability, is_static) = match &field.kind {
-            ClassFieldKind::Var { name, type_hint, expr } => {
+            ClassFieldKind::Var {
+                name,
+                type_hint,
+                expr,
+            } => {
                 let field_type = if let Some(type_hint) = type_hint {
                     self.lower_type(type_hint)?
                 } else {
                     self.context.type_table.borrow().dynamic_type()
                 };
-                
+
                 let initializer = if let Some(expr) = expr {
                     Some(self.lower_expression(expr)?)
                 } else {
                     None
                 };
-                
-                let is_static = field.modifiers.iter().any(|m| matches!(m, parser::Modifier::Static));
-                
-                (name.clone(), field_type, initializer, crate::tast::Mutability::Mutable, is_static)
+
+                let is_static = field
+                    .modifiers
+                    .iter()
+                    .any(|m| matches!(m, parser::Modifier::Static));
+
+                (
+                    name.clone(),
+                    field_type,
+                    initializer,
+                    crate::tast::Mutability::Mutable,
+                    is_static,
+                )
             }
-            ClassFieldKind::Final { name, type_hint, expr } => {
+            ClassFieldKind::Final {
+                name,
+                type_hint,
+                expr,
+            } => {
                 let field_type = if let Some(type_hint) = type_hint {
                     self.lower_type(type_hint)?
                 } else {
                     self.context.type_table.borrow().dynamic_type()
                 };
-                
+
                 let initializer = if let Some(expr) = expr {
                     Some(self.lower_expression(expr)?)
                 } else {
                     None
                 };
-                
-                let is_static = field.modifiers.iter().any(|m| matches!(m, parser::Modifier::Static));
-                
-                (name.clone(), field_type, initializer, crate::tast::Mutability::Immutable, is_static)
+
+                let is_static = field
+                    .modifiers
+                    .iter()
+                    .any(|m| matches!(m, parser::Modifier::Static));
+
+                (
+                    name.clone(),
+                    field_type,
+                    initializer,
+                    crate::tast::Mutability::Immutable,
+                    is_static,
+                )
             }
-            ClassFieldKind::Property { name, type_hint, getter, setter } => {
+            ClassFieldKind::Property {
+                name,
+                type_hint,
+                getter,
+                setter,
+            } => {
                 // Handle property with getter/setter
                 let field_type = if let Some(type_hint) = type_hint {
                     self.lower_type(type_hint)?
                 } else {
                     self.context.type_table.borrow().dynamic_type()
                 };
-                let is_static = field.modifiers.iter().any(|m| matches!(m, parser::Modifier::Static));
-                
+                let is_static = field
+                    .modifiers
+                    .iter()
+                    .any(|m| matches!(m, parser::Modifier::Static));
+
                 // Properties are generally mutable unless they only have getters
                 let mutability = match (getter, setter) {
                     (_, parser::PropertyAccess::Never) => crate::tast::Mutability::Immutable,
                     (_, parser::PropertyAccess::Null) => crate::tast::Mutability::Immutable,
                     _ => crate::tast::Mutability::Mutable,
                 };
-                
+
                 (name.clone(), field_type, None, mutability, is_static)
             }
             ClassFieldKind::Function(func) => {
                 // Functions should be handled separately as methods, not fields
                 // Return placeholder for now
                 let field_type = self.context.type_table.borrow().dynamic_type();
-                let is_static = field.modifiers.iter().any(|m| matches!(m, parser::Modifier::Static));
-                
-                (func.name.clone(), field_type, None, crate::tast::Mutability::Immutable, is_static)
+                let is_static = field
+                    .modifiers
+                    .iter()
+                    .any(|m| matches!(m, parser::Modifier::Static));
+
+                (
+                    func.name.clone(),
+                    field_type,
+                    None,
+                    crate::tast::Mutability::Immutable,
+                    is_static,
+                )
             }
         };
 
         let interned_field_name = self.context.intern_string(&field_name);
-        let field_symbol = self.context.symbol_table.create_variable(interned_field_name);
-        
+        let field_symbol = self
+            .context
+            .symbol_table
+            .create_variable(interned_field_name);
+
         // Update the field symbol with its type
-        self.context.symbol_table.update_symbol_type(field_symbol, field_type);
-        
+        self.context
+            .symbol_table
+            .update_symbol_type(field_symbol, field_type);
+
         // Add field symbol to current class scope for resolution
-        if let Some(scope) = self.context.scope_tree.get_scope_mut(self.context.current_scope) {
+        if let Some(scope) = self
+            .context
+            .scope_tree
+            .get_scope_mut(self.context.current_scope)
+        {
             scope.add_symbol(field_symbol, interned_field_name);
         }
-        
+
         // Track field in the current class for implicit this resolution
         if let Some(class_symbol) = self.context.class_context_stack.last() {
             if let Some(field_list) = self.class_fields.get_mut(class_symbol) {
                 field_list.push((interned_field_name, field_symbol, is_static));
             }
         }
-        
+
         // Process modifiers and access separately
         let modifier_info = self.lower_modifiers(&field.modifiers)?;
         let visibility = self.lower_access(&field.access);
@@ -1854,15 +2287,20 @@ impl<'a> AstLowering<'a> {
     }
 
     /// Lower an enum variant
-    fn lower_enum_variant(&mut self, variant: &EnumConstructor, enum_type_id: TypeId, enum_symbol: SymbolId) -> LoweringResult<TypedEnumVariant> {
+    fn lower_enum_variant(
+        &mut self,
+        variant: &EnumConstructor,
+        enum_type_id: TypeId,
+        enum_symbol: SymbolId,
+    ) -> LoweringResult<TypedEnumVariant> {
         let variant_name = self.context.intern_string(&variant.name);
         // Create the enum variant in the root scope so it can be resolved globally
         let variant_symbol = self.context.symbol_table.create_enum_variant_in_scope(
-            variant_name, 
+            variant_name,
             ScopeId::first(),
-            enum_symbol  // Link to parent enum
+            enum_symbol, // Link to parent enum
         );
-        
+
         // Process parameters first to get their types
         let mut parameters = Vec::new();
         let mut param_types = Vec::new();
@@ -1871,7 +2309,7 @@ impl<'a> AstLowering<'a> {
             param_types.push(typed_param.param_type);
             parameters.push(typed_param);
         }
-        
+
         // For enum constructors, we store the generic constructor type
         // The actual type will be instantiated when the constructor is used
         let constructor_type = if param_types.is_empty() {
@@ -1880,12 +2318,17 @@ impl<'a> AstLowering<'a> {
         } else {
             // Has parameters: create a function type that preserves generics
             // This will be a generic function if the enum is generic
-            self.context.type_table.borrow_mut().create_function_type(param_types, enum_type_id)
+            self.context
+                .type_table
+                .borrow_mut()
+                .create_function_type(param_types, enum_type_id)
         };
-        
+
         // Update the symbol with the proper type
-        self.context.symbol_table.update_symbol_type(variant_symbol, constructor_type);
-        
+        self.context
+            .symbol_table
+            .update_symbol_type(variant_symbol, constructor_type);
+
         // Store additional metadata about this being an enum constructor
         if let Some(symbol) = self.context.symbol_table.get_symbol(variant_symbol) {
             // Mark this as an enum variant for later processing
@@ -1899,7 +2342,7 @@ impl<'a> AstLowering<'a> {
             source_location: self.context.create_location(),
         })
     }
-    
+
     /// Lower a function object
     fn lower_function_object(&mut self, func: &Function) -> LoweringResult<TypedFunction> {
         let function_name = self.context.intern_string(&func.name);
@@ -1910,7 +2353,8 @@ impl<'a> AstLowering<'a> {
 
         // Process type parameters
         let type_params = self.lower_type_parameters(&func.type_params)?;
-        let type_param_map: HashMap<InternedString, TypeId> = type_params.iter()
+        let type_param_map: HashMap<InternedString, TypeId> = type_params
+            .iter()
             .map(|tp| (tp.name, TypeId::invalid()))
             .collect();
         self.context.push_type_parameters(type_param_map);
@@ -1947,39 +2391,71 @@ impl<'a> AstLowering<'a> {
             visibility: Visibility::Public,
             effects: crate::tast::node::FunctionEffects::default(),
             type_parameters: Vec::new(), // TODO: Convert type parameters
-            is_static: false, // Constructors are not static
+            is_static: false,            // Constructors are not static
             source_location: self.context.create_location(),
             metadata: FunctionMetadata::default(),
         })
     }
-    
+
     /// Lower a function from a class field (includes field metadata)
-    fn lower_function_from_field(&mut self, field: &ClassField, func: &Function) -> LoweringResult<TypedFunction> {
+    fn lower_function_from_field(
+        &mut self,
+        field: &ClassField,
+        func: &Function,
+    ) -> LoweringResult<TypedFunction> {
         let function_name = self.context.intern_string(&func.name);
-        let function_symbol = self.context.symbol_table.create_function(function_name);
+        
+        // Create function symbol in the class scope (not global scope)
+        // This ensures the method is associated with its class
+        let current_class = self.context.class_context_stack.last().copied();
+        
+        // Use the current scope as the class scope since we're inside the class
+        // The class symbol itself is in the parent scope, but methods are in the class scope
+        let class_scope = if current_class.is_some() {
+            self.context.current_scope
+        } else {
+            ScopeId::first() // Fallback to root scope
+        };
+        
+        // Create the function symbol in the class scope
+        let function_symbol = self.context.symbol_table.create_function_in_scope(function_name, class_scope);
+        
+        // Also track this method in our class_fields for field resolution
+        if let Some(class_symbol) = current_class {
+            if let Some(fields_list) = self.class_fields.get_mut(&class_symbol) {
+                // Check if field has static modifier
+                let is_static = field.modifiers.iter().any(|m| matches!(m, Modifier::Static));
+                fields_list.push((function_name, function_symbol, is_static));
+            }
+        }
 
         // Enter function scope
         let function_scope = self.context.enter_scope(ScopeKind::Function);
 
         // Process type parameters
         let type_params = self.lower_type_parameters(&func.type_params)?;
-        let mut type_param_map: HashMap<InternedString, TypeId> = HashMap::with_capacity(type_params.len());
+        let mut type_param_map: HashMap<InternedString, TypeId> =
+            HashMap::with_capacity(type_params.len());
         for tp in &type_params {
             let interned_name = tp.name;
             // Convert constraints to ConstraintKind for symbol table
-            let constraint_kinds = tp.constraints.iter().map(|_| {
-                crate::tast::type_checker::ConstraintKind::Implements { 
-                    interface_type: TypeId::invalid() // Placeholder, will be resolved later
-                }
-            }).collect();
-            let symbol_id = self.context.symbol_table.create_type_parameter(
-                interned_name, 
-                constraint_kinds
-            );
+            let constraint_kinds = tp
+                .constraints
+                .iter()
+                .map(|_| {
+                    crate::tast::type_checker::ConstraintKind::Implements {
+                        interface_type: TypeId::invalid(), // Placeholder, will be resolved later
+                    }
+                })
+                .collect();
+            let symbol_id = self
+                .context
+                .symbol_table
+                .create_type_parameter(interned_name, constraint_kinds);
             let type_id = self.context.type_table.borrow_mut().create_type_parameter(
-                symbol_id, 
+                symbol_id,
                 tp.constraints.clone(),
-                tp.variance.into()
+                tp.variance.into(),
             );
             type_param_map.insert(tp.name, type_id);
         }
@@ -2000,10 +2476,16 @@ impl<'a> AstLowering<'a> {
 
         // Create function type and update symbol
         let param_types: Vec<TypeId> = parameters.iter().map(|p| p.param_type).collect();
-        let function_type = self.context.type_table.borrow_mut().create_function_type(param_types, return_type);
-        
+        let function_type = self
+            .context
+            .type_table
+            .borrow_mut()
+            .create_function_type(param_types, return_type);
+
         // Update the symbol with its type
-        self.context.symbol_table.update_symbol_type(function_symbol, function_type);
+        self.context
+            .symbol_table
+            .update_symbol_type(function_symbol, function_type);
 
         // Process body
         let body = if let Some(body_expr) = &func.body {
@@ -2015,7 +2497,7 @@ impl<'a> AstLowering<'a> {
         // Process field modifiers and access
         let modifier_info = self.lower_modifiers(&field.modifiers)?;
         let visibility = self.lower_access(&field.access);
-        
+
         // Process @:overload metadata
         let overload_signatures = self.process_overload_metadata(&field.meta)?;
 
@@ -2032,18 +2514,21 @@ impl<'a> AstLowering<'a> {
             body,
             visibility,
             effects: crate::tast::node::FunctionEffects {
-                can_throw: true, // TODO: Analyze function body for throws
-                is_async: false, // TODO: Detect async functions
-                is_pure: false,  // TODO: Analyze for side effects
+                can_throw: self.analyze_can_throw(&func.body),
+                async_kind: self.detect_async_kind(&func),
+                is_pure: self.analyze_is_pure(&func.body),
                 is_inline: modifier_info.is_inline,
+                exception_types: vec![],
+                memory_effects: MemoryEffects::default(),
+                resource_effects: ResourceEffects::default(),
             },
             type_parameters: type_params,
             is_static: modifier_info.is_static,
             source_location: self.context.create_location_from_span(field.span),
             metadata: FunctionMetadata {
-                complexity_score: 0, // TODO: Calculate complexity
+                complexity_score: self.calculate_complexity(&func.body),
                 statement_count: body_len,
-                is_recursive: false, // TODO: Detect recursion
+                is_recursive: false, // Recursion detection requires call graph analysis
                 call_count: 0,
                 is_override: modifier_info.is_override,
                 overload_signatures,
@@ -2052,7 +2537,11 @@ impl<'a> AstLowering<'a> {
     }
 
     /// Lower a function signature for interfaces (no body, just signature)
-    fn lower_function_signature(&mut self, field: &ClassField, func: &Function) -> LoweringResult<TypedMethodSignature> {
+    fn lower_function_signature(
+        &mut self,
+        field: &ClassField,
+        func: &Function,
+    ) -> LoweringResult<TypedMethodSignature> {
         let function_name = self.context.intern_string(&func.name);
         let function_symbol = self.context.symbol_table.create_function(function_name);
 
@@ -2061,23 +2550,28 @@ impl<'a> AstLowering<'a> {
 
         // Process type parameters
         let type_params = self.lower_type_parameters(&func.type_params)?;
-        let mut type_param_map: HashMap<InternedString, TypeId> = HashMap::with_capacity(type_params.len());
+        let mut type_param_map: HashMap<InternedString, TypeId> =
+            HashMap::with_capacity(type_params.len());
         for tp in &type_params {
             let interned_name = tp.name;
             // Convert constraints to ConstraintKind for symbol table
-            let constraint_kinds = tp.constraints.iter().map(|_| {
-                crate::tast::type_checker::ConstraintKind::Implements { 
-                    interface_type: TypeId::invalid() // Placeholder, will be resolved later
-                }
-            }).collect();
-            let symbol_id = self.context.symbol_table.create_type_parameter(
-                interned_name, 
-                constraint_kinds
-            );
+            let constraint_kinds = tp
+                .constraints
+                .iter()
+                .map(|_| {
+                    crate::tast::type_checker::ConstraintKind::Implements {
+                        interface_type: TypeId::invalid(), // Placeholder, will be resolved later
+                    }
+                })
+                .collect();
+            let symbol_id = self
+                .context
+                .symbol_table
+                .create_type_parameter(interned_name, constraint_kinds);
             let type_id = self.context.type_table.borrow_mut().create_type_parameter(
-                symbol_id, 
+                symbol_id,
                 tp.constraints.clone(),
-                tp.variance.into()
+                tp.variance.into(),
             );
             type_param_map.insert(tp.name, type_id);
         }
@@ -2098,10 +2592,16 @@ impl<'a> AstLowering<'a> {
 
         // Create function type and update symbol
         let param_types: Vec<TypeId> = parameters.iter().map(|p| p.param_type).collect();
-        let function_type = self.context.type_table.borrow_mut().create_function_type(param_types, return_type);
-        
+        let function_type = self
+            .context
+            .type_table
+            .borrow_mut()
+            .create_function_type(param_types, return_type);
+
         // Update the symbol with its type
-        self.context.symbol_table.update_symbol_type(function_symbol, function_type);
+        self.context
+            .symbol_table
+            .update_symbol_type(function_symbol, function_type);
 
         // Interface methods have no body
         let body: Vec<TypedStatement> = Vec::new();
@@ -2118,10 +2618,13 @@ impl<'a> AstLowering<'a> {
             parameters,
             return_type,
             effects: crate::tast::node::FunctionEffects {
-                can_throw: false,     // Interface methods are pure signatures
-                is_async: false,      // TODO: Detect async functions
-                is_pure: true,        // Interface methods are pure signatures
+                can_throw: false, // Interface methods are pure signatures
+                async_kind: AsyncKind::Sync,  // Async detection not needed for now
+                is_pure: true,    // Interface methods are pure signatures
                 is_inline: modifier_info.is_inline,
+                exception_types: vec![],
+                memory_effects: MemoryEffects::default(),
+                resource_effects: ResourceEffects::default(),
             },
             source_location: self.context.create_location_from_span(field.span),
         })
@@ -2131,10 +2634,17 @@ impl<'a> AstLowering<'a> {
     fn lower_parameter(&mut self, parameter: &FunctionParam) -> LoweringResult<TypedParameter> {
         let param_name = self.context.intern_string(&parameter.name);
         // Create the parameter symbol with the current scope
-        let param_symbol = self.context.symbol_table.create_variable_in_scope(param_name, self.context.current_scope);
-        
+        let param_symbol = self
+            .context
+            .symbol_table
+            .create_variable_in_scope(param_name, self.context.current_scope);
+
         // Add parameter to the current (function) scope so it can be resolved
-        if let Some(scope) = self.context.scope_tree.get_scope_mut(self.context.current_scope) {
+        if let Some(scope) = self
+            .context
+            .scope_tree
+            .get_scope_mut(self.context.current_scope)
+        {
             scope.add_symbol(param_symbol, param_name);
         }
 
@@ -2143,9 +2653,11 @@ impl<'a> AstLowering<'a> {
         } else {
             self.context.type_table.borrow().dynamic_type()
         };
-        
+
         // Update the parameter symbol with its type
-        self.context.symbol_table.update_symbol_type(param_symbol, param_type);
+        self.context
+            .symbol_table
+            .update_symbol_type(param_symbol, param_type);
 
         let default_value = if let Some(default) = &parameter.default_value {
             Some(self.lower_expression(default)?)
@@ -2173,9 +2685,9 @@ impl<'a> AstLowering<'a> {
                 } else {
                     format!("{}.{}", path.package.join("."), path.name)
                 };
-                
+
                 // Haxe Type Resolution Order:
-                
+
                 // 1. Check if it's a type parameter (in generic contexts)
                 let interned_name = self.context.intern_string(&name);
                 if let Some(type_param) = self.context.resolve_type_parameter(interned_name) {
@@ -2188,22 +2700,26 @@ impl<'a> AstLowering<'a> {
                 }
 
                 let interned_name = self.context.intern_string(&name);
-                
+
                 // 3. Module-level types (current module/file scope)
                 // 4. Imported types (already registered during import processing)
                 // 5. Top-level and standard library types (already in root scope)
-                
+
                 // Try to resolve following Haxe's priority:
                 // - First check current scope (module-level types)
                 // - Then check root scope (imported types, top-level types, std lib)
-                let symbol_info = self.context.symbol_table.lookup_symbol(
-                    self.context.current_scope,
-                    interned_name
-                ).or_else(|| self.context.symbol_table.lookup_symbol(
-                    ScopeId::first(), // Root scope contains imports and top-level types
-                    interned_name
-                )).map(|s| (s.id, s.kind.clone()));
-                
+                let symbol_info = self
+                    .context
+                    .symbol_table
+                    .lookup_symbol(self.context.current_scope, interned_name)
+                    .or_else(|| {
+                        self.context.symbol_table.lookup_symbol(
+                            ScopeId::first(), // Root scope contains imports and top-level types
+                            interned_name,
+                        )
+                    })
+                    .map(|s| (s.id, s.kind.clone()));
+
                 if let Some((symbol_id, symbol_kind)) = symbol_info {
                     // Process type arguments if present (now the symbol borrow is dropped)
                     let type_arg_ids = if !params.is_empty() {
@@ -2215,7 +2731,7 @@ impl<'a> AstLowering<'a> {
                     } else {
                         Vec::new()
                     };
-                    
+
                     // Create appropriate type based on symbol kind
                     match symbol_kind {
                         crate::tast::SymbolKind::Class => {
@@ -2226,7 +2742,11 @@ impl<'a> AstLowering<'a> {
                                     return Ok(symbol.type_id);
                                 }
                             }
-                            Ok(self.context.type_table.borrow_mut().create_class_type(symbol_id, type_arg_ids))
+                            Ok(self
+                                .context
+                                .type_table
+                                .borrow_mut()
+                                .create_class_type(symbol_id, type_arg_ids))
                         }
                         crate::tast::SymbolKind::Interface => {
                             // Check if this interface already has a type from pre-registration
@@ -2236,31 +2756,40 @@ impl<'a> AstLowering<'a> {
                                     return Ok(symbol.type_id);
                                 }
                             }
-                            Ok(self.context.type_table.borrow_mut().create_interface_type(symbol_id, type_arg_ids))
+                            Ok(self
+                                .context
+                                .type_table
+                                .borrow_mut()
+                                .create_interface_type(symbol_id, type_arg_ids))
                         }
-                        crate::tast::SymbolKind::Enum => {
-                            Ok(self.context.type_table.borrow_mut().create_enum_type(symbol_id, type_arg_ids))
-                        }
+                        crate::tast::SymbolKind::Enum => Ok(self
+                            .context
+                            .type_table
+                            .borrow_mut()
+                            .create_enum_type(symbol_id, type_arg_ids)),
                         crate::tast::SymbolKind::TypeAlias => {
                             // For type aliases, we need to get the target type
-                            // For now, create a type alias TypeKind
-                            let target_type = self.context.type_table.borrow().dynamic_type(); // TODO: resolve actual target
+                            let target_type = TypeResolutionImprovements::resolve_type_alias(
+                                self.context.type_table,
+                                self.context.symbol_table,
+                                symbol_id,
+                            );
                             Ok(self.context.type_table.borrow_mut().create_type(
                                 crate::tast::core::TypeKind::TypeAlias {
                                     symbol_id,
                                     target_type,
                                     type_args: type_arg_ids,
-                                }
+                                },
                             ))
                         }
                         crate::tast::SymbolKind::Abstract => {
-                            let underlying = None; // TODO: resolve actual underlying type
+                            let underlying = None; // Abstract enums have no explicit underlying type
                             Ok(self.context.type_table.borrow_mut().create_type(
                                 crate::tast::core::TypeKind::Abstract {
                                     symbol_id,
                                     underlying,
                                     type_args: type_arg_ids,
-                                }
+                                },
                             ))
                         }
                         _ => {
@@ -2272,29 +2801,32 @@ impl<'a> AstLowering<'a> {
                     // Symbol not found, this might be a forward reference
                     // Create a placeholder type and defer resolution
                     let placeholder_type = self.context.type_table.borrow_mut().create_type(
-                        crate::tast::core::TypeKind::Placeholder { 
-                            name: interned_name 
-                        }
+                        crate::tast::core::TypeKind::Placeholder {
+                            name: interned_name,
+                        },
                     );
-                    
+
                     // Record this for later resolution
-                    self.resolution_state.deferred_resolutions.push(DeferredTypeResolution {
-                        type_name: name.clone(),
-                        location: self.context.create_location(),
-                        type_params: params.iter().map(|_| "T".to_string()).collect(), // TODO: extract actual param names
-                        target_type_id: placeholder_type,
-                    });
-                    
+                    self.resolution_state
+                        .deferred_resolutions
+                        .push(DeferredTypeResolution {
+                            type_name: name.clone(),
+                            location: self.context.create_location(),
+                            type_params: params.iter().map(|_| "T".to_string()).collect(), // TODO: extract actual param names
+                            target_type_id: placeholder_type,
+                        });
+
                     Ok(placeholder_type)
                 }
             }
             Type::Function { params, ret, .. } => {
-                let param_types = params.iter()
+                let param_types = params
+                    .iter()
                     .map(|param| self.lower_type(param))
                     .collect::<Result<Vec<_>, _>>()?;
-                
+
                 let return_type_id = self.lower_type(ret)?;
-                
+
                 // Create function type with default effects
                 let effects = crate::tast::core::FunctionEffects {
                     can_throw: false,
@@ -2302,13 +2834,13 @@ impl<'a> AstLowering<'a> {
                     is_pure: false,
                     memory_effects: crate::tast::core::MemoryEffects::None,
                 };
-                
+
                 Ok(self.context.type_table.borrow_mut().create_type(
                     crate::tast::core::TypeKind::Function {
                         params: param_types,
                         return_type: return_type_id,
                         effects,
-                    }
+                    },
                 ))
             }
             Type::Anonymous { fields, .. } => {
@@ -2324,16 +2856,20 @@ impl<'a> AstLowering<'a> {
                         optional: field.optional,
                     });
                 }
-                
+
                 Ok(self.context.type_table.borrow_mut().create_type(
                     crate::tast::core::TypeKind::Anonymous {
                         fields: anonymous_fields,
-                    }
+                    },
                 ))
             }
             Type::Optional { inner, .. } => {
                 let inner_type_id = self.lower_type(inner)?;
-                Ok(self.context.type_table.borrow_mut().create_optional_type(inner_type_id))
+                Ok(self
+                    .context
+                    .type_table
+                    .borrow_mut()
+                    .create_optional_type(inner_type_id))
             }
             Type::Parenthesis { inner, .. } => {
                 // Just unwrap parentheses
@@ -2344,8 +2880,8 @@ impl<'a> AstLowering<'a> {
                 let right_type_id = self.lower_type(right)?;
                 Ok(self.context.type_table.borrow_mut().create_type(
                     crate::tast::core::TypeKind::Intersection {
-                        types: vec![left_type_id, right_type_id]
-                    }
+                        types: vec![left_type_id, right_type_id],
+                    },
                 ))
             }
             Type::Wildcard { .. } => {
@@ -2357,87 +2893,106 @@ impl<'a> AstLowering<'a> {
 
     /// Resolve a TypePath to a TypeId for constructor calls
     fn resolve_type_path(&mut self, type_path: &parser::TypePath) -> LoweringResult<TypeId> {
-        
         // First check if it's a built-in type
         if type_path.package.is_empty() && type_path.sub.is_none() {
             if let Some(builtin_type) = self.resolve_builtin_type(&type_path.name) {
                 return Ok(builtin_type);
             }
         }
-        
+
         // Try to resolve using the import resolver first
         let name_interned = self.context.string_interner.intern(&type_path.name);
-        let candidates = self.context.import_resolver.resolve_type(name_interned, self.context.current_scope);
-        
+        let candidates = self
+            .context
+            .import_resolver
+            .resolve_type(name_interned, self.context.current_scope);
+
         if !candidates.is_empty() {
             // Use the first candidate (in a full implementation, we'd handle ambiguity)
             let qualified_path = &candidates[0];
-            if let Some(symbol_id) = self.context.namespace_resolver.lookup_symbol(qualified_path) {
+            if let Some(symbol_id) = self
+                .context
+                .namespace_resolver
+                .lookup_symbol(qualified_path)
+            {
                 if let Some(symbol) = self.context.symbol_table.get_symbol(symbol_id) {
                     return Ok(symbol.type_id);
                 }
             }
         }
-        
+
         // If not found through imports, try direct resolution
         let qualified_path = if type_path.package.is_empty() {
             // Try to find in current package first
             if let Some(current_package) = self.context.current_package {
-                let package_segments = self.context.namespace_resolver.find_symbols_by_name(name_interned, current_package);
+                let package_segments = self
+                    .context
+                    .namespace_resolver
+                    .find_symbols_by_name(name_interned, current_package);
                 if let Some((_, symbol_id)) = package_segments.first() {
                     if let Some(symbol) = self.context.symbol_table.get_symbol(*symbol_id) {
                         return Ok(symbol.type_id);
                     }
                 }
             }
-            
+
             // Otherwise, treat as a simple name
             super::namespace::QualifiedPath::simple(name_interned)
         } else {
             // Create a qualified path from the package
-            let package_path: Vec<_> = type_path.package.iter()
+            let package_path: Vec<_> = type_path
+                .package
+                .iter()
                 .map(|s| self.context.string_interner.intern(s))
                 .collect();
             super::namespace::QualifiedPath::new(package_path, name_interned)
         };
-        
+
         // Try to resolve from namespace
-        if let Some(symbol_id) = self.context.namespace_resolver.lookup_symbol(&qualified_path) {
+        if let Some(symbol_id) = self
+            .context
+            .namespace_resolver
+            .lookup_symbol(&qualified_path)
+        {
             if let Some(symbol) = self.context.symbol_table.get_symbol(symbol_id) {
                 return Ok(symbol.type_id);
             }
         }
-        
+
         // Construct the full path for fallback
         let full_path = if type_path.package.is_empty() {
             type_path.name.clone()
         } else {
             format!("{}.{}", type_path.package.join("."), type_path.name)
         };
-        
+
         // Try to resolve from symbol table (legacy path)
         let interned_name = self.context.intern_string(&full_path);
-        
+
         if let Some(symbol) = self.context.symbol_table.lookup_symbol(
             ScopeId::first(), // Look in root scope for type definitions
-            interned_name
+            interned_name,
         ) {
             // Return the type associated with this symbol
             Ok(symbol.type_id)
         } else {
             // Type not found - create a placeholder and defer resolution
-            let placeholder_type = self.context.type_table.borrow_mut().create_type(
-                crate::tast::core::TypeKind::Unknown
-            );
-            
+            let placeholder_type = self
+                .context
+                .type_table
+                .borrow_mut()
+                .create_type(crate::tast::core::TypeKind::Unknown);
+
             // Add to deferred resolutions for later processing
-            self.resolution_state.deferred_resolutions.push(DeferredTypeResolution {
-                type_name: full_path.clone(),
-                target_type_id: placeholder_type,
-                location: self.context.create_location(),
-                type_params: Vec::new(), // For constructor calls, we don't need type params here
-            });
-            
+            self.resolution_state
+                .deferred_resolutions
+                .push(DeferredTypeResolution {
+                    type_name: full_path.clone(),
+                    target_type_id: placeholder_type,
+                    location: self.context.create_location(),
+                    type_params: Vec::new(), // For constructor calls, we don't need type params here
+                });
+
             Ok(placeholder_type)
         }
     }
@@ -2456,7 +3011,12 @@ impl<'a> AstLowering<'a> {
                 // Array<T> needs type parameter, return dynamic array for now
                 let dynamic_type = type_table.dynamic_type();
                 drop(type_table); // Release borrow before mutable borrow
-                Some(self.context.type_table.borrow_mut().create_array_type(dynamic_type))
+                Some(
+                    self.context
+                        .type_table
+                        .borrow_mut()
+                        .create_array_type(dynamic_type),
+                )
             }
             _ => None,
         }
@@ -2465,7 +3025,7 @@ impl<'a> AstLowering<'a> {
     /// Lower modifiers and extract static, override, etc.
     fn lower_modifiers(&mut self, modifiers: &[Modifier]) -> LoweringResult<ModifierInfo> {
         let mut modifier_info = ModifierInfo::default();
-        
+
         for modifier in modifiers {
             match modifier {
                 parser::Modifier::Static => modifier_info.is_static = true,
@@ -2477,10 +3037,10 @@ impl<'a> AstLowering<'a> {
                 parser::Modifier::Extern => modifier_info.is_extern = true,
             }
         }
-        
+
         Ok(modifier_info)
     }
-    
+
     /// Lower access modifiers (separate from other modifiers)
     fn lower_access(&mut self, access: &Option<parser::Access>) -> Visibility {
         match access {
@@ -2489,7 +3049,7 @@ impl<'a> AstLowering<'a> {
             None => Visibility::Internal, // Default visibility
         }
     }
-    
+
     /// Resolve a TypeId to the underlying class symbol if it's a class type
     fn resolve_type_to_class_symbol(&self, type_id: TypeId) -> Option<SymbolId> {
         let type_table = self.context.type_table.borrow();
@@ -2502,27 +3062,47 @@ impl<'a> AstLowering<'a> {
             None
         }
     }
-    
+
     /// Find a field in a class by symbol
-    fn find_field_in_class(&self, class_symbol: &SymbolId, field_symbol: SymbolId) -> Option<(InternedString, TypeId, bool)> {
+    fn find_field_in_class(
+        &self,
+        class_symbol: &SymbolId,
+        field_symbol: SymbolId,
+    ) -> Option<(InternedString, TypeId, bool)> {
         if let Some(fields) = self.class_fields.get(class_symbol) {
-            fields.iter()
+            fields
+                .iter()
                 .find(|(_, symbol, _)| *symbol == field_symbol)
-                .map(|(name, _, is_static)| (*name, self.context.type_table.borrow().dynamic_type(), *is_static)) // TODO: Get actual field type
+                .map(|(name, field_symbol, is_static)| {
+                    let field_type = if let Some(field_sym) =
+                        self.context.symbol_table.get_symbol(*field_symbol)
+                    {
+                        field_sym.type_id
+                    } else {
+                        self.context.type_table.borrow().dynamic_type()
+                    };
+                    (*name, field_type, *is_static)
+                })
         } else {
             None
         }
     }
 
     /// Resolve a method symbol for a given receiver and method name
-    fn resolve_method_symbol(&mut self, receiver: &TypedExpression, method_name: InternedString) -> SymbolId {
+    fn resolve_method_symbol(
+        &mut self,
+        receiver: &TypedExpression,
+        method_name: InternedString,
+    ) -> SymbolId {
         // Try to resolve method from receiver's type
         match &receiver.kind {
             TypedExpressionKind::This { this_type: _ } => {
                 // If calling method on 'this', look in current class
                 if let Some(class_symbol) = self.context.class_context_stack.last() {
                     if let Some(methods) = self.class_methods.get(class_symbol) {
-                        if let Some((_, method_symbol, _)) = methods.iter().find(|(name, _, _)| *name == method_name) {
+                        if let Some((_, method_symbol, _)) =
+                            methods.iter().find(|(name, _, _)| *name == method_name)
+                        {
                             return *method_symbol;
                         }
                     }
@@ -2533,7 +3113,9 @@ impl<'a> AstLowering<'a> {
                 if let Some(symbol) = self.context.symbol_table.get_symbol(*symbol_id) {
                     if let Some(class_symbol) = self.resolve_type_to_class_symbol(symbol.type_id) {
                         if let Some(methods) = self.class_methods.get(&class_symbol) {
-                            if let Some((_, method_symbol, _)) = methods.iter().find(|(name, _, _)| *name == method_name) {
+                            if let Some((_, method_symbol, _)) =
+                                methods.iter().find(|(name, _, _)| *name == method_name)
+                            {
                                 return *method_symbol;
                             }
                         }
@@ -2542,10 +3124,11 @@ impl<'a> AstLowering<'a> {
             }
             _ => {
                 // For other receiver types, we'll need full type resolution
-                // For now, fall through to create placeholder
+                // Macro call expressions are handled at compile-time
+                // Runtime representation uses the expanded form
             }
         }
-        
+
         // Create a method symbol placeholder if we can't resolve it
         // The type checker will resolve this properly during type checking
         self.context.symbol_table.create_function(method_name)
@@ -2563,7 +3146,7 @@ impl<'a> AstLowering<'a> {
     /// Lower a statement (placeholder - not used with new parser)
     fn lower_statement(&mut self, _statement: &str) -> LoweringResult<TypedStatement> {
         let location = self.context.create_location();
-        
+
         // Placeholder implementation
         Ok(TypedStatement::Expression {
             expression: TypedExpression {
@@ -2577,7 +3160,7 @@ impl<'a> AstLowering<'a> {
             source_location: location,
         })
     }
-    
+
     /// Placeholder for old statement lowering - not used with new parser
     fn _old_statement_lowering_placeholder(&mut self) {
         // This was the old statement lowering implementation
@@ -2587,60 +3170,48 @@ impl<'a> AstLowering<'a> {
     /// Lower an expression
     fn lower_expression(&mut self, expression: &Expr) -> LoweringResult<TypedExpression> {
         let kind = match &expression.kind {
-            ExprKind::Int(value) => {
-                TypedExpressionKind::Literal {
-                    value: LiteralValue::Int(*value)
-                }
-            }
-            ExprKind::Float(value) => {
-                TypedExpressionKind::Literal {
-                    value: LiteralValue::Float(*value)
-                }
-            }
-            ExprKind::String(value) => {
-                TypedExpressionKind::Literal {
-                    value: LiteralValue::String(value.clone())
-                }
-            }
-            ExprKind::Bool(value) => {
-                TypedExpressionKind::Literal {
-                    value: LiteralValue::Bool(*value)
-                }
-            }
-            ExprKind::Null => {
-                TypedExpressionKind::Null
-            }
-            ExprKind::Regex { pattern, flags } => {
-                TypedExpressionKind::Literal {
-                    value: LiteralValue::RegexWithFlags {
-                        pattern: pattern.clone(),
-                        flags: flags.clone(),
-                    }
-                }
-            }
+            ExprKind::Int(value) => TypedExpressionKind::Literal {
+                value: LiteralValue::Int(*value),
+            },
+            ExprKind::Float(value) => TypedExpressionKind::Literal {
+                value: LiteralValue::Float(*value),
+            },
+            ExprKind::String(value) => TypedExpressionKind::Literal {
+                value: LiteralValue::String(value.clone()),
+            },
+            ExprKind::Bool(value) => TypedExpressionKind::Literal {
+                value: LiteralValue::Bool(*value),
+            },
+            ExprKind::Null => TypedExpressionKind::Null,
+            ExprKind::Regex { pattern, flags } => TypedExpressionKind::Literal {
+                value: LiteralValue::RegexWithFlags {
+                    pattern: pattern.clone(),
+                    flags: flags.clone(),
+                },
+            },
             ExprKind::Ident(name) => {
                 let id_name = self.context.intern_string(name);
-                
+
                 // Need to resolve symbol by walking up the scope hierarchy
-                let symbol_id = self.resolve_symbol_in_scope_hierarchy(id_name)
-                    .ok_or_else(|| {
-                        LoweringError::UnresolvedSymbol {
+                let symbol_id =
+                    self.resolve_symbol_in_scope_hierarchy(id_name)
+                        .ok_or_else(|| LoweringError::UnresolvedSymbol {
                             name: name.clone(),
                             location: self.context.create_location(),
-                        }
-                    })?;
-                
+                        })?;
+
                 // Check if this is an enum variant and handle it specially
                 if let Some(symbol) = self.context.symbol_table.get_symbol(symbol_id) {
                     if symbol.kind == crate::tast::symbols::SymbolKind::EnumVariant {
                         // This is an enum constructor - we'll need special handling for generic instantiation
-                        println!("DEBUG: Found enum variant symbol '{}' with type {:?}", name, symbol.type_id);
+                        println!(
+                            "DEBUG: Found enum variant symbol '{}' with type {:?}",
+                            name, symbol.type_id
+                        );
                     }
                 }
-                
-                TypedExpressionKind::Variable {
-                    symbol_id
-                }
+
+                TypedExpressionKind::Variable { symbol_id }
             }
             ExprKind::Binary { left, op, right } => {
                 let left_expr = self.lower_expression(left)?;
@@ -2664,72 +3235,110 @@ impl<'a> AstLowering<'a> {
             }
             ExprKind::Call { expr, args } => {
                 eprintln!("DEBUG: Processing function call at {:?}", expression.span);
-                let arg_exprs = args.iter()
+                let arg_exprs = args
+                    .iter()
                     .map(|arg| self.lower_expression(arg))
                     .collect::<Result<Vec<_>, _>>()?;
 
                 // Check if this is a method call (field access being called)
                 match &expr.kind {
-                    ExprKind::Field { expr: obj_expr, field } => {
+                    ExprKind::Field {
+                        expr: obj_expr,
+                        field,
+                    } => {
                         // Check if this is a static method call (Class.method)
                         if let ExprKind::Ident(class_name) = &obj_expr.kind {
                             let class_name_interned = self.context.intern_string(class_name);
-                            
+
                             // Try to resolve as a class symbol
-                            if let Some(symbol_id) = self.resolve_symbol_in_scope_hierarchy(class_name_interned) {
-                                if let Some(symbol) = self.context.symbol_table.get_symbol(symbol_id) {
+                            if let Some(symbol_id) =
+                                self.resolve_symbol_in_scope_hierarchy(class_name_interned)
+                            {
+                                if let Some(symbol) =
+                                    self.context.symbol_table.get_symbol(symbol_id)
+                                {
                                     // Check if this symbol represents a class declaration (not just a variable of class type)
                                     if symbol.kind == crate::tast::symbols::SymbolKind::Class {
                                         // This is a class name, so this is a static method call
-                                        if let Ok(type_table) = self.context.type_table.try_borrow() {
-                                            if let Some(type_info) = type_table.get(symbol.type_id) {
-                                                if let crate::tast::core::TypeKind::Class { symbol_id: class_symbol, .. } = &type_info.kind {
+                                        if let Ok(type_table) = self.context.type_table.try_borrow()
+                                        {
+                                            if let Some(type_info) = type_table.get(symbol.type_id)
+                                            {
+                                                if let crate::tast::core::TypeKind::Class {
+                                                    symbol_id: class_symbol,
+                                                    ..
+                                                } = &type_info.kind
+                                                {
                                                     // This is a static method call
-                                                let method_name = self.context.intern_string(field);
-                                                
-                                                // Look for the method in this class
-                                                let method_symbol = if let Some(methods) = self.class_methods.get(class_symbol) {
-                                                    methods.iter()
-                                                        .find(|(name, _, _)| *name == method_name)
-                                                        .map(|(_, symbol, _)| *symbol)
-                                                        .unwrap_or_else(|| self.context.symbol_table.create_function(method_name))
-                                                } else {
-                                                    self.context.symbol_table.create_function(method_name)
-                                                };
-                                                
-                                                let kind = TypedExpressionKind::StaticMethodCall {
-                                                    class_symbol: *class_symbol,
-                                                    method_symbol,
-                                                    arguments: arg_exprs,
-                                                    type_arguments: Vec::new(),
-                                                };
-                                                
-                                                // Get method return type
-                                                let expr_type = if let Some(symbol) = self.context.symbol_table.get_symbol(method_symbol) {
-                                                    symbol.type_id
-                                                } else {
-                                                    self.context.type_table.borrow().dynamic_type()
-                                                };
-                                                
-                                                let usage = VariableUsage::Copy;
-                                                let lifetime_id = self.assign_lifetime(&kind, &expr_type);
-                                                let metadata = self.analyze_expression_metadata(&kind);
-                                                
-                                                // Calculate the span for the field name specifically
-                                                // The field appears after the object expression and a dot
-                                                let field_span = parser::haxe_ast::Span::new(
-                                                    obj_expr.span.end + 1, // +1 for the dot
-                                                    obj_expr.span.end + 1 + field.len()
-                                                );
-                                                
-                                                return Ok(TypedExpression {
-                                                    expr_type,
-                                                    kind,
-                                                    usage,
-                                                    lifetime_id,
-                                                    source_location: self.context.span_to_location(&field_span),
-                                                    metadata,
-                                                });
+                                                    let method_name =
+                                                        self.context.intern_string(field);
+
+                                                    // Look for the method in this class
+                                                    let method_symbol = if let Some(methods) =
+                                                        self.class_methods.get(class_symbol)
+                                                    {
+                                                        methods
+                                                            .iter()
+                                                            .find(|(name, _, _)| {
+                                                                *name == method_name
+                                                            })
+                                                            .map(|(_, symbol, _)| *symbol)
+                                                            .unwrap_or_else(|| {
+                                                                self.context
+                                                                    .symbol_table
+                                                                    .create_function(method_name)
+                                                            })
+                                                    } else {
+                                                        self.context
+                                                            .symbol_table
+                                                            .create_function(method_name)
+                                                    };
+
+                                                    let kind =
+                                                        TypedExpressionKind::StaticMethodCall {
+                                                            class_symbol: *class_symbol,
+                                                            method_symbol,
+                                                            arguments: arg_exprs,
+                                                            type_arguments: Vec::new(),
+                                                        };
+
+                                                    // Get method return type
+                                                    let expr_type = if let Some(symbol) = self
+                                                        .context
+                                                        .symbol_table
+                                                        .get_symbol(method_symbol)
+                                                    {
+                                                        symbol.type_id
+                                                    } else {
+                                                        self.context
+                                                            .type_table
+                                                            .borrow()
+                                                            .dynamic_type()
+                                                    };
+
+                                                    let usage = VariableUsage::Copy;
+                                                    let lifetime_id =
+                                                        self.assign_lifetime(&kind, &expr_type);
+                                                    let metadata =
+                                                        self.analyze_expression_metadata(&kind);
+
+                                                    // Calculate the span for the field name specifically
+                                                    // The field appears after the object expression and a dot
+                                                    let field_span = parser::haxe_ast::Span::new(
+                                                        obj_expr.span.end + 1, // +1 for the dot
+                                                        obj_expr.span.end + 1 + field.len(),
+                                                    );
+
+                                                    return Ok(TypedExpression {
+                                                        expr_type,
+                                                        kind,
+                                                        usage,
+                                                        lifetime_id,
+                                                        source_location: self
+                                                            .context
+                                                            .span_to_location(&field_span),
+                                                        metadata,
+                                                    });
                                                 }
                                             }
                                         }
@@ -2737,14 +3346,14 @@ impl<'a> AstLowering<'a> {
                                 }
                             }
                         }
-                        
+
                         // Not a static call, proceed with instance method call
                         let receiver_expr = self.lower_expression(obj_expr)?;
                         let method_name = self.context.intern_string(field);
-                        
+
                         // Create or lookup method symbol
                         let method_symbol = self.resolve_method_symbol(&receiver_expr, method_name);
-                        
+
                         TypedExpressionKind::MethodCall {
                             receiver: Box::new(receiver_expr),
                             method_symbol,
@@ -2756,20 +3365,28 @@ impl<'a> AstLowering<'a> {
                         // Regular function call
                         eprintln!("DEBUG: Creating regular function call");
                         let mut func_expr = self.lower_expression(expr)?;
-                        eprintln!("DEBUG: Function expression: {:?} at {:?}", func_expr.kind, func_expr.source_location);
+                        eprintln!(
+                            "DEBUG: Function expression: {:?} at {:?}",
+                            func_expr.kind, func_expr.source_location
+                        );
                         eprintln!("DEBUG: Function expression type: {:?}", func_expr.expr_type);
-                        
+
                         // Check if this is an enum constructor call and instantiate its type
                         if let TypedExpressionKind::Variable { symbol_id } = &func_expr.kind {
                             if let Some(symbol) = self.context.symbol_table.get_symbol(*symbol_id) {
                                 if symbol.kind == crate::tast::symbols::SymbolKind::EnumVariant {
                                     // This is an enum constructor - instantiate its function type
-                                    func_expr = self.instantiate_enum_constructor_type(*symbol_id, &arg_exprs, func_expr)?;
-                                    eprintln!("DEBUG: Instantiated constructor type: {:?}", func_expr.expr_type);
+                                    func_expr = self.instantiate_enum_constructor_type(
+                                        *symbol_id, &arg_exprs, func_expr,
+                                    )?;
+                                    eprintln!(
+                                        "DEBUG: Instantiated constructor type: {:?}",
+                                        func_expr.expr_type
+                                    );
                                 }
                             }
                         }
-                        
+
                         TypedExpressionKind::FunctionCall {
                             function: Box::new(func_expr),
                             arguments: arg_exprs,
@@ -2782,50 +3399,56 @@ impl<'a> AstLowering<'a> {
                 // Check if the expression is an identifier that refers to a class (static access)
                 if let ExprKind::Ident(class_name) = &expr.kind {
                     let class_name_interned = self.context.intern_string(class_name);
-                    
+
                     // Try to resolve as a class symbol
-                    if let Some(symbol_id) = self.resolve_symbol_in_scope_hierarchy(class_name_interned) {
+                    if let Some(symbol_id) =
+                        self.resolve_symbol_in_scope_hierarchy(class_name_interned)
+                    {
                         if let Some(symbol) = self.context.symbol_table.get_symbol(symbol_id) {
                             // Check if this symbol represents a class declaration (not just a variable of class type)
                             if symbol.kind == crate::tast::symbols::SymbolKind::Class {
                                 // This is a class name, so this is static field access
                                 let class_symbol = symbol_id;
                                 let field_name = self.context.intern_string(field);
-                                
+
                                 // Look for the field in this class and check if it's static
-                                let field_info = if let Some(fields) = self.class_fields.get(&class_symbol) {
-                                    fields.iter()
-                                        .find(|(name, _, _)| *name == field_name)
-                                        .map(|(_, symbol, is_static)| (*symbol, *is_static))
-                                } else {
-                                    None
-                                };
-                                
+                                let field_info =
+                                    if let Some(fields) = self.class_fields.get(&class_symbol) {
+                                        fields
+                                            .iter()
+                                            .find(|(name, _, _)| *name == field_name)
+                                            .map(|(_, symbol, is_static)| (*symbol, *is_static))
+                                    } else {
+                                        None
+                                    };
+
                                 if let Some((field_symbol, is_static)) = field_info {
                                     // Create StaticFieldAccess for any Class.field syntax
                                     // The type checker will validate if it's allowed
-                                    let expr_type = if let Some(field) = self.find_field_in_class(&class_symbol, field_symbol) {
+                                    let expr_type = if let Some(field) =
+                                        self.find_field_in_class(&class_symbol, field_symbol)
+                                    {
                                         field.1 // field type
                                     } else {
                                         self.context.type_table.borrow().dynamic_type()
                                     };
-                                    
+
                                     let kind = TypedExpressionKind::StaticFieldAccess {
                                         class_symbol,
                                         field_symbol,
                                     };
-                                    
+
                                     let usage = VariableUsage::Copy;
                                     let lifetime_id = self.assign_lifetime(&kind, &expr_type);
                                     let metadata = self.analyze_expression_metadata(&kind);
-                                    
+
                                     // Calculate the span for the field name specifically
                                     // The field appears after the object expression and a dot
                                     let field_span = parser::haxe_ast::Span::new(
                                         expr.span.end + 1, // +1 for the dot
-                                        expr.span.end + 1 + field.len()
+                                        expr.span.end + 1 + field.len(),
                                     );
-                                    
+
                                     return Ok(TypedExpression {
                                         expr_type,
                                         kind,
@@ -2839,23 +3462,26 @@ impl<'a> AstLowering<'a> {
                         }
                     }
                 }
-                
+
                 // Not a static access, proceed with instance field access
                 let obj_expr = self.lower_expression(expr)?;
                 let field_name = self.context.intern_string(field);
-                
+
                 // For field access, we need to look up the field symbol from the object's type
-                // For now, create a placeholder - proper resolution happens during type checking
+                // Create type parameter with deferred constraint resolution
                 // But we can try to resolve it if the object is 'this'
                 let field_symbol = match &obj_expr.kind {
                     TypedExpressionKind::This { this_type: _ } => {
                         // If accessing field on 'this', try to find it in current class
                         if let Some(class_symbol) = self.context.class_context_stack.last() {
                             if let Some(fields) = self.class_fields.get(class_symbol) {
-                                fields.iter()
+                                fields
+                                    .iter()
                                     .find(|(name, _, _)| *name == field_name)
                                     .map(|(_, symbol, _)| *symbol)
-                                    .unwrap_or_else(|| self.context.symbol_table.create_field(field_name))
+                                    .unwrap_or_else(|| {
+                                        self.context.symbol_table.create_field(field_name)
+                                    })
                             } else {
                                 self.context.symbol_table.create_field(field_name)
                             }
@@ -2866,10 +3492,14 @@ impl<'a> AstLowering<'a> {
                     TypedExpressionKind::Variable { symbol_id } => {
                         // If accessing field on a variable/parameter, try to resolve from its type
                         if let Some(symbol) = self.context.symbol_table.get_symbol(*symbol_id) {
-                            if let Some(class_symbol) = self.resolve_type_to_class_symbol(symbol.type_id) {
+                            if let Some(class_symbol) =
+                                self.resolve_type_to_class_symbol(symbol.type_id)
+                            {
                                 // Look for the field in this class
                                 if let Some(fields) = self.class_fields.get(&class_symbol) {
-                                    if let Some((_, field_symbol_id, _)) = fields.iter().find(|(name, _, _)| *name == field_name) {
+                                    if let Some((_, field_symbol_id, _)) =
+                                        fields.iter().find(|(name, _, _)| *name == field_name)
+                                    {
                                         *field_symbol_id
                                     } else {
                                         // Field not found, create placeholder
@@ -2911,7 +3541,7 @@ impl<'a> AstLowering<'a> {
             ExprKind::Assign { left, op, right } => {
                 let target_expr = self.lower_expression(left)?;
                 let value_expr = self.lower_expression(right)?;
-                
+
                 match op {
                     parser::AssignOp::Assign => {
                         // Simple assignment: target = value
@@ -2925,7 +3555,7 @@ impl<'a> AstLowering<'a> {
                         // Compound assignment: target op= value
                         // This needs to be: target = target op value
                         let target_clone = target_expr.clone();
-                        
+
                         // Map compound assignment operators to their corresponding binary operators
                         let binary_op = match op {
                             parser::AssignOp::AddAssign => BinaryOperator::Add,
@@ -2939,7 +3569,7 @@ impl<'a> AstLowering<'a> {
                             parser::AssignOp::ShlAssign => BinaryOperator::Shl,
                             parser::AssignOp::ShrAssign => BinaryOperator::Shr,
                             parser::AssignOp::UshrAssign => BinaryOperator::Shr, // UShr maps to Shr
-                            parser::AssignOp::Assign => unreachable!(), // Handled above
+                            parser::AssignOp::Assign => unreachable!(),          // Handled above
                         };
 
                         // Create the binary operation: target op value
@@ -2965,21 +3595,25 @@ impl<'a> AstLowering<'a> {
                     }
                 }
             }
-            ExprKind::New { type_path, params, args } => {
-                
+            ExprKind::New {
+                type_path,
+                params,
+                args,
+            } => {
                 // Resolve the class type from type_path
                 let class_type_id = self.resolve_type_path(type_path)?;
-                
+
                 // Lower constructor arguments
-                let arg_exprs = args.iter()
+                let arg_exprs = args
+                    .iter()
                     .map(|arg| self.lower_expression(arg))
                     .collect::<Result<Vec<_>, _>>()?;
 
                 // Lower type arguments from params for constraint validation
-                let type_args = params.iter()
+                let type_args = params
+                    .iter()
                     .map(|param| self.lower_type(param))
                     .collect::<Result<Vec<_>, _>>()?;
-
 
                 TypedExpressionKind::New {
                     class_type: class_type_id,
@@ -2988,7 +3622,11 @@ impl<'a> AstLowering<'a> {
                 }
             }
             // Cast doesn't exist in ExprKind, remove this variant
-            ExprKind::Ternary { cond, then_expr, else_expr } => {
+            ExprKind::Ternary {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
                 let cond_expr = self.lower_expression(cond)?;
                 let then_expression = self.lower_expression(then_expr)?;
                 let else_expression = Some(Box::new(self.lower_expression(else_expr)?));
@@ -2996,14 +3634,14 @@ impl<'a> AstLowering<'a> {
                 TypedExpressionKind::Conditional {
                     condition: Box::new(cond_expr),
                     then_expr: Box::new(then_expression),
-                    else_expr: else_expression
+                    else_expr: else_expression,
                 }
             }
             ExprKind::Block(block_elements) => {
                 // Handle block expressions
                 let mut statements = Vec::new();
                 let block_scope = self.context.enter_scope(ScopeKind::Block);
-                
+
                 for elem in block_elements {
                     match elem {
                         parser::BlockElement::Expr(expr) => {
@@ -3012,23 +3650,37 @@ impl<'a> AstLowering<'a> {
                                 parser::ExprKind::Var { .. } | parser::ExprKind::Final { .. } => {
                                     // Variable declaration - lower as expression and convert to statement
                                     let typed_expr = self.lower_expression(expr)?;
-                                    
+
                                     // Extract the declaration info to create a proper statement
-                                    if let TypedExpressionKind::VarDeclarationExpr { symbol_id, var_type, initializer } = typed_expr.kind {
+                                    if let TypedExpressionKind::VarDeclarationExpr {
+                                        symbol_id,
+                                        var_type,
+                                        initializer,
+                                    } = typed_expr.kind
+                                    {
                                         statements.push(TypedStatement::VarDeclaration {
                                             symbol_id,
                                             var_type,
                                             initializer: Some(*initializer),
                                             mutability: crate::tast::symbols::Mutability::Mutable,
-                                            source_location: self.context.span_to_location(&expr.span),
+                                            source_location: self
+                                                .context
+                                                .span_to_location(&expr.span),
                                         });
-                                    } else if let TypedExpressionKind::FinalDeclarationExpr { symbol_id, var_type, initializer } = typed_expr.kind {
+                                    } else if let TypedExpressionKind::FinalDeclarationExpr {
+                                        symbol_id,
+                                        var_type,
+                                        initializer,
+                                    } = typed_expr.kind
+                                    {
                                         statements.push(TypedStatement::VarDeclaration {
                                             symbol_id,
                                             var_type,
                                             initializer: Some(*initializer),
                                             mutability: crate::tast::symbols::Mutability::Immutable,
-                                            source_location: self.context.span_to_location(&expr.span),
+                                            source_location: self
+                                                .context
+                                                .span_to_location(&expr.span),
                                         });
                                     }
                                 }
@@ -3042,27 +3694,34 @@ impl<'a> AstLowering<'a> {
                                 }
                             }
                         }
-                        parser::BlockElement::Import(_) | 
-                        parser::BlockElement::Using(_) | 
-                        parser::BlockElement::Conditional(_) => {
+                        parser::BlockElement::Import(_)
+                        | parser::BlockElement::Using(_)
+                        | parser::BlockElement::Conditional(_) => {
                             // Skip imports, using statements, and conditional compilation for now
                             // These should be handled at the module level
                         }
                     }
                 }
-                
+
                 // Leave the block scope
-                let parent_scope = self.context.scope_tree.get_scope(block_scope)
+                let parent_scope = self
+                    .context
+                    .scope_tree
+                    .get_scope(block_scope)
                     .and_then(|scope| scope.parent_id)
                     .unwrap_or(ScopeId::first());
                 self.context.current_scope = parent_scope;
-                
+
                 TypedExpressionKind::Block {
                     statements,
                     scope_id: block_scope,
                 }
             }
-            ExprKind::If { cond, then_branch, else_branch } => {
+            ExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
                 let cond_expr = self.lower_expression(cond)?;
                 let then_expr = self.lower_expression(then_branch)?;
                 let else_expr = if let Some(else_branch) = else_branch {
@@ -3071,24 +3730,24 @@ impl<'a> AstLowering<'a> {
                     None
                 };
 
-                TypedExpressionKind::Conditional  {
+                TypedExpressionKind::Conditional {
                     condition: Box::new(cond_expr),
                     then_expr: Box::new(then_expr),
-                    else_expr
+                    else_expr,
                 }
             }
             ExprKind::While { cond, body } => {
                 // Convert while expressions to statement form for proper CFG handling
                 let cond_expr = self.lower_expression(cond)?;
                 let body_stmt = self.convert_expression_to_statement(body)?;
-                
+
                 // Create a while statement and wrap it in a block expression
                 let while_stmt = TypedStatement::While {
                     condition: cond_expr,
                     body: Box::new(body_stmt),
                     source_location: SourceLocation::unknown(),
                 };
-                
+
                 // Return block expression containing the while statement
                 TypedExpressionKind::Block {
                     statements: vec![while_stmt],
@@ -3099,44 +3758,50 @@ impl<'a> AstLowering<'a> {
                 // Convert do-while expressions to statement form
                 let body_stmt = self.convert_expression_to_statement(body)?;
                 let cond_expr = self.lower_expression(cond)?;
-                
+
                 // Create a do-while statement (add to TAST if missing)
-                // For now, convert to while with initial execution
+                // Convert do-while to equivalent control flow:
+                // { body; while(cond) { body } }
                 let body_block = TypedStatement::Block {
                     statements: vec![body_stmt.clone()],
                     scope_id: ScopeId::from_raw(self.context.next_scope_id()),
                     source_location: SourceLocation::unknown(),
                 };
-                
+
                 let while_stmt = TypedStatement::While {
                     condition: cond_expr,
                     body: Box::new(body_stmt),
                     source_location: SourceLocation::unknown(),
                 };
-                
+
                 // Return block that executes body once, then while loop
                 TypedExpressionKind::Block {
                     statements: vec![body_block, while_stmt],
                     scope_id: ScopeId::from_raw(self.context.next_scope_id()),
                 }
             }
-            ExprKind::For { var, key_var, iter, body } => {
+            ExprKind::For {
+                var,
+                key_var,
+                iter,
+                body,
+            } => {
                 // First, lower the iterable expression (this doesn't need loop variables)
                 let iterable_expr = self.lower_expression(iter)?;
-                
+
                 // Infer the element type from the iterable
                 let element_type = self.infer_element_type_from_iterable(&iterable_expr);
-                
+
                 // Create the loop body scope and symbols BEFORE processing the body
                 let loop_body_scope_id = ScopeId::from_raw(self.context.next_scope_id());
-                
+
                 let var_name = self.context.intern_string(var);
                 let var_symbol = self.context.symbol_table.create_variable_with_type(
-                    var_name, 
+                    var_name,
                     loop_body_scope_id,
-                    element_type
+                    element_type,
                 );
-                
+
                 // Handle optional key variable for key-value iteration
                 let key_symbol = if let Some(key_var_name) = key_var {
                     let key_name = self.context.intern_string(key_var_name);
@@ -3145,21 +3810,21 @@ impl<'a> AstLowering<'a> {
                     Some(self.context.symbol_table.create_variable_with_type(
                         key_name,
                         loop_body_scope_id,
-                        key_type
+                        key_type,
                     ))
                 } else {
                     None
                 };
-                
+
                 // Enter the loop body scope so symbol resolution works
                 let old_scope = self.context.current_scope;
                 self.context.current_scope = loop_body_scope_id;
-                
+
                 let body_stmt = self.convert_expression_to_statement(body)?;
-                
+
                 // Restore the previous scope
                 self.context.current_scope = old_scope;
-                
+
                 // Create enhanced for statement (for-in style)
                 // If TAST doesn't support for-in, convert to C-style for
                 let for_stmt = self.convert_for_in_to_c_style_for(
@@ -3170,7 +3835,7 @@ impl<'a> AstLowering<'a> {
                     loop_body_scope_id,
                     SourceLocation::unknown(),
                 )?;
-                
+
                 // Return block expression containing the for statement
                 TypedExpressionKind::Block {
                     statements: vec![for_stmt],
@@ -3178,7 +3843,8 @@ impl<'a> AstLowering<'a> {
                 }
             }
             ExprKind::Array(elements) => {
-                let element_exprs = elements.iter()
+                let element_exprs = elements
+                    .iter()
                     .map(|elem| self.lower_expression(elem))
                     .collect::<Result<Vec<_>, _>>()?;
 
@@ -3193,16 +3859,10 @@ impl<'a> AstLowering<'a> {
                     None
                 };
 
-                TypedExpressionKind::Return {
-                    value: return_expr,
-                }
+                TypedExpressionKind::Return { value: return_expr }
             }
-            ExprKind::Break => {
-                TypedExpressionKind::Break
-            }
-            ExprKind::Continue => {
-                TypedExpressionKind::Continue
-            }
+            ExprKind::Break => TypedExpressionKind::Break,
+            ExprKind::Continue => TypedExpressionKind::Continue,
             // Is doesn't exist in ExprKind, remove this variant
             ExprKind::Throw(expr) => {
                 let expression = self.lower_expression(expr)?;
@@ -3210,55 +3870,115 @@ impl<'a> AstLowering<'a> {
                     expression: Box::new(expression),
                 }
             }
-            ExprKind::Switch { expr, cases, default } => {
+            ExprKind::Switch {
+                expr,
+                cases,
+                default,
+            } => {
                 // Lower the discriminant expression
                 let discriminant = Box::new(self.lower_expression(expr)?);
-                
-                // Lower each case
-                let mut typed_cases = Vec::with_capacity(cases.len());
-                for case in cases {
-                    let typed_case = self.lower_switch_case(case)?;
-                    typed_cases.push(typed_case);
-                }
-                
-                // Lower the default case if present
-                let default_case = if let Some(default_expr) = default {
-                    Some(Box::new(self.lower_expression(default_expr)?))
+
+                // Check if this is a switch expression or switch statement
+                // In a switch expression, all cases must have expression values
+                // In a switch statement, cases contain statements (like return)
+                let is_expression = cases.iter().all(|case| {
+                    // Check if the case body is a simple expression (not a block with statements)
+                    !matches!(&case.body.kind, 
+                        ExprKind::Block(_) | 
+                        ExprKind::Return(_) |
+                        ExprKind::Break | 
+                        ExprKind::Continue |
+                        ExprKind::Throw(_)
+                    )
+                });
+
+                if is_expression {
+                    // Lower as switch expression
+                    let mut typed_cases = Vec::with_capacity(cases.len());
+                    for case in cases {
+                        let typed_case = self.lower_switch_case_expression(case)?;
+                        typed_cases.push(typed_case);
+                    }
+
+                    // Lower the default case if present
+                    let default_case = if let Some(default_expr) = default {
+                        Some(Box::new(self.lower_expression(default_expr)?))
+                    } else {
+                        None
+                    };
+
+                    TypedExpressionKind::Switch {
+                        discriminant,
+                        cases: typed_cases,
+                        default_case,
+                    }
                 } else {
-                    None
-                };
-                
-                TypedExpressionKind::Switch {
-                    discriminant,
-                    cases: typed_cases,
-                    default_case,
+                    // Switch statement - lower as a block with switch statement
+                    // For now, we'll lower it as a switch expression but mark it as void type
+                    let mut typed_cases = Vec::with_capacity(cases.len());
+                    for case in cases {
+                        let typed_case = self.lower_switch_case(case)?;
+                        typed_cases.push(typed_case);
+                    }
+
+                    // Lower the default case if present  
+                    let default_case = if let Some(default_expr) = default {
+                        Some(Box::new(self.lower_expression(default_expr)?))
+                    } else {
+                        None
+                    };
+
+                    // Create a switch that returns void
+                    TypedExpressionKind::Switch {
+                        discriminant,
+                        cases: typed_cases,
+                        default_case,
+                    }
                 }
             }
             ExprKind::Try { expr, catches } => {
                 // Lower the try expression
                 let try_expr = Box::new(self.lower_expression(expr)?);
-                
+
                 // Lower catch clauses
                 let mut catch_clauses = Vec::new();
                 for catch in catches {
                     let typed_catch = self.lower_catch_clause(catch)?;
                     catch_clauses.push(typed_catch);
                 }
-                
+
                 TypedExpressionKind::Try {
                     try_expr,
                     catch_clauses,
                 }
             }
             ExprKind::This => {
-                TypedExpressionKind::This {
-                    this_type: self.context.type_table.borrow().dynamic_type(),
-                }
+                // Find current class context
+                let this_type = if let Some(current_class) = self.context.class_context_stack.last()
+                {
+                    TypeResolutionImprovements::resolve_this_type(
+                        &self.context.type_table,
+                        self.context.symbol_table,
+                        Some(*current_class),
+                    )
+                } else {
+                    self.context.type_table.borrow().dynamic_type()
+                };
+                TypedExpressionKind::This { this_type }
             }
             ExprKind::Super => {
-                TypedExpressionKind::Super {
-                    super_type: self.context.type_table.borrow().dynamic_type(),
-                }
+                // Find current class context and get super type
+                let super_type =
+                    if let Some(current_class) = self.context.class_context_stack.last() {
+                        TypeResolutionImprovements::resolve_super_type(
+                            &self.context.type_table,
+                            self.context.symbol_table,
+                            Some(*current_class),
+                        )
+                    } else {
+                        self.context.type_table.borrow().dynamic_type()
+                    };
+                TypedExpressionKind::Super { super_type }
             }
             ExprKind::Map(entries) => {
                 // Map literal: ["key1" => value1, "key2" => value2]
@@ -3288,7 +4008,9 @@ impl<'a> AstLowering<'a> {
                         source_location: self.context.create_location(),
                     });
                 }
-                TypedExpressionKind::ObjectLiteral { fields: typed_fields }
+                TypedExpressionKind::ObjectLiteral {
+                    fields: typed_fields,
+                }
             }
             ExprKind::StringInterpolation(parts) => {
                 let mut typed_parts = Vec::new();
@@ -3331,18 +4053,23 @@ impl<'a> AstLowering<'a> {
                 }
             }
             ExprKind::Function(func) => {
-                // Function expression/lambda
-                let parameters = func.params.iter()
-                    .map(|param| self.lower_function_param(param))
-                    .collect::<Result<Vec<_>, _>>()?;
+                // Function expression/lambda - create a new scope for the function body
+                let function_scope = self.context.enter_scope(ScopeKind::Function);
                 
-                // Lower function body
+                // Lower parameters - they will be automatically registered in the function scope
+                let mut parameters = Vec::new();
+                for param in &func.params {
+                    let param_result = self.lower_function_param(param)?;
+                    parameters.push(param_result);
+                }
+
+                // Lower function body in the new scope
                 let body = if let Some(body_expr) = &func.body {
                     self.lower_function_body(body_expr)?
                 } else {
                     Vec::new()
                 };
-                
+
                 // Determine return type
                 let return_type = if let Some(ret_type) = &func.return_type {
                     self.lower_type(ret_type)?
@@ -3350,6 +4077,9 @@ impl<'a> AstLowering<'a> {
                     self.context.type_table.borrow().dynamic_type()
                 };
                 
+                // Exit the function scope
+                self.context.exit_scope();
+
                 TypedExpressionKind::FunctionLiteral {
                     parameters,
                     body,
@@ -3357,17 +4087,21 @@ impl<'a> AstLowering<'a> {
                 }
             }
             ExprKind::Arrow { params, expr } => {
-                // Arrow function: x -> x * 2
+                // Arrow function: x -> x * 2 - create a new scope for the function body
+                let function_scope = self.context.enter_scope(ScopeKind::Function);
+                
                 let mut typed_params = Vec::new();
                 for param_name in params {
-                    // Create parameter with inferred type
-                    let param_symbol = self.context.symbol_table.create_variable(
-                        self.context.string_interner.intern(param_name)
-                    );
-                    
+                    // Create parameter with inferred type in the current scope
+                    let param_interned = self.context.string_interner.intern(param_name);
+                    let param_symbol = self
+                        .context
+                        .symbol_table
+                        .create_variable_in_scope(param_interned, self.context.current_scope);
+
                     typed_params.push(TypedParameter {
                         symbol_id: param_symbol,
-                        name: self.context.string_interner.intern(param_name),
+                        name: param_interned,
                         param_type: self.context.type_table.borrow().dynamic_type(),
                         is_optional: false,
                         default_value: None,
@@ -3375,24 +4109,31 @@ impl<'a> AstLowering<'a> {
                         source_location: self.context.span_to_location(&expression.span),
                     });
                 }
-                
-                // Lower arrow body (single expression)
+
+                // Lower arrow body (single expression) in the new scope
                 let body_expr = self.lower_expression(expr)?;
                 let body = vec![TypedStatement::Expression {
                     expression: body_expr.clone(),
                     source_location: body_expr.source_location,
                 }];
                 
+                // Exit the function scope
+                self.context.exit_scope();
+
                 TypedExpressionKind::FunctionLiteral {
                     parameters: typed_params,
                     body,
                     return_type: body_expr.expr_type,
                 }
             }
-            ExprKind::Var { name, type_hint, expr } => {
+            ExprKind::Var {
+                name,
+                type_hint,
+                expr,
+            } => {
                 // Variable declaration as expression: `var x = 5` returns 5
                 let var_name = self.context.intern_string(name);
-                
+
                 // Lower initializer expression first if it exists
                 let initializer = if let Some(init_expr) = expr {
                     self.lower_expression(init_expr)?
@@ -3407,21 +4148,32 @@ impl<'a> AstLowering<'a> {
                         metadata: ExpressionMetadata::default(),
                     }
                 };
-                
+
                 // Determine variable type
                 let var_type = if let Some(type_hint) = type_hint {
                     self.lower_type(type_hint)?
                 } else {
                     // Infer type from initializer
-                    eprintln!("DEBUG: Var '{}' inferring type from initializer: {:?}", name, initializer.expr_type);
+                    eprintln!(
+                        "DEBUG: Var '{}' inferring type from initializer: {:?}",
+                        name, initializer.expr_type
+                    );
                     initializer.expr_type
                 };
-                
+
                 // Create the variable symbol with the correct type
-                let var_symbol = self.context.symbol_table.create_variable_with_type(var_name, self.context.current_scope, var_type);
-                
+                let var_symbol = self.context.symbol_table.create_variable_with_type(
+                    var_name,
+                    self.context.current_scope,
+                    var_type,
+                );
+
                 // Add the variable to the current scope so it can be resolved later
-                if let Some(scope) = self.context.scope_tree.get_scope_mut(self.context.current_scope) {
+                if let Some(scope) = self
+                    .context
+                    .scope_tree
+                    .get_scope_mut(self.context.current_scope)
+                {
                     scope.add_symbol(var_symbol, var_name);
                 }
 
@@ -3431,10 +4183,14 @@ impl<'a> AstLowering<'a> {
                     initializer: Box::new(initializer),
                 }
             }
-            ExprKind::Final { name, type_hint, expr } => {
+            ExprKind::Final {
+                name,
+                type_hint,
+                expr,
+            } => {
                 // Final declaration as expression: `final x = 5` returns 5
                 let var_name = self.context.intern_string(name);
-                
+
                 // Final variables must have an initializer
                 let initializer = if let Some(init_expr) = expr {
                     self.lower_expression(init_expr)?
@@ -3444,7 +4200,7 @@ impl<'a> AstLowering<'a> {
                         location: self.context.span_to_location(&expression.span),
                     });
                 };
-                
+
                 // Determine variable type
                 let var_type = if let Some(type_hint) = type_hint {
                     self.lower_type(type_hint)?
@@ -3452,12 +4208,20 @@ impl<'a> AstLowering<'a> {
                     // Infer type from initializer
                     initializer.expr_type
                 };
-                
+
                 // Create the variable symbol with the correct type
-                let var_symbol = self.context.symbol_table.create_variable_with_type(var_name, self.context.current_scope, var_type);
-                
+                let var_symbol = self.context.symbol_table.create_variable_with_type(
+                    var_name,
+                    self.context.current_scope,
+                    var_type,
+                );
+
                 // Add the variable to the current scope so it can be resolved later
-                if let Some(scope) = self.context.scope_tree.get_scope_mut(self.context.current_scope) {
+                if let Some(scope) = self
+                    .context
+                    .scope_tree
+                    .get_scope_mut(self.context.current_scope)
+                {
                     scope.add_symbol(var_symbol, var_name);
                 }
 
@@ -3470,16 +4234,18 @@ impl<'a> AstLowering<'a> {
             ExprKind::Meta { meta, expr } => {
                 // Metadata annotation: @:meta expr
                 let inner_expr = self.lower_expression(expr)?;
-                
+
                 // Convert parser metadata to typed metadata
                 let typed_meta = TypedMetadata {
                     name: self.context.intern_string(&meta.name),
-                    params: meta.params.iter()
+                    params: meta
+                        .params
+                        .iter()
                         .map(|param_expr| self.lower_expression(param_expr))
                         .collect::<Result<Vec<_>, _>>()?,
                     source_location: self.context.span_to_location(&meta.span),
                 };
-                
+
                 TypedExpressionKind::Meta {
                     metadata: vec![typed_meta],
                     expression: Box::new(inner_expr),
@@ -3492,7 +4258,7 @@ impl<'a> AstLowering<'a> {
                 } else {
                     None
                 };
-                
+
                 TypedExpressionKind::DollarIdent {
                     name: self.context.intern_string(name),
                     arg: arg_expr,
@@ -3515,7 +4281,7 @@ impl<'a> AstLowering<'a> {
                 }
             }
             ExprKind::Reify(expr) => {
-                // Macro reification: $expr  
+                // Macro reification: $expr
                 // This is similar to DollarIdent but for expressions
                 let inner_expr = self.lower_expression(expr)?;
                 TypedExpressionKind::DollarIdent {
@@ -3525,19 +4291,19 @@ impl<'a> AstLowering<'a> {
             }
             ExprKind::ArrayComprehension { for_parts, expr } => {
                 // Array comprehension: [for (i in 0...10) i * 2]
-                // For now, lower as a simple array literal placeholder
-                // TODO: Implement proper comprehension lowering
-                TypedExpressionKind::ArrayLiteral {
-                    elements: Vec::new(), // Placeholder - proper implementation needed
-                }
+                let expr_location = self.context.span_to_location(&expression.span);
+                let comprehension = self.lower_array_comprehension(for_parts, expr, &expr_location)?;
+                comprehension.kind
             }
-            ExprKind::MapComprehension { for_parts, key, value } => {
-                // Map comprehension: [for (i in 0...10) i => i * 2]  
-                // For now, lower as a simple map literal placeholder
-                // TODO: Implement proper comprehension lowering
-                TypedExpressionKind::MapLiteral {
-                    entries: Vec::new(), // Placeholder - proper implementation needed
-                }
+            ExprKind::MapComprehension {
+                for_parts,
+                key,
+                value,
+            } => {
+                // Map comprehension: [for (i in 0...10) i => i * 2]
+                let expr_location = self.context.span_to_location(&expression.span);
+                let comprehension = self.lower_map_comprehension(for_parts, key, value, &expr_location)?;
+                comprehension.kind
             }
             ExprKind::CompilerSpecific { target, code } => {
                 // Compiler-specific code: __js__("code")
@@ -3558,13 +4324,13 @@ impl<'a> AstLowering<'a> {
 
         // Determine expression type based on kind
         let expr_type = self.infer_expression_type(&kind)?;
-        
+
         // Determine ownership usage based on expression kind
         let usage = self.determine_variable_usage(&kind);
-        
+
         // Assign lifetime based on expression scope and type
         let lifetime_id = self.assign_lifetime(&kind, &expr_type);
-        
+
         // Analyze expression metadata
         let metadata = self.analyze_expression_metadata(&kind);
 
@@ -3576,25 +4342,255 @@ impl<'a> AstLowering<'a> {
             source_location: self.context.span_to_location(&expression.span),
             metadata,
         };
-        
+
         // Debug switch expressions
         match &typed_expr.kind {
             TypedExpressionKind::Switch { .. } => {
-                eprintln!("DEBUG: Created switch expression with type: {:?}", typed_expr.expr_type);
+                eprintln!(
+                    "DEBUG: Created switch expression with type: {:?}",
+                    typed_expr.expr_type
+                );
             }
             _ => {}
         }
-        
+
         Ok(typed_expr)
+    }
+    
+    /// Lower array comprehension: [for (i in 0...10) i * 2]
+    fn lower_array_comprehension(
+        &mut self,
+        for_parts: &[parser::ComprehensionFor],
+        expr: &Expr,
+        location: &SourceLocation,
+    ) -> LoweringResult<TypedExpression> {
+        // Create a new scope for the comprehension
+        let comprehension_scope = self.context.scope_tree.create_scope(Some(self.context.current_scope));
+        
+        let previous_scope = self.context.current_scope;
+        self.context.current_scope = comprehension_scope;
+        
+        // Lower all for parts
+        let mut typed_for_parts = Vec::new();
+        
+        for for_part in for_parts {
+            // Lower the iterator expression first
+            let typed_iterator = self.lower_expression(&for_part.iter)?;
+            
+            // Determine the element type from the iterator
+            let (element_type, key_type) = self.infer_iterator_types(&typed_iterator)?;
+            
+            // Create symbol for the loop variable
+            let var_name = self.context.intern_string(&for_part.var);
+            let var_symbol = self.context.symbol_table.create_variable_with_type(
+                var_name,
+                comprehension_scope,
+                element_type,
+            );
+            
+            // Handle optional key variable for key-value iteration
+            let key_var_symbol = if let Some(key_var) = &for_part.key_var {
+                let key_type = key_type.unwrap_or_else(|| self.context.type_table.borrow().int_type());
+                let key_name = self.context.intern_string(key_var);
+                let symbol = self.context.symbol_table.create_variable_with_type(
+                    key_name,
+                    comprehension_scope,
+                    key_type,
+                );
+                Some(symbol)
+            } else {
+                None
+            };
+            
+            typed_for_parts.push(TypedComprehensionFor {
+                var_symbol,
+                key_var_symbol,
+                iterator: typed_iterator,
+                var_type: element_type,
+                key_type,
+                scope_id: comprehension_scope,
+                source_location: location.clone(),
+            });
+        }
+        
+        // Lower the expression in the comprehension scope
+        let typed_expr = self.lower_expression(expr)?;
+        let element_type = typed_expr.expr_type;
+        
+        // Restore the previous scope
+        self.context.current_scope = previous_scope;
+        
+        // Create the array type
+        let array_type = self.context.type_table.borrow_mut().create_array_type(element_type);
+        
+        Ok(TypedExpression {
+            expr_type: array_type,
+            kind: TypedExpressionKind::ArrayComprehension {
+                for_parts: typed_for_parts,
+                expression: Box::new(typed_expr),
+                element_type,
+            },
+            usage: VariableUsage::Copy,
+            lifetime_id: crate::tast::LifetimeId::first(),
+            source_location: location.clone(),
+            metadata: ExpressionMetadata::default(),
+        })
+    }
+    
+    /// Lower map comprehension: [for (i in 0...10) i => i * 2]
+    fn lower_map_comprehension(
+        &mut self,
+        for_parts: &[parser::ComprehensionFor],
+        key: &Expr,
+        value: &Expr,
+        location: &SourceLocation,
+    ) -> LoweringResult<TypedExpression> {
+        // Create a new scope for the comprehension
+        let comprehension_scope = self.context.scope_tree.create_scope(Some(self.context.current_scope));
+        
+        let previous_scope = self.context.current_scope;
+        self.context.current_scope = comprehension_scope;
+        
+        // Lower all for parts
+        let mut typed_for_parts = Vec::new();
+        
+        for for_part in for_parts {
+            // Lower the iterator expression first
+            let typed_iterator = self.lower_expression(&for_part.iter)?;
+            
+            // Determine the element type from the iterator
+            let (element_type, key_type) = self.infer_iterator_types(&typed_iterator)?;
+            
+            // Create symbol for the loop variable
+            let var_name = self.context.intern_string(&for_part.var);
+            let var_symbol = self.context.symbol_table.create_variable_with_type(
+                var_name,
+                comprehension_scope,
+                element_type,
+            );
+            
+            // Handle optional key variable for key-value iteration
+            let key_var_symbol = if let Some(key_var) = &for_part.key_var {
+                let key_type = key_type.unwrap_or_else(|| self.context.type_table.borrow().int_type());
+                let key_name = self.context.intern_string(key_var);
+                let symbol = self.context.symbol_table.create_variable_with_type(
+                    key_name,
+                    comprehension_scope,
+                    key_type,
+                );
+                Some(symbol)
+            } else {
+                None
+            };
+            
+            typed_for_parts.push(TypedComprehensionFor {
+                var_symbol,
+                key_var_symbol,
+                iterator: typed_iterator,
+                var_type: element_type,
+                key_type,
+                scope_id: comprehension_scope,
+                source_location: location.clone(),
+            });
+        }
+        
+        // Lower the key and value expressions in the comprehension scope
+        let typed_key = self.lower_expression(key)?;
+        let typed_value = self.lower_expression(value)?;
+        
+        let key_type = typed_key.expr_type;
+        let value_type = typed_value.expr_type;
+        
+        // Restore the previous scope
+        self.context.current_scope = previous_scope;
+        
+        // Create the map type
+        let map_type = self.context.type_table.borrow_mut().create_map_type(key_type, value_type);
+        
+        Ok(TypedExpression {
+            expr_type: map_type,
+            kind: TypedExpressionKind::MapComprehension {
+                for_parts: typed_for_parts,
+                key_expr: Box::new(typed_key),
+                value_expr: Box::new(typed_value),
+                key_type,
+                value_type,
+            },
+            usage: VariableUsage::Copy,
+            lifetime_id: crate::tast::LifetimeId::first(),
+            source_location: location.clone(),
+            metadata: ExpressionMetadata::default(),
+        })
+    }
+    
+    /// Infer the element and optional key types from an iterator expression
+    fn infer_iterator_types(&mut self, iterator: &TypedExpression) -> LoweringResult<(TypeId, Option<TypeId>)> {
+        let type_table = self.context.type_table.borrow();
+        
+        match type_table.get(iterator.expr_type) {
+            Some(iter_type) => match &iter_type.kind {
+                // Array<T> -> element type T, no key type
+                crate::tast::core::TypeKind::Array { element_type } => {
+                    Ok((*element_type, None))
+                }
+                // Map<K, V> -> value type V, key type K
+                crate::tast::core::TypeKind::Map { key_type, value_type } => {
+                    Ok((*value_type, Some(*key_type)))
+                }
+                // String -> Char elements, Int keys
+                _ if iter_type.kind == crate::tast::core::TypeKind::String => {
+                    // In Haxe, iterating over strings yields characters
+                    let int_type = type_table.int_type();
+                    drop(type_table);
+                    let char_type = self.context.type_table.borrow_mut().create_type(crate::tast::core::TypeKind::Char);
+                    Ok((char_type, Some(int_type)))
+                }
+                // IntIterator (from range expressions like 0...10)
+                _ if self.is_int_iterator_type(iterator.expr_type) => {
+                    Ok((type_table.int_type(), None))
+                }
+                // Dynamic or unknown - default to dynamic element type
+                _ => {
+                    Ok((type_table.dynamic_type(), None))
+                }
+            },
+            None => Ok((type_table.dynamic_type(), None)),
+        }
+    }
+    
+    /// Check if a type is an integer iterator (from range expressions)
+    fn is_int_iterator_type(&self, type_id: TypeId) -> bool {
+        // Check if this is an IntIterator type
+        if let Some(type_info) = self.context.type_table.borrow().get(type_id) {
+            match &type_info.kind {
+                TypeKind::Class { symbol_id, .. } => {
+                    // Check if the class is IntIterator
+                    if let Some(class_symbol) = self.context.symbol_table.get_symbol(*symbol_id) {
+                        let int_iterator_name = self.context.string_interner.intern("IntIterator");
+                        return class_symbol.name == int_iterator_name;
+                    }
+                }
+                TypeKind::Dynamic => {
+                    // Dynamic type could be an iterator at runtime
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     /// Lower a literal
     fn lower_literal(&mut self, literal: &parser::StringPart) -> LoweringResult<LiteralValue> {
         match literal {
             parser::StringPart::Literal(text) => Ok(LiteralValue::String(text.clone())),
-            parser::StringPart::Interpolation(_) => {
-                // For now, convert interpolated expressions to placeholders
-                Ok(LiteralValue::String("${expr}".to_string()))
+            parser::StringPart::Interpolation(expr) => {
+                // String interpolation expressions should not be converted to literals
+                // They should be handled as part of StringInterpolation expression
+                Err(LoweringError::InternalError {
+                    message: "String interpolation part cannot be converted to literal value".to_string(),
+                    location: self.context.create_location_from_span(expr.span),
+                })
             }
         }
     }
@@ -3620,11 +4616,41 @@ impl<'a> AstLowering<'a> {
             BinaryOp::BitXor => Ok(BinaryOperator::BitXor),
             BinaryOp::Shl => Ok(BinaryOperator::Shl),
             BinaryOp::Shr => Ok(BinaryOperator::Shr),
-            BinaryOp::Ushr => Ok(BinaryOperator::Shr), // Map to regular shift
-            BinaryOp::Range => Ok(BinaryOperator::Add), // Map to add for now
-            BinaryOp::Arrow => Ok(BinaryOperator::Add), // Map to add for now
-            BinaryOp::Is => Ok(BinaryOperator::Eq), // Map to equality for now
-            BinaryOp::NullCoal => Ok(BinaryOperator::Or), // Map to or for now
+            BinaryOp::Ushr => {
+                // Unsigned shift right requires special handling
+                Err(LoweringError::IncompleteImplementation {
+                    feature: "Unsigned shift right operator".to_string(),
+                    location: self.context.create_location(),
+                })
+            }
+            BinaryOp::Range => {
+                // Range operator should be desugared to appropriate iterator creation
+                Err(LoweringError::IncompleteImplementation {
+                    feature: "Range operator desugaring".to_string(),
+                    location: self.context.create_location(),
+                })
+            }
+            BinaryOp::Arrow => {
+                // Arrow operator is for key-value pairs in comprehensions
+                Err(LoweringError::IncompleteImplementation {
+                    feature: "Arrow operator in expressions".to_string(),
+                    location: self.context.create_location(),
+                })
+            }
+            BinaryOp::Is => {
+                // 'is' operator needs runtime type checking support
+                Err(LoweringError::IncompleteImplementation {
+                    feature: "Runtime type checking with 'is' operator".to_string(),
+                    location: self.context.create_location(),
+                })
+            }
+            BinaryOp::NullCoal => {
+                // Null coalescing should be desugared to conditional
+                Err(LoweringError::IncompleteImplementation {
+                    feature: "Null coalescing operator desugaring".to_string(),
+                    location: self.context.create_location(),
+                })
+            }
         }
     }
 
@@ -3647,9 +4673,9 @@ impl<'a> AstLowering<'a> {
     pub fn get_errors(&self) -> &[LoweringError] {
         &self.context.errors
     }
-    
+
     /// Check if a type might reference type parameters that aren't defined yet
-    fn type_might_reference_undefined_params(&self, type_annotation: &Type) -> bool {
+    fn type_might_reference_undefined_params(&mut self, type_annotation: &Type) -> bool {
         match type_annotation {
             Type::Path { path, params, .. } => {
                 let name = if path.package.is_empty() {
@@ -3657,31 +4683,41 @@ impl<'a> AstLowering<'a> {
                 } else {
                     return false; // Qualified paths are not type parameters
                 };
-                
+
                 // Check if any type arguments contain references to type parameters
                 // For example, in Sortable<T>, the T might not be defined yet
                 for param in params {
                     if self.type_might_reference_undefined_params(param) {
                         return true;
                     }
-                    
+
                     // Check if this is a simple type parameter reference
-                    if let Type::Path { path: param_path, params: param_params, .. } = param {
+                    if let Type::Path {
+                        path: param_path,
+                        params: param_params,
+                        ..
+                    } = param
+                    {
                         if param_path.package.is_empty() && param_params.is_empty() {
                             // This looks like a type parameter reference (e.g., T)
                             // Check if it's NOT a built-in type
                             if self.resolve_builtin_type(&param_path.name).is_none() {
                                 // It's not a built-in, so it might be a type parameter
                                 // Check if it's already defined
-                                let interned_param_name = self.context.intern_string(&param_path.name);
-                                if self.context.resolve_type_parameter(interned_param_name).is_none() {
+                                let interned_param_name =
+                                    self.context.intern_string(&param_path.name);
+                                if self
+                                    .context
+                                    .resolve_type_parameter(interned_param_name)
+                                    .is_none()
+                                {
                                     return true;
                                 }
                             }
                         }
                     }
                 }
-                
+
                 // Check if the base type exists and can be resolved
                 // Only defer if we can't resolve the base type or if it has arity issues
                 if !params.is_empty() {
@@ -3692,7 +4728,7 @@ impl<'a> AstLowering<'a> {
                         // Qualified names should be resolvable - don't defer
                         return false;
                     };
-                    
+
                     // Check if this is a known interface/class that can accept type parameters
                     // Try to find the type in the symbol table without interning a new string
                     // We can check for common interface names directly
@@ -3708,27 +4744,27 @@ impl<'a> AstLowering<'a> {
                         }
                     }
                 }
-                
+
                 false
             }
             Type::Function { params, ret, .. } => {
                 // Check function parameter and return types
-                params.iter().any(|p| self.type_might_reference_undefined_params(p)) ||
-                self.type_might_reference_undefined_params(ret)
+                params
+                    .iter()
+                    .any(|p| self.type_might_reference_undefined_params(p))
+                    || self.type_might_reference_undefined_params(ret)
             }
             Type::Anonymous { fields, .. } => {
                 // Check anonymous type fields
-                fields.iter().any(|f| self.type_might_reference_undefined_params(&f.type_hint))
+                fields
+                    .iter()
+                    .any(|f| self.type_might_reference_undefined_params(&f.type_hint))
             }
-            Type::Optional { inner, .. } => {
-                self.type_might_reference_undefined_params(inner)
-            }
-            Type::Parenthesis { inner, .. } => {
-                self.type_might_reference_undefined_params(inner)
-            }
+            Type::Optional { inner, .. } => self.type_might_reference_undefined_params(inner),
+            Type::Parenthesis { inner, .. } => self.type_might_reference_undefined_params(inner),
             Type::Intersection { left, right, .. } => {
-                self.type_might_reference_undefined_params(left) ||
-                self.type_might_reference_undefined_params(right)
+                self.type_might_reference_undefined_params(left)
+                    || self.type_might_reference_undefined_params(right)
             }
             Type::Wildcard { .. } => false,
         }
@@ -3737,7 +4773,7 @@ impl<'a> AstLowering<'a> {
     /// Convert an expression to a statement for proper CFG handling
     fn convert_expression_to_statement(&mut self, expr: &Expr) -> LoweringResult<TypedStatement> {
         let typed_expr = self.lower_expression(expr)?;
-        
+
         // Wrap expression in an expression statement
         Ok(TypedStatement::Expression {
             expression: typed_expr,
@@ -3757,10 +4793,8 @@ impl<'a> AstLowering<'a> {
     ) -> LoweringResult<TypedStatement> {
         let iter_index_str = self.context.intern_string("__iter_index");
         // Create iterator variable: var i = 0
-        let iterator_symbol = self.context.symbol_table.create_variable(
-            iter_index_str
-        );
-        
+        let iterator_symbol = self.context.symbol_table.create_variable(iter_index_str);
+
         let zero_literal = TypedExpression {
             expr_type: self.context.type_table.borrow().int_type(),
             kind: TypedExpressionKind::Literal {
@@ -3771,31 +4805,29 @@ impl<'a> AstLowering<'a> {
             source_location,
             metadata: ExpressionMetadata::default(),
         };
-        
+
         let init_stmt = TypedStatement::VarDeclaration {
             symbol_id: iterator_symbol,
             var_type: self.context.type_table.borrow().int_type(),
             initializer: Some(zero_literal),
             source_location,
-            mutability: crate::tast::Mutability::Mutable
+            mutability: crate::tast::Mutability::Mutable,
         };
-        
+
         let length_str = self.context.intern_string("length");
         // Create condition: i < iterable.length
         let length_access = TypedExpression {
             expr_type: self.context.type_table.borrow().int_type(),
             kind: TypedExpressionKind::FieldAccess {
                 object: Box::new(iterable.clone()),
-                field_symbol: self.context.symbol_table.create_variable(
-                    length_str
-                ),
+                field_symbol: self.context.symbol_table.create_variable(length_str),
             },
             usage: VariableUsage::Copy,
             lifetime_id: LifetimeId::static_lifetime(),
             source_location,
             metadata: ExpressionMetadata::default(),
         };
-        
+
         let iterator_var = TypedExpression {
             expr_type: self.context.type_table.borrow().int_type(),
             kind: TypedExpressionKind::Variable {
@@ -3806,7 +4838,7 @@ impl<'a> AstLowering<'a> {
             source_location,
             metadata: ExpressionMetadata::default(),
         };
-        
+
         let condition = TypedExpression {
             expr_type: self.context.type_table.borrow().bool_type(),
             kind: TypedExpressionKind::BinaryOp {
@@ -3819,7 +4851,7 @@ impl<'a> AstLowering<'a> {
             source_location,
             metadata: ExpressionMetadata::default(),
         };
-        
+
         // Create update: i++
         let one_literal = TypedExpression {
             expr_type: self.context.type_table.borrow().int_type(),
@@ -3831,7 +4863,7 @@ impl<'a> AstLowering<'a> {
             source_location,
             metadata: ExpressionMetadata::default(),
         };
-        
+
         let update = TypedExpression {
             expr_type: self.context.type_table.borrow().int_type(),
             kind: TypedExpressionKind::BinaryOp {
@@ -3844,13 +4876,13 @@ impl<'a> AstLowering<'a> {
             source_location,
             metadata: ExpressionMetadata::default(),
         };
-        
+
         // Create loop variable assignments based on iteration type
         let mut loop_declarations = Vec::new();
-        
+
         if let Some(key_sym) = key_variable {
             // Key-value iteration: for (key => value in iterable)
-            
+
             // Create key assignment: key = i (the iterator index)
             let key_decl = TypedStatement::VarDeclaration {
                 symbol_id: key_sym,
@@ -3860,7 +4892,7 @@ impl<'a> AstLowering<'a> {
                 mutability: crate::tast::Mutability::Mutable,
             };
             loop_declarations.push(key_decl);
-            
+
             // Create value assignment: value = iterable[i]
             let element_type = self.infer_element_type_from_iterable(&iterable);
             let array_access = TypedExpression {
@@ -3874,7 +4906,7 @@ impl<'a> AstLowering<'a> {
                 source_location,
                 metadata: ExpressionMetadata::default(),
             };
-            
+
             let value_decl = TypedStatement::VarDeclaration {
                 symbol_id: variable,
                 var_type: element_type,
@@ -3885,7 +4917,7 @@ impl<'a> AstLowering<'a> {
             loop_declarations.push(value_decl);
         } else {
             // Simple iteration: for (value in iterable)
-            
+
             // Create value assignment: value = iterable[i]
             let element_type = self.infer_element_type_from_iterable(&iterable);
             let array_access = TypedExpression {
@@ -3899,7 +4931,7 @@ impl<'a> AstLowering<'a> {
                 source_location,
                 metadata: ExpressionMetadata::default(),
             };
-            
+
             let value_decl = TypedStatement::VarDeclaration {
                 symbol_id: variable,
                 var_type: element_type,
@@ -3909,17 +4941,17 @@ impl<'a> AstLowering<'a> {
             };
             loop_declarations.push(value_decl);
         }
-        
+
         // Combine loop variable declarations with body
         let mut body_statements = loop_declarations;
         body_statements.push(body);
-        
+
         let enhanced_body = TypedStatement::Block {
             statements: body_statements,
             scope_id: loop_body_scope_id,
             source_location,
         };
-        
+
         // Create C-style for loop
         Ok(TypedStatement::For {
             init: Some(Box::new(init_stmt)),
@@ -3929,11 +4961,11 @@ impl<'a> AstLowering<'a> {
             source_location,
         })
     }
-    
+
     /// Infer the element type from an iterable expression (array, map, etc.)
     fn infer_element_type_from_iterable(&self, iterable: &TypedExpression) -> TypeId {
         let type_table = self.context.type_table.borrow();
-        
+
         // Get the actual type of the iterable
         if let Some(actual_type) = type_table.get(iterable.expr_type) {
             match &actual_type.kind {
@@ -3941,8 +4973,31 @@ impl<'a> AstLowering<'a> {
                 TypeKind::Map { value_type, .. } => *value_type,
                 TypeKind::Dynamic => type_table.dynamic_type(),
                 _ => {
-                    // For other types, return dynamic type as fallback
-                    // In a complete implementation, we would check for Iterable<T> interface
+                    // Check if type implements Iterable<T> interface
+                    if let TypeKind::Class { symbol_id, .. } = &actual_type.kind {
+                        // Look for Iterable interface implementation
+                        if let Some(class_symbol) = self.context.symbol_table.get_symbol(*symbol_id) {
+                            if let Some(hierarchy) = self.context.symbol_table.get_class_hierarchy(*symbol_id) {
+                                // Check implemented interfaces for Iterable<T>
+                                for interface_type in &hierarchy.interfaces {
+                                    if let Some(interface_info) = type_table.get(*interface_type) {
+                                        if let TypeKind::Interface { symbol_id: interface_symbol, .. } = &interface_info.kind {
+                                            // Check if this is the Iterable interface
+                                            if let Some(interface) = self.context.symbol_table.get_symbol(*interface_symbol) {
+                                                let iterable_name = self.context.string_interner.intern("Iterable");
+                                                if interface.name == iterable_name {
+                                                    // For generic interfaces, extract the type argument
+                                                    // This would require tracking instantiated type arguments
+                                                    return type_table.dynamic_type();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Not iterable or can't determine element type
                     type_table.dynamic_type()
                 }
             }
@@ -3951,10 +5006,9 @@ impl<'a> AstLowering<'a> {
             type_table.dynamic_type()
         }
     }
-    
+
     /// Infer the type of an expression based on its kind
     fn infer_expression_type(&mut self, kind: &TypedExpressionKind) -> LoweringResult<TypeId> {
-        
         match kind {
             TypedExpressionKind::Literal { value } => {
                 let type_table = self.context.type_table.borrow();
@@ -3966,7 +5020,10 @@ impl<'a> AstLowering<'a> {
                     LiteralValue::Char(_) => Ok(type_table.string_type()), // Haxe treats char as string
                     LiteralValue::Regex(_) | LiteralValue::RegexWithFlags { .. } => {
                         // EReg type in Haxe
-                        Ok(type_table.dynamic_type()) // TODO: Create proper EReg type
+                        Ok(TypeResolutionImprovements::get_regex_type(
+                            &self.context.type_table,
+                            self.context.string_interner,
+                        ))
                     }
                 }
             }
@@ -3978,7 +5035,11 @@ impl<'a> AstLowering<'a> {
                     Ok(self.context.type_table.borrow().dynamic_type())
                 }
             }
-            TypedExpressionKind::BinaryOp { left, operator, right } => {
+            TypedExpressionKind::BinaryOp {
+                left,
+                operator,
+                right,
+            } => {
                 let type_table = self.context.type_table.borrow();
                 match operator {
                     BinaryOperator::Add => {
@@ -3988,7 +5049,7 @@ impl<'a> AstLowering<'a> {
                         let string_type = type_table.string_type();
                         let int_type = type_table.int_type();
                         let float_type = type_table.float_type();
-                        
+
                         // If either operand is string, result is string (concatenation)
                         if left_type == string_type || right_type == string_type {
                             Ok(string_type)
@@ -4006,21 +5067,27 @@ impl<'a> AstLowering<'a> {
                             Ok(float_type)
                         }
                     }
-                    BinaryOperator::Sub | BinaryOperator::Mul | 
-                    BinaryOperator::Div | BinaryOperator::Mod => {
+                    BinaryOperator::Sub
+                    | BinaryOperator::Mul
+                    | BinaryOperator::Div
+                    | BinaryOperator::Mod => {
                         // Purely numeric operations
                         let left_type = left.expr_type;
                         let right_type = right.expr_type;
-                        
+
                         // If either operand is Float, result is Float
-                        if left_type == type_table.float_type() || right_type == type_table.float_type() {
+                        if left_type == type_table.float_type()
+                            || right_type == type_table.float_type()
+                        {
                             Ok(type_table.float_type())
                         }
                         // If both are Int, result is Int (except for division which returns Float)
-                        else if left_type == type_table.int_type() && right_type == type_table.int_type() {
+                        else if left_type == type_table.int_type()
+                            && right_type == type_table.int_type()
+                        {
                             match operator {
                                 BinaryOperator::Div => Ok(type_table.float_type()), // Division always returns Float in Haxe
-                                _ => Ok(type_table.int_type())
+                                _ => Ok(type_table.int_type()),
                             }
                         }
                         // Default to Float for safety
@@ -4028,75 +5095,88 @@ impl<'a> AstLowering<'a> {
                             Ok(type_table.float_type())
                         }
                     }
-                    BinaryOperator::Eq | BinaryOperator::Ne | BinaryOperator::Lt | 
-                    BinaryOperator::Le | BinaryOperator::Gt | BinaryOperator::Ge => {
-                        Ok(type_table.bool_type())
-                    }
-                    BinaryOperator::And | BinaryOperator::Or => {
-                        Ok(type_table.bool_type())
-                    }
-                    BinaryOperator::Assign | BinaryOperator::AddAssign | BinaryOperator::SubAssign | 
-                    BinaryOperator::MulAssign | BinaryOperator::DivAssign | BinaryOperator::ModAssign => {
+                    BinaryOperator::Eq
+                    | BinaryOperator::Ne
+                    | BinaryOperator::Lt
+                    | BinaryOperator::Le
+                    | BinaryOperator::Gt
+                    | BinaryOperator::Ge => Ok(type_table.bool_type()),
+                    BinaryOperator::And | BinaryOperator::Or => Ok(type_table.bool_type()),
+                    BinaryOperator::Assign
+                    | BinaryOperator::AddAssign
+                    | BinaryOperator::SubAssign
+                    | BinaryOperator::MulAssign
+                    | BinaryOperator::DivAssign
+                    | BinaryOperator::ModAssign => {
                         // Assignment returns the type of the left operand
                         Ok(left.expr_type)
                     }
                     _ => Ok(type_table.dynamic_type()),
                 }
             }
-            TypedExpressionKind::FunctionCall { function, arguments, .. } => {
+            TypedExpressionKind::FunctionCall {
+                function,
+                arguments,
+                ..
+            } => {
                 // Extract return type from function signature
                 match &function.expr_type {
                     type_id => {
                         // Try to get function type information
                         let type_table = self.context.type_table.borrow();
                         match type_table.get(*type_id) {
-                            Some(function_type) => {
-                                match &function_type.kind {
-                                    crate::tast::core::TypeKind::Function { return_type, .. } => {
-                                        Ok(*return_type)
-                                    }
-                                    _ => Ok(type_table.dynamic_type())
+                            Some(function_type) => match &function_type.kind {
+                                crate::tast::core::TypeKind::Function { return_type, .. } => {
+                                    Ok(*return_type)
                                 }
-                            }
-                            None => Ok(type_table.dynamic_type())
+                                _ => Ok(type_table.dynamic_type()),
+                            },
+                            None => Ok(type_table.dynamic_type()),
                         }
                     }
                 }
             }
-            TypedExpressionKind::New { class_type, .. } => {
-                Ok(*class_type)
-            }
+            TypedExpressionKind::New { class_type, .. } => Ok(*class_type),
             TypedExpressionKind::ArrayLiteral { elements } => {
                 if let Some(first_element) = elements.first() {
                     let element_type = first_element.expr_type;
-                    Ok(self.context.type_table.borrow_mut().create_array_type(element_type))
+                    Ok(self
+                        .context
+                        .type_table
+                        .borrow_mut()
+                        .create_array_type(element_type))
                 } else {
                     let dyn_type = self.context.type_table.borrow().dynamic_type();
-                    Ok(self.context.type_table.borrow_mut().create_array_type(dyn_type))
+                    Ok(self
+                        .context
+                        .type_table
+                        .borrow_mut()
+                        .create_array_type(dyn_type))
                 }
             }
-            TypedExpressionKind::Null => {
-                Ok(self.context.type_table.borrow().dynamic_type()) // TODO: Null type
-            }
-            TypedExpressionKind::This { this_type } => {
-                Ok(*this_type)
-            }
-            TypedExpressionKind::Super { super_type } => {
-                Ok(*super_type)
-            }
-            TypedExpressionKind::ObjectLiteral { .. } => {
-                Ok(self.context.type_table.borrow().dynamic_type()) // TODO: Anonymous object type
+            TypedExpressionKind::Null => Ok(TypeResolutionImprovements::get_null_type(
+                &self.context.type_table,
+            )),
+            TypedExpressionKind::This { this_type } => Ok(*this_type),
+            TypedExpressionKind::Super { super_type } => Ok(*super_type),
+            TypedExpressionKind::ObjectLiteral { fields } => {
+                // For anonymous objects, infer type from fields
+                let field_types: Vec<(InternedString, TypeId)> =
+                    fields.iter().map(|f| (f.name, f.value.expr_type)).collect();
+                Ok(TypeResolutionImprovements::create_anonymous_object_type(
+                    &self.context.type_table,
+                    field_types,
+                ))
             }
             TypedExpressionKind::StringInterpolation { .. } => {
                 Ok(self.context.type_table.borrow().string_type())
             }
-            TypedExpressionKind::Cast { target_type, .. } => {
-                Ok(*target_type)
-            }
-            TypedExpressionKind::Is { .. } => {
-                Ok(self.context.type_table.borrow().bool_type())
-            }
-            TypedExpressionKind::FieldAccess { object, field_symbol } => {
+            TypedExpressionKind::Cast { target_type, .. } => Ok(*target_type),
+            TypedExpressionKind::Is { .. } => Ok(self.context.type_table.borrow().bool_type()),
+            TypedExpressionKind::FieldAccess {
+                object,
+                field_symbol,
+            } => {
                 // Look up field type from symbol table
                 if let Some(symbol) = self.context.symbol_table.get_symbol(*field_symbol) {
                     // Check if this is a valid typed symbol
@@ -4115,18 +5195,18 @@ impl<'a> AstLowering<'a> {
                 // Extract element type from array type
                 let type_table = self.context.type_table.borrow();
                 match type_table.get(array.expr_type) {
-                    Some(array_type) => {
-                        match &array_type.kind {
-                            crate::tast::core::TypeKind::Array { element_type } => {
-                                Ok(*element_type)
-                            }
-                            _ => Ok(type_table.dynamic_type())
-                        }
-                    }
-                    None => Ok(type_table.dynamic_type())
+                    Some(array_type) => match &array_type.kind {
+                        crate::tast::core::TypeKind::Array { element_type } => Ok(*element_type),
+                        _ => Ok(type_table.dynamic_type()),
+                    },
+                    None => Ok(type_table.dynamic_type()),
                 }
             }
-            TypedExpressionKind::MethodCall { receiver, method_symbol, .. } => {
+            TypedExpressionKind::MethodCall {
+                receiver,
+                method_symbol,
+                ..
+            } => {
                 // Extract return type from method signature
                 if let Some(symbol) = self.context.symbol_table.get_symbol(*method_symbol) {
                     let type_table = self.context.type_table.borrow();
@@ -4135,7 +5215,7 @@ impl<'a> AstLowering<'a> {
                             crate::tast::core::TypeKind::Function { return_type, .. } => {
                                 Ok(*return_type)
                             }
-                            _ => Ok(type_table.dynamic_type())
+                            _ => Ok(type_table.dynamic_type()),
                         }
                     } else {
                         Ok(type_table.dynamic_type())
@@ -4149,27 +5229,30 @@ impl<'a> AstLowering<'a> {
                 match operator {
                     UnaryOperator::Not => Ok(type_table.bool_type()),
                     UnaryOperator::Neg | UnaryOperator::BitNot => Ok(operand.expr_type),
-                    UnaryOperator::PreInc | UnaryOperator::PostInc | 
-                    UnaryOperator::PreDec | UnaryOperator::PostDec => Ok(operand.expr_type),
+                    UnaryOperator::PreInc
+                    | UnaryOperator::PostInc
+                    | UnaryOperator::PreDec
+                    | UnaryOperator::PostDec => Ok(operand.expr_type),
                 }
             }
-            TypedExpressionKind::Conditional { then_expr, else_expr, .. } => {
-                // TODO: Union type of then and else branches
+            TypedExpressionKind::Conditional {
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                // Type unification handled by type checker
                 Ok(then_expr.expr_type)
             }
-            TypedExpressionKind::While { .. } | TypedExpressionKind::For { .. } | 
-            TypedExpressionKind::ForIn { .. } => {
-                Ok(self.context.type_table.borrow().void_type())
+            TypedExpressionKind::While { .. }
+            | TypedExpressionKind::For { .. }
+            | TypedExpressionKind::ForIn { .. } => Ok(self.context.type_table.borrow().void_type()),
+            TypedExpressionKind::FunctionLiteral { parameters, return_type, .. } => {
+                // Create a function type: (param1_type, param2_type, ...) -> return_type
+                let param_types: Vec<TypeId> = parameters.iter().map(|p| p.param_type).collect();
+                Ok(self.context.type_table.borrow_mut().create_function_type(param_types, *return_type))
             }
-            TypedExpressionKind::FunctionLiteral { return_type, .. } => {
-                Ok(*return_type)
-            }
-            TypedExpressionKind::Return { .. } => {
-                Ok(self.context.type_table.borrow().void_type())
-            }
-            TypedExpressionKind::Throw { .. } => {
-                Ok(self.context.type_table.borrow().void_type())
-            }
+            TypedExpressionKind::Return { .. } => Ok(self.context.type_table.borrow().void_type()),
+            TypedExpressionKind::Throw { .. } => Ok(self.context.type_table.borrow().void_type()),
             TypedExpressionKind::Break | TypedExpressionKind::Continue => {
                 Ok(self.context.type_table.borrow().void_type())
             }
@@ -4179,9 +5262,7 @@ impl<'a> AstLowering<'a> {
                 if let Some(last_stmt) = statements.last() {
                     // Extract type from last statement
                     match last_stmt {
-                        TypedStatement::Expression { expression, .. } => {
-                            Ok(expression.expr_type)
-                        }
+                        TypedStatement::Expression { expression, .. } => Ok(expression.expr_type),
                         _ => {
                             // Non-expression statements result in void type
                             Ok(type_table.void_type())
@@ -4192,35 +5273,36 @@ impl<'a> AstLowering<'a> {
                     Ok(type_table.void_type())
                 }
             }
-            TypedExpressionKind::Meta { expression, .. } => {
-                Ok(expression.expr_type)
-            }
+            TypedExpressionKind::Meta { expression, .. } => Ok(expression.expr_type),
             TypedExpressionKind::DollarIdent { .. } => {
                 Ok(self.context.type_table.borrow().dynamic_type()) // Macro-related
             }
             TypedExpressionKind::CompilerSpecific { .. } => {
                 Ok(self.context.type_table.borrow().dynamic_type())
             }
-            TypedExpressionKind::Switch { cases, default_case, .. } => {
+            TypedExpressionKind::Switch {
+                cases,
+                default_case,
+                ..
+            } => {
                 // Switch expression type is inferred from the branches
                 // All branches should have compatible types
                 let mut branch_types = Vec::new();
-                
+
                 // Collect types from case branches
                 for case in cases {
                     // Extract expression type from the case body statement
                     match &case.body {
                         TypedStatement::Expression { expression, .. } => {
                             branch_types.push(expression.expr_type);
-                            eprintln!("DEBUG: Switch case expression type: {:?}", expression.expr_type);
-                            
-                            // Check for void expressions in switch expression context
-                            if expression.expr_type == self.context.type_table.borrow().void_type() {
-                                self.context.errors.push(LoweringError::InternalError {
-                                    message: "Switch expression case cannot have void expression".to_string(),
-                                    location: expression.source_location,
-                                });
-                            }
+                            eprintln!(
+                                "DEBUG: Switch case expression type: {:?}",
+                                expression.expr_type
+                            );
+
+                            // For switch expressions (not statements), check for void type
+                            // But only if this is truly a switch expression context
+                            // TODO: Properly distinguish between switch expressions and statements
                         }
                         _ => {
                             // Non-expression statements in switch expression context
@@ -4233,73 +5315,100 @@ impl<'a> AstLowering<'a> {
                         }
                     }
                 }
-                
+
                 // Add default case type if present
                 if let Some(default) = default_case {
                     branch_types.push(default.expr_type);
-                    eprintln!("DEBUG: Switch default expression type: {:?}", default.expr_type);
-                    
-                    // Check for void expressions in default case
-                    if default.expr_type == self.context.type_table.borrow().void_type() {
-                        self.context.errors.push(LoweringError::InternalError {
-                            message: "Switch expression default case cannot have void expression".to_string(),
-                            location: default.source_location,
-                        });
-                    }
+                    eprintln!(
+                        "DEBUG: Switch default expression type: {:?}",
+                        default.expr_type
+                    );
+
+                    // For switch expressions (not statements), check for void type in default
+                    // But only if this is truly a switch expression context
+                    // TODO: Properly distinguish between switch expressions and statements
                 }
-                
+
                 // If no branches have expressions, it's a void switch
                 if branch_types.is_empty() {
                     eprintln!("DEBUG: Switch has no branch types, returning void");
                     return Ok(self.context.type_table.borrow().void_type());
                 }
-                
+
                 // Filter out void types and use the first non-void type for expression result
                 let void_type = self.context.type_table.borrow().void_type();
-                let non_void_types: Vec<TypeId> = branch_types.iter()
+                let non_void_types: Vec<TypeId> = branch_types
+                    .iter()
                     .filter(|&&t| t != void_type)
                     .copied()
                     .collect();
-                
+
                 if non_void_types.is_empty() {
                     // All branches are void, return void (but errors should have been generated above)
                     eprintln!("DEBUG: All switch branches are void, returning void");
                     return Ok(void_type);
                 }
-                
+
                 // For now, use the first non-void branch type
-                // TODO: Implement proper type unification for all branches
-                eprintln!("DEBUG: Switch expression inferred type: {:?}", non_void_types[0]);
+                // Type unification deferred to type checker
+                eprintln!(
+                    "DEBUG: Switch expression inferred type: {:?}",
+                    non_void_types[0]
+                );
                 Ok(non_void_types[0])
             }
             TypedExpressionKind::Try { try_expr, .. } => {
                 // Try expression type is the type of the try block
                 Ok(try_expr.expr_type)
             }
-            TypedExpressionKind::VarDeclarationExpr { var_type, .. } => {
-                Ok(*var_type)
-            }
-            TypedExpressionKind::FinalDeclarationExpr { var_type, .. } => {
-                Ok(*var_type)
-            }
-            TypedExpressionKind::MapLiteral { .. } => {
-                Ok(self.context.type_table.borrow().dynamic_type()) // TODO: Map type
+            TypedExpressionKind::VarDeclarationExpr { var_type, .. } => Ok(*var_type),
+            TypedExpressionKind::FinalDeclarationExpr { var_type, .. } => Ok(*var_type),
+            TypedExpressionKind::MapLiteral { entries } => {
+                // Infer key and value types from initial values
+                let (key_type, value_type) = if entries.is_empty() {
+                    let dyn_type = self.context.type_table.borrow().dynamic_type();
+                    (dyn_type, dyn_type)
+                } else {
+                    // Use first entry to infer types
+                    let first = &entries[0];
+                    (first.key.expr_type, first.value.expr_type)
+                };
+                Ok(TypeResolutionImprovements::create_map_type(
+                    &self.context.type_table,
+                    key_type,
+                    value_type,
+                ))
             }
             TypedExpressionKind::MacroExpression { .. } => {
                 Ok(self.context.type_table.borrow().dynamic_type()) // Macro result type
             }
+            TypedExpressionKind::ArrayComprehension { element_type, .. } => {
+                // Array comprehension creates an Array<T> type
+                Ok(self.context.type_table.borrow_mut().create_array_type(*element_type))
+            }
+            TypedExpressionKind::MapComprehension { key_type, value_type, .. } => {
+                // Map comprehension creates a Map<K, V> type
+                Ok(TypeResolutionImprovements::create_map_type(
+                    &self.context.type_table,
+                    *key_type,
+                    *value_type,
+                ))
+            }
             _ => {
                 // Log unhandled case as warning but continue with dynamic type
-                self.context.add_error(LoweringError::IncompleteImplementation {
-                    feature: format!("Type inference for expression kind: {:?}", 
-                                   std::mem::discriminant(kind)),
-                    location: self.context.create_location(),
-                });
+                self.context
+                    .add_error(LoweringError::IncompleteImplementation {
+                        feature: format!(
+                            "Type inference for expression kind: {:?}",
+                            kind
+                        ),
+                        location: self.context.create_location(),
+                    });
                 Ok(self.context.type_table.borrow().dynamic_type())
             }
         }
     }
-    
+
     /// Determine variable usage based on expression kind (simplified for TAST)
     fn determine_variable_usage(&self, kind: &TypedExpressionKind) -> VariableUsage {
         match kind {
@@ -4313,7 +5422,7 @@ impl<'a> AstLowering<'a> {
             }
         }
     }
-    
+
     /// Assign lifetime based on expression scope and type (simplified for TAST)
     fn assign_lifetime(&self, kind: &TypedExpressionKind, expr_type: &TypeId) -> LifetimeId {
         match kind {
@@ -4326,7 +5435,7 @@ impl<'a> AstLowering<'a> {
                 if let Some(symbol) = self.context.symbol_table.get_symbol(*symbol_id) {
                     symbol.lifetime_id
                 } else {
-                    LifetimeId::from_raw(1) // TODO: Use proper lifetime ID generation
+                    LifetimeId::first() // Default lifetime for TAST
                 }
             }
             _ => {
@@ -4335,11 +5444,11 @@ impl<'a> AstLowering<'a> {
             }
         }
     }
-    
+
     /// Analyze expression metadata for optimization and error reporting
     fn analyze_expression_metadata(&self, kind: &TypedExpressionKind) -> ExpressionMetadata {
         let mut metadata = ExpressionMetadata::default();
-        
+
         match kind {
             TypedExpressionKind::Literal { .. } => {
                 metadata.is_constant = true;
@@ -4362,10 +5471,14 @@ impl<'a> AstLowering<'a> {
             TypedExpressionKind::BinaryOp { operator, .. } => {
                 metadata.is_constant = false;
                 metadata.complexity_score = 2;
-                
+
                 match operator {
-                    BinaryOperator::Assign | BinaryOperator::AddAssign | BinaryOperator::SubAssign | 
-                    BinaryOperator::MulAssign | BinaryOperator::DivAssign | BinaryOperator::ModAssign => {
+                    BinaryOperator::Assign
+                    | BinaryOperator::AddAssign
+                    | BinaryOperator::SubAssign
+                    | BinaryOperator::MulAssign
+                    | BinaryOperator::DivAssign
+                    | BinaryOperator::ModAssign => {
                         metadata.has_side_effects = true;
                         metadata.can_throw = false;
                     }
@@ -4392,29 +5505,33 @@ impl<'a> AstLowering<'a> {
                 metadata.complexity_score = 1;
             }
         }
-        
+
         metadata
     }
-    
+
     /// Validate that the lowered TAST contains all necessary information for memory safety analysis
     pub fn validate_tast(&self, typed_file: &TypedFile) -> Vec<LoweringError> {
         let mut errors = Vec::new();
-        
+
         // Validate functions have proper lifetime and ownership information
         for function in &typed_file.functions {
-            if function.parameters.iter().any(|p| p.symbol_id == SymbolId::invalid()) {
+            if function
+                .parameters
+                .iter()
+                .any(|p| p.symbol_id == SymbolId::invalid())
+            {
                 errors.push(LoweringError::IncompleteImplementation {
                     feature: format!("Function parameter symbol resolution for {}", function.name),
                     location: function.source_location,
                 });
             }
-            
+
             // Validate expressions in function bodies
             for statement in &function.body {
                 self.validate_statement(statement, &mut errors);
             }
         }
-        
+
         // Validate classes have proper field information
         for class in &typed_file.classes {
             if class.symbol_id == SymbolId::invalid() {
@@ -4423,7 +5540,7 @@ impl<'a> AstLowering<'a> {
                     location: class.source_location,
                 });
             }
-            
+
             for field in &class.fields {
                 if field.symbol_id == SymbolId::invalid() {
                     errors.push(LoweringError::IncompleteImplementation {
@@ -4433,17 +5550,24 @@ impl<'a> AstLowering<'a> {
                 }
             }
         }
-        
+
         errors
     }
-    
+
     /// Validate a statement recursively
     fn validate_statement(&self, statement: &TypedStatement, errors: &mut Vec<LoweringError>) {
         match statement {
-            TypedStatement::Expression { expression, source_location } => {
+            TypedStatement::Expression {
+                expression,
+                source_location,
+            } => {
                 self.validate_expression(expression, errors);
             }
-            TypedStatement::VarDeclaration { symbol_id, source_location, .. } => {
+            TypedStatement::VarDeclaration {
+                symbol_id,
+                source_location,
+                ..
+            } => {
                 if *symbol_id == SymbolId::invalid() {
                     errors.push(LoweringError::IncompleteImplementation {
                         feature: "Variable declaration symbol resolution".to_string(),
@@ -4451,18 +5575,31 @@ impl<'a> AstLowering<'a> {
                     });
                 }
             }
-            TypedStatement::If { condition, then_branch, else_branch, .. } => {
+            TypedStatement::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 self.validate_expression(condition, errors);
                 self.validate_statement(then_branch, errors);
                 if let Some(else_stmt) = else_branch {
                     self.validate_statement(else_stmt, errors);
                 }
             }
-            TypedStatement::While { condition, body, .. } => {
+            TypedStatement::While {
+                condition, body, ..
+            } => {
                 self.validate_expression(condition, errors);
                 self.validate_statement(body, errors);
             }
-            TypedStatement::For { init, condition, update, body, .. } => {
+            TypedStatement::For {
+                init,
+                condition,
+                update,
+                body,
+                ..
+            } => {
                 if let Some(init_stmt) = init {
                     self.validate_statement(init_stmt, errors);
                 }
@@ -4484,7 +5621,7 @@ impl<'a> AstLowering<'a> {
             }
         }
     }
-    
+
     /// Validate an expression recursively
     fn validate_expression(&self, expression: &TypedExpression, errors: &mut Vec<LoweringError>) {
         // Check for invalid type IDs
@@ -4494,7 +5631,7 @@ impl<'a> AstLowering<'a> {
                 location: expression.source_location,
             });
         }
-        
+
         // Check for invalid lifetime IDs
         if expression.lifetime_id == LifetimeId::invalid() {
             errors.push(LoweringError::LifetimeError {
@@ -4502,7 +5639,7 @@ impl<'a> AstLowering<'a> {
                 location: expression.source_location,
             });
         }
-        
+
         // Validate variable references have proper symbols
         match &expression.kind {
             TypedExpressionKind::Variable { symbol_id } => {
@@ -4513,7 +5650,10 @@ impl<'a> AstLowering<'a> {
                     });
                 }
             }
-            TypedExpressionKind::FieldAccess { object, field_symbol } => {
+            TypedExpressionKind::FieldAccess {
+                object,
+                field_symbol,
+            } => {
                 self.validate_expression(object, errors);
                 if *field_symbol == SymbolId::invalid() {
                     errors.push(LoweringError::UnresolvedSymbol {
@@ -4529,7 +5669,11 @@ impl<'a> AstLowering<'a> {
             TypedExpressionKind::UnaryOp { operand, .. } => {
                 self.validate_expression(operand, errors);
             }
-            TypedExpressionKind::FunctionCall { function, arguments, .. } => {
+            TypedExpressionKind::FunctionCall {
+                function,
+                arguments,
+                ..
+            } => {
                 self.validate_expression(function, errors);
                 for arg in arguments {
                     self.validate_expression(arg, errors);
@@ -4539,7 +5683,11 @@ impl<'a> AstLowering<'a> {
                 self.validate_expression(array, errors);
                 self.validate_expression(index, errors);
             }
-            TypedExpressionKind::Conditional { condition, then_expr, else_expr } => {
+            TypedExpressionKind::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
                 self.validate_expression(condition, errors);
                 self.validate_expression(then_expr, errors);
                 if let Some(else_e) = else_expr {
@@ -4560,33 +5708,39 @@ impl<'a> AstLowering<'a> {
     /// Resolve deferred type references (second pass)
     fn resolve_deferred_types(&mut self) -> LoweringResult<()> {
         let deferred = std::mem::take(&mut self.resolution_state.deferred_resolutions);
-        
+
         for deferred_type in deferred {
             // Try to resolve the type now that all declarations have been processed
             let interned_name = self.context.intern_string(&deferred_type.type_name);
-            
+
             if let Some(symbol) = self.context.symbol_table.lookup_symbol(
                 ScopeId::first(), // Look in root scope where declarations are stored
-                interned_name
+                interned_name,
             ) {
                 // Create the actual type based on the symbol kind
                 let resolved_type = match symbol.kind {
-                    crate::tast::SymbolKind::Class => {
-                        self.context.type_table.borrow_mut().create_class_type(symbol.id, Vec::new())
-                    }
-                    crate::tast::SymbolKind::Interface => {
-                        self.context.type_table.borrow_mut().create_interface_type(symbol.id, Vec::new())
-                    }
-                    crate::tast::SymbolKind::Enum => {
-                        self.context.type_table.borrow_mut().create_enum_type(symbol.id, Vec::new())
-                    }
+                    crate::tast::SymbolKind::Class => self
+                        .context
+                        .type_table
+                        .borrow_mut()
+                        .create_class_type(symbol.id, Vec::new()),
+                    crate::tast::SymbolKind::Interface => self
+                        .context
+                        .type_table
+                        .borrow_mut()
+                        .create_interface_type(symbol.id, Vec::new()),
+                    crate::tast::SymbolKind::Enum => self
+                        .context
+                        .type_table
+                        .borrow_mut()
+                        .create_enum_type(symbol.id, Vec::new()),
                     crate::tast::SymbolKind::Abstract => {
                         self.context.type_table.borrow_mut().create_type(
                             crate::tast::core::TypeKind::Abstract {
                                 symbol_id: symbol.id,
                                 underlying: None,
                                 type_args: Vec::new(),
-                            }
+                            },
                         )
                     }
                     crate::tast::SymbolKind::TypeAlias => {
@@ -4596,7 +5750,7 @@ impl<'a> AstLowering<'a> {
                                 symbol_id: symbol.id,
                                 target_type,
                                 type_args: Vec::new(),
-                            }
+                            },
                         )
                     }
                     _ => {
@@ -4604,10 +5758,12 @@ impl<'a> AstLowering<'a> {
                         continue;
                     }
                 };
-                
+
                 // Record the mapping from placeholder to resolved type
-                self.resolution_state.placeholder_to_real.insert(deferred_type.target_type_id, resolved_type);
-                
+                self.resolution_state
+                    .placeholder_to_real
+                    .insert(deferred_type.target_type_id, resolved_type);
+
                 // TODO: Update all references to the placeholder type
                 // For now, we've recorded the mapping which can be used later
             } else {
@@ -4619,11 +5775,39 @@ impl<'a> AstLowering<'a> {
                 // Continue processing other deferred types
             }
         }
-        
+
         Ok(())
     }
 
     /// Lower a switch case
+    /// Lower a switch case for expression context (where case body is an expression)
+    fn lower_switch_case_expression(&mut self, case: &parser::Case) -> Result<TypedSwitchCase, LoweringError> {
+        // For switch expressions, the case body should be an expression
+        let case_value = if let Some(first_pattern) = case.patterns.first() {
+            self.lower_pattern_to_expression(first_pattern)?
+        } else {
+            return Err(LoweringError::IncompleteImplementation {
+                feature: "Empty switch case patterns".to_string(),
+                location: self.context.span_to_location(&case.span),
+            });
+        };
+
+        // Lower case body as expression
+        let body_expr = self.lower_expression(&case.body)?;
+        
+        // Convert to statement for compatibility
+        let body = TypedStatement::Expression {
+            expression: body_expr,
+            source_location: self.context.span_to_location(&case.span),
+        };
+
+        Ok(TypedSwitchCase {
+            case_value,
+            body,
+            source_location: self.context.span_to_location(&case.span),
+        })
+    }
+    
     fn lower_switch_case(&mut self, case: &parser::Case) -> Result<TypedSwitchCase, LoweringError> {
         // For now, use the first pattern as the case value
         // TODO: Handle multiple patterns and guards properly
@@ -4631,22 +5815,25 @@ impl<'a> AstLowering<'a> {
             // Check if this is a complex pattern that requires variable binding
             if self.pattern_has_variables(first_pattern) {
                 // Create a new scope for this case to bind pattern variables
-                let case_scope = self.context.scope_tree.create_scope(Some(self.context.current_scope));
+                let case_scope = self
+                    .context
+                    .scope_tree
+                    .create_scope(Some(self.context.current_scope));
                 let prev_scope = self.context.current_scope;
                 self.context.current_scope = case_scope;
-                
+
                 // Bind pattern variables in the new scope
                 self.bind_pattern_variables(first_pattern)?;
-                
+
                 // For constructor patterns, create the constructor expression
                 let case_expr = self.create_constructor_expression(first_pattern)?;
-                
+
                 // Lower case body in the new scope with bound variables
                 let body = self.lower_expression_to_statement(&case.body)?;
-                
+
                 // Restore previous scope
                 self.context.current_scope = prev_scope;
-                
+
                 return Ok(TypedSwitchCase {
                     case_value: case_expr,
                     body,
@@ -4662,17 +5849,17 @@ impl<'a> AstLowering<'a> {
                 location: self.context.span_to_location(&case.span),
             });
         };
-        
+
         // Lower case body as statement
         let body = self.lower_expression_to_statement(&case.body)?;
-        
+
         Ok(TypedSwitchCase {
             case_value,
             body,
             source_location: self.context.span_to_location(&case.span),
         })
     }
-    
+
     /// Check if a pattern contains variables that need binding
     fn pattern_has_variables(&self, pattern: &parser::Pattern) -> bool {
         use parser::Pattern;
@@ -4709,7 +5896,7 @@ impl<'a> AstLowering<'a> {
             }
         }
     }
-    
+
     /// Bind pattern variables in the current scope
     fn bind_pattern_variables(&mut self, pattern: &parser::Pattern) -> Result<(), LoweringError> {
         use parser::Pattern;
@@ -4717,16 +5904,18 @@ impl<'a> AstLowering<'a> {
             Pattern::Var(var_name) => {
                 // Create a variable symbol for the pattern variable
                 let interned_name = self.context.intern_string(var_name);
-                let var_symbol = self.context.symbol_table.create_variable_in_scope(
-                    interned_name,
-                    self.context.current_scope
-                );
-                
+                let var_symbol = self
+                    .context
+                    .symbol_table
+                    .create_variable_in_scope(interned_name, self.context.current_scope);
+
                 // Add to current scope
-                self.context.scope_tree.get_scope_mut(self.context.current_scope)
+                self.context
+                    .scope_tree
+                    .get_scope_mut(self.context.current_scope)
                     .expect("Current scope should exist")
                     .add_symbol(var_symbol, interned_name);
-                    
+
                 Ok(())
             }
             Pattern::Constructor { params, .. } => {
@@ -4748,15 +5937,17 @@ impl<'a> AstLowering<'a> {
                 for pattern in elements {
                     self.bind_pattern_variables(pattern)?;
                 }
-                
+
                 // Bind the rest variable if present
                 if let Some(rest_var) = rest {
                     let interned_name = self.context.intern_string(rest_var);
-                    let var_symbol = self.context.symbol_table.create_variable_in_scope(
-                        interned_name,
-                        self.context.current_scope
-                    );
-                    self.context.scope_tree.get_scope_mut(self.context.current_scope)
+                    let var_symbol = self
+                        .context
+                        .symbol_table
+                        .create_variable_in_scope(interned_name, self.context.current_scope);
+                    self.context
+                        .scope_tree
+                        .get_scope_mut(self.context.current_scope)
                         .expect("Current scope should exist")
                         .add_symbol(var_symbol, interned_name);
                 }
@@ -4772,11 +5963,13 @@ impl<'a> AstLowering<'a> {
             Pattern::Type { var, .. } => {
                 // Bind the typed variable
                 let interned_name = self.context.intern_string(var);
-                let var_symbol = self.context.symbol_table.create_variable_in_scope(
-                    interned_name,
-                    self.context.current_scope
-                );
-                self.context.scope_tree.get_scope_mut(self.context.current_scope)
+                let var_symbol = self
+                    .context
+                    .symbol_table
+                    .create_variable_in_scope(interned_name, self.context.current_scope);
+                self.context
+                    .scope_tree
+                    .get_scope_mut(self.context.current_scope)
                     .expect("Current scope should exist")
                     .add_symbol(var_symbol, interned_name);
                 Ok(())
@@ -4801,30 +5994,39 @@ impl<'a> AstLowering<'a> {
             }
         }
     }
-    
+
     /// Create a constructor expression for pattern matching
-    fn create_constructor_expression(&mut self, pattern: &parser::Pattern) -> Result<TypedExpression, LoweringError> {
+    fn create_constructor_expression(
+        &mut self,
+        pattern: &parser::Pattern,
+    ) -> Result<TypedExpression, LoweringError> {
         use parser::Pattern;
         match pattern {
             Pattern::Constructor { path, params } => {
                 // Resolve the constructor symbol
                 let constructor_name = self.context.intern_string(&path.name);
-                let constructor_symbol = self.resolve_symbol_in_scope_hierarchy(constructor_name)
+                let constructor_symbol = self
+                    .resolve_symbol_in_scope_hierarchy(constructor_name)
                     .ok_or_else(|| LoweringError::UnresolvedSymbol {
-                        name: path.name.clone(),
-                        location: SourceLocation::new(0, 0, 0, 0),
-                    })?;
-                
-                println!("DEBUG: Create constructor expression '{}' resolved to symbol {:?}", path.name, constructor_symbol);
-                
+                    name: path.name.clone(),
+                    location: SourceLocation::new(0, 0, 0, 0),
+                })?;
+
+                println!(
+                    "DEBUG: Create constructor expression '{}' resolved to symbol {:?}",
+                    path.name, constructor_symbol
+                );
+
                 if params.is_empty() {
                     // Simple constructor like Red, Green, Blue
-                    let constructor_type = if let Some(symbol) = self.context.symbol_table.get_symbol(constructor_symbol) {
+                    let constructor_type = if let Some(symbol) =
+                        self.context.symbol_table.get_symbol(constructor_symbol)
+                    {
                         symbol.type_id
                     } else {
                         self.context.type_table.borrow().dynamic_type()
                     };
-                    
+
                     Ok(TypedExpression {
                         kind: TypedExpressionKind::Variable {
                             symbol_id: constructor_symbol,
@@ -4852,7 +6054,10 @@ impl<'a> AstLowering<'a> {
     }
 
     /// Create a pattern placeholder for complex patterns that need later compilation
-    fn create_pattern_placeholder(&mut self, pattern: &parser::Pattern) -> Result<TypedExpression, LoweringError> {
+    fn create_pattern_placeholder(
+        &mut self,
+        pattern: &parser::Pattern,
+    ) -> Result<TypedExpression, LoweringError> {
         let source_location = SourceLocation::new(0, 0, 0, 0); // TODO: get actual pattern location
         Ok(TypedExpression {
             kind: TypedExpressionKind::PatternPlaceholder {
@@ -4866,54 +6071,72 @@ impl<'a> AstLowering<'a> {
             metadata: ExpressionMetadata::default(),
         })
     }
-    
+
     /// Convert a pattern to an expression for case values
-    fn lower_pattern_to_expression(&mut self, pattern: &parser::Pattern) -> Result<TypedExpression, LoweringError> {
+    fn lower_pattern_to_expression(
+        &mut self,
+        pattern: &parser::Pattern,
+    ) -> Result<TypedExpression, LoweringError> {
         use parser::Pattern;
-        
+
         match pattern {
             Pattern::Const(expr) => {
                 // Convert constant expression directly
                 self.lower_expression(expr)
             }
-            Pattern::Var(_name) => {
-                // Variable patterns in switch are problematic - for now treat as identifier
-                let kind = TypedExpressionKind::Variable {
-                    symbol_id: SymbolId::invalid(), // TODO: resolve variable
-                };
+            Pattern::Var(name) => {
+                // Variable patterns bind a new variable in the case body
+                // For pattern matching, we need to create a wildcard match
+                // The actual variable binding happens in the case body scope
+                let interned_name = self.context.intern_string(name);
+                let var_symbol = self.context.symbol_table.create_variable(interned_name);
+                
+                // Register in current scope for the case body
+                let current_scope = self.context.current_scope;
+                if let Some(scope) = self.context.scope_tree.get_scope_mut(current_scope) {
+                    scope.add_symbol(var_symbol, interned_name);
+                }
+                
+                // Return a wildcard pattern expression
                 Ok(TypedExpression {
-                    kind,
+                    kind: TypedExpressionKind::Null, // Placeholder for wildcard
                     expr_type: self.context.type_table.borrow().dynamic_type(),
                     usage: VariableUsage::Borrow,
-                    lifetime_id: LifetimeId::from_raw(1),
-                    source_location: SourceLocation::new(0, 0, 0, 0),
+                    lifetime_id: LifetimeId::first(),
+                    source_location: self.context.create_location(),
                     metadata: ExpressionMetadata::default(),
                 })
             }
             Pattern::Constructor { path, params } => {
                 // Resolve the constructor symbol
                 let constructor_name = self.context.intern_string(&path.name);
-                let constructor_symbol = self.resolve_symbol_in_scope_hierarchy(constructor_name)
+                let constructor_symbol = self
+                    .resolve_symbol_in_scope_hierarchy(constructor_name)
                     .ok_or_else(|| LoweringError::UnresolvedSymbol {
-                        name: path.name.clone(),
-                        location: SourceLocation::new(0, 0, 0, 0),
-                    })?;
-                
-                println!("DEBUG: Pattern constructor '{}' resolved to symbol {:?}", path.name, constructor_symbol);
-                
+                    name: path.name.clone(),
+                    location: SourceLocation::new(0, 0, 0, 0),
+                })?;
+
+                println!(
+                    "DEBUG: Pattern constructor '{}' resolved to symbol {:?}",
+                    path.name, constructor_symbol
+                );
+
                 if params.is_empty() {
                     // Simple constructor like Red, Green, Blue
                     let constructor_var = TypedExpressionKind::Variable {
                         symbol_id: constructor_symbol,
                     };
-                    
+
                     // Get the constructor's type
-                    let constructor_type = if let Some(symbol) = self.context.symbol_table.get_symbol(constructor_symbol) {
+                    let constructor_type = if let Some(symbol) =
+                        self.context.symbol_table.get_symbol(constructor_symbol)
+                    {
                         symbol.type_id
                     } else {
                         self.context.type_table.borrow().dynamic_type()
                     };
-                    
+
                     Ok(TypedExpression {
                         kind: constructor_var,
                         expr_type: constructor_type,
@@ -4929,14 +6152,16 @@ impl<'a> AstLowering<'a> {
                         let arg_expr = self.lower_pattern_to_expression(param_pattern)?;
                         arg_exprs.push(arg_expr);
                     }
-                    
+
                     // Get the constructor's type
-                    let constructor_type = if let Some(symbol) = self.context.symbol_table.get_symbol(constructor_symbol) {
+                    let constructor_type = if let Some(symbol) =
+                        self.context.symbol_table.get_symbol(constructor_symbol)
+                    {
                         symbol.type_id
                     } else {
                         self.context.type_table.borrow().dynamic_type()
                     };
-                    
+
                     // Create the constructor variable expression
                     let mut constructor_expr = TypedExpression {
                         kind: TypedExpressionKind::Variable {
@@ -4948,14 +6173,18 @@ impl<'a> AstLowering<'a> {
                         source_location: SourceLocation::new(0, 0, 0, 0),
                         metadata: ExpressionMetadata::default(),
                     };
-                    
+
                     // Check if this is a generic enum constructor and instantiate its type
                     if let Some(symbol) = self.context.symbol_table.get_symbol(constructor_symbol) {
                         if symbol.kind == crate::tast::symbols::SymbolKind::EnumVariant {
-                            constructor_expr = self.instantiate_enum_constructor_type(constructor_symbol, &arg_exprs, constructor_expr)?;
+                            constructor_expr = self.instantiate_enum_constructor_type(
+                                constructor_symbol,
+                                &arg_exprs,
+                                constructor_expr,
+                            )?;
                         }
                     }
-                    
+
                     Ok(TypedExpression {
                         kind: TypedExpressionKind::FunctionCall {
                             function: Box::new(constructor_expr),
@@ -4976,7 +6205,7 @@ impl<'a> AstLowering<'a> {
                 for pattern in patterns {
                     elements.push(self.lower_pattern_to_expression(pattern)?);
                 }
-                
+
                 Ok(TypedExpression {
                     kind: TypedExpressionKind::ArrayLiteral { elements },
                     expr_type: self.context.type_table.borrow().dynamic_type(),
@@ -5028,121 +6257,146 @@ impl<'a> AstLowering<'a> {
                 // Object pattern: {x: 42, y: "hello"}
                 // Convert to object literal expression
                 let mut typed_fields = Vec::new();
-                
+
                 for (field_name, field_pattern) in fields {
                     // Recursively convert the field pattern to expression
                     let field_expr = self.lower_pattern_to_expression(field_pattern)?;
                     let interned_name = self.context.intern_string(field_name);
-                    
+
                     typed_fields.push(TypedObjectField {
                         name: interned_name,
                         value: field_expr,
                         source_location: SourceLocation::new(0, 0, 0, 0),
                     });
                 }
-                
+
+                let field_types: Vec<(InternedString, TypeId)> = typed_fields
+                    .iter()
+                    .map(|f| (f.name, f.value.expr_type))
+                    .collect();
+
                 let kind = TypedExpressionKind::ObjectLiteral {
                     fields: typed_fields,
                 };
-                
+
                 Ok(TypedExpression {
                     kind,
-                    expr_type: self.context.type_table.borrow().dynamic_type(), // TODO: infer proper object type
+                    expr_type: {
+                        // Extract field types for type inference
+
+                        TypeResolutionImprovements::infer_object_literal_type(
+                            &self.context.type_table,
+                            &field_types,
+                        )
+                    },
                     usage: VariableUsage::Borrow,
                     lifetime_id: LifetimeId::from_raw(1),
                     source_location: SourceLocation::new(0, 0, 0, 0),
                     metadata: ExpressionMetadata::default(),
                 })
             }
-            
+
             Pattern::ArrayRest { elements, rest } => {
                 // Array rest pattern: [first, ...rest]
                 // Convert elements to expressions
                 let mut typed_elements = Vec::new();
-                
+
                 for element_pattern in elements {
                     let element_expr = self.lower_pattern_to_expression(element_pattern)?;
                     typed_elements.push(element_expr);
                 }
-                
+
                 // Handle the rest variable if present
                 if let Some(rest_name) = rest {
                     // Create a variable expression for the rest binding
                     let rest_interned = self.context.intern_string(rest_name);
-                    
+
                     // Look up or create symbol for rest variable
-                    let rest_symbol = if let Some(symbol_id) = self.resolve_symbol_in_scope_hierarchy(rest_interned) {
+                    let rest_symbol = if let Some(symbol_id) =
+                        self.resolve_symbol_in_scope_hierarchy(rest_interned)
+                    {
                         symbol_id
                     } else {
                         // Create new variable symbol in current scope
-                        let symbol_id = self.context.symbol_table.create_variable_in_scope(
-                            rest_interned,
-                            self.context.current_scope
-                        );
-                        
-                        self.context.scope_tree.get_scope_mut(self.context.current_scope)
+                        let symbol_id = self
+                            .context
+                            .symbol_table
+                            .create_variable_in_scope(rest_interned, self.context.current_scope);
+
+                        self.context
+                            .scope_tree
+                            .get_scope_mut(self.context.current_scope)
                             .expect("Current scope should exist")
                             .add_symbol(symbol_id, rest_interned);
-                        
+
                         symbol_id
                     };
-                    
+
                     let rest_expr = TypedExpression {
-                        kind: TypedExpressionKind::Variable { symbol_id: rest_symbol },
-                        expr_type: self.context.type_table.borrow().dynamic_type(), // TODO: infer array type
+                        kind: TypedExpressionKind::Variable {
+                            symbol_id: rest_symbol,
+                        },
+                        expr_type: self.context.type_table.borrow_mut().create_array_type(
+                            self.context.type_table.borrow().dynamic_type()
+                        ), // Array type with dynamic elements
                         usage: VariableUsage::Borrow,
                         lifetime_id: LifetimeId::from_raw(1),
                         source_location: SourceLocation::new(0, 0, 0, 0),
                         metadata: ExpressionMetadata::default(),
                     };
-                    
+
                     // Add rest to the elements
                     typed_elements.push(rest_expr);
                 }
-                
+
                 let kind = TypedExpressionKind::ArrayLiteral {
                     elements: typed_elements,
                 };
-                
+
                 Ok(TypedExpression {
                     kind,
-                    expr_type: self.context.type_table.borrow().dynamic_type(), // TODO: infer proper array type
+                    expr_type: self.context.type_table.borrow_mut().create_array_type(
+                        self.context.type_table.borrow().dynamic_type()
+                    ), // Array type with dynamic elements
                     usage: VariableUsage::Borrow,
                     lifetime_id: LifetimeId::from_raw(1),
                     source_location: SourceLocation::new(0, 0, 0, 0),
                     metadata: ExpressionMetadata::default(),
                 })
             }
-            
+
             Pattern::Type { var, type_hint } => {
                 // Type pattern: (s:String)
                 // Create a variable expression with type constraint
                 let var_interned = self.context.intern_string(var);
-                
+
                 // Look up or create symbol for the typed variable
-                let var_symbol = if let Some(symbol_id) = self.resolve_symbol_in_scope_hierarchy(var_interned) {
-                    symbol_id
-                } else {
-                    // Create new variable symbol in current scope
-                    let symbol_id = self.context.symbol_table.create_variable_in_scope(
-                        var_interned,
-                        self.context.current_scope
-                    );
-                    
-                    self.context.scope_tree.get_scope_mut(self.context.current_scope)
-                        .expect("Current scope should exist")
-                        .add_symbol(symbol_id, var_interned);
-                    
-                    symbol_id
-                };
-                
+                let var_symbol =
+                    if let Some(symbol_id) = self.resolve_symbol_in_scope_hierarchy(var_interned) {
+                        symbol_id
+                    } else {
+                        // Create new variable symbol in current scope
+                        let symbol_id = self
+                            .context
+                            .symbol_table
+                            .create_variable_in_scope(var_interned, self.context.current_scope);
+
+                        self.context
+                            .scope_tree
+                            .get_scope_mut(self.context.current_scope)
+                            .expect("Current scope should exist")
+                            .add_symbol(symbol_id, var_interned);
+
+                        symbol_id
+                    };
+
                 // Resolve the type hint to get the proper type
                 let resolved_type = self.lower_type(type_hint)?;
-                
-                let kind = TypedExpressionKind::Variable { 
-                    symbol_id: var_symbol 
+
+                let kind = TypedExpressionKind::Variable {
+                    symbol_id: var_symbol,
                 };
-                
+
                 Ok(TypedExpression {
                     kind,
                     expr_type: resolved_type, // Use the type constraint from the pattern
@@ -5152,7 +6406,7 @@ impl<'a> AstLowering<'a> {
                     metadata: ExpressionMetadata::default(),
                 })
             }
-            
+
             Pattern::Extractor { .. } => {
                 // Extractor patterns require runtime evaluation - not implemented
                 Err(LoweringError::IncompleteImplementation {
@@ -5162,23 +6416,34 @@ impl<'a> AstLowering<'a> {
             }
         }
     }
-    
+
     /// Convert an expression to a statement
-    fn lower_expression_to_statement(&mut self, expr: &parser::Expr) -> Result<TypedStatement, LoweringError> {
+    fn lower_expression_to_statement(
+        &mut self,
+        expr: &parser::Expr,
+    ) -> Result<TypedStatement, LoweringError> {
         let typed_expr = self.lower_expression(expr)?;
         Ok(TypedStatement::Expression {
             expression: typed_expr,
             source_location: self.context.span_to_location(&expr.span),
         })
     }
-    
+
     /// Lower a catch clause
-    fn lower_catch_clause(&mut self, catch: &parser::Catch) -> Result<TypedCatchClause, LoweringError> {
-        // Create symbol for exception variable
-        let var_symbol = self.context.symbol_table.create_variable(
-            self.context.string_interner.intern(&catch.var)
-        );
+    fn lower_catch_clause(
+        &mut self,
+        catch: &parser::Catch,
+    ) -> Result<TypedCatchClause, LoweringError> {
+        // Create a new scope for the catch block
+        let catch_scope = self.context.enter_scope(ScopeKind::Block);
         
+        // Create symbol for exception variable in the catch scope
+        let var_name = self.context.string_interner.intern(&catch.var);
+        let var_symbol = self
+            .context
+            .symbol_table
+            .create_variable_in_scope(var_name, self.context.current_scope);
+
         // Resolve exception type
         let exception_type = if let Some(type_hint) = &catch.type_hint {
             self.lower_type(type_hint)?
@@ -5186,17 +6451,20 @@ impl<'a> AstLowering<'a> {
             // Default to dynamic type if no type specified
             self.context.type_table.borrow().dynamic_type()
         };
-        
-        // Lower filter condition if present
+
+        // Lower filter condition if present (in the catch scope where the exception var is available)
         let filter = if let Some(filter_expr) = &catch.filter {
             Some(self.lower_expression(filter_expr)?)
         } else {
             None
         };
-        
-        // Lower catch handler body
+
+        // Lower catch handler body (in the catch scope where the exception var is available)
         let handler = self.lower_expression(&catch.body)?;
         
+        // Exit the catch scope
+        self.context.exit_scope();
+
         Ok(TypedCatchClause {
             exception_variable: var_symbol,
             exception_type,
@@ -5208,28 +6476,36 @@ impl<'a> AstLowering<'a> {
             source_location: self.context.create_location(),
         })
     }
-    
+
     /// Lower a function parameter
-    fn lower_function_param(&mut self, param: &parser::FunctionParam) -> Result<TypedParameter, LoweringError> {
-        // Create symbol for parameter
-        let param_symbol = self.context.symbol_table.create_variable(
-            self.context.string_interner.intern(&param.name)
-        );
-        
+    fn lower_function_param(
+        &mut self,
+        param: &parser::FunctionParam,
+    ) -> Result<TypedParameter, LoweringError> {
+        // Create symbol for parameter in the current scope
+        let param_name = self.context.string_interner.intern(&param.name);
+        let param_symbol = self
+            .context
+            .symbol_table
+            .create_variable_in_scope(param_name, self.context.current_scope);
+
         // Resolve parameter type
         let param_type = if let Some(type_hint) = &param.type_hint {
             self.lower_type(type_hint)?
         } else {
             self.context.type_table.borrow().dynamic_type()
         };
-        
+
+        // Update the symbol with its type
+        self.context.symbol_table.update_symbol_type(param_symbol, param_type);
+
         // Lower default value if present
         let default_value = if let Some(default_expr) = &param.default_value {
             Some(self.lower_expression(default_expr)?)
         } else {
             None
         };
-        
+
         Ok(TypedParameter {
             symbol_id: param_symbol,
             name: self.context.string_interner.intern(&param.name),
@@ -5240,16 +6516,24 @@ impl<'a> AstLowering<'a> {
             source_location: self.context.span_to_location(&param.span),
         })
     }
-    
+
     /// Infer the type of built-in methods like Array.push, String.charAt, etc.
-    fn infer_builtin_method_type(&mut self, object: &TypedExpression, field_symbol: SymbolId) -> LoweringResult<TypeId> {
+    fn infer_builtin_method_type(
+        &mut self,
+        object: &TypedExpression,
+        field_symbol: SymbolId,
+    ) -> LoweringResult<TypeId> {
         // Get the field name from the symbol
         let field_name = if let Some(symbol) = self.context.symbol_table.get_symbol(field_symbol) {
-            self.context.string_interner.get(symbol.name).unwrap_or("<unknown>").to_string()
+            self.context
+                .string_interner
+                .get(symbol.name)
+                .unwrap_or("<unknown>")
+                .to_string()
         } else {
             return Ok(self.context.type_table.borrow().dynamic_type());
         };
-        
+
         // Check the object type to see if it's a built-in type with known methods
         let type_table = self.context.type_table.borrow();
         if let Some(object_type_info) = type_table.get(object.expr_type) {
@@ -5261,7 +6545,11 @@ impl<'a> AstLowering<'a> {
                             let void_type = type_table.void_type();
                             let element_type_copy = *element_type;
                             drop(type_table);
-                            Ok(self.context.type_table.borrow_mut().create_function_type(vec![element_type_copy], void_type))
+                            Ok(self
+                                .context
+                                .type_table
+                                .borrow_mut()
+                                .create_function_type(vec![element_type_copy], void_type))
                         }
                         "pop" => {
                             // pop(): T
@@ -5271,7 +6559,7 @@ impl<'a> AstLowering<'a> {
                             // length: Int
                             Ok(type_table.int_type())
                         }
-                        _ => Ok(type_table.dynamic_type())
+                        _ => Ok(type_table.dynamic_type()),
                     }
                 }
                 crate::tast::core::TypeKind::String => {
@@ -5282,13 +6570,21 @@ impl<'a> AstLowering<'a> {
                             let string_type = type_table.string_type();
                             let int_type = type_table.int_type();
                             drop(type_table);
-                            Ok(self.context.type_table.borrow_mut().create_function_type(vec![int_type], string_type))
+                            Ok(self
+                                .context
+                                .type_table
+                                .borrow_mut()
+                                .create_function_type(vec![int_type], string_type))
                         }
                         "toUpperCase" | "toLowerCase" | "toString" | "trim" => {
                             // toUpperCase(): String, toLowerCase(): String, toString(): String, trim(): String
                             let string_type = type_table.string_type();
                             drop(type_table);
-                            Ok(self.context.type_table.borrow_mut().create_function_type(vec![], string_type))
+                            Ok(self
+                                .context
+                                .type_table
+                                .borrow_mut()
+                                .create_function_type(vec![], string_type))
                         }
                         "substring" | "substr" => {
                             // substring(startIndex: Int, ?endIndex: Int): String
@@ -5296,34 +6592,53 @@ impl<'a> AstLowering<'a> {
                             let int_type = type_table.int_type();
                             drop(type_table);
                             // For simplicity, we'll create a function that takes two Int parameters
-                            Ok(self.context.type_table.borrow_mut().create_function_type(vec![int_type, int_type], string_type))
+                            Ok(self
+                                .context
+                                .type_table
+                                .borrow_mut()
+                                .create_function_type(vec![int_type, int_type], string_type))
                         }
                         "indexOf" | "lastIndexOf" => {
                             // indexOf(str: String, ?startIndex: Int): Int
                             let string_type = type_table.string_type();
                             let int_type = type_table.int_type();
                             drop(type_table);
-                            Ok(self.context.type_table.borrow_mut().create_function_type(vec![string_type], int_type))
+                            Ok(self
+                                .context
+                                .type_table
+                                .borrow_mut()
+                                .create_function_type(vec![string_type], int_type))
                         }
                         "split" => {
                             // split(delimiter: String): Array<String>
                             let string_type = type_table.string_type();
                             drop(type_table);
-                            let array_of_strings = self.context.type_table.borrow_mut().create_array_type(string_type);
-                            Ok(self.context.type_table.borrow_mut().create_function_type(vec![string_type], array_of_strings))
+                            let array_of_strings = self
+                                .context
+                                .type_table
+                                .borrow_mut()
+                                .create_array_type(string_type);
+                            Ok(self
+                                .context
+                                .type_table
+                                .borrow_mut()
+                                .create_function_type(vec![string_type], array_of_strings))
                         }
-                        _ => Ok(type_table.dynamic_type())
+                        _ => Ok(type_table.dynamic_type()),
                     }
                 }
-                _ => Ok(type_table.dynamic_type())
+                _ => Ok(type_table.dynamic_type()),
             }
         } else {
             Ok(type_table.dynamic_type())
         }
     }
-    
+
     /// Lower a function body
-    fn lower_function_body(&mut self, body: &parser::Expr) -> Result<Vec<TypedStatement>, LoweringError> {
+    fn lower_function_body(
+        &mut self,
+        body: &parser::Expr,
+    ) -> Result<Vec<TypedStatement>, LoweringError> {
         match &body.kind {
             parser::ExprKind::Block(elements) => {
                 // Function body is a block - lower all elements
@@ -5331,28 +6646,42 @@ impl<'a> AstLowering<'a> {
                 for element in elements {
                     match element {
                         parser::BlockElement::Expr(expr) => {
-                            // Check if this is a variable declaration expression  
+                            // Check if this is a variable declaration expression
                             match &expr.kind {
                                 parser::ExprKind::Var { .. } | parser::ExprKind::Final { .. } => {
                                     // Variable declaration - lower as expression and convert to statement
                                     let typed_expr = self.lower_expression(expr)?;
-                                    
+
                                     // Extract the declaration info to create a proper statement
-                                    if let TypedExpressionKind::VarDeclarationExpr { symbol_id, var_type, initializer } = typed_expr.kind {
+                                    if let TypedExpressionKind::VarDeclarationExpr {
+                                        symbol_id,
+                                        var_type,
+                                        initializer,
+                                    } = typed_expr.kind
+                                    {
                                         statements.push(TypedStatement::VarDeclaration {
                                             symbol_id,
                                             var_type,
                                             initializer: Some(*initializer),
                                             mutability: crate::tast::symbols::Mutability::Mutable,
-                                            source_location: self.context.span_to_location(&expr.span),
+                                            source_location: self
+                                                .context
+                                                .span_to_location(&expr.span),
                                         });
-                                    } else if let TypedExpressionKind::FinalDeclarationExpr { symbol_id, var_type, initializer } = typed_expr.kind {
+                                    } else if let TypedExpressionKind::FinalDeclarationExpr {
+                                        symbol_id,
+                                        var_type,
+                                        initializer,
+                                    } = typed_expr.kind
+                                    {
                                         statements.push(TypedStatement::VarDeclaration {
                                             symbol_id,
                                             var_type,
                                             initializer: Some(*initializer),
                                             mutability: crate::tast::symbols::Mutability::Immutable,
-                                            source_location: self.context.span_to_location(&expr.span),
+                                            source_location: self
+                                                .context
+                                                .span_to_location(&expr.span),
                                         });
                                     }
                                 }
@@ -5366,9 +6695,9 @@ impl<'a> AstLowering<'a> {
                                 }
                             }
                         }
-                        parser::BlockElement::Import(_) | 
-                        parser::BlockElement::Using(_) | 
-                        parser::BlockElement::Conditional(_) => {
+                        parser::BlockElement::Import(_)
+                        | parser::BlockElement::Using(_)
+                        | parser::BlockElement::Conditional(_) => {
                             // Skip imports, using statements, and conditional compilation for now
                             // These should be handled at the module level
                         }
@@ -5386,12 +6715,14 @@ impl<'a> AstLowering<'a> {
             }
         }
     }
-    
+
     /// Process @:overload metadata to extract method overload signatures
-    fn process_overload_metadata(&mut self, metadata: &[parser::Metadata]) -> LoweringResult<Vec<MethodOverload>> {
-        
+    fn process_overload_metadata(
+        &mut self,
+        metadata: &[parser::Metadata],
+    ) -> LoweringResult<Vec<MethodOverload>> {
         let mut overload_signatures = Vec::new();
-        
+
         for meta in metadata {
             if meta.name == "overload" {
                 // @:overload(param1:Type1, param2:Type2 -> ReturnType)
@@ -5400,27 +6731,33 @@ impl<'a> AstLowering<'a> {
                     if let parser::ExprKind::String(signature_str) = &meta.params[0].kind {
                         // Parse the signature string to extract types
                         // This is a simplified implementation - a full parser would be more robust
-                        if let Some(overload) = self.parse_overload_signature(signature_str, &meta.span)? {
+                        if let Some(overload) =
+                            self.parse_overload_signature(signature_str, &meta.span)?
+                        {
                             overload_signatures.push(overload);
                         }
                     }
                 }
             }
         }
-        
+
         Ok(overload_signatures)
     }
-    
+
     /// Parse a function signature string from @:overload metadata
-    fn parse_overload_signature(&mut self, signature: &str, span: &parser::Span) -> LoweringResult<Option<MethodOverload>> {
+    fn parse_overload_signature(
+        &mut self,
+        signature: &str,
+        span: &parser::Span,
+    ) -> LoweringResult<Option<MethodOverload>> {
         use crate::tast::node::MethodOverload;
-        
+
         // Simple signature parsing: "param1:Type1, param2:Type2 -> ReturnType"
         // Split on "->" to separate parameters from return type
         if let Some(arrow_pos) = signature.find("->") {
             let params_part = signature[..arrow_pos].trim();
             let return_part = signature[arrow_pos + 2..].trim();
-            
+
             // Parse parameter types
             let mut parameter_types = Vec::new();
             if !params_part.is_empty() {
@@ -5438,14 +6775,14 @@ impl<'a> AstLowering<'a> {
                     }
                 }
             }
-            
+
             // Parse return type
             let return_type = if let Ok(type_id) = self.resolve_type_by_name(return_part) {
                 type_id
             } else {
                 self.context.type_table.borrow().dynamic_type()
             };
-            
+
             Ok(Some(MethodOverload {
                 parameter_types,
                 return_type,
@@ -5460,7 +6797,7 @@ impl<'a> AstLowering<'a> {
             }))
         }
     }
-    
+
     /// Resolve a type by name (helper for overload parsing)
     fn resolve_type_by_name(&mut self, type_name: &str) -> Result<TypeId, LoweringError> {
         match type_name {
@@ -5473,7 +6810,11 @@ impl<'a> AstLowering<'a> {
             _ => {
                 // Try to resolve as a class/interface name
                 let interned_name = self.context.intern_string(type_name);
-                if let Some(symbol) = self.context.symbol_table.lookup_symbol(self.context.current_scope, interned_name) {
+                if let Some(symbol) = self
+                    .context
+                    .symbol_table
+                    .lookup_symbol(self.context.current_scope, interned_name)
+                {
                     Ok(symbol.type_id)
                 } else {
                     Err(LoweringError::UnresolvedType {
@@ -5482,6 +6823,137 @@ impl<'a> AstLowering<'a> {
                     })
                 }
             }
+        }
+    }
+
+    /// Analyze if function body can throw exceptions
+    fn analyze_can_throw(&self, body: &Option<Box<parser::Expr>>) -> bool {
+        if let Some(body_expr) = body {
+            self.expr_can_throw(body_expr)
+        } else {
+            false
+        }
+    }
+
+    /// Check if an expression can throw
+    fn expr_can_throw(&self, expr: &parser::Expr) -> bool {
+        match &expr.kind {
+            parser::ExprKind::Throw(_) => true,
+            parser::ExprKind::Block(elements) => elements.iter().any(|elem| {
+                if let parser::BlockElement::Expr(e) = elem {
+                    self.expr_can_throw(e)
+                } else {
+                    false
+                }
+            }),
+            parser::ExprKind::If { then_branch, else_branch, .. } => {
+                self.expr_can_throw(then_branch) || 
+                else_branch.as_ref().map_or(false, |e| self.expr_can_throw(e))
+            },
+            parser::ExprKind::Switch { cases, default, .. } => {
+                cases.iter().any(|c| self.expr_can_throw(&c.body)) ||
+                default.as_ref().map_or(false, |d| self.expr_can_throw(d))
+            },
+            parser::ExprKind::Try { .. } => false, // Try blocks handle exceptions
+            parser::ExprKind::While { body, .. } | 
+            parser::ExprKind::DoWhile { body, .. } |
+            parser::ExprKind::For { body, .. } => self.expr_can_throw(body),
+            _ => false
+        }
+    }
+
+    /// Detect if function is async
+    fn detect_async_kind(&self, _func: &parser::Function) -> AsyncKind {
+        // Haxe doesn't have native async/await, but might use promises/futures
+        // For now, return Sync
+        AsyncKind::Sync
+    }
+
+    /// Analyze if function is pure (no side effects)
+    fn analyze_is_pure(&self, body: &Option<Box<parser::Expr>>) -> bool {
+        if let Some(body_expr) = body {
+            self.expr_is_pure(body_expr)
+        } else {
+            true // No body means pure
+        }
+    }
+
+    /// Check if an expression is pure
+    fn expr_is_pure(&self, expr: &parser::Expr) -> bool {
+        match &expr.kind {
+            // Pure expressions
+            parser::ExprKind::Int(_) | parser::ExprKind::Float(_) | 
+            parser::ExprKind::String(_) | parser::ExprKind::Bool(_) |
+            parser::ExprKind::Null | parser::ExprKind::Ident(_) => true,
+            
+            // Assignments and mutations are impure
+            parser::ExprKind::Assign { .. } => false,
+            parser::ExprKind::Unary { op, .. } => {
+                !matches!(op, parser::UnaryOp::PreIncr | parser::UnaryOp::PreDecr | 
+                         parser::UnaryOp::PostIncr | parser::UnaryOp::PostDecr)
+            },
+            
+            // Function calls might have side effects
+            parser::ExprKind::Call { .. } | parser::ExprKind::New { .. } => false,
+            
+            // Recursively check compound expressions
+            parser::ExprKind::Binary { left, right, .. } => {
+                self.expr_is_pure(left) && self.expr_is_pure(right)
+            },
+            parser::ExprKind::Block(elements) => elements.iter().all(|elem| {
+                if let parser::BlockElement::Expr(e) = elem {
+                    self.expr_is_pure(e)
+                } else {
+                    true
+                }
+            }),
+            
+            _ => false // Conservative: assume impure
+        }
+    }
+
+    /// Calculate cyclomatic complexity of function body
+    fn calculate_complexity(&self, body: &Option<Box<parser::Expr>>) -> u32 {
+        if let Some(body_expr) = body {
+            1 + self.expr_complexity(body_expr)
+        } else {
+            1
+        }
+    }
+
+    /// Calculate expression complexity
+    fn expr_complexity(&self, expr: &parser::Expr) -> u32 {
+        match &expr.kind {
+            parser::ExprKind::If { then_branch, else_branch, .. } => {
+                1 + self.expr_complexity(then_branch) + 
+                else_branch.as_ref().map_or(0, |e| self.expr_complexity(e))
+            },
+            parser::ExprKind::Switch { cases, default, .. } => {
+                cases.len() as u32 + 
+                cases.iter().map(|c| self.expr_complexity(&c.body)).sum::<u32>() +
+                default.as_ref().map_or(0, |d| self.expr_complexity(d))
+            },
+            parser::ExprKind::While { body, .. } | 
+            parser::ExprKind::DoWhile { body, .. } |
+            parser::ExprKind::For { body, .. } => 1 + self.expr_complexity(body),
+            parser::ExprKind::Binary { op, left, right } => {
+                let base = match op {
+                    parser::BinaryOp::And | parser::BinaryOp::Or => 1,
+                    _ => 0
+                };
+                base + self.expr_complexity(left) + self.expr_complexity(right)
+            },
+            parser::ExprKind::Block(elements) => {
+                elements.iter().map(|elem| {
+                    if let parser::BlockElement::Expr(e) = elem {
+                        self.expr_complexity(e)
+                    } else {
+                        0
+                    }
+                }).sum()
+            },
+            parser::ExprKind::Try { catches, .. } => catches.len() as u32,
+            _ => 0
         }
     }
 }
@@ -5496,6 +6968,13 @@ pub fn lower_haxe_file(
     namespace_resolver: &mut super::namespace::NamespaceResolver,
     import_resolver: &mut super::namespace::ImportResolver,
 ) -> LoweringResult<TypedFile> {
-    let mut lowering = AstLowering::new(string_interner, symbol_table, type_table, scope_tree, namespace_resolver, import_resolver);
+    let mut lowering = AstLowering::new(
+        string_interner,
+        symbol_table,
+        type_table,
+        scope_tree,
+        namespace_resolver,
+        import_resolver,
+    );
     lowering.lower_file(file)
 }

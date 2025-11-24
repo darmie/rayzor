@@ -8,15 +8,21 @@
 //! - Easy to optimize and transform
 //! - Suitable for targeting multiple backends (JS, C++, JVM, etc.)
 
+pub mod hir;  // High-level IR (close to source syntax)
+pub mod tast_to_hir;  // TAST to HIR lowering
+pub mod hir_to_mir;   // HIR to MIR lowering
+
+// MIR modules (the existing IR serves as MIR)
 pub mod types;
 pub mod instructions;
 pub mod blocks;
 pub mod functions;
 pub mod modules;
 pub mod builder;
-pub mod lowering;
+pub mod lowering;  // Legacy TAST to MIR (being phased out)
 pub mod optimization;
 pub mod validation;
+pub mod optimizable;  // Generic optimization trait for different IR levels
 
 pub use types::*;
 pub use instructions::*;

@@ -13,10 +13,12 @@ use crate::tast::SourceLocation;
 use super::{
     SymbolId, TypeId, ScopeId, LifetimeId, 
     TypedArena, StringInterner, InternedString,
-    collections::{IdMap, IdSet, new_id_map, new_id_set},
+    collections::{IdMap, IdSet, new_id_map},
+    type_cache::{TypeCache, TypeCacheKey},
 };
 use std::collections::HashMap;
 use std::fmt;
+use std::rc::Rc;
 
 
 
@@ -403,6 +405,9 @@ pub struct TypeTable {
     
     /// String interner for efficient string management
     string_interner: StringInterner,
+    
+    /// Multi-level type cache for frequently accessed types
+    type_cache: Rc<TypeCache>,
 }
 
 /// Usage statistics for types
@@ -433,7 +438,7 @@ impl TypeTable {
     /// Create a new type table with common types pre-allocated
     pub fn new() -> Self {
         let arena = TypedArena::new();
-        let mut types = Vec::new();
+        let types = Vec::new();
         let kind_index = HashMap::new();
         let symbol_index = new_id_map();
         let generic_cache = HashMap::new();
@@ -447,6 +452,7 @@ impl TypeTable {
             generic_cache,
             usage_stats,
             string_interner: StringInterner::new(),
+            type_cache: Rc::new(TypeCache::new()),
             // Temporary placeholder - will be filled below
             common_types: CommonTypesCache {
                 void_type: TypeId::invalid(),
@@ -478,7 +484,7 @@ impl TypeTable {
     /// Create a type table with custom arena configuration
     pub fn with_capacity(capacity: usize) -> Self {
         let arena = TypedArena::with_capacity(capacity);
-        let mut types = Vec::with_capacity(capacity);
+        let types = Vec::with_capacity(capacity);
         let kind_index = HashMap::with_capacity(capacity / 4);
         let symbol_index = new_id_map();
         let generic_cache = HashMap::new();
@@ -492,6 +498,7 @@ impl TypeTable {
             generic_cache,
             usage_stats,
             string_interner: StringInterner::new(),
+            type_cache: Rc::new(TypeCache::new()),
             common_types: CommonTypesCache {
                 void_type: TypeId::invalid(),
                 bool_type: TypeId::invalid(),
@@ -542,8 +549,21 @@ impl TypeTable {
     }
 
      /// Create a new type with automatic ID assignment
-    pub fn create_union_type(&mut self, types:Vec<TypeId>) -> TypeId {
-        self.intern_type(TypeKind::Union { types })
+    pub fn create_union_type(&mut self, mut types: Vec<TypeId>) -> TypeId {
+        // Sort types for consistent caching
+        types.sort();
+        types.dedup();
+        
+        let cache_key = TypeCacheKey::UnionType(types.clone());
+        
+        // Check cache first
+        if let Some(cached_id) = self.type_cache.get(&cache_key) {
+            return cached_id;
+        }
+        
+        let type_id = self.intern_type(TypeKind::Union { types });
+        self.type_cache.insert(cache_key, type_id);
+        type_id
     }
     
     /// Create a new type with source location
@@ -713,26 +733,62 @@ impl TypeTable {
     
     /// Create an optional/nullable type: T?
     pub fn create_optional_type(&mut self, inner_type: TypeId) -> TypeId {
-        self.intern_type(TypeKind::Optional { inner_type })
+        let cache_key = TypeCacheKey::OptionalType(inner_type);
+        
+        // Check cache first
+        if let Some(cached_id) = self.type_cache.get(&cache_key) {
+            return cached_id;
+        }
+        
+        let type_id = self.intern_type(TypeKind::Optional { inner_type });
+        self.type_cache.insert(cache_key, type_id);
+        type_id
     }
     
     /// Create an array type: Array<T>
     pub fn create_array_type(&mut self, element_type: TypeId) -> TypeId {
-        self.intern_type(TypeKind::Array { element_type })
+        let cache_key = TypeCacheKey::ArrayType(element_type);
+        
+        // Check cache first
+        if let Some(cached_id) = self.type_cache.get(&cache_key) {
+            return cached_id;
+        }
+        
+        let type_id = self.intern_type(TypeKind::Array { element_type });
+        self.type_cache.insert(cache_key, type_id);
+        type_id
     }
     
     /// Create a map type: Map<K, V>
     pub fn create_map_type(&mut self, key_type: TypeId, value_type: TypeId) -> TypeId {
-        self.intern_type(TypeKind::Map { key_type, value_type })
+        let cache_key = TypeCacheKey::MapType(key_type, value_type);
+        
+        // Check cache first
+        if let Some(cached_id) = self.type_cache.get(&cache_key) {
+            return cached_id;
+        }
+        
+        let type_id = self.intern_type(TypeKind::Map { key_type, value_type });
+        self.type_cache.insert(cache_key, type_id);
+        type_id
     }
     
     /// Create a function type: (params...) -> return_type
     pub fn create_function_type(&mut self, params: Vec<TypeId>, return_type: TypeId) -> TypeId {
-        self.intern_type(TypeKind::Function { 
+        let cache_key = TypeCacheKey::FunctionType(params.clone(), return_type);
+        
+        // Check cache first
+        if let Some(cached_id) = self.type_cache.get(&cache_key) {
+            return cached_id;
+        }
+        
+        let type_id = self.intern_type(TypeKind::Function { 
             params, 
             return_type,
             effects: FunctionEffects::default(),
-        })
+        });
+        self.type_cache.insert(cache_key, type_id);
+        type_id
     }
     
     /// Create a function type with effects
@@ -747,17 +803,56 @@ impl TypeTable {
     
     /// Create a class type
     pub fn create_class_type(&mut self, symbol_id: SymbolId, type_args: Vec<TypeId>) -> TypeId {
-        self.intern_type(TypeKind::Class { symbol_id, type_args })
+        let cache_key = if type_args.is_empty() {
+            TypeCacheKey::NamedType(symbol_id)
+        } else {
+            TypeCacheKey::GenericType(symbol_id, type_args.clone())
+        };
+        
+        // Check cache first
+        if let Some(cached_id) = self.type_cache.get(&cache_key) {
+            return cached_id;
+        }
+        
+        let type_id = self.intern_type(TypeKind::Class { symbol_id, type_args });
+        self.type_cache.insert(cache_key, type_id);
+        type_id
     }
     
     /// Create an interface type
     pub fn create_interface_type(&mut self, symbol_id: SymbolId, type_args: Vec<TypeId>) -> TypeId {
-        self.intern_type(TypeKind::Interface { symbol_id, type_args })
+        let cache_key = if type_args.is_empty() {
+            TypeCacheKey::NamedType(symbol_id)
+        } else {
+            TypeCacheKey::GenericType(symbol_id, type_args.clone())
+        };
+        
+        // Check cache first
+        if let Some(cached_id) = self.type_cache.get(&cache_key) {
+            return cached_id;
+        }
+        
+        let type_id = self.intern_type(TypeKind::Interface { symbol_id, type_args });
+        self.type_cache.insert(cache_key, type_id);
+        type_id
     }
     
     /// Create an enum type
     pub fn create_enum_type(&mut self, symbol_id: SymbolId, type_args: Vec<TypeId>) -> TypeId {
-        self.intern_type(TypeKind::Enum { symbol_id, type_args })
+        let cache_key = if type_args.is_empty() {
+            TypeCacheKey::NamedType(symbol_id)
+        } else {
+            TypeCacheKey::GenericType(symbol_id, type_args.clone())
+        };
+        
+        // Check cache first
+        if let Some(cached_id) = self.type_cache.get(&cache_key) {
+            return cached_id;
+        }
+        
+        let type_id = self.intern_type(TypeKind::Enum { symbol_id, type_args });
+        self.type_cache.insert(cache_key, type_id);
+        type_id
     }
     
     /// Create an abstract type
@@ -773,7 +868,7 @@ impl TypeTable {
     /// Create a generic instance with caching
     pub fn create_generic_instance(&mut self, base_type: TypeId, type_args: Vec<TypeId>) -> TypeId {
         // Use a temporary key for lookup to avoid cloning unless necessary
-        let temp_key = (base_type, &type_args);
+        let _temp_key = (base_type, &type_args);
         
         // Check if this combination already exists
         for ((cached_base, cached_args), &cached_id) in &self.generic_cache {
@@ -957,6 +1052,109 @@ impl TypeTable {
 
     pub fn get_type_symbol(&self, ty:TypeId) -> Option<SymbolId> {
         self.get(ty).map(|t| t.symbol_id().unwrap_or(SymbolId::invalid()))
+    }
+    
+    // === Cache Management Methods ===
+    
+    /// Preload common types into the cache for better performance
+    pub fn preload_common_types_to_cache(&self) {
+        let common_types = vec![
+            (TypeCacheKey::ArrayType(self.dynamic_type()), self.create_array_type_uncached(self.dynamic_type())),
+            (TypeCacheKey::ArrayType(self.string_type()), self.create_array_type_uncached(self.string_type())),
+            (TypeCacheKey::ArrayType(self.int_type()), self.create_array_type_uncached(self.int_type())),
+            (TypeCacheKey::OptionalType(self.string_type()), self.create_optional_type_uncached(self.string_type())),
+            (TypeCacheKey::OptionalType(self.int_type()), self.create_optional_type_uncached(self.int_type())),
+            (TypeCacheKey::OptionalType(self.bool_type()), self.create_optional_type_uncached(self.bool_type())),
+        ];
+        
+        self.type_cache.preload_common_types(common_types);
+    }
+    
+    /// Get cache statistics
+    pub fn cache_stats(&self) -> super::type_cache::CacheStats {
+        self.type_cache.stats()
+    }
+    
+    /// Clear the type cache
+    pub fn clear_cache(&self) {
+        self.type_cache.clear();
+    }
+    
+    /// Get current cache sizes (L1, L2)
+    pub fn cache_sizes(&self) -> (usize, usize) {
+        self.type_cache.sizes()
+    }
+    
+    // Uncached versions for preloading
+    fn create_array_type_uncached(&self, _element_type: TypeId) -> TypeId {
+        // This would need access to intern_type, but since we're in an immutable context,
+        // we'll use a placeholder. In practice, these would be created during initialization.
+        self.dynamic_type() // Placeholder
+    }
+    
+    fn create_optional_type_uncached(&self, _inner_type: TypeId) -> TypeId {
+        // This would need access to intern_type, but since we're in an immutable context,
+        // we'll use a placeholder. In practice, these would be created during initialization.
+        self.dynamic_type() // Placeholder
+    }
+    
+    /// Resolve a type alias to its target type with caching
+    pub fn resolve_type_alias(&self, symbol_id: SymbolId) -> TypeId {
+        let cache_key = TypeCacheKey::TypeAlias(symbol_id);
+        
+        // Check cache first
+        if let Some(cached_id) = self.type_cache.get(&cache_key) {
+            return cached_id;
+        }
+        
+        // Look up the type alias and follow the chain
+        if let Some(types) = self.symbol_index.get(&symbol_id) {
+            for &type_id in types {
+                if let Some(ty) = self.get(type_id) {
+                    if let TypeKind::TypeAlias { target_type, .. } = &ty.kind {
+                        self.type_cache.insert(cache_key, *target_type);
+                        return *target_type;
+                    }
+                }
+            }
+        }
+        
+        // Not found, return dynamic type
+        let dynamic = self.dynamic_type();
+        self.type_cache.insert(cache_key, dynamic);
+        dynamic
+    }
+    
+    /// Resolve abstract type underlying with caching
+    pub fn resolve_abstract_underlying(&self, symbol_id: SymbolId) -> Option<TypeId> {
+        let cache_key = TypeCacheKey::AbstractUnderlying(symbol_id);
+        
+        // Check cache first - use dynamic_type as sentinel for None
+        if let Some(cached_id) = self.type_cache.get(&cache_key) {
+            return if cached_id == self.dynamic_type() {
+                None
+            } else {
+                Some(cached_id)
+            };
+        }
+        
+        // Look up the abstract type
+        if let Some(types) = self.symbol_index.get(&symbol_id) {
+            for &type_id in types {
+                if let Some(ty) = self.get(type_id) {
+                    if let TypeKind::Abstract { underlying, .. } = &ty.kind {
+                        if let Some(underlying_type) = underlying {
+                            self.type_cache.insert(cache_key, *underlying_type);
+                            return Some(*underlying_type);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Not found, cache as dynamic (sentinel for None)
+        self.type_cache.insert(cache_key, self.dynamic_type());
+        None
     }
 }
 

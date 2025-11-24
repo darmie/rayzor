@@ -15,6 +15,7 @@ use nom::{
 
 use crate::haxe_ast::*;
 use crate::haxe_parser::{ws, symbol, keyword, identifier, PResult, position, make_span, metadata_list};
+use crate::custom_error::ContextualError;
 use crate::haxe_parser_types::{type_expr, type_params};
 use crate::haxe_parser_decls::function_param;
 use crate::haxe_parser_expr::expression;
@@ -38,9 +39,9 @@ fn function_body<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
 pub fn try_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     use nom::error::context;
     let start = position(full, input);
-    let (input, _) = context("expected 'try' keyword", keyword("try")).parse(input)?;
-    let (input, expr) = context("expected expression after 'try'", |i| expression(full, i)).parse(input)?;
-    let (input, catches) = context("expected at least one 'catch' clause after try expression", many1(|i| catch_clause(full, i))).parse(input)?;
+    let (input, _) = context("[E0060] expected 'try' keyword", keyword("try")).parse(input)?;
+    let (input, expr) = context("[E0061] expected expression after 'try' | help: provide the expression that might throw an exception", |i| expression(full, i)).parse(input)?;
+    let (input, catches) = context("[E0062] expected at least one 'catch' clause after try expression | help: try blocks must have at least one catch clause", many1(|i| catch_clause(full, i))).parse(input)?;
     let end = position(full, input);
     
     Ok((input, Expr {
@@ -55,13 +56,13 @@ pub fn try_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
 fn catch_clause<'a>(full: &'a str, input: &'a str) -> PResult<'a, Catch> {
     use nom::error::context;
     let start = position(full, input);
-    let (input, _) = context("expected 'catch' keyword", keyword("catch")).parse(input)?;
-    let (input, _) = context("expected '(' after 'catch'", symbol("(")).parse(input)?;
-    let (input, var) = context("expected variable name in catch clause", identifier).parse(input)?;
-    let (input, type_hint) = opt(preceded(context("expected ':' before exception type", symbol(":")), |i| type_expr(full, i))).parse(input)?;
-    let (input, _) = context("expected ')' to close catch parameter list", symbol(")")).parse(input)?;
-    let (input, filter) = opt(preceded(context("expected 'if' keyword for catch filter", keyword("if")), |i| expression(full, i))).parse(input)?;
-    let (input, body) = context("expected catch body expression", |i| expression(full, i)).parse(input)?;
+    let (input, _) = context("[E0063] expected 'catch' keyword", keyword("catch")).parse(input)?;
+    let (input, _) = context("[E0064] expected '(' after 'catch' | help: catch clause requires parentheses around the exception variable", symbol("(")).parse(input)?;
+    let (input, var) = context("[E0065] expected variable name in catch clause | help: provide a name for the caught exception", identifier).parse(input)?;
+    let (input, type_hint) = opt(preceded(context("[E0066] expected ':' before exception type", symbol(":")), |i| type_expr(full, i))).parse(input)?;
+    let (input, _) = context("[E0067] expected ')' to close catch parameter list", symbol(")")).parse(input)?;
+    let (input, filter) = opt(preceded(context("[E0068] expected 'if' keyword for catch filter", keyword("if")), |i| expression(full, i))).parse(input)?;
+    let (input, body) = context("[E0069] expected catch body expression | help: provide an expression or block to handle the caught exception", |i| expression(full, i)).parse(input)?;
     let end = position(full, input);
     
     Ok((input, Catch {
@@ -199,13 +200,13 @@ pub fn var_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let start = position(full, input);
     
     let (input, is_final) = alt((
-        value(true, context("expected 'final' keyword", keyword("final"))),
-        value(false, context("expected 'var' keyword", keyword("var"))),
+        value(true, context("[E0070] expected 'final' keyword", keyword("final"))),
+        value(false, context("[E0071] expected 'var' keyword", keyword("var"))),
     )).parse(input)?;
     
-    let (input, name) = context("expected variable name", identifier).parse(input)?;
-    let (input, type_hint) = opt(preceded(context("expected ':' before type annotation", symbol(":")), |i| type_expr(full, i))).parse(input)?;
-    let (input, expr) = opt(preceded(context("expected '=' before initializer", symbol("=")), |i| expression(full, i))).parse(input)?;
+    let (input, name) = context("[E0072] expected variable name | help: provide a name for the variable declaration", identifier).parse(input)?;
+    let (input, type_hint) = opt(preceded(context("[E0073] expected ':' before type annotation", symbol(":")), |i| type_expr(full, i))).parse(input)?;
+    let (input, expr) = opt(preceded(context("[E0074] expected '=' before initializer", symbol("=")), |i| expression(full, i))).parse(input)?;
     
     let end = position(full, input);
     
@@ -236,7 +237,7 @@ pub fn paren_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let (input, _) = symbol("(").parse(input)?;
     
     // Check for type check syntax: (expr : Type)
-    let mut check_typecheck = |input| -> IResult<_, _> {
+    let mut check_typecheck = |input| -> IResult<_, _, ContextualError<&str>> {
         let (input, expr) = expression(full, input)?;
         let (input, _) = symbol(":").parse(input)?;
         let (input, type_hint) = type_expr(full, input)?;

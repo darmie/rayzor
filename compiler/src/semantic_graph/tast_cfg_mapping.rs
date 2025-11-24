@@ -36,6 +36,28 @@ pub struct StatementLocation {
     
     /// Unique identifier for this statement
     pub id: u64,
+    
+    /// Branch context for navigating control flow statements
+    pub branch_context: BranchContext,
+}
+
+/// Context for navigating branches in control flow statements
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BranchContext {
+    /// Not in a branch
+    None,
+    /// In the then branch of an If statement
+    IfThen,
+    /// In the else branch of an If statement
+    IfElse,
+    /// In a specific case of a Switch statement
+    SwitchCase(usize),
+    /// In the default case of a Switch statement
+    SwitchDefault,
+    /// In a catch clause
+    CatchClause(usize),
+    /// In a finally block
+    Finally,
 }
 
 /// Result of mapping TAST to CFG
@@ -175,6 +197,7 @@ impl TastCfgMapper {
                 statement_index: index,
                 nesting_depth: 0,
                 id: self.statement_counter,
+                branch_context: BranchContext::None,
             };
             self.statement_counter += 1;
             
@@ -216,7 +239,7 @@ impl TastCfgMapper {
                 let old_block = self.current_block;
                 self.current_block = then_block;
                 
-                let then_location = self.create_nested_location(location, depth + 1, 0);
+                let then_location = self.create_nested_location_with_branch(location, depth + 1, 0, BranchContext::IfThen);
                 self.map_statement(cfg, then_branch, then_location, depth + 1);
                 
                 // Map else branch if present
@@ -224,7 +247,7 @@ impl TastCfgMapper {
                     let else_block = self.find_else_block(cfg, old_block);
                     self.current_block = else_block;
                     
-                    let else_location = self.create_nested_location(location, depth + 1, 1);
+                    let else_location = self.create_nested_location_with_branch(location, depth + 1, 0, BranchContext::IfElse);
                     self.map_statement(cfg, else_stmt, else_location, depth + 1);
                 }
                 
@@ -425,6 +448,19 @@ impl TastCfgMapper {
             statement_index: parent.statement_index,
             nesting_depth: depth,
             id: self.statement_counter,
+            branch_context: parent.branch_context,
+        };
+        self.statement_counter += 1;
+        location
+    }
+    
+    /// Create a nested statement location with a specific branch context
+    fn create_nested_location_with_branch(&mut self, parent: StatementLocation, depth: u32, index: u64, branch_context: BranchContext) -> StatementLocation {
+        let location = StatementLocation {
+            statement_index: parent.statement_index,
+            nesting_depth: depth,
+            id: self.statement_counter,
+            branch_context,
         };
         self.statement_counter += 1;
         location
@@ -563,6 +599,7 @@ mod tests {
             statement_index: 0,
             nesting_depth: 0,
             id: 1,
+            branch_context: BranchContext::None,
         };
         
         assert_eq!(location.statement_index, 0);

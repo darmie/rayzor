@@ -27,6 +27,11 @@ impl ClassHierarchyBuilder {
             interfaces,
             all_supertypes: HashSet::new(), // Will be computed later
             depth: 0, // Will be computed later
+            is_final: false, // TODO: Extract from class metadata
+            is_abstract: false, // TODO: Extract from class metadata
+            is_extern: false, // TODO: Extract from class metadata
+            is_interface: false, // This is a class, not interface
+            sealed_to: None, // TODO: Extract from metadata
         };
         
         self.hierarchies.insert(class_id, info);
@@ -217,6 +222,11 @@ mod tests {
             interfaces: vec![],
             all_supertypes: HashSet::new(),
             depth: 0,
+            is_final: false,
+            is_abstract: false,
+            is_extern: false,
+            is_interface: false,
+            sealed_to: None,
         };
         symbol_table.register_class_hierarchy(object_sym, object_info);
         
@@ -226,6 +236,11 @@ mod tests {
             interfaces: vec![],
             all_supertypes: HashSet::from_iter([TypeId::from_raw(1)]),
             depth: 1,
+            is_final: false,
+            is_abstract: false,
+            is_extern: false,
+            is_interface: false,
+            sealed_to: None,
         };
         symbol_table.register_class_hierarchy(animal_sym, animal_info);
         
@@ -243,7 +258,7 @@ mod tests {
         let mut symbol_table = SymbolTable::new();
         let interner = StringInterner::new();
         // Create interface symbol
-        let comparable_sym = symbol_table.create_interfce(interner.intern("Comparable"));
+        let comparable_sym = symbol_table.create_interface(interner.intern("Comparable"));
         
         // Register as interface (no superclass, depth 0)
         let interface_info = ClassHierarchyInfo {
@@ -251,6 +266,11 @@ mod tests {
             interfaces: vec![],
             all_supertypes: HashSet::new(),
             depth: 0,
+            is_final: false,
+            is_abstract: false,
+            is_extern: false,
+            is_interface: true, // This is an interface
+            sealed_to: None,
         };
         symbol_table.register_class_hierarchy(comparable_sym, interface_info);
         

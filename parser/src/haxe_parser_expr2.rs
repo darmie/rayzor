@@ -3,19 +3,13 @@
 //! This module contains the remaining expression parsers
 
 use nom::{
-    IResult,
-    branch::alt,
-    bytes::complete::tag,
-    character::complete::char,
-    combinator::{map, opt, value, recognize},
-    error::context,
-    multi::{many0, many1, separated_list0, separated_list1},
-    sequence::{pair, tuple, preceded, terminated, delimited},
-    Parser,
+    branch::alt, bytes::complete::tag, character::complete::char, combinator::{map, opt, peek, recognize, value}, error::context, multi::{many0, many1, separated_list0, separated_list1}, sequence::{delimited, pair, preceded, terminated, tuple}, IResult, Parser
 };
 
 use crate::haxe_ast::*;
 use crate::haxe_parser::{ws, symbol, keyword, identifier, PResult, position, compiler_specific_identifier};
+use crate::custom_error::ContextualError;
+use nom::error::{ContextError, ParseError};
 use crate::haxe_parser_types::type_expr;
 use crate::haxe_parser_expr::expression;
 
@@ -344,7 +338,7 @@ fn array_comprehension<'a>(full: &'a str, start: usize, input: &'a str) -> PResu
     let (input, for_parts) = many1(|i|comprehension_for(full, i)).parse(input)?;
     
     // Check for map comprehension (has =>)
-    let check_result: IResult<_, _> = tuple((
+    let check_result: IResult<_, _, ContextualError<&str>> = tuple((
         |i| expression(full, i),
         symbol("=>"),
         |i| expression(full, i)
@@ -433,9 +427,9 @@ fn object_field<'a>(full: &'a str, input: &'a str) -> PResult<'a, ObjectField> {
 
 pub fn block_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let start = position(full, input);
-    let (input, _) = context("expected '{' to start block", symbol("{")).parse(input)?;
-    let (input, elements) = context("expected block contents", many0(|i|block_element(full, i))).parse(input)?;
-    let (input, _) = context("expected '}' to close block", symbol("}")).parse(input)?;
+    let (input, _) = context("[E0003] expected '{' to start block", symbol("{")).parse(input)?;
+    let (input, elements) = context("[E0004] expected block contents | help: provide statements or expressions inside the block", many0(|i|block_element(full, i))).parse(input)?;
+    let (input, _) = context("[E0005] expected '}' to close block | help: blocks must be properly closed with '}'", symbol("}")).parse(input)?;
     let end = position(full, input);
     
     Ok((input, Expr {
@@ -455,7 +449,7 @@ fn block_element<'a>(full: &'a str, input: &'a str) -> PResult<'a, BlockElement>
                     BlockElement::Conditional
                 ).parse(i)
             } else {
-                Err(nom::Err::Error(nom::error::Error::new(i, nom::error::ErrorKind::Tag)))
+                Err(nom::Err::Error(ContextualError::new(i, nom::error::ErrorKind::Tag)))
             }
         },
         // Import/using inside block
@@ -527,22 +521,23 @@ pub fn if_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
 pub fn switch_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let start = position(full, input);
     let (input, _) = keyword("switch").parse(input)?;
-    let (input, _) = context("expected '(' after 'switch'", symbol("(")).parse(input)?;
-    let (input, expr) = context("expected expression inside switch parentheses", |i| expression(full, i)).parse(input)?;
-    let (input, _) = context("expected ')' after switch expression", symbol(")")).parse(input)?;
-    let (input, _) = context("expected '{' to start switch body", symbol("{")).parse(input)?;
+    let (input, _) = context("[E0020] expected '(' after 'switch' | help: switch expression must be enclosed in parentheses: switch(expr)", symbol("(")).parse(input)?;
+    let (input, expr) = context("[E0021] expected expression inside switch parentheses", |i| expression(full, i)).parse(input)?;
+    let (input, _) = context("[E0021] expected ')' after switch expression", symbol(")")).parse(input)?;
+    let (input, _) = context("[E0022] expected '{' to start switch body | help: switch body must be enclosed in braces", symbol("{")).parse(input)?;
     
-    let (input, cases) = context("expected switch cases", many0(|i| case(full, i))).parse(input)?;
+    // Don't wrap in context here - let inner errors bubble up with their contexts
+    let (input, cases) = many0(|i| case(full, i)).parse(input)?;
     
     let (input, default) = opt(preceded(
         keyword("default"),
         preceded(
-            context("expected ':' after 'default'", symbol(":")), 
-            context("expected default case body", |i| parse_case_body(full, i))
+            context("[E0027] expected ':' after 'default'", symbol(":")), 
+            context("[E0028] expected default case body", |i| parse_case_body(full, i))
         )
     )).parse(input)?;
     
-    let (input, _) = context("expected '}' to close switch body", symbol("}")).parse(input)?;
+    let (input, _) = context("[E0023] expected '}' to close switch body", symbol("}")).parse(input)?;
     let end = position(full, input);
     
     Ok((input, Expr {
@@ -558,23 +553,35 @@ pub fn switch_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
 fn case<'a>(full: &'a str, input: &'a str) -> PResult<'a, Case> {
     let start = position(full, input);
     let (input, _) = keyword("case").parse(input)?;
-    let (input, patterns) = context("expected pattern(s) after 'case'", 
+    let (input, patterns) = context("[E0025] expected pattern(s) after 'case' | help: provide a pattern to match against", 
         separated_list1(symbol("|"), |i| pattern(full, i))
     ).parse(input)?;
     
-    let (input, guard) = opt(preceded(
-        keyword("if"),
-        delimited(
-            context("expected '(' after 'if' in case guard", symbol("(")),
-            context("expected guard expression", |i| expression(full, i)),
-            context("expected ')' after guard expression", symbol(")"))
-        )
-    )).parse(input)?;
+    // Try to parse guard - if we see 'if', we require proper guard syntax
+    let (input, guard) = {
+        // First, check if there's an 'if' keyword
+        if let Ok((after_if, _)) = keyword("if").parse(input) {
+            // println!("Found 'if' keyword for case guard");
+            // We found 'if', so we MUST have a properly formed guard
+            // Check for opening parenthesis first
+            // The context wrapper will automatically handle error creation and byte offset calculation
+            let (input, guard_expr) = delimited(
+                context("[E0040] expected '(' after 'if' in case guard | help: case guard expressions must be enclosed in parentheses: case pattern if (condition):", symbol("(")),
+                context("[E0042] expected guard expression | help: provide a boolean expression for the guard condition", |i| expression(full, i)),
+                context("[E0041] expected ')' after guard expression | help: guard expressions must be properly closed with ')'", symbol(")"))
+            ).parse(after_if)?;
+
+            (input, Some(guard_expr))
+        } else {
+            // No 'if' keyword found, no guard
+            (input, None)
+        }
+    };
     
-    let (input, _) = context("expected ':' after case pattern", symbol(":")).parse(input)?;
+    let (input, _) = context("[E0024] expected ':' after case pattern | help: case patterns must be followed by a colon", symbol(":")).parse(input)?;
     
     // Parse case body as a sequence of statements until next case/default/}
-    let (input, body) = context("expected case body", |i| parse_case_body(full, i)).parse(input)?;
+    let (input, body) = context("[E0026] expected case body | help: provide an expression or block for the case", |i| parse_case_body(full, i)).parse(input)?;
     let end = position(full, input);
     
     Ok((input, Case {
@@ -681,7 +688,7 @@ fn pattern<'a>(full: &'a str, input: &'a str) -> PResult<'a, Pattern> {
                     }
                 }
             }
-            Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)))
+            Err(nom::Err::Error(ContextualError::new(input, nom::error::ErrorKind::Tag)))
         },
         
         // Object pattern: {x: 0, y: 0}
@@ -699,7 +706,7 @@ fn pattern<'a>(full: &'a str, input: &'a str) -> PResult<'a, Pattern> {
                 let (input, _) = symbol("}").parse(input)?;
                 Ok((input, Pattern::Object { fields }))
             } else {
-                Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)))
+                Err(nom::Err::Error(ContextualError::new(input, nom::error::ErrorKind::Tag)))
             }
         },
         
@@ -760,7 +767,7 @@ fn pattern<'a>(full: &'a str, input: &'a str) -> PResult<'a, Pattern> {
                     Ok((current_input, Pattern::Array(elements)))
                 }
             } else {
-                Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)))
+                Err(nom::Err::Error(ContextualError::new(input, nom::error::ErrorKind::Tag)))
             }
         },
         
@@ -782,18 +789,18 @@ fn pattern<'a>(full: &'a str, input: &'a str) -> PResult<'a, Pattern> {
                                 },
                                 Err(_) => {
                                     // Not a valid extractor
-                                    Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)))
+                                    Err(nom::Err::Error(ContextualError::new(input, nom::error::ErrorKind::Tag)))
                                 }
                             }
                         },
                         Err(_) => {
                             // Not an extractor pattern
-                            Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)))
+                            Err(nom::Err::Error(ContextualError::new(input, nom::error::ErrorKind::Tag)))
                         }
                     }
                 },
                 Err(_) => {
-                    Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)))
+                    Err(nom::Err::Error(ContextualError::new(input, nom::error::ErrorKind::Tag)))
                 }
             }
         },
@@ -830,7 +837,7 @@ fn pattern<'a>(full: &'a str, input: &'a str) -> PResult<'a, Pattern> {
             if let Ok((rest, expr)) = crate::haxe_parser_expr::literal_expr(full, input) {
                 Ok((rest, Pattern::Const(expr)))
             } else {
-                Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)))
+                Err(nom::Err::Error(ContextualError::new(input, nom::error::ErrorKind::Tag)))
             }
         },
         
@@ -842,7 +849,7 @@ fn pattern<'a>(full: &'a str, input: &'a str) -> PResult<'a, Pattern> {
             // Check if followed by a dot - if so, this should be an expression
             if let Ok((_, _)) = symbol(".").parse(input) {
                 // This is _.something, should be parsed as an expression
-                Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)))
+                Err(nom::Err::Error(ContextualError::new(input, nom::error::ErrorKind::Tag)))
             } else {
                 Ok((input, Pattern::Underscore))
             }

@@ -18,7 +18,16 @@ pub mod stdlib_loader;
 pub mod type_diagnostics;
 pub mod type_checking_pipeline;
 pub mod namespace;
-// pub mod type_resolution;
+pub mod package_access;
+pub mod type_resolution;
+pub mod type_resolution_helpers;
+pub mod type_resolution_improvements;
+pub mod type_cache;
+pub mod symbol_cache;
+pub mod effect_analysis;
+pub mod control_flow_analysis;
+pub mod null_safety_analysis;
+pub mod type_flow_guard;
 // pub mod type_inference;
 
 #[cfg(test)]
@@ -48,7 +57,11 @@ pub use scopes::*;
 pub use core::{TypeTable, TypeKind, Type, TypeFlags, Variance};
 pub use ast_lowering::*;
 pub use type_checker::{TypeChecker, TypeCheckError, TypeErrorKind, TypeCheckResult, AccessLevel};
-pub use node::{TypedFile, TypedClass, TypedInterface, TypedEnum, TypedExpression, TypedStatement};
+pub use node::{TypedFile, TypedClass, TypedInterface, TypedEnum, TypedExpression, TypedStatement, 
+               FunctionEffects, AsyncKind, MemoryEffects, ResourceEffects, TypedExpressionKind};
 pub use namespace::{NamespaceResolver, ImportResolver, PackageId, PackageInfo, QualifiedPath, ImportEntry};
+pub use package_access::{PackageAccessValidator, PackageAccessContext, AccessPermission};
+pub use type_flow_guard::{TypeFlowGuard, FlowSafetyError, FlowSafetyResults, FlowAnalysisMetrics};
+pub use control_flow_analysis::VariableState as FlowVariableState;
 // pub use type_resolution::*;
 // pub use type_inference::*;

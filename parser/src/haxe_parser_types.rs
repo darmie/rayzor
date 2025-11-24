@@ -15,6 +15,7 @@ use nom::{
 
 use crate::haxe_ast::*;
 use crate::haxe_parser::{ws, symbol, keyword, identifier, dot_path, PResult, position, make_span};
+use crate::custom_error::ContextualError;
 
 /// Parse type parameters: `<T, U>`
 pub fn type_params<'a>(full: &'a str, input: &'a str) -> PResult<'a, Vec<TypeParam>> {
@@ -169,7 +170,7 @@ fn function_type<'a>(full: &'a str, input: &'a str) -> PResult<'a, Type> {
     }
     
     // Try to parse as right-associative function type: `Int -> String -> Void`
-    let result: IResult<_, _> = (
+    let result: IResult<_, _, ContextualError<&str>> = (
         |i| basic_type(full, i),
         symbol("->"),
         separated_list1(symbol("->"), |i| basic_type(full, i))
@@ -210,7 +211,7 @@ fn wildcard_type<'a>(full: &'a str, input: &'a str) -> PResult<'a, Type> {
     
     // If peek fails, this means ? is followed by a type (optional type)
     if peek_result.is_err() {
-        return Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)));
+        return Err(nom::Err::Error(ContextualError::new(input, nom::error::ErrorKind::Tag)));
     }
     
     let end = position(full, input);
@@ -334,7 +335,7 @@ fn anonymous_type<'a>(full: &'a str, input: &'a str) -> PResult<'a, Type> {
                 }
                 // If no separator found, that's ok - might be the last field
             }
-            Err(_) => return Err(nom::Err::Error(nom::error::Error::new(current_input, nom::error::ErrorKind::Tag))),
+            Err(_) => return Err(nom::Err::Error(ContextualError::new(current_input, nom::error::ErrorKind::Tag))),
         }
     }
     

@@ -14,6 +14,7 @@ use nom::{
 
 use crate::haxe_ast::*;
 use crate::haxe_parser::{ws, symbol, keyword, identifier, PResult, position};
+use crate::custom_error::ContextualError;
 use crate::haxe_parser_expr2::{identifier_expr, this_expr, super_expr, null_expr, new_expr, cast_expr, untyped_expr, array_expr, object_expr, block_expr, if_expr, switch_expr, for_expr, while_expr, do_while_expr, macro_expr, reify_expr, compiler_specific_expr};
 use crate::haxe_parser_expr3::{try_expr, function_expr, return_expr, break_expr, continue_expr, throw_expr, var_expr, paren_expr, metadata_expr, arrow_params};
 
@@ -30,9 +31,9 @@ fn ternary_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     
     // Check for ternary
     if let Ok((input, _)) = symbol("?")(input) {
-        let (input, then_expr) = context("expected expression after '?' in ternary operator", |i| ternary_expr(full, i)).parse(input)?;
-        let (input, _) = context("expected ':' after then expression in ternary operator", symbol(":")).parse(input)?;
-        let (input, else_expr) = context("expected expression after ':' in ternary operator", |i| ternary_expr(full, i)).parse(input)?;
+        let (input, then_expr) = context("[E0050] expected expression after '?' in ternary operator | help: provide the expression to return when condition is true", |i| ternary_expr(full, i)).parse(input)?;
+        let (input, _) = context("[E0051] expected ':' after then expression in ternary operator | help: ternary operator requires ':' to separate then and else branches", symbol(":")).parse(input)?;
+        let (input, else_expr) = context("[E0052] expected expression after ':' in ternary operator | help: provide the expression to return when condition is false", |i| ternary_expr(full, i)).parse(input)?;
         let end = position(full, input);
         
         Ok((input, Expr {
@@ -288,7 +289,7 @@ fn ws_before_one_of_ops<'a>(ops: &'a [(&'a str, BinaryOp)]) -> impl FnMut(&'a st
                 return Ok((rest, *op_str));
             }
         }
-        Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)))
+        Err(nom::Err::Error(crate::custom_error::ContextualError::new(input, nom::error::ErrorKind::Tag)))
     }
 }
 

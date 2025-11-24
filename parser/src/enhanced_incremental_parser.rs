@@ -6,7 +6,7 @@
 use diagnostics::{
     SourceMap, SourceSpan, SourcePosition, FileId, Diagnostics
 };
-use crate::context_integration::ContextErrorCollector;
+
 use crate::enhanced_context::HaxeDiagnostics;
 use crate::haxe_ast::HaxeFile;
 use crate::haxe_parser_decls;
@@ -57,7 +57,7 @@ impl EnhancedParseResult {
 pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> EnhancedParseResult {
     let mut result = EnhancedParseResult::new(file_name.to_string(), input);
     let file_id = FileId::new(0); // First file in source map
-    let mut collector = ContextErrorCollector::new(file_id);
+    // let mut collector = ContextErrorCollector::new(file_id);
     
     // Try to parse the full file first
     if let Ok(file) = crate::haxe_parser::parse_haxe_file(file_name, input, false) {
@@ -79,7 +79,7 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> EnhancedPar
                 let consumed = current_input.len() - remaining.len();
                 
                 // Try to parse this specific declaration
-                match parse_single_declaration(current_input, &decl_type, &mut collector) {
+                match parse_single_declaration(current_input, &decl_type) {
                     Ok((new_remaining, _)) => {
                         // Successfully parsed declaration
                         let new_consumed = current_input.len() - new_remaining.len();
@@ -125,9 +125,9 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> EnhancedPar
     }
     
     // Add any diagnostics collected during context parsing
-    for diagnostic in collector.into_diagnostics() {
-        result.add_diagnostic(diagnostic);
-    }
+    // for diagnostic in collector.into_diagnostics() {
+    //     result.add_diagnostic(diagnostic);
+    // }
     
     result
 }
@@ -155,7 +155,7 @@ fn identify_next_declaration(input: &str) -> IResult<&str, String> {
 fn parse_single_declaration<'a>(
     input: &'a str,
     _decl_type: &str,
-    _collector: &mut ContextErrorCollector,
+    // _collector: &mut ContextErrorCollector,
 ) -> IResult<&'a str, ()> {
     // For now, just consume until semicolon or brace
     // TODO: Integrate with actual declaration parsers

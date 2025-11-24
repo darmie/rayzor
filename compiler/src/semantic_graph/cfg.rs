@@ -198,7 +198,7 @@ pub enum PerformanceHint {
 }
 
 /// Complete control flow graph for a function
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ControlFlowGraph {
     /// All basic blocks in this CFG
     pub blocks: IdMap<BlockId, BasicBlock>,

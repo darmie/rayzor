@@ -266,6 +266,33 @@ impl NamespaceResolver {
             Vec::new()
         }
     }
+
+    /// Find the package containing a symbol
+    pub fn find_package_by_symbol(&self, symbol_id: SymbolId) -> Option<PackageId> {
+        for (&package_id, package) in &self.packages {
+            if package.symbols.values().any(|&s| s == symbol_id) {
+                return Some(package_id);
+            }
+        }
+        None
+    }
+
+    /// Mark a package as internal
+    pub fn set_package_internal(&mut self, package_id: PackageId, is_internal: bool) {
+        if let Some(package) = self.packages.get_mut(&package_id) {
+            package.is_internal = is_internal;
+        }
+    }
+
+    /// Check if a package path exists
+    pub fn has_package(&self, path: &[InternedString]) -> bool {
+        self.package_paths.contains_key(path)
+    }
+
+    /// Get package ID by path
+    pub fn get_package_by_path(&self, path: &[InternedString]) -> Option<PackageId> {
+        self.package_paths.get(path).copied()
+    }
 }
 
 /// Import resolver for managing import visibility and precedence

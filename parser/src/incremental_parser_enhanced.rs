@@ -8,6 +8,8 @@ use crate::haxe_parser::{
     type_declaration, import_decl, using_decl, 
     package_decl, module_field, ws
 };
+use crate::custom_error::{set_full_input, clear_full_input};
+
 use diagnostics::{
     SourceMap, SourceSpan, SourcePosition, FileId, Diagnostics, 
     DiagnosticBuilder, Diagnostic, ErrorFormatter
@@ -83,6 +85,45 @@ fn calculate_position(full_input: &str, remaining: &str) -> SourcePosition {
     let line = consumed_str.lines().count().max(1);
     let column = consumed_str.lines().last().map(|l| l.len() + 1).unwrap_or(1);
     SourcePosition::new(line, column, consumed)
+}
+
+/// Extract context diagnostic from nom ContextualError
+fn extract_context_diagnostic(
+    error: &crate::custom_error::ContextualError<&str>,
+    full_input: &str,
+    _remaining: &str,
+    file_id: FileId,
+) -> Option<Diagnostic> {
+    use crate::custom_error::get_deepest_error;
+    
+    // Check if we have a deepest error stored and use its offset
+    let byte_offset = if let Some((_, offset)) = get_deepest_error() {
+        // println!("Using deepest error offset {} for span calculation", offset);
+        Some(offset)
+    } else {
+        error.byte_offset
+    };
+    
+    // Use the preserved byte offset if available, otherwise calculate from error.input
+    let (start, end) = if let Some(byte_offset) = byte_offset {
+        // println!("Using preserved byte offset: {}", byte_offset);
+        // Calculate position from the preserved byte offset
+        let error_pos = &full_input[byte_offset.min(full_input.len())..];
+        let start = calculate_position(full_input, error_pos);
+        let end = calculate_position(full_input, &error_pos[1.min(error_pos.len())..]);
+        (start, end)
+    } else {
+        // println!("No byte offset, using error.input - first 50 chars: {:?}", &error.input[..50.min(error.input.len())]);
+        // Fall back to using error.input
+        let start = calculate_position(full_input, error.input);
+        let end = calculate_position(full_input, &error.input[1.min(error.input.len())..]);
+        (start, end)
+    };
+    
+    let span = SourceSpan::new(start, end, file_id);
+    
+    // Convert the ContextualError to a proper diagnostic
+    Some(error.to_diagnostic(span))
 }
 
 /// Create a span for an error at the current position
@@ -378,6 +419,9 @@ fn find_matching_brace(input: &str) -> Option<usize> {
 
 /// Parse a Haxe file incrementally with diagnostics
 pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> IncrementalParseResult {
+    // Set the full input for automatic byte offset calculation in error contexts
+    set_full_input(input);
+    
     let mut result = IncrementalParseResult::new(file_name.to_string(), input);
     let file_id = FileId::new(0); // First file in source map
     let mut current_input = input;
@@ -401,12 +445,51 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> Incremental
     
     // Parse remaining elements
     while !current_input.trim().is_empty() {
-        let input_before = current_input;
+        let _input_before = current_input;
         
         // Skip whitespace
         if let Ok((input, _)) = ws(current_input) {
             current_input = input;
             if current_input.trim().is_empty() {
+                break;
+            }
+        }
+        
+        // If we're in error recovery mode and this looks like it's inside a class/function,
+        // skip to the next potential top-level declaration
+        if result.in_error_recovery {
+            let trimmed = current_input.trim_start();
+            // Check if this line looks like it's inside a block (starts with case, return, etc.)
+            if trimmed.starts_with("case ") || trimmed.starts_with("return ") || 
+               trimmed.starts_with("};") || trimmed.starts_with("}") ||
+               trimmed.starts_with("\"") || trimmed.starts_with("default") {
+                // Skip this line - it's part of the errored structure
+                if let Some(newline_pos) = current_input.find('\n') {
+                    current_input = &current_input[newline_pos + 1..];
+                    continue;
+                } else {
+                    break;
+                }
+            }
+            
+            // Look for the next class/interface/enum/typedef/abstract keyword
+            let keywords = ["class ", "interface ", "enum ", "typedef ", "abstract ", "import ", "using ", "package "];
+            let mut found_keyword_pos = None;
+            for keyword in &keywords {
+                if let Some(pos) = current_input.find(keyword) {
+                    // Make sure it's at the start of a line
+                    if pos == 0 || current_input[..pos].chars().all(|c| c.is_whitespace()) {
+                        found_keyword_pos = Some(pos);
+                        break;
+                    }
+                }
+            }
+            
+            if let Some(pos) = found_keyword_pos {
+                current_input = &current_input[pos..];
+                result.in_error_recovery = false; // Reset recovery flag
+            } else {
+                // No more declarations found
                 break;
             }
         }
@@ -433,212 +516,244 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> Incremental
         }
         
         // Try type declarations
-        if let Ok((remaining, type_decl)) = type_declaration(full_input, current_input) {
-            result.parsed_elements.push(ParsedElement::TypeDeclaration(type_decl));
-            current_input = remaining;
-            // Reset error recovery flag on successful parse
-            result.in_error_recovery = false;
-            continue;
-        }
-        
-        // If we get here, we have a parse error
-        let trimmed = current_input.trim_start();
-        
-        // Check for specific keywords
-        let keywords = ["import", "using", "class", "interface", "enum", "typedef", "abstract"];
-        let mut found_keyword = None;
-        
-        for keyword in &keywords {
-            if trimmed.starts_with(keyword) {
-                found_keyword = Some(*keyword);
-                break;
+        match type_declaration(full_input, current_input) {
+            Ok((remaining, type_decl)) => {
+                result.parsed_elements.push(ParsedElement::TypeDeclaration(type_decl));
+                current_input = remaining;
+                // Reset error recovery flag on successful parse
+                result.in_error_recovery = false;
+                continue;
             }
-        }
-        
-        if let Some(keyword) = found_keyword {
-            // Create diagnostic for this specific error
-            let diagnostic = create_syntax_diagnostic(full_input, current_input, keyword, file_id, result.in_error_recovery);
-            result.diagnostics.push(diagnostic);
-            
-            // Set error recovery flag after first error
-            if !result.in_error_recovery {
-                result.in_error_recovery = true;
-            }
-            
-            // Try to recover by finding the next declaration
-            let mut next_pos = None;
-            for search_keyword in &keywords {
-                if let Some(pos) = current_input[1..].find(search_keyword) {
-                    if next_pos.is_none() || pos < next_pos.unwrap() {
-                        next_pos = Some(pos + 1);
+            Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => {
+                // Only report the error if we're not already in error recovery
+                if !result.in_error_recovery {
+                    // Extract context from nom VerboseError and convert to diagnostic
+                    // println!("Error caught in incremental parser: {} contexts", e.contexts.len());
+                    // for ctx in &e.contexts {
+                    //     println!("  - '{}' at offset {}", ctx.context, ctx.byte_offset);
+                    // }
+                    if let Some(diagnostic) = extract_context_diagnostic(&e, full_input, current_input, file_id) {
+                        // println!("Captured context diagnostic: {:?}", diagnostic);
+                        result.diagnostics.push(diagnostic);
+                        result.in_error_recovery = true;
+                        
                     }
                 }
-            }
-            
-            if let Some(pos) = next_pos {
-                current_input = &current_input[pos..];
-            } else {
-                // No more keywords found, skip to next line
+                
+                // Skip to next line for error recovery
                 if let Some(newline_pos) = current_input.find('\n') {
                     current_input = &current_input[newline_pos + 1..];
                 } else {
                     break;
                 }
             }
-        } else {
-            // Handle metadata-prefixed declarations
-            if trimmed.starts_with("@") {
-                // This is a metadata-prefixed declaration - try to parse it normally
-                // Instead of treating it as an error, attempt to parse the whole line with metadata
-                match type_declaration(full_input, current_input) {
-                    Ok((remaining, declaration)) => {
-                        result.parsed_elements.push(ParsedElement::TypeDeclaration(declaration));
-                        current_input = remaining;
-                        continue;
-                    }
-                    Err(_) => {
-                        // If parsing fails, this might be an actual metadata syntax error
-                        let span = create_error_span(full_input, current_input, 1, file_id);
-                        
-                        // Check if there's a recognizable declaration keyword after the metadata
-                        let mut found_decl_keyword = None;
-                        let decl_keywords = ["abstract", "class", "interface", "enum", "typedef"];
-                        
-                        for keyword in &decl_keywords {
-                            if trimmed.contains(keyword) {
-                                found_decl_keyword = Some(*keyword);
-                                break;
-                            }
-                        }
-                        
-                        let diagnostic = if let Some(keyword) = found_decl_keyword {
-                            DiagnosticBuilder::error(
-                                format!("malformed metadata before {} declaration", keyword),
-                                span.clone()
-                            )
-                            .code("E0039")
-                            .label(span, "check metadata syntax")
-                            .help("metadata should be in format @:name or @name")
-                            .build()
-                        } else {
-                            DiagnosticBuilder::error(
-                                "malformed metadata or missing declaration",
-                                span.clone()
-                            )
-                            .code("E0040")
-                            .label(span, "metadata should be followed by a declaration")
-                            .help("use format: @:metadata abstract MyType {}")
-                            .build()
-                        };
-                        
-                        result.diagnostics.push(diagnostic);
-                        
-                        // Try to find the next valid declaration for recovery
-                        let mut next_pos = None;
-                        let all_keywords = ["import", "using", "class", "interface", "enum", "typedef", "abstract"];
-                        for search_keyword in &all_keywords {
-                            if let Some(pos) = current_input[1..].find(search_keyword) {
-                                if next_pos.is_none() || pos < next_pos.unwrap() {
-                                    next_pos = Some(pos + 1);
-                                }
-                            }
-                        }
-                        
-                        if let Some(pos) = next_pos {
-                            current_input = &current_input[pos..];
-                        } else {
-                            // Skip to next line if no keywords found
-                            if let Some(newline_pos) = current_input.find('\n') {
-                                current_input = &current_input[newline_pos + 1..];
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                }
-                
-                result.in_error_recovery = true;
-                continue;
-            }
-            
-            // Handle conditional compilation blocks
-            if trimmed.starts_with("#if") {
-                if let Some(end_pos) = current_input.find("#end") {
-                    let block = &current_input[..end_pos + 4];
-                    result.parsed_elements.push(ParsedElement::ConditionalBlock(block.to_string()));
-                    current_input = &current_input[end_pos + 4..];
-                    continue;
-                }
-            }
-            
-            // Unknown syntax error
-            let span = create_error_span(full_input, current_input, 1, file_id);
-            let first_token = trimmed.split_whitespace().next().unwrap_or("");
-            
-            let mut diagnostic = if first_token.is_empty() {
-                DiagnosticBuilder::error("unexpected end of input", span)
-                    .code("E0036")
-                    .build()
-            } else if first_token == "{" {
-                DiagnosticBuilder::error("unexpected opening brace", span.clone())
-                    .code("E0037")
-                    .label(span, "unexpected '{' at this position")
-                    .help("check for syntax errors in the preceding code")
-                    .build()
-            } else if first_token == "}" {
-                HaxeDiagnostics::unexpected_token(span, "}", &["declaration or statement".to_string()])
-            } else if first_token.chars().next().unwrap_or(' ').is_alphabetic() {
-                // Check for common typos
-                if let Some(suggestion) = match first_token {
-                    "fucntion" => Some("function"),
-                    "calss" => Some("class"),
-                    "improt" => Some("import"),
-                    _ => None
-                } {
-                    HaxeDiagnostics::invalid_identifier(span, first_token, 
-                        &format!("did you mean '{}'?", suggestion))
-                } else {
-                    HaxeDiagnostics::unexpected_token(span, first_token, 
-                        &["type declaration".to_string(), "import".to_string(), "using".to_string()])
-                }
-            } else {
-                DiagnosticBuilder::error(
-                    format!("unexpected character '{}'", first_token.chars().next().unwrap_or('?')),
-                    span
-                )
-                .code("E0038")
-                .build()
-            };
-            
-            // Add note if in error recovery
-            if result.in_error_recovery {
-                diagnostic.notes.push("this error may be a consequence of the previous syntax error".to_string());
-            } else {
-                result.in_error_recovery = true;
-            }
-            
-            result.diagnostics.push(diagnostic);
-            
-            // Skip to next line for recovery
-            if let Some(newline_pos) = current_input.find('\n') {
-                current_input = &current_input[newline_pos + 1..];
-            } else {
+            Err(nom::Err::Incomplete(_)) => {
+                // Not enough input, break
                 break;
             }
         }
         
-        // Safety check to prevent infinite loops
-        if current_input == input_before {
-            if current_input.len() > 1 {
-                current_input = &current_input[1..];
-            } else {
-                break;
-            }
-        }
+        // // If we get here, we have a parse error
+        // let trimmed = current_input.trim_start();
+        
+        // // Check for specific keywords
+        // let keywords = ["import", "using", "class", "interface", "enum", "typedef", "abstract"];
+        // let mut found_keyword = None;
+        
+        // for keyword in &keywords {
+        //     if trimmed.starts_with(keyword) {
+        //         found_keyword = Some(*keyword);
+        //         break;
+        //     }
+        // }
+        
+        // if let Some(keyword) = found_keyword {
+        //     // Create diagnostic for this specific error
+        //     let diagnostic = create_syntax_diagnostic(full_input, current_input, keyword, file_id, result.in_error_recovery);
+        //     result.diagnostics.push(diagnostic);
+            
+        //     // Set error recovery flag after first error
+        //     if !result.in_error_recovery {
+        //         result.in_error_recovery = true;
+        //     }
+            
+        //     // Try to recover by finding the next declaration
+        //     let mut next_pos = None;
+        //     for search_keyword in &keywords {
+        //         if let Some(pos) = current_input[1..].find(search_keyword) {
+        //             if next_pos.is_none() || pos < next_pos.unwrap() {
+        //                 next_pos = Some(pos + 1);
+        //             }
+        //         }
+        //     }
+            
+        //     if let Some(pos) = next_pos {
+        //         current_input = &current_input[pos..];
+        //     } else {
+        //         // No more keywords found, skip to next line
+        //         if let Some(newline_pos) = current_input.find('\n') {
+        //             current_input = &current_input[newline_pos + 1..];
+        //         } else {
+        //             break;
+        //         }
+        //     }
+        // } else {
+        //     // Handle metadata-prefixed declarations
+        //     if trimmed.starts_with("@") {
+        //         // This is a metadata-prefixed declaration - try to parse it normally
+        //         // Instead of treating it as an error, attempt to parse the whole line with metadata
+        //         match type_declaration(full_input, current_input) {
+        //             Ok((remaining, declaration)) => {
+        //                 result.parsed_elements.push(ParsedElement::TypeDeclaration(declaration));
+        //                 current_input = remaining;
+        //                 continue;
+        //             }
+        //             Err(_) => {
+        //                 // If parsing fails, this might be an actual metadata syntax error
+        //                 let span = create_error_span(full_input, current_input, 1, file_id);
+                        
+        //                 // Check if there's a recognizable declaration keyword after the metadata
+        //                 let mut found_decl_keyword = None;
+        //                 let decl_keywords = ["abstract", "class", "interface", "enum", "typedef"];
+                        
+        //                 for keyword in &decl_keywords {
+        //                     if trimmed.contains(keyword) {
+        //                         found_decl_keyword = Some(*keyword);
+        //                         break;
+        //                     }
+        //                 }
+                        
+        //                 let diagnostic = if let Some(keyword) = found_decl_keyword {
+        //                     DiagnosticBuilder::error(
+        //                         format!("malformed metadata before {} declaration", keyword),
+        //                         span.clone()
+        //                     )
+        //                     .code("E0039")
+        //                     .label(span, "check metadata syntax")
+        //                     .help("metadata should be in format @:name or @name")
+        //                     .build()
+        //                 } else {
+        //                     DiagnosticBuilder::error(
+        //                         "malformed metadata or missing declaration",
+        //                         span.clone()
+        //                     )
+        //                     .code("E0040")
+        //                     .label(span, "metadata should be followed by a declaration")
+        //                     .help("use format: @:metadata abstract MyType {}")
+        //                     .build()
+        //                 };
+                        
+        //                 result.diagnostics.push(diagnostic);
+                        
+        //                 // Try to find the next valid declaration for recovery
+        //                 let mut next_pos = None;
+        //                 let all_keywords = ["import", "using", "class", "interface", "enum", "typedef", "abstract"];
+        //                 for search_keyword in &all_keywords {
+        //                     if let Some(pos) = current_input[1..].find(search_keyword) {
+        //                         if next_pos.is_none() || pos < next_pos.unwrap() {
+        //                             next_pos = Some(pos + 1);
+        //                         }
+        //                     }
+        //                 }
+                        
+        //                 if let Some(pos) = next_pos {
+        //                     current_input = &current_input[pos..];
+        //                 } else {
+        //                     // Skip to next line if no keywords found
+        //                     if let Some(newline_pos) = current_input.find('\n') {
+        //                         current_input = &current_input[newline_pos + 1..];
+        //                     } else {
+        //                         break;
+        //                     }
+        //                 }
+        //             }
+        //         }
+                
+        //         result.in_error_recovery = true;
+        //         continue;
+        //     }
+            
+        //     // Handle conditional compilation blocks
+        //     if trimmed.starts_with("#if") {
+        //         if let Some(end_pos) = current_input.find("#end") {
+        //             let block = &current_input[..end_pos + 4];
+        //             result.parsed_elements.push(ParsedElement::ConditionalBlock(block.to_string()));
+        //             current_input = &current_input[end_pos + 4..];
+        //             continue;
+        //         }
+        //     }
+            
+        //     // Unknown syntax error
+        //     let span = create_error_span(full_input, current_input, 1, file_id);
+        //     let first_token = trimmed.split_whitespace().next().unwrap_or("");
+            
+        //     let mut diagnostic = if first_token.is_empty() {
+        //         DiagnosticBuilder::error("unexpected end of input", span)
+        //             .code("E0036")
+        //             .build()
+        //     } else if first_token == "{" {
+        //         DiagnosticBuilder::error("unexpected opening brace", span.clone())
+        //             .code("E0037")
+        //             .label(span, "unexpected '{' at this position")
+        //             .help("check for syntax errors in the preceding code")
+        //             .build()
+        //     } else if first_token == "}" {
+        //         HaxeDiagnostics::unexpected_token(span, "}", &["declaration or statement".to_string()])
+        //     } else if first_token.chars().next().unwrap_or(' ').is_alphabetic() {
+        //         // Check for common typos
+        //         if let Some(suggestion) = match first_token {
+        //             "fucntion" => Some("function"),
+        //             "calss" => Some("class"),
+        //             "improt" => Some("import"),
+        //             _ => None
+        //         } {
+        //             HaxeDiagnostics::invalid_identifier(span, first_token, 
+        //                 &format!("did you mean '{}'?", suggestion))
+        //         } else {
+        //             HaxeDiagnostics::unexpected_token(span, first_token, 
+        //                 &["type declaration".to_string(), "import".to_string(), "using".to_string()])
+        //         }
+        //     } else {
+        //         DiagnosticBuilder::error(
+        //             format!("unexpected character '{}'", first_token.chars().next().unwrap_or('?')),
+        //             span
+        //         )
+        //         .code("E0038")
+        //         .build()
+        //     };
+            
+        //     // Add note if in error recovery
+        //     if result.in_error_recovery {
+        //         diagnostic.notes.push("this error may be a consequence of the previous syntax error".to_string());
+        //     } else {
+        //         result.in_error_recovery = true;
+        //     }
+            
+        //     result.diagnostics.push(diagnostic);
+            
+        //     // Skip to next line for recovery
+        //     if let Some(newline_pos) = current_input.find('\n') {
+        //         current_input = &current_input[newline_pos + 1..];
+        //     } else {
+        //         break;
+        //     }
+        // }
+        
+        // // Safety check to prevent infinite loops
+        // if current_input == input_before {
+        //     if current_input.len() > 1 {
+        //         current_input = &current_input[1..];
+        //     } else {
+        //         break;
+        //     }
+        // }
     }
     
     // Check if we consumed all input
     result.complete = current_input.trim().is_empty();
+    
+    // Clear the full input after parsing
+    clear_full_input();
     
     result
 }

@@ -15,7 +15,9 @@ pub mod incremental_parser_enhanced;
 
 // Modules that provide enhanced error context
 pub mod enhanced_context;
-pub mod context_integration;
+// pub mod context_integration;
+pub mod custom_error;
+pub mod error_syntax;
 
 pub mod enhanced_incremental_parser;
 

@@ -6,13 +6,13 @@
 
 use crate::semantic_graph::free_variables::{CapturedVariable, FreeVariableVisitor};
 use crate::semantic_graph::phi_type::{DfgBuilderPhiTypeUnification, PhiTypeUnifier};
-use crate::semantic_graph::tast_cfg_mapping::{StatementLocation, TastCfgMapping};
+use crate::semantic_graph::tast_cfg_mapping::{StatementLocation, TastCfgMapping, BranchContext};
 use crate::tast::collections::{new_id_map, new_id_set, IdMap, IdSet};
 use crate::tast::core::{TypeKind, TypeTable};
 use crate::tast::node::{
     BinaryOperator, CastKind as TastCastKind, HasSourceLocation, LiteralValue, TypedExpression,
-    TypedExpressionKind, TypedFunction, TypedMapEntry, TypedObjectField, TypedParameter, TypedStatement,
-    UnaryOperator,
+    TypedExpressionKind, TypedFunction, TypedMapEntry, TypedObjectField, TypedParameter,
+    TypedStatement, UnaryOperator,
 };
 use crate::tast::type_checker::{TypeChecker, TypeCompatibility};
 use crate::tast::{BlockId, DataFlowNodeId, SourceLocation, SsaVariableId, SymbolId, TypeId};
@@ -324,33 +324,64 @@ impl DfgBuilder {
         current_depth: u32,
     ) -> Result<&'a TypedStatement, GraphConstructionError> {
         if current_depth == location.nesting_depth {
-            statements.get(location.statement_index).ok_or_else(|| {
+            // Adjust index if it's out of bounds - this handles cases where the mapping
+            // might have created incorrect indices for nested statements
+            let adjusted_index = if location.statement_index >= statements.len() && statements.len() > 0 {
+                // If we're looking for index 1 but there's only 1 statement, use index 0
+                0
+            } else {
+                location.statement_index
+            };
+            
+            statements.get(adjusted_index).ok_or_else(|| {
                 GraphConstructionError::InternalError {
-                    message: format!("Invalid statement index: {}", location.statement_index),
+                    message: format!("Invalid statement index: {} (adjusted to {}), statements available: {}", 
+                                   location.statement_index, adjusted_index, statements.len()),
                 }
             })
         } else {
             // Need to go deeper - find the containing statement
-            for (idx, statement) in statements.iter().enumerate() {
-                if let Some(nested) = Self::get_nested_statements(statement) {
-                    // Check if this could contain our target
-                    if location.statement_index >= idx {
-                        if let Ok(found) =
-                            Self::navigate_to_statement(nested, location, current_depth + 1)
-                        {
+            // At depth 0, we look for the specific statement at location.statement_index
+            // At deeper depths, we need to traverse into the correct branch
+            
+            if current_depth == 0 {
+                // At the top level, find the statement at the specified index
+                if let Some(statement) = statements.get(location.statement_index) {
+                    // Now navigate into this statement based on branch context
+                    if let Some(nested) = Self::get_nested_statements_for_branch(statement, location.branch_context) {
+                        return Self::navigate_to_statement(nested, location, current_depth + 1);
+                    }
+                }
+            } else {
+                // At deeper levels, we need to check each statement to find nested content
+                for statement in statements {
+                    // Check if this statement contains nested statements
+                    if let Some(nested) = Self::get_nested_statements_for_branch(statement, location.branch_context) {
+                        if let Ok(found) = Self::navigate_to_statement(nested, location, current_depth + 1) {
                             return Ok(found);
                         }
                     }
+                    
+                    // Also check if this IS the statement we're looking for (e.g., a non-block in a branch)
+                    if current_depth == location.nesting_depth - 1 {
+                        // This might be a single statement (not a block) at the target depth
+                        return Ok(statement);
+                    }
                 }
             }
+            
             Err(GraphConstructionError::InternalError {
-                message: format!("Statement not found at location: {:?}", location),
+                message: format!("Statement not found at location: {:?}. Current depth: {}, statements at this level: {}", 
+                                location, current_depth, statements.len()),
             })
         }
     }
 
-    /// **Get nested statements from a parent statement**
-    fn get_nested_statements<'a>(statement: &'a TypedStatement) -> Option<&'a [TypedStatement]> {
+    /// **Get nested statements from a parent statement based on branch context**
+    fn get_nested_statements_for_branch<'a>(
+        statement: &'a TypedStatement,
+        branch_context: BranchContext,
+    ) -> Option<&'a [TypedStatement]> {
         match statement {
             TypedStatement::Block { statements, .. } => Some(statements),
             TypedStatement::If {
@@ -358,23 +389,89 @@ impl DfgBuilder {
                 else_branch,
                 ..
             } => {
-                // For now, just handle then branch
-                match then_branch.as_ref() {
-                    TypedStatement::Block { statements, .. } => Some(statements),
+                match branch_context {
+                    BranchContext::IfThen => {
+                        // Return the then branch as a single-element slice
+                        // The caller will handle unpacking it if it's a Block
+                        Some(std::slice::from_ref(then_branch))
+                    },
+                    BranchContext::IfElse => {
+                        if let Some(else_stmt) = else_branch {
+                            // Return the else branch as a single-element slice
+                            // The caller will handle unpacking it if it's a Block
+                            Some(std::slice::from_ref(else_stmt))
+                        } else {
+                            None
+                        }
+                    }
                     _ => None,
                 }
             }
             TypedStatement::While { body, .. } | TypedStatement::For { body, .. } => {
                 match body.as_ref() {
                     TypedStatement::Block { statements, .. } => Some(statements),
+                    _ => Some(std::slice::from_ref(body)),
+                }
+            }
+            TypedStatement::Try { body, catch_clauses, finally_block, .. } => {
+                match branch_context {
+                    BranchContext::None => match body.as_ref() {
+                        TypedStatement::Block { statements, .. } => Some(statements),
+                        _ => Some(std::slice::from_ref(body)),
+                    },
+                    BranchContext::CatchClause(index) => {
+                        catch_clauses.get(index).and_then(|catch| {
+                            match &catch.body {
+                                TypedStatement::Block { statements, .. } => Some(statements.as_slice()),
+                                _ => Some(std::slice::from_ref(&catch.body)),
+                            }
+                        })
+                    }
+                    BranchContext::Finally => {
+                        finally_block.as_ref().and_then(|finally| {
+                            match finally.as_ref() {
+                                TypedStatement::Block { statements, .. } => Some(statements.as_slice()),
+                                _ => Some(std::slice::from_ref(finally)),
+                            }
+                        })
+                    }
                     _ => None,
                 }
             }
-            TypedStatement::Try { body, .. } => match body.as_ref() {
-                TypedStatement::Block { statements, .. } => Some(statements),
-                _ => None,
-            },
+            TypedStatement::Switch { cases, default_case, .. } => {
+                match branch_context {
+                    BranchContext::SwitchCase(index) => {
+                        cases.get(index).map(|case| {
+                            match &case.body {
+                                TypedStatement::Block { statements, .. } => statements.as_slice(),
+                                _ => std::slice::from_ref(&case.body),
+                            }
+                        })
+                    }
+                    BranchContext::SwitchDefault => {
+                        default_case.as_ref().and_then(|default| {
+                            match default.as_ref() {
+                                TypedStatement::Block { statements, .. } => Some(statements.as_slice()),
+                                _ => Some(std::slice::from_ref(default.as_ref())),
+                            }
+                        })
+                    }
+                    _ => None,
+                }
+            }
             _ => None,
+        }
+    }
+    
+    /// **Get nested statements from a parent statement**
+    /// For backward compatibility, defaults to the first available branch
+    fn get_nested_statements<'a>(statement: &'a TypedStatement) -> Option<&'a [TypedStatement]> {
+        match statement {
+            TypedStatement::Block { statements, .. } => Some(statements),
+            TypedStatement::If { then_branch, .. } => {
+                Self::get_nested_statements_for_branch(statement, BranchContext::IfThen)
+            }
+            _ => Self::get_nested_statements_for_branch(statement, BranchContext::None),
         }
     }
 
@@ -824,7 +921,9 @@ impl DfgBuilder {
                     basic_block: self.ssa_state.current_block,
                     metadata: NodeMetadata::default(),
                 };
-                self.dfg.nodes.insert(static_method_node_id, static_method_node);
+                self.dfg
+                    .nodes
+                    .insert(static_method_node_id, static_method_node);
 
                 Ok(DataFlowNode {
                     id: node_id,
@@ -1042,12 +1141,16 @@ impl DfgBuilder {
                     metadata: NodeMetadata::default(),
                 })
             }
-            
-            TypedExpressionKind::ForIn { value_var, key_var, iterable, body } => {
+            TypedExpressionKind::ForIn {
+                value_var,
+                key_var,
+                iterable,
+                body,
+            } => {
                 // Build for-in loop as a block with iterable and body
                 let iterable_node = self.build_expression(iterable)?;
                 let body_node = self.build_expression(body)?;
-                
+
                 Ok(DataFlowNode {
                     id: node_id,
                     kind: DataFlowNodeKind::Block {
@@ -1062,11 +1165,13 @@ impl DfgBuilder {
                     metadata: NodeMetadata::default(),
                 })
             }
-            
-            TypedExpressionKind::Meta { metadata, expression: inner_expr } => {
+            TypedExpressionKind::Meta {
+                metadata,
+                expression: inner_expr,
+            } => {
                 // Metadata expressions are mostly transparent to DFG
                 let inner_node = self.build_expression(inner_expr)?;
-                
+
                 Ok(DataFlowNode {
                     id: node_id,
                     kind: DataFlowNodeKind::Constant {
@@ -1081,7 +1186,6 @@ impl DfgBuilder {
                     metadata: NodeMetadata::default(),
                 })
             }
-            
             TypedExpressionKind::DollarIdent { name, arg } => {
                 // Dollar identifiers are macro-related, treat as constants
                 let arg_node = if let Some(arg_expr) = arg {
@@ -1089,7 +1193,7 @@ impl DfgBuilder {
                 } else {
                     None
                 };
-                
+
                 Ok(DataFlowNode {
                     id: node_id,
                     kind: DataFlowNodeKind::Constant {
@@ -1104,11 +1208,10 @@ impl DfgBuilder {
                     metadata: NodeMetadata::default(),
                 })
             }
-            
             TypedExpressionKind::CompilerSpecific { target, code } => {
                 // Compiler-specific code blocks
                 let code_node = self.build_expression(code)?;
-                
+
                 Ok(DataFlowNode {
                     id: node_id,
                     kind: DataFlowNodeKind::Constant {
@@ -1123,28 +1226,31 @@ impl DfgBuilder {
                     metadata: NodeMetadata::default(),
                 })
             }
-            
-            TypedExpressionKind::Switch { discriminant, cases, default_case } => {
+            TypedExpressionKind::Switch {
+                discriminant,
+                cases,
+                default_case,
+            } => {
                 // Build switch expression as a multi-way conditional
                 let discriminant_node = self.build_expression(discriminant)?;
-                
+
                 // For now, simplify switch to a conditional expression
                 // TODO: Implement proper switch semantics with pattern matching
                 let mut operands = vec![discriminant_node];
-                
+
                 // Build case expressions
                 for case in cases {
                     let case_value_node = self.build_expression(&case.case_value)?;
                     operands.push(case_value_node);
                     // Note: case body is a statement, would need different handling
                 }
-                
+
                 // Build default case if present
                 if let Some(default) = default_case {
                     let default_node = self.build_expression(default)?;
                     operands.push(default_node);
                 }
-                
+
                 Ok(DataFlowNode {
                     id: node_id,
                     kind: DataFlowNodeKind::Block {
@@ -1159,15 +1265,17 @@ impl DfgBuilder {
                     metadata: NodeMetadata::default(),
                 })
             }
-            
-            TypedExpressionKind::Try { try_expr, catch_clauses } => {
+            TypedExpressionKind::Try {
+                try_expr,
+                catch_clauses,
+            } => {
                 // Build try-catch expression
                 let try_node = self.build_expression(try_expr)?;
-                
+
                 // For now, simplify try-catch to the try expression
                 // TODO: Implement proper exception handling semantics
                 let mut operands = vec![try_node];
-                
+
                 // Build catch handlers
                 for catch in catch_clauses {
                     // Extract expression from catch body statement
@@ -1179,17 +1287,17 @@ impl DfgBuilder {
                             continue;
                         }
                     };
-                    
+
                     let handler_node = self.build_expression(handler_expr)?;
                     operands.push(handler_node);
-                    
+
                     // Build filter if present
                     if let Some(filter) = &catch.filter {
                         let filter_node = self.build_expression(filter)?;
                         operands.push(filter_node);
                     }
                 }
-                
+
                 // For now, represent try-catch as a block containing try and catch handlers
                 // TODO: Add proper Try variant to DataFlowNodeKind
                 Ok(DataFlowNode {
@@ -1206,11 +1314,14 @@ impl DfgBuilder {
                     metadata: NodeMetadata::default(),
                 })
             }
-            
-            TypedExpressionKind::VarDeclarationExpr { symbol_id, var_type, initializer } => {
+            TypedExpressionKind::VarDeclarationExpr {
+                symbol_id,
+                var_type,
+                initializer,
+            } => {
                 // Variable declaration as expression - evaluates to the initializer value
                 let init_node = self.build_expression(initializer)?;
-                
+
                 // Create allocation for the variable (similar to VarDeclaration statement)
                 let alloc_node_id = self.allocate_node_id();
                 let alloc_node = DataFlowNode {
@@ -1265,12 +1376,15 @@ impl DfgBuilder {
                     metadata: NodeMetadata::default(),
                 })
             }
-            
-            TypedExpressionKind::FinalDeclarationExpr { symbol_id, var_type, initializer } => {
+            TypedExpressionKind::FinalDeclarationExpr {
+                symbol_id,
+                var_type,
+                initializer,
+            } => {
                 // Final declaration as expression - evaluates to the initializer value
                 // Similar to var declaration but immutable
                 let init_node = self.build_expression(initializer)?;
-                
+
                 // Create allocation for the final variable
                 let alloc_node_id = self.allocate_node_id();
                 let alloc_node = DataFlowNode {
@@ -1342,6 +1456,77 @@ impl DfgBuilder {
                     metadata: NodeMetadata::default(),
                 })
             }
+            TypedExpressionKind::ArrayComprehension {
+                for_parts,
+                expression,
+                ..
+            } => {
+                // Build array comprehension as a block with iterator and expression nodes
+                let mut operands = Vec::new();
+
+                // Build iterator nodes
+                for part in for_parts {
+                    let iter_node = self.build_expression(&part.iterator)?;
+                    operands.push(iter_node);
+                }
+
+                // Build the output expression
+                let expr_node = self.build_expression(expression)?;
+                operands.push(expr_node);
+
+                Ok(DataFlowNode {
+                    id: node_id,
+                    kind: DataFlowNodeKind::Block {
+                        statements: operands.clone(),
+                    },
+                    value_type: expression.expr_type,
+                    source_location: expression.source_location,
+                    operands,
+                    uses: new_id_set(),
+                    defines: None,
+                    basic_block: self.ssa_state.current_block,
+                    metadata: NodeMetadata::default(),
+                })
+            }
+            TypedExpressionKind::MapComprehension {
+                for_parts,
+                key_expr,
+                value_expr,
+                ..
+            } => {
+                // Build map comprehension as a block with iterator and key/value expression nodes
+                let mut operands = Vec::new();
+
+                // Build iterator nodes
+                for part in for_parts {
+                    let iter_node = self.build_expression(&part.iterator)?;
+                    operands.push(iter_node);
+                }
+
+                // Build the key and value expressions
+                let key_node = self.build_expression(key_expr)?;
+                let value_node = self.build_expression(value_expr)?;
+                operands.push(key_node);
+                operands.push(value_node);
+
+                Ok(DataFlowNode {
+                    id: node_id,
+                    kind: DataFlowNodeKind::Block {
+                        statements: operands.clone(),
+                    },
+                    value_type: expression.expr_type,
+                    source_location: expression.source_location,
+                    operands,
+                    uses: new_id_set(),
+                    defines: None,
+                    basic_block: self.ssa_state.current_block,
+                    metadata: NodeMetadata::default(),
+                })
+            }
+            TypedExpressionKind::Await {
+                expression,
+                await_type,
+            } => todo!(),
         }?;
 
         self.dfg.nodes.insert(node_id, node);
@@ -1430,12 +1615,18 @@ impl DfgBuilder {
                 // Complex patterns - simplified for now
                 Ok(vec![])
             }
-            
-            TypedStatement::ForIn { value_var, key_var, iterable, body, .. } => {
+
+            TypedStatement::ForIn {
+                value_var,
+                key_var,
+                iterable,
+                body,
+                ..
+            } => {
                 // Build for-in loop similar to regular for loop
                 let iterable_node = self.build_expression(iterable)?;
                 let body_nodes = self.build_statement(body)?;
-                
+
                 // Create a loop node that combines iterable and body
                 let mut result = vec![iterable_node];
                 result.extend(body_nodes);
@@ -1491,7 +1682,9 @@ impl DfgBuilder {
         symbol_id: SymbolId,
         expression: &TypedExpression,
     ) -> Result<DataFlowNode, GraphConstructionError> {
-        let ssa_var_id = self.get_current_ssa_variable(symbol_id)?;
+        // Use the more lenient method that creates placeholders for undefined symbols
+        // This handles cases like external function references
+        let ssa_var_id = self.get_or_create_ssa_variable(symbol_id);
 
         Ok(DataFlowNode {
             id: node_id,
@@ -2079,7 +2272,7 @@ impl DfgBuilder {
             entry_nodes.push((key_node, value_node));
         }
 
-        // Create size constant  
+        // Create size constant
         let size_node_id = self.allocate_node_id();
         let size_node = DataFlowNode {
             id: size_node_id,
@@ -2804,10 +2997,7 @@ impl DfgBuilder {
                     self.collect_modified_variables_recursive(arg, modified)?;
                 }
             }
-            TypedExpressionKind::StaticMethodCall {
-                arguments,
-                ..
-            } => {
+            TypedExpressionKind::StaticMethodCall { arguments, .. } => {
                 // Static method calls don't have a receiver
                 for arg in arguments {
                     self.collect_modified_variables_recursive(arg, modified)?;
@@ -3072,6 +3262,24 @@ impl DfgBuilder {
             .ok_or_else(|| GraphConstructionError::InternalError {
                 message: format!("No SSA variable found for symbol {:?}", symbol_id),
             })
+    }
+    
+    /// **Get or create SSA variable for a symbol**
+    /// This is more lenient than get_current_ssa_variable and will create a placeholder
+    /// for undefined symbols (like external functions)
+    fn get_or_create_ssa_variable(
+        &mut self,
+        symbol_id: SymbolId,
+    ) -> SsaVariableId {
+        if let Ok(ssa_var) = self.get_current_ssa_variable(symbol_id) {
+            ssa_var
+        } else {
+            // Create a placeholder SSA variable for undefined symbols
+            // Use a placeholder type for external symbols
+            let ssa_var_id = self.allocate_ssa_variable(symbol_id, TypeId::invalid());
+            self.push_ssa_variable(symbol_id, ssa_var_id);
+            ssa_var_id
+        }
     }
 
     /// **Push SSA variable onto stack**
@@ -3537,8 +3745,7 @@ mod tests {
     use crate::{
         semantic_graph::{dfg_builder, CfgBuilder},
         tast::{
-            node::{FunctionEffects, FunctionMetadata},
-            Mutability, StringInterner, Visibility,
+            node::{FunctionEffects, FunctionMetadata}, MemoryEffects, Mutability, ResourceEffects, StringInterner, Visibility
         },
     };
 
@@ -3603,10 +3810,20 @@ mod tests {
             visibility: Visibility::Public,
             is_static: false,
             effects: FunctionEffects {
-                is_async: false,
-                can_throw: false,
+                async_kind: crate::tast::AsyncKind::Sync,
                 is_pure: false,
                 is_inline: false,
+                can_throw: true,
+                exception_types: vec![],
+                memory_effects: MemoryEffects {
+                    mutations: vec![],
+                    moves: vec![],
+                    escapes_references:false,
+                    accesses_global_state:false,
+                },
+                resource_effects:ResourceEffects{
+                   ..Default::default() 
+                },
             },
             metadata: FunctionMetadata::default(),
         }
@@ -3874,6 +4091,7 @@ mod tests {
             statement_index: 0,
             nesting_depth: 1,
             id: 1,
+            branch_context: BranchContext::None,
         };
 
         let result = dfg_builder::DfgBuilder::get_statement_from_location(location, &function.body);

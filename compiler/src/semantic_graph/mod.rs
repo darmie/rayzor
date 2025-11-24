@@ -55,7 +55,7 @@ impl LifetimeId {
 }
 
 /// Complete semantic graphs for a compilation unit
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SemanticGraphs {
     /// Control Flow Graph for each function
     pub control_flow: IdMap<SymbolId, ControlFlowGraph>,
