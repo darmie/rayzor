@@ -162,10 +162,48 @@ register_symbol!("haxe_sys_print_float", crate::haxe_sys::haxe_sys_print_float);
 register_symbol!("haxe_sys_print_bool", crate::haxe_sys::haxe_sys_print_bool);
 register_symbol!("haxe_sys_println", crate::haxe_sys::haxe_sys_println);
 
+// Trace (Runtime logging)
+register_symbol!("haxe_trace_int", crate::haxe_sys::haxe_trace_int);
+register_symbol!("haxe_trace_float", crate::haxe_sys::haxe_trace_float);
+register_symbol!("haxe_trace_bool", crate::haxe_sys::haxe_trace_bool);
+register_symbol!("haxe_trace_string", crate::haxe_sys::haxe_trace_string);
+register_symbol!("haxe_trace_string_struct", crate::haxe_sys::haxe_trace_string_struct);
+register_symbol!("haxe_trace_any", crate::haxe_sys::haxe_trace_any);
+
+// Std.string() - Type-specific conversions
+register_symbol!("haxe_string_from_int", crate::haxe_sys::haxe_string_from_int);
+register_symbol!("haxe_string_from_float", crate::haxe_sys::haxe_string_from_float);
+register_symbol!("haxe_string_from_bool", crate::haxe_sys::haxe_string_from_bool);
+register_symbol!("haxe_string_from_string", crate::haxe_sys::haxe_string_from_string);
+register_symbol!("haxe_string_from_null", crate::haxe_sys::haxe_string_from_null);
+
 // Program control
 register_symbol!("haxe_sys_exit", crate::haxe_sys::haxe_sys_exit);
 register_symbol!("haxe_sys_time", crate::haxe_sys::haxe_sys_time);
 register_symbol!("haxe_sys_args_count", crate::haxe_sys::haxe_sys_args_count);
+
+// ============================================================================
+// Type System (Dynamic values and Std.string)
+// ============================================================================
+
+// Boxing functions: Convert concrete values to Dynamic
+register_symbol!("haxe_box_int", crate::type_system::haxe_box_int);
+register_symbol!("haxe_box_float", crate::type_system::haxe_box_float);
+register_symbol!("haxe_box_bool", crate::type_system::haxe_box_bool);
+register_symbol!("haxe_box_string", crate::type_system::haxe_box_string);
+register_symbol!("haxe_box_null", crate::type_system::haxe_box_null);
+
+// Unboxing functions: Extract concrete values from Dynamic
+register_symbol!("haxe_unbox_int", crate::type_system::haxe_unbox_int);
+register_symbol!("haxe_unbox_float", crate::type_system::haxe_unbox_float);
+register_symbol!("haxe_unbox_bool", crate::type_system::haxe_unbox_bool);
+register_symbol!("haxe_unbox_string", crate::type_system::haxe_unbox_string);
+
+// Std.string() with runtime type dispatch
+register_symbol!("haxe_std_string", crate::type_system::haxe_std_string);
+
+// Memory management for Dynamic values
+register_symbol!("haxe_free_dynamic", crate::type_system::haxe_free_dynamic);
 
 // ============================================================================
 // Concurrency Functions (Thread, Arc, Mutex, Channel)

@@ -36,6 +36,119 @@ pub extern "C" fn haxe_sys_println() {
 }
 
 // ============================================================================
+// Trace Functions (Runtime Logging)
+// ============================================================================
+
+/// Trace integer value
+#[no_mangle]
+pub extern "C" fn haxe_trace_int(value: i64) {
+    println!("{}", value);
+}
+
+/// Trace float value
+#[no_mangle]
+pub extern "C" fn haxe_trace_float(value: f64) {
+    println!("{}", value);
+}
+
+/// Trace boolean value
+#[no_mangle]
+pub extern "C" fn haxe_trace_bool(value: bool) {
+    println!("{}", value);
+}
+
+/// Trace string value (ptr + len)
+#[no_mangle]
+pub extern "C" fn haxe_trace_string(ptr: *const u8, len: usize) {
+    if ptr.is_null() {
+        println!("null");
+        return;
+    }
+
+    unsafe {
+        let slice = std::slice::from_raw_parts(ptr, len);
+        match std::str::from_utf8(slice) {
+            Ok(s) => println!("{}", s),
+            Err(_) => println!("<invalid utf8>"),
+        }
+    }
+}
+
+/// Trace string value (takes HaxeString struct directly)
+#[no_mangle]
+pub extern "C" fn haxe_trace_string_struct(s: HaxeString) {
+    haxe_trace_string(s.ptr, s.len);
+}
+
+/// Trace any value (fallback for Dynamic type)
+/// For now, just prints the raw i64 value until we have Std.string()
+#[no_mangle]
+pub extern "C" fn haxe_trace_any(value: i64) {
+    // Without type information, we can only print the raw value
+    // TODO: Once Std.string() is implemented, use that instead
+    println!("{}", value);
+}
+
+// ============================================================================
+// Std.string() - Type-specific string conversions
+// ============================================================================
+
+/// String representation (ptr + len) for FFI
+#[repr(C)]
+pub struct HaxeString {
+    pub ptr: *const u8,
+    pub len: usize,
+}
+
+/// Convert Int to String
+#[no_mangle]
+pub extern "C" fn haxe_string_from_int(value: i64) -> HaxeString {
+    let s = value.to_string();
+    let boxed = s.into_boxed_str();
+    let ptr = boxed.as_ptr();
+    let len = boxed.len();
+    std::mem::forget(boxed); // Leak the string (TODO: proper memory management)
+    HaxeString { ptr, len }
+}
+
+/// Convert Float to String
+#[no_mangle]
+pub extern "C" fn haxe_string_from_float(value: f64) -> HaxeString {
+    let s = value.to_string();
+    let boxed = s.into_boxed_str();
+    let ptr = boxed.as_ptr();
+    let len = boxed.len();
+    std::mem::forget(boxed);
+    HaxeString { ptr, len }
+}
+
+/// Convert Bool to String
+#[no_mangle]
+pub extern "C" fn haxe_string_from_bool(value: bool) -> HaxeString {
+    let s = if value { "true" } else { "false" };
+    HaxeString {
+        ptr: s.as_ptr(),
+        len: s.len(),
+    }
+}
+
+/// Convert String to String (identity, but normalizes representation)
+#[no_mangle]
+pub extern "C" fn haxe_string_from_string(ptr: *const u8, len: usize) -> HaxeString {
+    HaxeString { ptr, len }
+}
+
+/// Convert null to String
+#[no_mangle]
+pub extern "C" fn haxe_string_from_null() -> HaxeString {
+    let s = "null";
+    HaxeString {
+        ptr: s.as_ptr(),
+        len: s.len(),
+    }
+}
+
+// ============================================================================
 // Program Control
 // ============================================================================
 

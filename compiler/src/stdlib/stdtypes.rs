@@ -1,19 +1,63 @@
 /// Standard Type Conversions using MIR Builder
 ///
 /// Provides type conversion functions (int/float/bool to string)
+/// These are MIR wrappers that call extern runtime functions
 
 use crate::ir::mir_builder::MirBuilder;
 use crate::ir::{IrType, CallingConvention, BinaryOp};
 
 /// Build all standard type conversion functions
 pub fn build_std_types(builder: &mut MirBuilder) {
+    // Declare extern runtime functions first
+    declare_string_conversion_externs(builder);
+
+    // Build MIR wrappers
     build_int_to_string(builder);
     build_float_to_string(builder);
     build_bool_to_string(builder);
+    build_string_to_string(builder);
+}
+
+/// Declare extern runtime functions for string conversions
+fn declare_string_conversion_externs(builder: &mut MirBuilder) {
+    // extern fn haxe_string_from_int(value: i64) -> String
+    let func_id = builder.begin_function("haxe_string_from_int")
+        .param("value", IrType::I64)
+        .returns(IrType::String)
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // extern fn haxe_string_from_float(value: f64) -> String
+    let func_id = builder.begin_function("haxe_string_from_float")
+        .param("value", IrType::F64)
+        .returns(IrType::String)
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // extern fn haxe_string_from_bool(value: bool) -> String
+    let func_id = builder.begin_function("haxe_string_from_bool")
+        .param("value", IrType::Bool)
+        .returns(IrType::String)
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // extern fn haxe_string_from_string(ptr: *u8, len: usize) -> String
+    // Identity function for String type (normalizes representation)
+    let ptr_u8 = builder.ptr_type(builder.u8_type());
+    let func_id = builder.begin_function("haxe_string_from_string")
+        .param("ptr", ptr_u8)
+        .param("len", IrType::I64)
+        .returns(IrType::String)
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
 }
 
 /// Build: fn int_to_string(value: i32) -> String
-/// Converts an integer to its string representation
+/// Converts an integer to its string representation by calling runtime
 fn build_int_to_string(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("int_to_string")
         .param("value", IrType::I32)
@@ -28,18 +72,19 @@ fn build_int_to_string(builder: &mut MirBuilder) {
 
     let value = builder.get_param(0);
 
-    // For now, we'll create a placeholder implementation
-    // In a real implementation, this would convert the int to a string
-    // by allocating a buffer and formatting the number
+    // Cast i32 to i64 for runtime function
+    let value_i64 = builder.cast(value, IrType::I32, IrType::I64);
 
-    // TODO: Implement proper int to string conversion
-    // For now, return an empty string
-    let empty_str = builder.const_string("");
-    builder.ret(Some(empty_str));
+    // Call extern runtime function
+    let extern_id = builder.get_function_by_name("haxe_string_from_int")
+        .expect("haxe_string_from_int not found");
+    let result = builder.call(extern_id, vec![value_i64]).unwrap();
+
+    builder.ret(Some(result));
 }
 
 /// Build: fn float_to_string(value: f64) -> String
-/// Converts a float to its string representation
+/// Converts a float to its string representation by calling runtime
 fn build_float_to_string(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("float_to_string")
         .param("value", IrType::F64)
@@ -52,16 +97,18 @@ fn build_float_to_string(builder: &mut MirBuilder) {
     let entry = builder.create_block("entry");
     builder.set_insert_point(entry);
 
-    let _value = builder.get_param(0);
+    let value = builder.get_param(0);
 
-    // TODO: Implement proper float to string conversion
-    // For now, return an empty string
-    let empty_str = builder.const_string("");
-    builder.ret(Some(empty_str));
+    // Call extern runtime function
+    let extern_id = builder.get_function_by_name("haxe_string_from_float")
+        .expect("haxe_string_from_float not found");
+    let result = builder.call(extern_id, vec![value]).unwrap();
+
+    builder.ret(Some(result));
 }
 
 /// Build: fn bool_to_string(value: bool) -> String
-/// Converts a boolean to "true" or "false"
+/// Converts a boolean to "true" or "false" by calling runtime
 fn build_bool_to_string(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("bool_to_string")
         .param("value", IrType::Bool)
@@ -72,22 +119,40 @@ fn build_bool_to_string(builder: &mut MirBuilder) {
     builder.set_current_function(func_id);
 
     let entry = builder.create_block("entry");
-    let true_block = builder.create_block("if_true");
-    let false_block = builder.create_block("if_false");
-
     builder.set_insert_point(entry);
+
     let value = builder.get_param(0);
 
-    // Branch based on boolean value
-    builder.cond_br(value, true_block, false_block);
+    // Call extern runtime function
+    let extern_id = builder.get_function_by_name("haxe_string_from_bool")
+        .expect("haxe_string_from_bool not found");
+    let result = builder.call(extern_id, vec![value]).unwrap();
 
-    // True branch: return "true"
-    builder.set_insert_point(true_block);
-    let true_str = builder.const_string("true");
-    builder.ret(Some(true_str));
+    builder.ret(Some(result));
+}
 
-    // False branch: return "false"
-    builder.set_insert_point(false_block);
-    let false_str = builder.const_string("false");
-    builder.ret(Some(false_str));
+/// Build: fn string_to_string(s: String) -> String
+/// Identity function for String type (normalizes representation)
+fn build_string_to_string(builder: &mut MirBuilder) {
+    let func_id = builder.begin_function("string_to_string")
+        .param("s", IrType::String)
+        .returns(IrType::String)
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let string_val = builder.get_param(0);
+
+    // For String type, we could just return it directly, but for consistency
+    // with other conversions and to ensure proper memory management, we call
+    // the runtime function which normalizes the representation
+    //
+    // String is a struct { ptr: *u8, len: usize }, we need to extract the fields
+    // TODO: Add proper struct field extraction to MirBuilder
+    // For now, just return the string as-is
+    builder.ret(Some(string_val));
 }

@@ -29,8 +29,9 @@ pub mod haxe_array; // Dynamic Array API
 pub mod haxe_math; // Math functions
 pub mod haxe_string; // Comprehensive String API
 pub mod haxe_sys; // System/IO functions
-pub mod safety;
-pub mod vec_plugin; // Pointer-based Vec API // Safety validation and error reporting
+pub mod safety; // Safety validation and error reporting
+pub mod type_system; // Runtime type information for Dynamic values
+pub mod vec_plugin; // Pointer-based Vec API
 
 pub mod plugin_impl; // Plugin registration
 
@@ -155,7 +156,8 @@ pub unsafe extern "C" fn rayzor_free(ptr: *mut u8, size: u64) {
 /// Initialize the runtime (called before any other runtime functions)
 #[no_mangle]
 pub extern "C" fn rayzor_runtime_init() {
-    // Nothing to do for now - Rust's global allocator is always initialized
+    // Initialize the type system for Dynamic value support
+    type_system::init_type_system();
 }
 
 /// Shutdown the runtime (called when program exits)

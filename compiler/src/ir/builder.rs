@@ -226,9 +226,13 @@ impl IrBuilder {
         let arg_ownership = args.iter().map(|_| crate::ir::instructions::OwnershipMode::Move).collect();
         self.add_instruction(IrInstruction::CallDirect { dest, func_id, args, arg_ownership })?;
 
-        // Check if function's actual return type matches expected type
-        // If not, insert a Cast instruction (but NOT if actual is pointer and expected is scalar)
+        // Register the return type for the result register
         if let Some(dest_reg) = dest {
+            // Always register the actual return type (important for type-dependent optimizations)
+            self.set_register_type(dest_reg, actual_return_type.clone());
+
+            // Check if function's actual return type matches expected type
+            // If not, insert a Cast instruction (but NOT if actual is pointer and expected is scalar)
             if actual_return_type != ty {
                 // Don't cast from pointer to scalar - that's a bug in type inference for generics
                 // When the actual return type is a pointer (class instance) but expected type is
@@ -239,8 +243,7 @@ impl IrBuilder {
                 if actual_is_ptr && expected_is_scalar {
                     eprintln!("DEBUG: CallDirect type mismatch - function returns {:?}, expected {:?}, but NOT inserting cast (pointer->scalar would lose data)",
                               actual_return_type, ty);
-                    // Register the actual return type for this register
-                    self.set_register_type(dest_reg, actual_return_type);
+                    // Type already registered above
                 } else {
                     eprintln!("DEBUG: CallDirect type mismatch - function returns {:?}, expected {:?}, inserting cast",
                               actual_return_type, ty);

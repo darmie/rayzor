@@ -1682,13 +1682,20 @@ impl<'a> HirToMirContext<'a> {
                         // This can happen when generic type resolution fails (e.g., Thread<T> where T is unresolved)
                         // and the type system incorrectly infers I32 for a class instance pointer
                         if actual_type != expected_type {
-                            // Check if actual_type is a pointer and expected_type is a scalar
-                            // In this case, trust the actual type (pointers should not be truncated)
-                            let should_skip_cast = matches!(&actual_type, IrType::Ptr(_))
-                                && !matches!(&expected_type, IrType::Ptr(_));
+                            // Skip casts in these cases to preserve actual type:
+                            // 1. Actual is pointer, expected is scalar (would truncate pointer)
+                            // 2. Actual is String, expected is Ptr(Void) (would lose string data)
+                            // 3. Actual is more specific than Ptr(Void)
+                            let actual_is_ptr = matches!(&actual_type, IrType::Ptr(_));
+                            let expected_is_ptr = matches!(&expected_type, IrType::Ptr(_));
+                            let expected_is_void_ptr = matches!(&expected_type, IrType::Ptr(inner) if matches!(**inner, IrType::Void));
+                            let actual_is_specific = matches!(&actual_type, IrType::String | IrType::I32 | IrType::I64 | IrType::F32 | IrType::F64 | IrType::Bool);
+
+                            let should_skip_cast = (actual_is_ptr && !expected_is_ptr)  // pointer to scalar
+                                || (actual_is_specific && expected_is_void_ptr);         // specific type to void pointer
 
                             if should_skip_cast {
-                                eprintln!("DEBUG: Variable type mismatch - symbol={:?}, actual: {:?}, expected: {:?}, SKIPPING cast (actual is pointer)", symbol, actual_type, expected_type);
+                                eprintln!("DEBUG: Variable type mismatch - symbol={:?}, actual: {:?}, expected: {:?}, SKIPPING cast (would lose type info)", symbol, actual_type, expected_type);
                                 Some(reg)
                             } else {
                                 eprintln!("DEBUG: Variable type mismatch - symbol={:?}, actual: {:?}, expected: {:?}, inserting cast", symbol, actual_type, expected_type);
@@ -1898,13 +1905,128 @@ impl<'a> HirToMirContext<'a> {
                         .get_symbol(*symbol)
                         .and_then(|s| self.string_interner.get(s.name))
                         .unwrap_or("<unknown>");
-                    // eprintln!(
-                    //     "DEBUG: Callee is Variable, symbol={:?} ({}), is_method={}, args.len()={}",
-                    //     symbol,
-                    //     symbol_name,
-                    //     is_method,
-                    //     args.len()
-                    // );
+                    eprintln!(
+                        "DEBUG: Callee is Variable, symbol={:?} ({}), is_method={}, args.len()={}",
+                        symbol,
+                        symbol_name,
+                        is_method,
+                        args.len()
+                    );
+
+                    // SPECIAL CASE: Handle global trace() function
+                    // Route to type-specific trace functions based on argument type
+                    if symbol_name == "trace" && args.len() == 1 {
+                        let arg = &args[0];
+
+                        // Lower the argument first to get the actual MIR register
+                        let arg_reg = self.lower_expression(arg)?;
+
+                        // Get the actual MIR type from the register (not the HIR type)
+                        // This is important because HIR types may be vague (Ptr(Void)) but
+                        // MIR registers have the actual type (String, etc.)
+                        let arg_type = self.builder.get_register_type(arg_reg)
+                            .unwrap_or_else(|| self.convert_type(arg.ty));
+
+                        // Determine which trace function to call based on type
+                        let trace_method = match arg_type {
+                            IrType::I32 | IrType::I64 => "traceInt",
+                            IrType::F32 | IrType::F64 => "traceFloat",
+                            IrType::Bool => "traceBool",
+                            IrType::String => "traceString", // String is ptr+len struct
+                            _ => "traceAny", // Fallback for Dynamic or unknown types
+                        };
+
+                        eprintln!("DEBUG: [TRACE] Routing trace() call to rayzor.Trace.{} for type {:?}", trace_method, arg_type);
+
+                        // Build the qualified name for the trace function
+                        let trace_func_name = format!("rayzor.Trace.{}", trace_method);
+
+                        // Look up the runtime function name
+                        // For now, manually map to the runtime function
+                        let runtime_func = match trace_method {
+                            "traceInt" => "haxe_trace_int",
+                            "traceFloat" => "haxe_trace_float",
+                            "traceBool" => "haxe_trace_bool",
+                            "traceString" => "haxe_trace_string",
+                            "traceAny" => "haxe_trace_any",
+                            _ => "haxe_trace_any",
+                        };
+
+                        // Special handling for String: use haxe_trace_string_struct that takes the whole struct
+                        if trace_method == "traceString" {
+                            // String is a struct (ptr+len), use the struct version of trace
+                            let param_types = vec![IrType::String];
+                            let string_trace_id = self.get_or_register_extern_function(
+                                "haxe_trace_string_struct",
+                                param_types,
+                                IrType::Void,
+                            );
+                            return self.builder.build_call_direct(
+                                string_trace_id,
+                                vec![arg_reg],
+                                IrType::Void,
+                            );
+                        }
+
+                        // Get or register the extern runtime function
+                        let param_types = vec![arg_type.clone()];
+                        let runtime_func_id = self.get_or_register_extern_function(
+                            runtime_func,
+                            param_types,
+                            IrType::Void,
+                        );
+
+                        // Generate the call
+                        return self.builder.build_call_direct(
+                            runtime_func_id,
+                            vec![arg_reg],
+                            IrType::Void,
+                        );
+                    }
+
+                    // SPECIAL CASE: Handle Std.string() function
+                    // Route to type-specific string conversion functions based on argument type
+                    // Note: Std.string() comes as a static method call with 2 args (Std class + actual arg)
+                    if symbol_name == "string" && (args.len() == 1 || (args.len() == 2 && *is_method)) {
+                        eprintln!("DEBUG: [STD.STRING CHECK] Found 'string' call, is_method={}, args.len()={}", is_method, args.len());
+
+                        // For static method calls, the actual argument is the second one (skip Std class)
+                        let arg = if *is_method && args.len() == 2 { &args[1] } else { &args[0] };
+                        let arg_type = self.convert_type(arg.ty);
+
+                        // Determine which MIR wrapper function to call based on type
+                        // These wrappers call the extern runtime functions
+                        let mir_wrapper = match arg_type {
+                            IrType::I32 | IrType::I64 => "int_to_string",
+                            IrType::F32 | IrType::F64 => "float_to_string",
+                            IrType::Bool => "bool_to_string",
+                            IrType::String => "string_to_string",
+                            // TODO: Handle null explicitly, handle Dynamic with runtime dispatch
+                            _ => "int_to_string", // Fallback - will need Dynamic support later
+                        };
+
+                        eprintln!("DEBUG: [STD.STRING] Routing Std.string() call to {} for type {:?}", mir_wrapper, arg_type);
+
+                        // Lower the argument
+                        let arg_reg = self.lower_expression(arg)?;
+
+                        // Get or register the MIR wrapper function
+                        // These return String (a struct with ptr + len)
+                        let param_types = vec![arg_type.clone()];
+                        let return_type = IrType::String; // String is represented as ptr+len
+                        let mir_wrapper_id = self.get_or_register_extern_function(
+                            mir_wrapper,
+                            param_types,
+                            return_type.clone(),
+                        );
+
+                        // Generate the call to MIR wrapper
+                        return self.builder.build_call_direct(
+                            mir_wrapper_id,
+                            vec![arg_reg],
+                            return_type,
+                        );
+                    }
 
                     // For instance method calls, check if this is a stdlib method
                     // Note: Static methods like Thread.spawn() can also come through here with is_method=true
@@ -4148,15 +4270,21 @@ impl<'a> HirToMirContext<'a> {
                 if let Some(type_id) = ty {
                     let var_type_from_hint = self.convert_type(type_id);
 
-                    // Check if the actual register type is a pointer while the hint says scalar
-                    // This can happen when generic method return types aren't properly resolved
-                    // (e.g., Thread.spawn() returning Thread<T> where T is unresolved)
+                    // Check if the actual register type is more specific than the hint
+                    // This can happen when:
+                    // - Generic method return types aren't properly resolved (Thread<T>)
+                    // - HIR type is vague (Ptr(Void)) but actual MIR type is specific (String)
                     let actual_reg_type = self.builder.get_register_type(value);
                     let var_type = if let Some(ref actual_type) = actual_reg_type {
-                        // If actual type is a pointer but hint type is scalar, use actual type
+                        // If hint is Ptr(Void) but actual type is more specific, use actual type
+                        let hint_is_void_ptr = matches!(&var_type_from_hint, IrType::Ptr(inner) if matches!(**inner, IrType::Void));
+                        let actual_is_specific = !matches!(actual_type, IrType::Ptr(inner) if matches!(**inner, IrType::Void));
+
+                        // Also handle case where actual is pointer but hint is scalar
                         let actual_is_ptr = matches!(actual_type, IrType::Ptr(_));
                         let hint_is_scalar = matches!(&var_type_from_hint, IrType::I32 | IrType::I64 | IrType::Bool | IrType::F32 | IrType::F64);
-                        if actual_is_ptr && hint_is_scalar {
+
+                        if (hint_is_void_ptr && actual_is_specific) || (actual_is_ptr && hint_is_scalar) {
                             eprintln!("DEBUG:   Variable '{}' type mismatch - hint says {:?} but actual register is {:?}, using actual", name, var_type_from_hint, actual_type);
                             actual_type.clone()
                         } else {
