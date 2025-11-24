@@ -1,0 +1,1227 @@
+//! Typed AST (TAST) node implementations
+//!
+//! This module contains the core data structures for the Typed AST system,
+//! which adds type information, symbol resolution, and ownership tracking
+//! to the syntax tree for advanced static analysis.
+
+use crate::tast::{InternedString, Mutability, ScopeId, SourceLocation, StringInterner, SymbolId, TypeId, Visibility};
+use std::rc::Rc;
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+/// Ownership and usage information for variables and expressions
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VariableUsage {
+    /// Transfer ownership (move semantics)
+    Move,
+    /// Immutable reference/borrow
+    Borrow,
+    /// Mutable reference/borrow  
+    BorrowMut,
+    /// Copy for Copy types (primitives)
+    Copy,
+}
+
+/// A complete typed file (compilation unit)
+#[derive(Debug, Clone)]
+pub struct TypedFile {
+    /// Functions defined in this file
+    pub functions: Vec<TypedFunction>,
+
+    /// Classes defined in this file
+    pub classes: Vec<TypedClass>,
+
+    /// Interfaces defined in this file
+    pub interfaces: Vec<TypedInterface>,
+
+    /// Enums defined in this file
+    pub enums: Vec<TypedEnum>,
+
+    /// Type aliases defined in this file
+    pub type_aliases: Vec<TypedTypeAlias>,
+
+    /// Abstract types defined in this file
+    pub abstracts: Vec<TypedAbstract>,
+
+    /// Module-level fields (variables and functions at module level)
+    pub module_fields: Vec<TypedModuleField>,
+
+    /// Import statements
+    pub imports: Vec<TypedImport>,
+
+    /// Using statements
+    pub using_statements: Vec<TypedUsing>,
+
+    /// File-level metadata
+    pub metadata: FileMetadata,
+
+    /// String interner for efficient string management throughout compilation
+    pub string_interner: Rc<RefCell<StringInterner>>,
+}
+
+/// Metadata about a typed file
+#[derive(Debug, Clone, Default)]
+pub struct FileMetadata {
+    /// File path
+    pub file_path: String,
+
+    /// Package/module name
+    pub package_name: Option<String>,
+
+    /// Total lines of code
+    pub loc: usize,
+
+    /// Compilation timestamp
+    pub timestamp: u64,
+}
+
+impl TypedFile {
+    /// Create a new TypedFile with the given string interner
+    pub fn new(string_interner: Rc<RefCell<StringInterner>>) -> Self {
+        Self {
+            functions: Vec::new(),
+            classes: Vec::new(),
+            interfaces: Vec::new(),
+            enums: Vec::new(),
+            type_aliases: Vec::new(),
+            abstracts: Vec::new(),
+            module_fields: Vec::new(),
+            imports: Vec::new(),
+            using_statements: Vec::new(),
+            metadata: FileMetadata::default(),
+            string_interner,
+        }
+    }
+
+    /// Get a shared reference to the string interner
+    pub fn string_interner(&self) -> Rc<RefCell<StringInterner>> {
+        Rc::clone(&self.string_interner)
+    }
+
+    /// Intern a string using the file's string interner
+    pub fn intern_string(&self, s: &str) -> InternedString {
+        self.string_interner.borrow_mut().intern(s)
+    }
+
+    /// Get a string from an interned string using the file's string interner
+    pub fn get_string(&self, interned: InternedString) -> Option<String> {
+        self.string_interner.borrow().get(interned).map(|s| s.to_string())
+    }
+}
+
+/// A typed function definition
+#[derive(Debug, Clone)]
+pub struct TypedFunction {
+    /// Symbol ID for this function
+    pub symbol_id: SymbolId,
+
+    /// Function name
+    pub name: InternedString,
+
+    /// Function parameters
+    pub parameters: Vec<TypedParameter>,
+
+    /// Return type
+    pub return_type: TypeId,
+
+    /// Function body statements
+    pub body: Vec<TypedStatement>,
+
+    /// Function visibility
+    pub visibility: Visibility,
+
+    /// Function effects (can throw, async, etc.)
+    pub effects: FunctionEffects,
+
+    /// Generic type parameters
+    pub type_parameters: Vec<TypedTypeParameter>,
+
+    /// Source location
+    pub source_location: SourceLocation,
+
+    /// Function metadata
+    pub metadata: FunctionMetadata,
+}
+
+/// Function parameter
+#[derive(Debug, Clone)]
+pub struct TypedParameter {
+    /// Symbol ID for this parameter
+    pub symbol_id: SymbolId,
+
+    /// Parameter name
+    pub name: InternedString,
+
+    /// Parameter type
+    pub param_type: TypeId,
+
+    /// Whether parameter is optional
+    pub is_optional: bool,
+
+    /// Default value if optional
+    pub default_value: Option<TypedExpression>,
+
+    /// Parameter mutability
+    pub mutability: Mutability,
+
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+/// Function effects information
+#[derive(Debug, Clone, Default)]
+pub struct FunctionEffects {
+    /// Can throw exceptions
+    pub can_throw: bool,
+
+    /// Is async function
+    pub is_async: bool,
+
+    /// Is pure function (no side effects)
+    pub is_pure: bool,
+
+    /// Is inline function
+    pub is_inline: bool,
+}
+
+/// Function metadata
+#[derive(Debug, Clone, Default)]
+pub struct FunctionMetadata {
+    /// Estimated complexity score
+    pub complexity_score: u32,
+
+    /// Number of statements in body
+    pub statement_count: usize,
+
+    /// Whether function is recursive
+    pub is_recursive: bool,
+
+    /// Call count (for optimization)
+    pub call_count: u32,
+}
+
+/// Generic type parameter with variance support
+#[derive(Debug, Clone)]
+pub struct TypedTypeParameter {
+    /// Symbol ID for this type parameter
+    pub symbol_id: SymbolId,
+
+    /// Parameter name (T, U, etc.)
+    pub name: String,
+
+    /// Type constraints
+    pub constraints: Vec<TypeId>,
+
+    /// Variance annotation (covariant +, contravariant -, invariant)
+    pub variance: TypeVariance,
+
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+/// Type variance for generic parameters
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeVariance {
+    /// Invariant (no variance)
+    Invariant,
+    /// Covariant (+T)
+    Covariant,
+    /// Contravariant (-T)
+    Contravariant,
+}
+
+/// A typed statement
+#[derive(Debug, Clone)]
+pub enum TypedStatement {
+    /// Expression statement
+    Expression {
+        expression: TypedExpression,
+        source_location: SourceLocation,
+    },
+
+    /// Variable declaration
+    VarDeclaration {
+        symbol_id: SymbolId,
+        var_type: TypeId,
+        initializer: Option<TypedExpression>,
+        mutability: Mutability,
+        source_location: SourceLocation,
+    },
+
+    /// Assignment statement
+    Assignment {
+        target: TypedExpression,
+        value: TypedExpression,
+        source_location: SourceLocation,
+    },
+
+    /// If statement
+    If {
+        condition: TypedExpression,
+        then_branch: Box<TypedStatement>,
+        else_branch: Option<Box<TypedStatement>>,
+        source_location: SourceLocation,
+    },
+
+    /// While loop
+    While {
+        condition: TypedExpression,
+        body: Box<TypedStatement>,
+        source_location: SourceLocation,
+    },
+
+    /// For loop
+    For {
+        init: Option<Box<TypedStatement>>,
+        condition: Option<TypedExpression>,
+        update: Option<TypedExpression>,
+        body: Box<TypedStatement>,
+        source_location: SourceLocation,
+    },
+
+    /// For-in loop with optional key-value iteration: `for (item in iterable)` or `for (key => value in map)`
+    ForIn {
+        /// Variable to bind the value (or just the item for simple iteration)
+        value_var: SymbolId,
+        /// Optional variable to bind the key (for key-value iteration)
+        key_var: Option<SymbolId>,
+        /// Expression to iterate over
+        iterable: TypedExpression,
+        /// Loop body
+        body: Box<TypedStatement>,
+        source_location: SourceLocation,
+    },
+
+    /// Return statement
+    Return {
+        value: Option<TypedExpression>,
+        source_location: SourceLocation,
+    },
+
+    /// Throw statement
+    Throw {
+        exception: TypedExpression,
+        source_location: SourceLocation,
+    },
+
+    /// Try-catch-finally statement
+    Try {
+        body: Box<TypedStatement>,
+        catch_clauses: Vec<TypedCatchClause>,
+        finally_block: Option<Box<TypedStatement>>,
+        source_location: SourceLocation,
+    },
+
+    /// Switch statement
+    Switch {
+        discriminant: TypedExpression,
+        cases: Vec<TypedSwitchCase>,
+        default_case: Option<Box<TypedStatement>>,
+        source_location: SourceLocation,
+    },
+
+    /// Break statement
+    Break {
+        target_loop: Option<SymbolId>,
+        source_location: SourceLocation,
+    },
+
+    /// Continue statement
+    Continue {
+        target_loop: Option<SymbolId>,
+        source_location: SourceLocation,
+    },
+
+    /// Block statement
+    Block {
+        statements: Vec<TypedStatement>,
+        scope_id: ScopeId,
+        source_location: SourceLocation,
+    },
+
+    // Haxe-specific statements
+    /// Pattern matching statement
+    PatternMatch {
+        value: TypedExpression,
+        patterns: Vec<TypedPatternCase>,
+        source_location: SourceLocation,
+    },
+
+    /// Macro expansion
+    MacroExpansion {
+        expansion_info: MacroExpansionInfo,
+        expanded_statements: Vec<TypedStatement>,
+        source_location: SourceLocation,
+    },
+}
+
+/// Catch clause in try-catch with optional filter
+#[derive(Debug, Clone)]
+pub struct TypedCatchClause {
+    /// Exception type to catch
+    pub exception_type: TypeId,
+
+    /// Variable to bind exception to
+    pub exception_variable: SymbolId,
+
+    /// Optional filter expression for conditional catching
+    pub filter: Option<TypedExpression>,
+
+    /// Catch block body
+    pub body: TypedStatement,
+
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+/// Switch case
+#[derive(Debug, Clone)]
+pub struct TypedSwitchCase {
+    /// Case value (constant expression)
+    pub case_value: TypedExpression,
+
+    /// Case body
+    pub body: TypedStatement,
+
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+/// Pattern case for pattern matching
+#[derive(Debug, Clone)]
+pub struct TypedPatternCase {
+    /// Pattern to match
+    pub pattern: TypedPattern,
+
+    /// Guard condition (optional)
+    pub guard: Option<TypedExpression>,
+
+    /// Pattern body
+    pub body: TypedStatement,
+
+    /// Variables bound by this pattern
+    pub bound_variables: Vec<SymbolId>,
+
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+/// Haxe pattern for pattern matching
+#[derive(Debug, Clone)]
+pub enum TypedPattern {
+    /// Wildcard pattern (_)
+    Wildcard { source_location: SourceLocation },
+
+    /// Variable binding pattern
+    Variable {
+        symbol_id: SymbolId,
+        pattern_type: TypeId,
+        source_location: SourceLocation,
+    },
+
+    /// Literal value pattern
+    Literal {
+        value: TypedExpression,
+        source_location: SourceLocation,
+    },
+
+    /// Constructor pattern (enum matching)
+    Constructor {
+        constructor: SymbolId,
+        args: Vec<TypedPattern>,
+        pattern_type: TypeId,
+        source_location: SourceLocation,
+    },
+
+    /// Array pattern
+    Array {
+        elements: Vec<TypedPattern>,
+        rest: Option<Box<TypedPattern>>,
+        pattern_type: TypeId,
+        source_location: SourceLocation,
+    },
+
+    /// Object pattern
+    Object {
+        fields: Vec<TypedFieldPattern>,
+        pattern_type: TypeId,
+        source_location: SourceLocation,
+    },
+
+    /// Guard pattern (pattern with additional condition)
+    Guard {
+        pattern: Box<TypedPattern>,
+        guard: TypedExpression,
+    },
+
+    /// Extractor pattern: `expression => value`
+    Extractor {
+        /// Expression to extract from
+        extractor_expr: TypedExpression,
+        /// Value to extract/match
+        value_expr: TypedExpression,
+        /// Pattern type
+        pattern_type: TypeId,
+        source_location: SourceLocation,
+    },
+}
+
+/// Field pattern for object matching
+#[derive(Debug, Clone)]
+pub struct TypedFieldPattern {
+    /// Field name
+    pub field_name: String,
+
+    /// Field pattern
+    pub pattern: TypedPattern,
+
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+/// Macro expansion information
+#[derive(Debug, Clone)]
+pub struct MacroExpansionInfo {
+    /// The macro being expanded
+    pub macro_symbol: SymbolId,
+
+    /// Original source location before expansion
+    pub original_location: SourceLocation,
+
+    /// Expansion context
+    pub expansion_context: String,
+
+    /// Macro arguments
+    pub macro_args: Vec<TypedExpression>,
+}
+
+/// Metadata annotation for expressions and declarations
+#[derive(Debug, Clone)]
+pub struct TypedMetadata {
+    /// Metadata name (e.g., "native", "inline", etc.)
+    pub name: InternedString,
+    /// Optional parameters for the metadata
+    pub params: Vec<TypedExpression>,
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+/// Module-level field (variable or function declared at module level)
+#[derive(Debug, Clone)]
+pub struct TypedModuleField {
+    /// Field symbol ID
+    pub symbol_id: SymbolId,
+    /// Field name
+    pub name: InternedString,
+    /// Field kind (variable, final, or function)
+    pub kind: TypedModuleFieldKind,
+    /// Visibility
+    pub visibility: Visibility,
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+/// Module-level field kind
+#[derive(Debug, Clone)]
+pub enum TypedModuleFieldKind {
+    /// Variable field: `var x:Int = 10;`
+    Var {
+        field_type: TypeId,
+        initializer: Option<TypedExpression>,
+        mutability: Mutability,
+    },
+    /// Final field: `final x:Int = 10;`
+    Final {
+        field_type: TypeId,
+        initializer: Option<TypedExpression>,
+    },
+    /// Function: `function foo():Void {}`
+    Function(TypedFunction),
+}
+
+/// Using statement for extension methods
+#[derive(Debug, Clone)]
+pub struct TypedUsing {
+    /// Module path being used
+    pub module_path: String,
+    /// Target type for using (if specified)
+    pub target_type: Option<TypeId>,
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+/// Abstract type with full support for from/to conversions and special metadata
+#[derive(Debug, Clone)]
+pub struct TypedAbstract {
+    /// Symbol ID
+    pub symbol_id: SymbolId,
+    /// Abstract name
+    pub name: InternedString,
+    /// Underlying type
+    pub underlying_type: Option<TypeId>,
+    /// Type parameters
+    pub type_parameters: Vec<TypedTypeParameter>,
+    /// Fields and methods
+    pub fields: Vec<TypedField>,
+    /// Methods
+    pub methods: Vec<TypedFunction>,
+    /// Constructors
+    pub constructors: Vec<TypedFunction>,
+    /// From conversion types
+    pub from_types: Vec<TypeId>,
+    /// To conversion types
+    pub to_types: Vec<TypeId>,
+    /// Visibility
+    pub visibility: Visibility,
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+/// A typed expression
+#[derive(Debug, Clone)]
+pub struct TypedExpression {
+    /// Expression type
+    pub expr_type: TypeId,
+
+    /// Expression kind
+    pub kind: TypedExpressionKind,
+
+    /// Variable usage information
+    pub usage: VariableUsage,
+
+    /// Lifetime information
+    pub lifetime_id: crate::tast::LifetimeId,
+
+    /// Source location
+    pub source_location: SourceLocation,
+
+    /// Expression metadata
+    pub metadata: ExpressionMetadata,
+}
+
+/// Expression metadata
+#[derive(Debug, Clone, Default)]
+pub struct ExpressionMetadata {
+    /// Whether this expression is a compile-time constant
+    pub is_constant: bool,
+
+    /// Whether this expression has side effects
+    pub has_side_effects: bool,
+
+    /// Whether this expression can throw
+    pub can_throw: bool,
+
+    /// Estimated complexity score
+    pub complexity_score: u32,
+}
+
+/// Typed expression kinds
+#[derive(Debug, Clone)]
+pub enum TypedExpressionKind {
+    /// Literal values
+    Literal {
+        value: LiteralValue,
+    },
+
+    /// Variable reference
+    Variable {
+        symbol_id: SymbolId,
+    },
+
+    /// Field access: obj.field
+    FieldAccess {
+        object: Box<TypedExpression>,
+        field_symbol: SymbolId,
+    },
+
+    /// Array access: arr[index]
+    ArrayAccess {
+        array: Box<TypedExpression>,
+        index: Box<TypedExpression>,
+    },
+
+    /// Function call
+    FunctionCall {
+        function: Box<TypedExpression>,
+        arguments: Vec<TypedExpression>,
+        type_arguments: Vec<TypeId>,
+    },
+
+    /// Method call
+    MethodCall {
+        receiver: Box<TypedExpression>,
+        method_symbol: SymbolId,
+        arguments: Vec<TypedExpression>,
+        type_arguments: Vec<TypeId>,
+    },
+
+    /// Binary operation
+    BinaryOp {
+        left: Box<TypedExpression>,
+        operator: BinaryOperator,
+        right: Box<TypedExpression>,
+    },
+
+    /// Unary operation
+    UnaryOp {
+        operator: UnaryOperator,
+        operand: Box<TypedExpression>,
+    },
+
+    /// Conditional expression: condition ? then : else
+    Conditional {
+        condition: Box<TypedExpression>,
+        then_expr: Box<TypedExpression>,
+        else_expr: Option<Box<TypedExpression>>,
+    },
+
+    While {
+        condition: Box<TypedExpression>,
+        then_expr: Box<TypedExpression>,
+    },
+
+    For {
+        variable: SymbolId,
+        iterable: Box<TypedExpression>,
+        body: Box<TypedExpression>,
+    },
+
+    /// For-in expression with optional key-value iteration
+    ForIn {
+        /// Variable to bind the value
+        value_var: SymbolId,
+        /// Optional variable to bind the key
+        key_var: Option<SymbolId>,
+        /// Expression to iterate over
+        iterable: Box<TypedExpression>,
+        /// Expression body
+        body: Box<TypedExpression>,
+    },
+
+    /// Array literal: [1, 2, 3]
+    ArrayLiteral {
+        elements: Vec<TypedExpression>,
+    },
+
+    /// Object literal: { field1: value1, field2: value2 }
+    ObjectLiteral {
+        fields: Vec<TypedObjectField>,
+    },
+
+    /// Function literal/lambda
+    FunctionLiteral {
+        parameters: Vec<TypedParameter>,
+        body: Vec<TypedStatement>,
+        return_type: TypeId,
+    },
+
+    /// Type cast: (Type) expression
+    Cast {
+        expression: Box<TypedExpression>,
+        target_type: TypeId,
+        cast_kind: CastKind,
+    },
+
+    /// Instance creation: new Class()
+    New {
+        class_type: TypeId,
+        arguments: Vec<TypedExpression>,
+        type_arguments: Vec<TypeId>,
+    },
+
+    /// This reference
+    This {
+        this_type: TypeId,
+    },
+
+    /// Super reference
+    Super {
+        super_type: TypeId,
+    },
+
+    Is {
+        expression: Box<TypedExpression>,
+        check_type: TypeId,
+    },
+
+    /// Null literal
+    Null,
+
+    Return {
+        value: Option<Box<TypedExpression>>,
+    },
+
+    Throw {
+        expression: Box<TypedExpression>,
+    },
+
+    Break,
+    Continue,
+
+    // Haxe-specific expressions
+    /// String interpolation
+    StringInterpolation {
+        parts: Vec<StringInterpolationPart>,
+    },
+
+    /// Macro expression
+    MacroExpression {
+        macro_symbol: SymbolId,
+        arguments: Vec<TypedExpression>,
+    },
+
+    Block {
+        statements: Vec<TypedStatement>,
+        scope_id: ScopeId,
+    },
+
+    /// Metadata annotation on expression: `@:meta expr`
+    Meta {
+        metadata: Vec<TypedMetadata>,
+        expression: Box<TypedExpression>,
+    },
+
+    /// Dollar identifier: `$type`, `$v{...}`, `$i{...}`, etc.
+    DollarIdent {
+        name: InternedString,
+        arg: Option<Box<TypedExpression>>,
+    },
+
+    /// Compiler-specific code expression: `__js__("code")`
+    CompilerSpecific {
+        target: InternedString,
+        code: Box<TypedExpression>,
+    },
+}
+
+/// Literal values
+#[derive(Debug, Clone)]
+pub enum LiteralValue {
+    /// Boolean literal
+    Bool(bool),
+
+    /// Integer literal
+    Int(i64),
+
+    /// Floating point literal
+    Float(f64),
+
+    /// String literal
+    String(String),
+
+    /// Character literal
+    Char(char),
+
+    /// Regular expression literal
+    Regex(String),
+
+    /// Regex literal with flags
+    RegexWithFlags {
+        pattern: String,
+        flags: String,
+    },
+}
+
+/// Object field in object literal
+#[derive(Debug, Clone)]
+pub struct TypedObjectField {
+    /// Field name
+    pub name: InternedString,
+
+    /// Field value
+    pub value: TypedExpression,
+
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+/// Binary operators
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BinaryOperator {
+    // Arithmetic
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+
+    // Comparison
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+
+    // Logical
+    And,
+    Or,
+
+    // Bitwise
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+
+    // Assignment
+    Assign,
+    AddAssign,
+    SubAssign,
+    ModAssign,
+    MulAssign,
+    DivAssign
+}
+
+/// Unary operators
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UnaryOperator {
+    /// Negation: -x
+    Neg,
+
+    /// Logical not: !x
+    Not,
+
+    /// Bitwise not: ~x
+    BitNot,
+
+    /// Pre-increment: ++x
+    PreInc,
+
+    /// Post-increment: x++
+    PostInc,
+
+    /// Pre-decrement: --x
+    PreDec,
+
+    /// Post-decrement: x--
+    PostDec,
+}
+
+/// Type cast kinds
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CastKind {
+    /// Safe implicit cast
+    Implicit,
+
+    /// Explicit cast that may fail
+    Explicit,
+
+    /// Unsafe cast (compiler trusts programmer)
+    Unsafe,
+
+    /// Runtime type check cast
+    Checked,
+}
+
+/// Parts of string interpolation
+#[derive(Debug, Clone)]
+pub enum StringInterpolationPart {
+    /// Static string part
+    String(String),
+
+    /// Expression to interpolate
+    Expression(TypedExpression),
+}
+
+/// Class definition
+#[derive(Debug, Clone)]
+pub struct TypedClass {
+    /// Symbol ID
+    pub symbol_id: SymbolId,
+
+    /// Class name
+    pub name: InternedString,
+
+    /// Super class
+    pub super_class: Option<TypeId>,
+
+    /// Implemented interfaces
+    pub interfaces: Vec<TypeId>,
+
+    /// Fields
+    pub fields: Vec<TypedField>,
+
+    /// Methods
+    pub methods: Vec<TypedFunction>,
+
+    /// Constructors
+    pub constructors: Vec<TypedFunction>,
+
+    /// Generic type parameters
+    pub type_parameters: Vec<TypedTypeParameter>,
+
+    /// Visibility
+    pub visibility: Visibility,
+
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+/// Interface definition
+#[derive(Debug, Clone)]
+pub struct TypedInterface {
+    /// Symbol ID
+    pub symbol_id: SymbolId,
+
+    /// Interface name
+    pub name: String,
+
+    /// Extended interfaces
+    pub extends: Vec<TypeId>,
+
+    /// Method signatures
+    pub methods: Vec<TypedMethodSignature>,
+
+    /// Generic type parameters
+    pub type_parameters: Vec<TypedTypeParameter>,
+
+    /// Visibility
+    pub visibility: Visibility,
+
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+/// Method signature (for interfaces)
+#[derive(Debug, Clone)]
+pub struct TypedMethodSignature {
+    /// Method name
+    pub name: String,
+
+    /// Parameters
+    pub parameters: Vec<TypedParameter>,
+
+    /// Return type
+    pub return_type: TypeId,
+
+    /// Effects
+    pub effects: FunctionEffects,
+
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+/// Enum definition
+#[derive(Debug, Clone)]
+pub struct TypedEnum {
+    /// Symbol ID
+    pub symbol_id: SymbolId,
+
+    /// Enum name
+    pub name: String,
+
+    /// Enum variants
+    pub variants: Vec<TypedEnumVariant>,
+
+    /// Generic type parameters
+    pub type_parameters: Vec<TypedTypeParameter>,
+
+    /// Visibility
+    pub visibility: Visibility,
+
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+/// Enum variant
+#[derive(Debug, Clone)]
+pub struct TypedEnumVariant {
+    /// Variant name
+    pub name: String,
+
+    /// Variant parameters (for complex enums)
+    pub parameters: Vec<TypedParameter>,
+
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+/// Field definition
+#[derive(Debug, Clone)]
+pub struct TypedField {
+    /// Symbol ID
+    pub symbol_id: SymbolId,
+
+    /// Field name
+    pub name: String,
+
+    /// Field type
+    pub field_type: TypeId,
+
+    /// Initial value
+    pub initializer: Option<TypedExpression>,
+
+    /// Mutability
+    pub mutability: Mutability,
+
+    /// Visibility
+    pub visibility: Visibility,
+
+    /// Whether field is static
+    pub is_static: bool,
+
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+/// Type alias definition
+#[derive(Debug, Clone)]
+pub struct TypedTypeAlias {
+    /// Symbol ID
+    pub symbol_id: SymbolId,
+
+    /// Alias name
+    pub name: String,
+
+    /// Target type
+    pub target_type: TypeId,
+
+    /// Generic type parameters
+    pub type_parameters: Vec<TypedTypeParameter>,
+
+    /// Visibility
+    pub visibility: Visibility,
+
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+/// Import statement
+#[derive(Debug, Clone)]
+pub struct TypedImport {
+    /// Imported module path
+    pub module_path: String,
+
+    /// Imported symbols (None = import all)
+    pub imported_symbols: Option<Vec<String>>,
+
+    /// Alias for import
+    pub alias: Option<String>,
+
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+// Helper trait to get source location from any TAST node
+pub trait HasSourceLocation {
+    fn source_location(&self) -> SourceLocation;
+}
+
+impl HasSourceLocation for TypedStatement {
+    fn source_location(&self) -> SourceLocation {
+        match self {
+            TypedStatement::Expression {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::VarDeclaration {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::Assignment {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::If {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::While {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::For {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::Return {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::Throw {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::Try {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::Switch {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::Break {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::Continue {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::Block {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::PatternMatch {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::MacroExpansion {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::ForIn {
+                source_location, ..
+            } => *source_location,
+        }
+    }
+}
+
+impl HasSourceLocation for TypedExpression {
+    fn source_location(&self) -> SourceLocation {
+        self.source_location
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tast::ExpressionId;
+
+    use super::*;
+
+    #[test]
+    fn test_expression_id() {
+        let id = ExpressionId::from_raw(42);
+        assert_eq!(id.as_raw(), 42);
+        assert!(id.is_valid());
+
+        let invalid = ExpressionId::invalid();
+        assert!(!invalid.is_valid());
+    }
+
+    #[test]
+    fn test_variable_usage() {
+        let usage = VariableUsage::Move;
+        assert_eq!(usage, VariableUsage::Move);
+
+        let borrow = VariableUsage::Borrow;
+        assert_ne!(usage, borrow);
+    }
+
+    #[test]
+    fn test_typed_expression_creation() {
+        let expr = TypedExpression {
+            expr_type: TypeId::from_raw(1),
+            kind: TypedExpressionKind::Literal {
+                value: LiteralValue::Int(42),
+            },
+            usage: VariableUsage::Copy,
+            lifetime_id: crate::tast::LifetimeId::first(),
+            source_location: SourceLocation::unknown(),
+            metadata: ExpressionMetadata::default(),
+        };
+
+        assert!(matches!(expr.kind, TypedExpressionKind::Literal { .. }));
+        assert_eq!(expr.usage, VariableUsage::Copy);
+    }
+
+    #[test]
+    fn test_function_effects() {
+        let effects = FunctionEffects {
+            can_throw: true,
+            is_async: false,
+            is_pure: false,
+            is_inline: true,
+        };
+
+        assert!(effects.can_throw);
+        assert!(!effects.is_async);
+        assert!(effects.is_inline);
+    }
+}

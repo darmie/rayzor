@@ -1,0 +1,13 @@
+[package]
+name = "parser"
+version = "0.1.0"
+edition = "2021"
+description = "Rayzor Haxe Language Parser"
+
+[dependencies]
+nom = "8.0.0"
+nom_locate = "5.0.0"
+
+[[bin]]
+name = "demo_enhanced_errors"
+path = "tests/demo_enhanced_errors.rs"
