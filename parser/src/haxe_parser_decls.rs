@@ -24,10 +24,14 @@ use crate::haxe_parser_expr2::block_expr;
 /// Parse function body - handles both block and single expression bodies
 fn function_body<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let (input, _) = ws(input)?;
-    
+
+   
+
     // Check if this is a block body (starts with '{')
     if input.starts_with('{') {
-        block_expr(full, input)
+        let result = block_expr(full, input);
+       
+        result
     } else {
         // Single expression body
         expression(full, input)
@@ -36,20 +40,23 @@ fn function_body<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
 
 /// Parse class declaration
 pub fn class_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, ClassDecl> {
-    context("class declaration", |input| {
+    context("class declaration", |input: &'a str| {
+   
+
     let start = position(full, input);
-    
+
     // Metadata
     let (input, meta) = metadata_list(full, input)?;
-    
+
     // Access and modifiers
     let (input, access_mod) = opt(access).parse(input)?;
     let (input, modifiers) = modifiers(input)?;
-    
+
     // class keyword and name
     let (input, _) = context("[E0110] expected 'class' keyword", keyword("class")).parse(input)?;
     let (input, name) = context("[E0111] expected class name | help: provide a valid class name starting with uppercase", identifier).parse(input)?;
-    
+
+  
     // Type parameters
     let (input, type_params) = type_params(full, input)?;
     
@@ -67,7 +74,13 @@ pub fn class_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, ClassDecl> {
     
     // Class body
     let (input, _) = context("[E0116] expected '{' to start class body | help: class body must be enclosed in braces", symbol("{")).parse(input)?;
+
+   
+
     let (input, fields) = context("[E0117] expected class members | help: provide fields, methods, or properties inside the class body", |i| class_fields(full, i)).parse(input)?;
+
+  
+
     let (input, _) = context("[E0118] expected '}' to close class body", symbol("}")).parse(input)?;
     
     let end = position(full, input);
@@ -220,20 +233,33 @@ pub fn typedef_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, TypedefDec
 /// Parse abstract declaration
 pub fn abstract_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, AbstractDecl> {
     let start = position(full, input);
-    
+
     let (input, meta) = metadata_list(full, input)?;
     let (input, access) = opt(access).parse(input)?;
     let (input, modifiers) = modifiers(input)?;
-    
+
+    // Check for optional "enum" keyword before "abstract" (enum abstract syntax)
+    let (input, is_enum_abstract) = opt(keyword("enum")).parse(input)?;
+
     let (input, _) = keyword("abstract").parse(input)?;
     let (input, name) = identifier(input)?;
     let (input, type_params) = type_params(full, input)?;
     
-    // Underlying type (optional for @:coreType abstracts)
+    // Underlying type parsing depends on abstract type:
+    // - @:coreType abstracts: no underlying type
+    // - enum abstract: underlying type in parentheses (required)
+    // - regular abstract: underlying type in parentheses (required)
     let has_core_type = meta.iter().any(|m| m.name == "coreType");
     let (input, underlying) = if has_core_type {
         // @:coreType abstracts don't need an underlying type
         (input, None)
+    } else if is_enum_abstract.is_some() {
+        // enum abstract requires underlying type in parentheses
+        // Example: enum abstract XmlType(Int)
+        let (input, _) = symbol("(").parse(input)?;
+        let (input, underlying) = type_expr(full, input)?;
+        let (input, _) = symbol(")").parse(input)?;
+        (input, Some(underlying))
     } else {
         // Regular abstracts require an underlying type in parentheses
         let (input, _) = symbol("(").parse(input)?;
@@ -285,14 +311,19 @@ pub fn abstract_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, AbstractD
 fn class_fields<'a>(full: &'a str, input: &'a str) -> PResult<'a, Vec<ClassField>> {
     let mut result = Vec::new();
     let mut current_input = input;
-    
+
+
+
     loop {
         // Skip whitespace
         let (input, _) = ws(current_input)?;
         current_input = input;
-        
+
+    
+
         // Check for end of fields
         if current_input.is_empty() || current_input.starts_with('}') {
+            
             break;
         }
         
@@ -317,12 +348,17 @@ fn class_fields<'a>(full: &'a str, input: &'a str) -> PResult<'a, Vec<ClassField
             current_input = input;
         } else {
             // Parse regular field
+          
             match class_field(full, current_input) {
                 Ok((input, field)) => {
+                  
                     result.push(field);
                     current_input = input;
                 }
-                Err(_) => break,
+                Err(e) => {
+                   
+                    break;
+                }
             }
         }
     }
@@ -374,22 +410,30 @@ pub fn parse_access_and_modifiers(input: &str) -> PResult<(Option<Access>, Vec<M
 /// Parse class field
 fn class_field<'a>(full: &'a str, input: &'a str) -> PResult<'a, ClassField> {
     let start = position(full, input);
+
     
+
     let (input, meta) = metadata_list(full, input)?;
     let (input, (access, modifiers)) = parse_access_and_modifiers(input)?;
-    
+
+   
     // Check if final was parsed as a modifier
     let has_final_modifier = modifiers.iter().any(|m| matches!(m, Modifier::Final));
-    
+
     // Field kind
+    // NOTE: field_property MUST come before field_var_or_final because both parse
+    // "var identifier" but field_property expects "(accessor, accessor)" after,
+    // while field_var_or_final expects ":" or "=" or ";" after.
+    // If field_var_or_final is tried first, it will consume "var identifier" and
+    // then fail on "(", and field_property won't get a chance to try.
     let (input, kind) = alt((
         |i| field_function(full, i),
-        |i| field_var_or_final(full, i, has_final_modifier),
         |i| field_property(full, i),
+        |i| field_var_or_final(full, i, has_final_modifier),
     )).parse(input)?;
-    
+
     let end = position(full, input);
-    
+
     Ok((input, ClassField {
         meta,
         access,
@@ -408,23 +452,42 @@ fn interface_field<'a>(full: &'a str, input: &'a str) -> PResult<'a, ClassField>
 fn field_function<'a>(full: &'a str, input: &'a str) -> PResult<'a, ClassFieldKind> {
     let (input, _) = context("[E0120] expected 'function' keyword", keyword("function")).parse(input)?;
     let (input, name) = context("[E0121] expected function name | help: provide a valid function name", function_name).parse(input)?;
+
+  
+
     let (input, type_params) = type_params(full, input)?;
-    
+
     let (input, _) = context("[E0122] expected '(' to start parameter list | help: function parameters must be enclosed in parentheses", symbol("(")).parse(input)?;
     let (input, params) = context("[E0123] expected function parameters | help: provide parameter list or leave empty", separated_list0(symbol(","), |i| function_param(full, i))).parse(input)?;
     let (input, _) = opt(symbol(",")).parse(input)?; // Trailing comma
     let (input, _) = context("[E0124] expected ')' to close parameter list", symbol(")")).parse(input)?;
-    
+
     let (input, return_type) = opt(preceded(context("[E0125] expected ':' before return type", symbol(":")), |i| type_expr(full, i))).parse(input)?;
-    
+
+  
+
     // Body is optional (for interfaces and extern functions)
     let (input, body) = opt(|i| function_body(full, i)).parse(input)?;
+
+
     
     // Handle semicolon consumption based on body type
     let input = match &body {
         Some(expr) => {
-            // If body is a block expression, no semicolon needed
-            if matches!(expr.kind, ExprKind::Block(_)) {
+            // Check if expression is brace-terminated (block, if, switch, untyped, etc.)
+            fn is_brace_terminated(kind: &ExprKind) -> bool {
+                match kind {
+                    ExprKind::Block(_) | ExprKind::If { .. } | ExprKind::Switch { .. } |
+                    ExprKind::For { .. } | ExprKind::While { .. } | ExprKind::DoWhile { .. } |
+                    ExprKind::Try { .. } | ExprKind::Untyped(_) => true,
+                    _ => false,
+                }
+            }
+
+            let is_brace_term = is_brace_terminated(&expr.kind);
+
+            // If body is a brace-terminated expression, no semicolon needed
+            if is_brace_term {
                 input
             } else {
                 // Single expression body needs semicolon

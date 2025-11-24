@@ -8,6 +8,7 @@ use super::{
     IrInstruction, IrTerminator, IrPhiNode, IrId, IrType, IrValue,
     IrSourceLocation, BinaryOp, UnaryOp, CompareOp,
     IrFunctionSignature, IrParameter, CallingConvention,
+    IrLocal, AllocationHint,
 };
 use crate::tast::SymbolId;
 use std::collections::HashMap;
@@ -110,7 +111,21 @@ impl IrBuilder {
     pub fn alloc_reg(&mut self) -> Option<IrId> {
         self.current_function_mut().map(|f| f.alloc_reg())
     }
-    
+
+    /// Get the type of a register
+    pub fn get_register_type(&self, reg: IrId) -> Option<IrType> {
+        let func_id = self.current_function?;
+        let func = self.module.functions.get(&func_id)?;
+        func.register_types.get(&reg).cloned()
+    }
+
+    /// Set the type of a register
+    pub fn set_register_type(&mut self, reg: IrId, ty: IrType) {
+        if let Some(func) = self.current_function_mut() {
+            func.register_types.insert(reg, ty);
+        }
+    }
+
     /// Declare a local variable
     pub fn declare_local(&mut self, name: String, ty: IrType) -> Option<IrId> {
         self.current_function_mut().map(|f| f.declare_local(name, ty))
@@ -178,7 +193,7 @@ impl IrBuilder {
         self.add_instruction(IrInstruction::Cmp { dest, op, left, right })?;
         Some(dest)
     }
-    
+
     /// Build a function call
     /// Build a direct function call (callee known at compile time)
     pub fn build_call_direct(
@@ -187,14 +202,54 @@ impl IrBuilder {
         args: Vec<IrId>,
         ty: IrType,
     ) -> Option<IrId> {
+        // IMPORTANT: Always use the function's actual signature if available.
+        // The caller might pass an incorrect type (e.g., Any instead of Void) due to
+        // type inference issues in earlier stages. Using the actual signature ensures
+        // that void functions don't get destination registers allocated.
+        let actual_return_type = if let Some(func) = self.module.functions.get(&func_id) {
+            func.signature.return_type.clone()
+        } else {
+            // Function not in module yet (might be a forward ref being called from a lambda).
+            // Fall back to the provided type, but this is a known limitation.
+            // TODO: Pass the HirToMirContext to IrBuilder so we can lookup stdlib signatures here.
+            ty.clone()
+        };
+
         // Only allocate a destination register if the function returns a value
-        let dest = if ty == IrType::Void {
+        let dest = if actual_return_type == IrType::Void {
             None
         } else {
             Some(self.alloc_reg()?)
         };
 
-        self.add_instruction(IrInstruction::CallDirect { dest, func_id, args })?;
+        // Default to Move ownership for all arguments (will be refined by HIR lowering)
+        let arg_ownership = args.iter().map(|_| crate::ir::instructions::OwnershipMode::Move).collect();
+        self.add_instruction(IrInstruction::CallDirect { dest, func_id, args, arg_ownership })?;
+
+        // Check if function's actual return type matches expected type
+        // If not, insert a Cast instruction (but NOT if actual is pointer and expected is scalar)
+        if let Some(dest_reg) = dest {
+            if actual_return_type != ty {
+                // Don't cast from pointer to scalar - that's a bug in type inference for generics
+                // When the actual return type is a pointer (class instance) but expected type is
+                // a scalar like I32, it means generic type resolution failed. Trust the actual type.
+                let actual_is_ptr = matches!(actual_return_type, IrType::Ptr(_));
+                let expected_is_scalar = matches!(ty, IrType::I32 | IrType::I64 | IrType::Bool | IrType::F32 | IrType::F64);
+
+                if actual_is_ptr && expected_is_scalar {
+                    eprintln!("DEBUG: CallDirect type mismatch - function returns {:?}, expected {:?}, but NOT inserting cast (pointer->scalar would lose data)",
+                              actual_return_type, ty);
+                    // Register the actual return type for this register
+                    self.set_register_type(dest_reg, actual_return_type);
+                } else {
+                    eprintln!("DEBUG: CallDirect type mismatch - function returns {:?}, expected {:?}, inserting cast",
+                              actual_return_type, ty);
+                    // Insert cast from actual type to expected type
+                    return self.build_cast(dest_reg, actual_return_type.clone(), ty);
+                }
+            }
+        }
+
         dest
     }
 
@@ -206,7 +261,9 @@ impl IrBuilder {
         signature: IrType,
     ) -> Option<IrId> {
         let dest = self.alloc_reg()?;
-        self.add_instruction(IrInstruction::CallIndirect { dest: Some(dest), func_ptr, args, signature })?;
+        // Default to Move ownership for all arguments
+        let arg_ownership = args.iter().map(|_| crate::ir::instructions::OwnershipMode::Move).collect();
+        self.add_instruction(IrInstruction::CallIndirect { dest: Some(dest), func_ptr, args, signature, arg_ownership })?;
         Some(dest)
     }
     
@@ -322,14 +379,14 @@ impl IrBuilder {
     /// Set the terminator for the current block
     fn set_terminator(&mut self, term: IrTerminator) -> Option<()> {
         let block_id = self.current_block?;
-        eprintln!("DEBUG set_terminator: block={:?}, term={:?}", block_id, term);
+        // eprintln!("DEBUG set_terminator: block={:?}, term={:?}", block_id, term);
         let func = self.current_function_mut()?;
-        eprintln!("DEBUG set_terminator: function={}", func.name);
+        // eprintln!("DEBUG set_terminator: function={}", func.name);
 
         // First, set the terminator
         let block = func.cfg.get_block_mut(block_id)?;
         block.set_terminator(term.clone());
-        eprintln!("DEBUG set_terminator: terminator set on block successfully");
+        // eprintln!("DEBUG set_terminator: terminator set on block successfully");
         
         // Then, update predecessor information based on the terminator
         match &term {
@@ -383,11 +440,11 @@ impl IrBuilder {
     
     /// Build a return instruction
     pub fn build_return(&mut self, value: Option<IrId>) -> Option<()> {
-        eprintln!("DEBUG IrBuilder::build_return called with value={:?}", value);
-        eprintln!("DEBUG   Current function: {:?}", self.current_function().map(|f| &f.name));
-        eprintln!("DEBUG   Current block: {:?}", self.current_block);
+        // eprintln!("DEBUG IrBuilder::build_return called with value={:?}", value);
+        // eprintln!("DEBUG   Current function: {:?}", self.current_function().map(|f| &f.name));
+        // eprintln!("DEBUG   Current block: {:?}", self.current_block);
         let result = self.set_terminator(IrTerminator::Return { value });
-        eprintln!("DEBUG   set_terminator returned: {:?}", result);
+        // eprintln!("DEBUG   set_terminator returned: {:?}", result);
         result
     }
     
@@ -485,6 +542,56 @@ impl IrBuilder {
     pub fn build_div(&mut self, left: IrId, right: IrId, is_float: bool) -> Option<IrId> {
         let op = if is_float { BinaryOp::FDiv } else { BinaryOp::Div };
         self.build_binop(op, left, right)
+    }
+
+    // === Type Tracking Helpers (for lambda generation) ===
+
+    /// Register a local variable with type tracking
+    /// This should be called by instruction builders that create registers
+    pub(crate) fn register_local(&mut self, reg: IrId, ty: IrType) -> Option<()> {
+        let func = self.current_function_mut()?;
+
+        func.locals.insert(reg, IrLocal {
+            name: format!("r{}", reg.0),
+            ty,
+            mutable: false,
+            source_location: IrSourceLocation::unknown(),
+            allocation: AllocationHint::Register,
+        });
+
+        Some(())
+    }
+
+    /// Infer the result type of a binary operation
+    pub(crate) fn infer_binop_type(&self, op: BinaryOp, left: IrId, right: IrId) -> Option<IrType> {
+        let func = self.current_function()?;
+        let left_ty = &func.locals.get(&left)?.ty;
+        let right_ty = &func.locals.get(&right)?.ty;
+
+        // Type inference rules
+        Some(match op {
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
+                // Arithmetic: result type matches operands (prefer I64 if mixed)
+                if left_ty == right_ty {
+                    left_ty.clone()
+                } else {
+                    IrType::I64
+                }
+            }
+            BinaryOp::And | BinaryOp::Or | BinaryOp::Xor => {
+                // Bitwise: result type matches operands
+                if left_ty == right_ty {
+                    left_ty.clone()
+                } else {
+                    IrType::I64
+                }
+            }
+            BinaryOp::FAdd | BinaryOp::FSub | BinaryOp::FMul | BinaryOp::FDiv | BinaryOp::FRem => {
+                // Float arithmetic: prefer F64
+                IrType::F64
+            }
+            _ => IrType::I64, // Default for other ops
+        })
     }
 }
 

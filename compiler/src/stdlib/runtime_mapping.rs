@@ -38,6 +38,13 @@ pub struct RuntimeFunctionCall {
 
     /// Whether this method returns a value
     pub has_return: bool,
+
+    /// Which parameters need to be converted from values to pointers
+    /// This is a bitmask where bit N indicates parameter N needs pointer conversion.
+    /// For example: params_need_ptr_conversion = 0b10 means param[1] needs conversion
+    /// (bit 0 = param 0, bit 1 = param 1, etc.)
+    /// This is used for runtime functions that take `*const u8` for data parameters.
+    pub params_need_ptr_conversion: u32,
 }
 
 /// Method signature in Haxe stdlib
@@ -51,6 +58,9 @@ pub struct MethodSignature {
 
     /// Whether this is a static method
     pub is_static: bool,
+
+    /// Whether this is a constructor (new method on extern class)
+    pub is_constructor: bool,
 }
 
 /// Standard library runtime mapping
@@ -69,6 +79,10 @@ impl StdlibMapping {
         mapping.register_array_methods();
         mapping.register_math_methods();
         mapping.register_sys_methods();
+        mapping.register_thread_methods();
+        mapping.register_channel_methods();
+        mapping.register_arc_methods();
+        mapping.register_mutex_methods();
 
         mapping
     }
@@ -85,6 +99,71 @@ impl StdlibMapping {
         })
     }
 
+    /// Find a stdlib method mapping by class and method name
+    /// Returns the signature and runtime function call if found
+    pub fn find_by_name(&self, class: &str, method: &str) -> Option<(&MethodSignature, &RuntimeFunctionCall)> {
+        self.mappings.iter().find(|(sig, _)| {
+            sig.class == class && sig.method == method
+        })
+    }
+
+    /// Get all unique stdlib class names that have registered methods
+    pub fn get_all_classes(&self) -> Vec<&'static str> {
+        let mut classes: Vec<&'static str> = self.mappings.keys()
+            .map(|sig| sig.class)
+            .collect();
+        classes.sort_unstable();
+        classes.dedup();
+        classes
+    }
+
+    /// Check if a class name is a registered stdlib class
+    pub fn is_stdlib_class(&self, class_name: &str) -> bool {
+        self.mappings.keys().any(|sig| sig.class == class_name)
+    }
+
+    /// Check if methods of this class are typically static
+    /// Used to determine the default method type for a class
+    pub fn class_has_static_methods(&self, class_name: &str) -> bool {
+        self.mappings.keys()
+            .filter(|sig| sig.class == class_name)
+            .any(|sig| sig.is_static)
+    }
+
+    /// Get the class name as a 'static str if it exists in the mapping
+    /// This is useful for converting owned/borrowed strings to 'static references
+    pub fn get_class_static_str(&self, class_name: &str) -> Option<&'static str> {
+        self.mappings.keys()
+            .find(|sig| sig.class == class_name)
+            .map(|sig| sig.class)
+    }
+
+    /// Get all classes that have registered constructors (method="new", is_constructor=true)
+    /// Returns a deduplicated, sorted list of class names with constructors
+    pub fn get_constructor_classes(&self) -> Vec<&'static str> {
+        let mut classes: Vec<&'static str> = self.mappings.keys()
+            .filter(|sig| sig.is_constructor && sig.method == "new")
+            .map(|sig| sig.class)
+            .collect();
+        classes.sort_unstable();
+        classes.dedup();
+        classes
+    }
+
+    /// Find a constructor mapping for a class (method="new", is_constructor=true)
+    /// Returns the MethodSignature and RuntimeFunctionCall if found
+    pub fn find_constructor(&self, class: &str) -> Option<(&MethodSignature, &RuntimeFunctionCall)> {
+        self.mappings.iter().find(|(sig, _)| {
+            sig.class == class && sig.method == "new" && sig.is_constructor
+        })
+    }
+
+    /// Find a runtime function call by runtime function name
+    /// Returns the RuntimeFunctionCall metadata if found
+    pub fn find_by_runtime_name(&self, runtime_name: &str) -> Option<&RuntimeFunctionCall> {
+        self.mappings.values().find(|call| call.runtime_name == runtime_name)
+    }
+
     /// Register a stdlib method -> runtime function mapping
     fn register(&mut self, sig: MethodSignature, call: RuntimeFunctionCall) {
         self.mappings.insert(sig, call);
@@ -93,6 +172,26 @@ impl StdlibMapping {
 
 /// Macro to register stdlib methods more concisely
 macro_rules! map_method {
+    // Constructor - returns complex type (opaque pointer to extern class)
+    (constructor $class:expr, $method:expr => $runtime:expr, params: $params:expr, returns: complex) => {
+        (
+            MethodSignature {
+                class: $class,
+                method: $method,
+                is_static: true,  // Constructors are called like static methods
+                is_constructor: true,
+            },
+            RuntimeFunctionCall {
+                runtime_name: $runtime,
+                needs_out_param: true,
+                has_self_param: false,
+                param_count: $params,
+                has_return: false,
+                params_need_ptr_conversion: 0,
+            }
+        )
+    };
+
     // Instance method returning primitive
     (instance $class:expr, $method:expr => $runtime:expr, params: $params:expr, returns: primitive) => {
         (
@@ -100,6 +199,7 @@ macro_rules! map_method {
                 class: $class,
                 method: $method,
                 is_static: false,
+                is_constructor: false,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -107,6 +207,27 @@ macro_rules! map_method {
                 has_self_param: true,
                 param_count: $params,
                 has_return: true,
+                params_need_ptr_conversion: 0,
+            }
+        )
+    };
+
+    // Instance method returning primitive with pointer conversion metadata
+    (instance $class:expr, $method:expr => $runtime:expr, params: $params:expr, returns: primitive, ptr_params: $ptr_mask:expr) => {
+        (
+            MethodSignature {
+                class: $class,
+                method: $method,
+                is_static: false,
+                is_constructor: false,
+            },
+            RuntimeFunctionCall {
+                runtime_name: $runtime,
+                needs_out_param: false,
+                has_self_param: true,
+                param_count: $params,
+                has_return: true,
+                params_need_ptr_conversion: $ptr_mask,
             }
         )
     };
@@ -118,6 +239,7 @@ macro_rules! map_method {
                 class: $class,
                 method: $method,
                 is_static: false,
+                is_constructor: false,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -125,6 +247,7 @@ macro_rules! map_method {
                 has_self_param: true,
                 param_count: $params,
                 has_return: false,
+                params_need_ptr_conversion: 0,
             }
         )
     };
@@ -136,6 +259,7 @@ macro_rules! map_method {
                 class: $class,
                 method: $method,
                 is_static: false,
+                is_constructor: false,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -143,6 +267,27 @@ macro_rules! map_method {
                 has_self_param: true,
                 param_count: $params,
                 has_return: false,
+                params_need_ptr_conversion: 0,
+            }
+        )
+    };
+
+    // Instance method returning void with pointer conversion metadata
+    (instance $class:expr, $method:expr => $runtime:expr, params: $params:expr, returns: void, ptr_params: $ptr_mask:expr) => {
+        (
+            MethodSignature {
+                class: $class,
+                method: $method,
+                is_static: false,
+                is_constructor: false,
+            },
+            RuntimeFunctionCall {
+                runtime_name: $runtime,
+                needs_out_param: false,
+                has_self_param: true,
+                param_count: $params,
+                has_return: false,
+                params_need_ptr_conversion: $ptr_mask,
             }
         )
     };
@@ -154,6 +299,7 @@ macro_rules! map_method {
                 class: $class,
                 method: $method,
                 is_static: true,
+                is_constructor: false,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -161,6 +307,7 @@ macro_rules! map_method {
                 has_self_param: false,
                 param_count: $params,
                 has_return: true,
+                params_need_ptr_conversion: 0,
             }
         )
     };
@@ -172,6 +319,7 @@ macro_rules! map_method {
                 class: $class,
                 method: $method,
                 is_static: true,
+                is_constructor: false,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -179,6 +327,7 @@ macro_rules! map_method {
                 has_self_param: false,
                 param_count: $params,
                 has_return: false,
+                params_need_ptr_conversion: 0,
             }
         )
     };
@@ -190,6 +339,7 @@ macro_rules! map_method {
                 class: $class,
                 method: $method,
                 is_static: true,
+                is_constructor: false,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -197,6 +347,7 @@ macro_rules! map_method {
                 has_self_param: false,
                 param_count: $params,
                 has_return: false,
+                params_need_ptr_conversion: 0,
             }
         )
     };
@@ -244,20 +395,31 @@ impl StdlibMapping {
 
     fn register_array_methods(&mut self) {
         let mappings = vec![
+            // Properties (treated as getters with 0 params)
+            map_method!(instance "Array", "length" => "haxe_array_length", params: 0, returns: primitive),
+
             // Modification methods
-            map_method!(instance "Array", "push" => "haxe_array_push", params: 1, returns: primitive),
+            // push(x:T): arg[0]=array (no conversion), arg[1]=value (needs ptr conversion)
+            // Bitmask: 0b10 = bit 1 set (param index 1)
+            map_method!(instance "Array", "push" => "haxe_array_push", params: 1, returns: primitive, ptr_params: 0b10),
             map_method!(instance "Array", "pop" => "haxe_array_pop", params: 0, returns: complex),
             map_method!(instance "Array", "reverse" => "haxe_array_reverse", params: 0, returns: void),
-            map_method!(instance "Array", "insert" => "haxe_array_insert", params: 2, returns: void),
-            map_method!(instance "Array", "remove" => "haxe_array_remove", params: 1, returns: primitive),
+            // insert(pos:Int, x:T): arg[0]=array, arg[1]=pos (no conversion), arg[2]=value (needs ptr conversion)
+            // Bitmask: 0b100 = bit 2 set (param index 2)
+            map_method!(instance "Array", "insert" => "haxe_array_insert", params: 2, returns: void, ptr_params: 0b100),
+            // remove(x:T): arg[0]=array, arg[1]=value (needs ptr conversion)
+            // Bitmask: 0b10 = bit 1 set
+            map_method!(instance "Array", "remove" => "haxe_array_remove", params: 1, returns: primitive, ptr_params: 0b10),
 
             // Extraction methods
             map_method!(instance "Array", "slice" => "haxe_array_slice", params: 2, returns: complex),
             map_method!(instance "Array", "copy" => "haxe_array_copy", params: 0, returns: complex),
 
             // Search methods
-            map_method!(instance "Array", "indexOf" => "haxe_array_index_of", params: 2, returns: primitive),
-            map_method!(instance "Array", "lastIndexOf" => "haxe_array_last_index_of", params: 2, returns: primitive),
+            // indexOf(x:T, fromIndex:Int): arg[0]=array, arg[1]=value (needs ptr), arg[2]=fromIndex
+            // Bitmask: 0b10 = bit 1 set
+            map_method!(instance "Array", "indexOf" => "haxe_array_index_of", params: 2, returns: primitive, ptr_params: 0b10),
+            map_method!(instance "Array", "lastIndexOf" => "haxe_array_last_index_of", params: 2, returns: primitive, ptr_params: 0b10),
         ];
 
         self.register_from_tuples(mappings);
@@ -315,6 +477,122 @@ impl StdlibMapping {
 
         self.register_from_tuples(mappings);
     }
+
+    // ============================================================================
+    // Thread Methods (rayzor.concurrent.Thread)
+    // ============================================================================
+    //
+    // NOTE: Thread methods are implemented as MIR wrappers in compiler/src/stdlib/thread.rs
+    // These are NOT extern functions - they are MIR functions that get merged into the module.
+    // We register them here so the compiler knows they exist and can generate forward references.
+
+    fn register_thread_methods(&mut self) {
+        let mappings = vec![
+            // Thread::spawn<T>(f: Void -> T) -> Thread<T>
+            map_method!(static "Thread", "spawn" => "Thread_spawn", params: 1, returns: complex),
+            // Thread<T>::join() -> T
+            map_method!(instance "Thread", "join" => "Thread_join", params: 0, returns: complex),
+            // Thread<T>::isFinished() -> Bool
+            map_method!(instance "Thread", "isFinished" => "Thread_isFinished", params: 0, returns: primitive),
+            // Thread::sleep(millis: Int) -> Void
+            map_method!(static "Thread", "sleep" => "Thread_sleep", params: 1, returns: void),
+            // Thread::yieldNow() -> Void
+            map_method!(static "Thread", "yieldNow" => "Thread_yieldNow", params: 0, returns: void),
+            // Thread::currentId() -> Int
+            map_method!(static "Thread", "currentId" => "Thread_currentId", params: 0, returns: primitive),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // Channel Methods (rayzor.concurrent.Channel)
+    // ============================================================================
+    //
+    // NOTE: Channel methods are implemented as MIR wrappers in compiler/src/stdlib/channel.rs
+    // These are NOT extern functions - they are MIR functions that get merged into the module.
+    // The MIR wrappers call the extern runtime functions (rayzor_channel_*).
+
+    fn register_channel_methods(&mut self) {
+        let mappings = vec![
+            // Constructor: new Channel<T>(capacity: Int) -> Channel<T>
+            map_method!(constructor "Channel", "new" => "Channel_init", params: 1, returns: complex),
+            // Channel::init<T>(capacity: Int) -> Channel<T> (for backwards compatibility)
+            map_method!(static "Channel", "init" => "Channel_init", params: 1, returns: complex),
+            // Channel<T>::send(value: T) -> Void
+            map_method!(instance "Channel", "send" => "Channel_send", params: 1, returns: void),
+            // Channel<T>::trySend(value: T) -> Bool
+            map_method!(instance "Channel", "trySend" => "Channel_trySend", params: 1, returns: primitive),
+            // Channel<T>::receive() -> T
+            map_method!(instance "Channel", "receive" => "Channel_receive", params: 0, returns: complex),
+            // Channel<T>::tryReceive() -> Null<T>
+            map_method!(instance "Channel", "tryReceive" => "Channel_tryReceive", params: 0, returns: complex),
+            // Channel<T>::close() -> Void
+            map_method!(instance "Channel", "close" => "Channel_close", params: 0, returns: void),
+            // Channel<T>::isClosed() -> Bool
+            map_method!(instance "Channel", "isClosed" => "Channel_isClosed", params: 0, returns: primitive),
+            // Channel<T>::len() -> Int
+            map_method!(instance "Channel", "len" => "Channel_len", params: 0, returns: primitive),
+            // Channel<T>::capacity() -> Int
+            map_method!(instance "Channel", "capacity" => "Channel_capacity", params: 0, returns: primitive),
+            // Channel<T>::isEmpty() -> Bool
+            map_method!(instance "Channel", "isEmpty" => "Channel_isEmpty", params: 0, returns: primitive),
+            // Channel<T>::isFull() -> Bool
+            map_method!(instance "Channel", "isFull" => "Channel_isFull", params: 0, returns: primitive),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // Arc Methods (rayzor.concurrent.Arc)
+    // ============================================================================
+
+    fn register_arc_methods(&mut self) {
+        let mappings = vec![
+            // Constructor: new Arc<T>(value: T) -> Arc<T>
+            map_method!(constructor "Arc", "new" => "Arc_init", params: 1, returns: complex),
+            // Arc::init<T>(value: T) -> Arc<T> (for backwards compatibility)
+            map_method!(static "Arc", "init" => "Arc_init", params: 1, returns: complex),
+            // Arc<T>::clone() -> Arc<T>
+            map_method!(instance "Arc", "clone" => "Arc_clone", params: 0, returns: complex),
+            // Arc<T>::get() -> T
+            map_method!(instance "Arc", "get" => "Arc_get", params: 0, returns: complex),
+            // Arc<T>::strongCount() -> Int
+            map_method!(instance "Arc", "strongCount" => "Arc_strongCount", params: 0, returns: primitive),
+            // Arc<T>::tryUnwrap() -> Null<T>
+            map_method!(instance "Arc", "tryUnwrap" => "Arc_tryUnwrap", params: 0, returns: complex),
+            // Arc<T>::asPtr() -> Int
+            map_method!(instance "Arc", "asPtr" => "Arc_asPtr", params: 0, returns: primitive),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // Mutex Methods (rayzor.concurrent.Mutex)
+    // ============================================================================
+
+    fn register_mutex_methods(&mut self) {
+        let mappings = vec![
+            // Constructor: new Mutex<T>(value: T) -> Mutex<T>
+            map_method!(constructor "Mutex", "new" => "Mutex_init", params: 1, returns: complex),
+            // Mutex::init<T>(value: T) -> Mutex<T> (for backwards compatibility)
+            map_method!(static "Mutex", "init" => "Mutex_init", params: 1, returns: complex),
+            // Mutex<T>::lock() -> MutexGuard<T>
+            map_method!(instance "Mutex", "lock" => "Mutex_lock", params: 0, returns: complex),
+            // Mutex<T>::tryLock() -> Null<MutexGuard<T>>
+            map_method!(instance "Mutex", "tryLock" => "Mutex_tryLock", params: 0, returns: complex),
+            // Mutex<T>::isLocked() -> Bool
+            map_method!(instance "Mutex", "isLocked" => "Mutex_isLocked", params: 0, returns: primitive),
+            // MutexGuard<T>::get() -> T
+            map_method!(instance "MutexGuard", "get" => "MutexGuard_get", params: 0, returns: complex),
+            // MutexGuard<T>::unlock() -> Void
+            map_method!(instance "MutexGuard", "unlock" => "MutexGuard_unlock", params: 0, returns: void),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
 }
 
 impl Default for StdlibMapping {
@@ -336,6 +614,7 @@ mod tests {
             class: "String",
             method: "charAt",
             is_static: false,
+            is_constructor: false,
         };
         let call = mapping.get(&sig).expect("charAt should be mapped");
         assert_eq!(call.runtime_name, "haxe_string_char_at");
@@ -349,6 +628,7 @@ mod tests {
             class: "String",
             method: "toUpperCase",
             is_static: false,
+            is_constructor: false,
         };
         let call = mapping.get(&sig).expect("toUpperCase should be mapped");
         assert_eq!(call.runtime_name, "haxe_string_to_upper_case");
@@ -364,6 +644,7 @@ mod tests {
             class: "Array",
             method: "push",
             is_static: false,
+            is_constructor: false,
         };
         let call = mapping.get(&sig).expect("push should be mapped");
         assert_eq!(call.runtime_name, "haxe_array_push");
@@ -378,6 +659,7 @@ mod tests {
             class: "Math",
             method: "sin",
             is_static: true,
+            is_constructor: false,
         };
         let call = mapping.get(&sig).expect("sin should be mapped");
         assert_eq!(call.runtime_name, "haxe_math_sin");
@@ -391,5 +673,23 @@ mod tests {
         assert!(mapping.has_mapping("String", "charAt", false));
         assert!(mapping.has_mapping("Math", "sin", true));
         assert!(!mapping.has_mapping("String", "nonexistent", false));
+    }
+
+    #[test]
+    fn test_constructor_mapping() {
+        let mapping = StdlibMapping::new();
+
+        // Test Channel constructor
+        let sig = MethodSignature {
+            class: "Channel",
+            method: "new",
+            is_static: true,
+            is_constructor: true,
+        };
+        let call = mapping.get(&sig).expect("Channel constructor should be mapped");
+        assert_eq!(call.runtime_name, "Channel_init");
+        assert!(call.needs_out_param); // Returns complex type (opaque pointer)
+        assert!(!call.has_self_param); // Constructors don't have self
+        assert_eq!(call.param_count, 1);
     }
 }

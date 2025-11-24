@@ -81,10 +81,14 @@ pub extern "C" fn haxe_array_from_elements(
 /// Get array length
 #[no_mangle]
 pub extern "C" fn haxe_array_length(arr: *const HaxeArray) -> usize {
+    eprintln!("[DEBUG haxe_array_length] Called with arr={:?}", arr);
     if arr.is_null() {
+        eprintln!("[DEBUG haxe_array_length] arr is null, returning 0");
         return 0;
     }
-    unsafe { (*arr).len }
+    let len = unsafe { (*arr).len };
+    eprintln!("[DEBUG haxe_array_length] arr.len={}", len);
+    len
 }
 
 // ============================================================================
@@ -153,24 +157,40 @@ pub extern "C" fn haxe_array_get_ptr(arr: *const HaxeArray, index: usize) -> *mu
 /// Push element onto array
 #[no_mangle]
 pub extern "C" fn haxe_array_push(arr: *mut HaxeArray, data: *const u8) {
+    eprintln!("[DEBUG haxe_array_push] Called with arr={:?}, data={:?}", arr, data);
     if arr.is_null() || data.is_null() {
+        eprintln!("[DEBUG haxe_array_push] arr or data is null, returning");
         return;
     }
+    eprintln!("[DEBUG haxe_array_push] Before: arr.ptr={:?}, arr.len={}, arr.cap={}, arr.elem_size={}",
+              unsafe { (*arr).ptr }, unsafe { (*arr).len }, unsafe { (*arr).cap }, unsafe { (*arr).elem_size });
 
     unsafe {
         let arr_ref = &mut *arr;
 
         // Check if we need to grow
         if arr_ref.len >= arr_ref.cap {
-            let new_cap = arr_ref.cap * 2;
-            let old_size = arr_ref.cap * arr_ref.elem_size;
+            let new_cap = if arr_ref.cap == 0 {
+                INITIAL_CAPACITY
+            } else {
+                arr_ref.cap * 2
+            };
+
             let new_size = new_cap * arr_ref.elem_size;
 
-            let old_layout = Layout::from_size_align_unchecked(old_size, 8);
-            let new_ptr = realloc(arr_ref.ptr, old_layout, new_size);
+            let new_ptr = if arr_ref.ptr.is_null() || arr_ref.cap == 0 {
+                // First allocation - use alloc instead of realloc
+                let layout = Layout::from_size_align_unchecked(new_size, 8);
+                alloc(layout)
+            } else {
+                // Grow existing allocation
+                let old_size = arr_ref.cap * arr_ref.elem_size;
+                let old_layout = Layout::from_size_align_unchecked(old_size, 8);
+                realloc(arr_ref.ptr, old_layout, new_size)
+            };
 
             if new_ptr.is_null() {
-                panic!("Failed to reallocate memory for Array");
+                panic!("Failed to allocate/reallocate memory for Array");
             }
 
             arr_ref.ptr = new_ptr;

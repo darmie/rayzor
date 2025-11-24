@@ -100,7 +100,17 @@ impl<'a> LoweringContext<'a> {
     pub fn set_lowering_hints(&mut self, hints: &'a HIRLoweringHints) {
         self.lowering_hints = Some(hints);
     }
-    
+
+    /// Register a symbol-to-register mapping for memory safety validation
+    fn register_symbol_mapping(&mut self, symbol_id: SymbolId, register: IrId) {
+        // Add to local symbol map
+        self.symbol_map.insert(symbol_id, register);
+
+        // Add to module-level mapping for MirSafetyValidator
+        self.builder.module.symbol_to_register.insert(symbol_id, register);
+        self.builder.module.register_to_symbol.insert(register, symbol_id);
+    }
+
     /// Lower a typed file to HIR module
     pub fn lower_file(&mut self, file: &TypedFile) -> Result<IrModule, Vec<LoweringError>> {
         // Set module metadata
@@ -149,7 +159,7 @@ impl<'a> LoweringContext<'a> {
         for (i, param) in function.parameters.iter().enumerate() {
             if let Some(reg) = self.builder.current_function()
                 .and_then(|f| f.get_param_reg(i)) {
-                self.symbol_map.insert(param.symbol_id, reg);
+                self.register_symbol_mapping(param.symbol_id, reg);
             }
         }
         
@@ -242,8 +252,8 @@ impl<'a> LoweringContext<'a> {
                 
                 if let Some(var_reg) = var_reg {
                     // Map the symbol to its register
-                    self.symbol_map.insert(*symbol_id, var_reg);
-                    
+                    self.register_symbol_mapping(*symbol_id, var_reg);
+
                     // If there's an initializer, evaluate it and store
                     if let Some(init_expr) = initializer {
                         if let Some(init_value) = self.lower_expression(init_expr) {
@@ -939,7 +949,7 @@ impl<'a> LoweringContext<'a> {
             // Bind the exception variable
             let exception_type = self.lower_type(catch.exception_type);
             if let Some(exception_ptr) = self.builder.build_alloc(exception_type, None) {
-                self.symbol_map.insert(catch.exception_variable, exception_ptr);
+                self.register_symbol_mapping(catch.exception_variable, exception_ptr);
             }
             
             // Lower catch block statements

@@ -287,6 +287,7 @@ impl<'a> TastToHirContext<'a> {
                 visibility: self.convert_visibility(field.visibility),
                 is_static: field.is_static,
                 is_final: !matches!(field.mutability, crate::tast::Mutability::Mutable),
+                property_access: field.property_access.clone(),  // Preserve property accessor info
             });
         }
         
@@ -758,8 +759,11 @@ impl<'a> TastToHirContext<'a> {
                 ))
             }
             TypedStatement::ForIn { value_var, key_var, iterable, body, .. } => {
+                eprintln!("DEBUG [tast_to_hir ForIn]: Creating HirStatement::ForIn from TypedStatement::ForIn");
+                eprintln!("DEBUG [tast_to_hir ForIn]: value_var={:?}, key_var={:?}", value_var, key_var);
+                eprintln!("DEBUG [tast_to_hir ForIn]: iterable.expr_type={:?}", iterable.expr_type);
                 self.loop_labels.push(None);
-                
+
                 // Create pattern from value_var and optional key_var
                 let pattern = if let Some(key_var) = key_var {
                     // Key-value iteration: key => value
@@ -882,18 +886,14 @@ impl<'a> TastToHirContext<'a> {
         let type_table = self.type_table.borrow();
         let type_info = type_table.get(receiver_type)?;
 
+        // Get class name from type - no hardcoding!
         let class_name = match &type_info.kind {
             TypeKind::String => "String",
             TypeKind::Array { .. } => "Array",
             TypeKind::Class { symbol_id, .. } => {
                 // Get class name from symbol
                 if let Some(class_info) = self.symbol_table.get_symbol(*symbol_id) {
-                    let name = self.string_interner.get(class_info.name)?;
-                    match name {
-                        "Math" => "Math",
-                        "Sys" => "Sys",
-                        _ => return None, // Not a stdlib class
-                    }
+                    self.string_interner.get(class_info.name)?
                 } else {
                     return None;
                 }
@@ -903,19 +903,20 @@ impl<'a> TastToHirContext<'a> {
 
         drop(type_table);
 
-        // Check if we have a mapping for this method
-        // Instance methods for core types are always instance methods
-        let is_static = matches!(class_name, "Math" | "Sys");
+        // Check if this is actually a stdlib class using the mapping
+        // This replaces the hardcoded list ["Math", "Sys", "String", "Array"]
+        if !self.stdlib_mapping.is_stdlib_class(class_name) {
+            return None; // Not a stdlib class
+        }
+
+        // Determine if methods are static by checking the mapping
+        // This replaces hardcoded matches!(class_name, "Math" | "Sys")
+        let is_static = self.stdlib_mapping.class_has_static_methods(class_name);
 
         if self.stdlib_mapping.has_mapping(class_name, method_name, is_static) {
-            // Convert to static strings for the signature
-            let class_static: &'static str = match class_name {
-                "String" => "String",
-                "Array" => "Array",
-                "Math" => "Math",
-                "Sys" => "Sys",
-                _ => return None,
-            };
+            // Get the class name as a 'static str from the mapping registry
+            // This replaces the hardcoded match statement
+            let class_static = self.stdlib_mapping.get_class_static_str(class_name)?;
 
             // For method names, we need to use a leaked string for now
             // In production, we'd maintain a static registry
@@ -986,7 +987,7 @@ impl<'a> TastToHirContext<'a> {
                 }
             }
             TypedExpressionKind::MethodCall { receiver, method_symbol, type_arguments, arguments } => {
-                println!("DEBUG lower_expression: MethodCall on type {:?}", receiver.expr_type);
+                // println!("DEBUG lower_expression: MethodCall on type {:?}", receiver.expr_type);
 
                 // Check if this is an abstract type method that should be inlined
                 if let Some(inlined) = self.try_inline_abstract_method(
@@ -996,7 +997,7 @@ impl<'a> TastToHirContext<'a> {
                     expr.expr_type,
                     expr.source_location
                 ) {
-                    println!("DEBUG lower_expression: Method inlined successfully!");
+                    // println!("DEBUG lower_expression: Method inlined successfully!");
                     return inlined;
                 }
 
@@ -1004,23 +1005,24 @@ impl<'a> TastToHirContext<'a> {
                 if let Some((class_name, method_name, _is_static)) =
                     self.get_stdlib_method_info(receiver.expr_type, *method_symbol)
                 {
-                    println!("DEBUG: Mapping stdlib method {}.{} to runtime function", class_name, method_name);
+                    // println!("DEBUG: Mapping stdlib method {}.{} to runtime function", class_name, method_name);
 
                     let sig = MethodSignature {
                         class: class_name,
                         method: method_name,
                         is_static: _is_static,
+                        is_constructor: false,  // Not checking for constructors in this code path
                     };
 
                     if let Some(_mapping) = self.stdlib_mapping.get(&sig) {
-                        println!("DEBUG: Found runtime mapping for {}.{}", class_name, method_name);
+                        // println!("DEBUG: Found runtime mapping for {}.{}", class_name, method_name);
                         // For now, continue with normal lowering
                         // The actual runtime function call will be generated in MIR lowering
                         // based on the method signature
                     }
                 }
 
-                println!("DEBUG lower_expression: Method NOT inlined, lowering normally");
+                // println!("DEBUG lower_expression: Method NOT inlined, lowering normally");
 
                 // Desugar method call to function call with receiver as first argument
                 // receiver.method(args) becomes method(receiver, args)
@@ -1046,21 +1048,36 @@ impl<'a> TastToHirContext<'a> {
                     is_method: true, // Mark that this was originally a method call
                 }
             }
-            TypedExpressionKind::New { class_type, type_arguments, arguments } => {
+            TypedExpressionKind::New { class_type, type_arguments, arguments, class_name: tast_class_name } => {
                 // Validate constructor exists and is accessible
                 self.validate_constructor(*class_type, arguments.len(), expr.source_location);
-                
+
+                // Use class_name from TAST if available, otherwise extract from TypeId
+                // (for cases where TypeId might be invalid, e.g., extern stdlib classes)
+                let class_name = tast_class_name.or_else(|| {
+                    self.type_table.borrow().get(*class_type)
+                        .and_then(|type_ref| {
+                            if let crate::tast::TypeKind::Class { symbol_id, .. } = &type_ref.kind {
+                                self.symbol_table.get_symbol(*symbol_id)
+                                    .map(|sym| sym.name)
+                            } else {
+                                None
+                            }
+                        })
+                });
+
                 HirExprKind::New {
                     class_type: *class_type,
                     type_args: type_arguments.clone(),
                     args: arguments.iter().map(|a| self.lower_expression(a)).collect(),
+                    class_name,
                 }
             }
             TypedExpressionKind::UnaryOp { operator, operand } => {
                 // OPERATOR OVERLOADING: Check if operand has abstract type with @:op metadata
                 if let Some((method_symbol, _abstract_symbol)) = self.find_unary_operator_method(operand.expr_type, operator) {
-                    eprintln!("DEBUG: Found unary operator method for {:?} on type {:?}: method symbol {:?}",
-                              operator, operand.expr_type, method_symbol);
+                    // eprintln!("DEBUG: Found unary operator method for {:?} on type {:?}: method symbol {:?}",
+                    //           operator, operand.expr_type, method_symbol);
 
                     // Rewrite unary operation to method call:  `-a` → `a.negate()`
                     // Then try to inline it using existing infrastructure
@@ -1071,10 +1088,10 @@ impl<'a> TastToHirContext<'a> {
                         expr.expr_type,
                         expr.source_location,
                     ) {
-                        eprintln!("DEBUG: Successfully inlined unary operator method!");
+                        // eprintln!("DEBUG: Successfully inlined unary operator method!");
                         return inlined;
                     } else {
-                        eprintln!("DEBUG: Failed to inline unary operator method, falling back to method call");
+                        // eprintln!("DEBUG: Failed to inline unary operator method, falling back to method call");
                         // TODO: Fall back to method call if inlining fails
                     }
                 }
@@ -1090,8 +1107,8 @@ impl<'a> TastToHirContext<'a> {
                 if *operator == BinaryOperator::Assign {
                     if let TypedExpressionKind::ArrayAccess { array, index } = &left.kind {
                         if let Some((set_method, _abstract_symbol)) = self.find_array_access_method(array.expr_type, "set") {
-                            eprintln!("DEBUG: Found array access set method in BinaryOp for type {:?}: method symbol {:?}",
-                                      array.expr_type, set_method);
+                            // eprintln!("DEBUG: Found array access set method in BinaryOp for type {:?}: method symbol {:?}",
+                            //           array.expr_type, set_method);
 
                             // Rewrite array assignment to method call:  `a[i] = v` → `a.set(i, v)`
                             // Create arguments: [index, value]
@@ -1104,11 +1121,11 @@ impl<'a> TastToHirContext<'a> {
                                 right.expr_type, // Return value is typically the assigned value
                                 expr.source_location,
                             ) {
-                                eprintln!("DEBUG: Successfully inlined array access set method in BinaryOp!");
+                                // eprintln!("DEBUG: Successfully inlined array access set method in BinaryOp!");
                                 // Return the inlined set method call
                                 return inlined;
                             } else {
-                                eprintln!("DEBUG: Failed to inline array access set method in BinaryOp");
+                                // eprintln!("DEBUG: Failed to inline array access set method in BinaryOp");
                                 // Fall through to normal assignment
                             }
                         }
@@ -1117,8 +1134,8 @@ impl<'a> TastToHirContext<'a> {
 
                 // OPERATOR OVERLOADING: Check if left operand has abstract type with @:op metadata
                 if let Some((method_symbol, _abstract_symbol)) = self.find_binary_operator_method(left.expr_type, operator) {
-                    eprintln!("DEBUG: Found operator method for {:?} on type {:?}: method symbol {:?}",
-                              operator, left.expr_type, method_symbol);
+                    // eprintln!("DEBUG: Found operator method for {:?} on type {:?}: method symbol {:?}",
+                    //           operator, left.expr_type, method_symbol);
 
                     // Rewrite binary operation to method call:  `a + b` → `a.add(b)`
                     // Then try to inline it using existing infrastructure
@@ -1129,10 +1146,10 @@ impl<'a> TastToHirContext<'a> {
                         expr.expr_type,
                         expr.source_location,
                     ) {
-                        eprintln!("DEBUG: Successfully inlined operator method!");
+                        // eprintln!("DEBUG: Successfully inlined operator method!");
                         return inlined;
                     } else {
-                        eprintln!("DEBUG: Operator method found but not inlined, generating method call");
+                        // eprintln!("DEBUG: Operator method found but not inlined, generating method call");
                         // Fall through to generate a regular method call
                         // TODO: Generate MethodCall instead of Binary
                     }
@@ -1209,7 +1226,7 @@ impl<'a> TastToHirContext<'a> {
 
                 let captures = self.compute_captures(body, &param_symbols);
 
-                eprintln!("DEBUG: Lambda has {} parameters, found {} captures", parameters.len(), captures.len());
+                eprintln!("DEBUG TAST->HIR: Lambda has {} parameters, found {} captures", parameters.len(), captures.len());
                 for capture in &captures {
                     eprintln!("  Captured symbol: {:?}", capture.symbol);
                 }
@@ -1660,8 +1677,39 @@ impl<'a> TastToHirContext<'a> {
         }
     }
     
-    fn lower_import(&mut self, _import: &TypedImport) {
-        // TODO: Implement import lowering
+    fn lower_import(&mut self, import: &TypedImport) {
+        // Convert module path from InternedString to String
+        let module_path_str = self.string_interner.get(import.module_path)
+            .unwrap_or("Unknown");
+        let module_path = module_path_str.split('.').map(|s| s.to_string()).collect();
+
+        // Convert imported symbols from InternedString to SymbolId
+        // For now, we just track the symbol names - actual symbol resolution happens during import
+        let imported_symbols = if let Some(symbols) = &import.imported_symbols {
+            // Create symbol IDs for each imported symbol name
+            symbols.iter().filter_map(|&sym_str| {
+                // Look up the symbol in the symbol table
+                // The symbol should have been registered during TAST lowering
+                // if let Some(name) = self.string_interner.get(sym_str) {
+                //     eprintln!("DEBUG: Lowering import symbol: {}", name);
+                // }
+                None // For now, we don't track the actual SymbolIds in HIR imports
+            }).collect()
+        } else {
+            Vec::new()
+        };
+
+        // Convert alias if present
+        let alias = import.alias.and_then(|a| self.string_interner.get(a).map(|s| s.to_string()));
+
+        let hir_import = HirImport {
+            module_path,
+            imported_symbols,
+            alias,
+            is_static_extension: false, // TODO: detect 'using' imports
+        };
+
+        self.module.imports.push(hir_import);
     }
     
     fn lower_module_field(&mut self, _field: &TypedModuleField) {
@@ -2396,8 +2444,8 @@ impl<'a> TastToHirContext<'a> {
                     if let Some(parsed_op) = Self::parse_operator_from_metadata(op_str) {
                         // Compare using discriminant to match operator variants
                         if std::mem::discriminant(&parsed_op) == std::mem::discriminant(operator) {
-                            eprintln!("DEBUG: Matched operator {:?} to method {} with metadata '{}'",
-                                      operator, self.string_interner.get(method.name).unwrap_or("<unknown>"), op_str);
+                            // eprintln!("DEBUG: Matched operator {:?} to method {} with metadata '{}'",
+                            //           operator, self.string_interner.get(method.name).unwrap_or("<unknown>"), op_str);
                             return Some((method.symbol_id, abstract_symbol));
                         }
                     }
@@ -2477,8 +2525,8 @@ impl<'a> TastToHirContext<'a> {
                     if let Some(parsed_op) = Self::parse_unary_operator_from_metadata(op_str) {
                         // Compare using discriminant to match operator variants
                         if std::mem::discriminant(&parsed_op) == std::mem::discriminant(operator) {
-                            eprintln!("DEBUG: Matched unary operator {:?} to method {} with metadata '{}'",
-                                      operator, self.string_interner.get(method.name).unwrap_or("<unknown>"), op_str);
+                            // eprintln!("DEBUG: Matched unary operator {:?} to method {} with metadata '{}'",
+                            //           operator, self.string_interner.get(method.name).unwrap_or("<unknown>"), op_str);
                             return Some((method.symbol_id, abstract_symbol));
                         }
                     }
@@ -2621,9 +2669,9 @@ impl<'a> TastToHirContext<'a> {
         let abstract_def = found_abstract.unwrap();
         let method = found_method.unwrap();
 
-        println!("DEBUG: Inlining abstract method '{}' for abstract type '{}'",
-            self.string_interner.get(method.name).unwrap_or("<unknown>"),
-            self.string_interner.get(abstract_def.name).unwrap_or("<unknown>"));
+        // println!("DEBUG: Inlining abstract method '{}' for abstract type '{}'",
+        //     self.string_interner.get(method.name).unwrap_or("<unknown>"),
+        //     self.string_interner.get(abstract_def.name).unwrap_or("<unknown>"));
 
         // Inline the method body
         // Build a parameter mapping: parameter symbols -> argument expressions (already lowered to HIR)
@@ -2636,14 +2684,14 @@ impl<'a> TastToHirContext<'a> {
         // Map parameters to arguments
         if method.parameters.len() == arguments.len() {
             for (param, lowered_arg) in method.parameters.iter().zip(lowered_arguments.into_iter()) {
-                println!("DEBUG: Mapping parameter {:?} to argument: {:?}", param.symbol_id, lowered_arg);
+                // println!("DEBUG: Mapping parameter {:?} to argument: {:?}", param.symbol_id, lowered_arg);
                 param_map.insert(param.symbol_id, lowered_arg);
             }
         } else {
-            println!("DEBUG: Parameter count mismatch: method has {} params, call has {} args",
-                method.parameters.len(), arguments.len());
+            // println!("DEBUG: Parameter count mismatch: method has {} params, call has {} args",
+            //     method.parameters.len(), arguments.len());
         }
-        println!("DEBUG: param_map has {} entries", param_map.len());
+        // println!("DEBUG: param_map has {} entries", param_map.len());
 
         // Lower the receiver once
         let lowered_receiver = self.lower_expression(receiver);
@@ -2670,7 +2718,7 @@ impl<'a> TastToHirContext<'a> {
         // 2. Lower all statements
         // 3. Replace `this` and parameter references
         // For now, fall back to regular method call
-        println!("DEBUG: Method body too complex to inline (has {} statements)", method.body.len());
+        // println!("DEBUG: Method body too complex to inline (has {} statements)", method.body.len());
         None
     }
 
@@ -2695,7 +2743,7 @@ impl<'a> TastToHirContext<'a> {
             TypedExpressionKind::New { .. } => "New",
             _ => "Other",
         };
-        println!("DEBUG inline_expression_deep: Processing {}", kind_name);
+        // println!("DEBUG inline_expression_deep: Processing {}", kind_name);
         match &expr.kind {
             // If it's a `this` reference, replace it with the receiver
             TypedExpressionKind::This { .. } => {
@@ -2705,10 +2753,10 @@ impl<'a> TastToHirContext<'a> {
             // If it's a variable reference, check if it's a parameter
             TypedExpressionKind::Variable { symbol_id, .. } => {
                 if let Some(replacement) = param_map.get(symbol_id) {
-                    println!("DEBUG inline_expression_deep: Substituting variable {:?} with: {:?}", symbol_id, replacement);
+                    // println!("DEBUG inline_expression_deep: Substituting variable {:?} with: {:?}", symbol_id, replacement);
                     replacement.clone()
                 } else {
-                    println!("DEBUG inline_expression_deep: Variable {:?} not in param_map, lowering normally", symbol_id);
+                    // println!("DEBUG inline_expression_deep: Variable {:?} not in param_map, lowering normally", symbol_id);
                     // Not a parameter, lower normally
                     self.lower_expression(expr)
                 }
@@ -2716,21 +2764,21 @@ impl<'a> TastToHirContext<'a> {
 
             // For method calls on parameters, optimize identity methods like toInt()
             TypedExpressionKind::MethodCall { receiver: inner_receiver, method_symbol, type_arguments, arguments } => {
-                println!("DEBUG inline_expression_deep: Found MethodCall on {:?}", method_symbol);
+                // println!("DEBUG inline_expression_deep: Found MethodCall on {:?}", method_symbol);
 
                 // Special optimization: if receiver is a parameter and method is an identity method (toInt, etc.)
                 // just return the substituted parameter value directly
                 if let TypedExpressionKind::Variable { symbol_id } = &inner_receiver.kind {
                     if let Some(replacement) = param_map.get(symbol_id) {
-                        println!("DEBUG inline_expression_deep: Receiver is parameter {:?}", symbol_id);
+                        // println!("DEBUG inline_expression_deep: Receiver is parameter {:?}", symbol_id);
 
                         // Check if this is an identity method
                         // First get the symbol, then get its name
                         if let Some(symbol) = self.symbol_table.get_symbol(*method_symbol) {
                             if let Some(method_name_str) = self.string_interner.get(symbol.name) {
-                                println!("DEBUG inline_expression_deep: Method name is {}", method_name_str);
+                                // println!("DEBUG inline_expression_deep: Method name is {}", method_name_str);
                                 if method_name_str == "toInt" || method_name_str == "toFloat" || method_name_str == "toString" {
-                                    println!("DEBUG inline_expression_deep: Optimizing identity method - returning receiver");
+                                    // println!("DEBUG inline_expression_deep: Optimizing identity method - returning receiver");
                                     return replacement.clone();
                                 }
                             }
@@ -2739,7 +2787,7 @@ impl<'a> TastToHirContext<'a> {
                 }
 
                 // Otherwise, substitute receiver and arguments and create call
-                println!("DEBUG inline_expression_deep: Creating Call expression for method");
+                // println!("DEBUG inline_expression_deep: Creating Call expression for method");
                 let lowered_receiver = self.inline_expression_deep(inner_receiver, this_replacement, param_map, inner_receiver.expr_type);
                 let lowered_args: Vec<HirExpr> = arguments.iter()
                     .map(|arg| self.inline_expression_deep(arg, this_replacement, param_map, arg.expr_type))
@@ -2802,24 +2850,38 @@ impl<'a> TastToHirContext<'a> {
             }
 
             // For New expressions, recursively inline constructor arguments
-            TypedExpressionKind::New { class_type, type_arguments, arguments } => {
+            TypedExpressionKind::New { class_type, type_arguments, arguments, class_name: tast_class_name } => {
                 let lowered_args: Vec<HirExpr> = arguments.iter()
                     .map(|arg| self.inline_expression_deep(arg, this_replacement, param_map, expected_type))
                     .collect();
 
                 // Fix the type information: if class_type is UNKNOWN/invalid, use expected_type
                 let fixed_class_type = if *class_type == TypeId::invalid() {
-                    eprintln!("DEBUG: Fixing New expression type from UNKNOWN to {:?}", expected_type);
+                    // eprintln!("DEBUG: Fixing New expression type from UNKNOWN to {:?}", expected_type);
                     expected_type
                 } else {
                     *class_type
                 };
+
+                // Use class_name from TAST if available, otherwise extract from TypeId
+                let class_name = tast_class_name.or_else(|| {
+                    self.type_table.borrow().get(fixed_class_type)
+                        .and_then(|type_ref| {
+                            if let crate::tast::TypeKind::Class { symbol_id, .. } = &type_ref.kind {
+                                self.symbol_table.get_symbol(*symbol_id)
+                                    .and_then(|sym| Some(sym.name))
+                            } else {
+                                None
+                            }
+                        })
+                });
 
                 HirExpr::new(
                     HirExprKind::New {
                         class_type: fixed_class_type,
                         type_args: type_arguments.clone(),
                         args: lowered_args,
+                        class_name,
                     },
                     expected_type, // Use expected_type instead of expr.expr_type
                     self.current_lifetime,
@@ -2893,10 +2955,11 @@ impl<'a> TastToHirContext<'a> {
         body: &[TypedStatement],
         param_symbols: &std::collections::HashSet<SymbolId>,
     ) -> Vec<HirCapture> {
-        use std::collections::HashSet;
+        use std::collections::{HashSet, HashMap};
 
-        // Collect all variable references in the body
-        let mut referenced_vars = HashSet::new();
+
+        // Collect all variable references with their types
+        let mut referenced_vars: HashMap<SymbolId, TypeId> = HashMap::new();
         for stmt in body {
             self.collect_var_refs_stmt(stmt, &mut referenced_vars);
         }
@@ -2910,10 +2973,11 @@ impl<'a> TastToHirContext<'a> {
         // Free variables are those referenced but not locally defined
         let captures: Vec<_> = referenced_vars
             .into_iter()
-            .filter(|sym| !locally_defined.contains(sym))
-            .map(|symbol| HirCapture {
+            .filter(|(sym, _)| !locally_defined.contains(sym))
+            .map(|(symbol, ty)| HirCapture {
                 symbol,
                 mode: HirCaptureMode::ByValue, // Default to by-value capture
+                ty,
             })
             .collect();
 
@@ -2921,7 +2985,7 @@ impl<'a> TastToHirContext<'a> {
     }
 
     /// Collect all variable references in a statement
-    fn collect_var_refs_stmt(&self, stmt: &TypedStatement, refs: &mut std::collections::HashSet<SymbolId>) {
+    fn collect_var_refs_stmt(&self, stmt: &TypedStatement, refs: &mut std::collections::HashMap<SymbolId, TypeId>) {
         match stmt {
             TypedStatement::Expression { expression, .. } => {
                 self.collect_var_refs_expr(expression, refs);
@@ -2952,10 +3016,25 @@ impl<'a> TastToHirContext<'a> {
     }
 
     /// Collect all variable references in an expression
-    fn collect_var_refs_expr(&self, expr: &TypedExpression, refs: &mut std::collections::HashSet<SymbolId>) {
+    fn collect_var_refs_expr(&self, expr: &TypedExpression, refs: &mut std::collections::HashMap<SymbolId, TypeId>) {
         match &expr.kind {
             TypedExpressionKind::Variable { symbol_id, .. } => {
-                refs.insert(*symbol_id);
+                // Store the variable with its type from the expression
+                refs.insert(*symbol_id, expr.expr_type);
+            }
+            TypedExpressionKind::FieldAccess { object, .. } => {
+                // Field access like msg.value - need to capture the object (msg)
+                self.collect_var_refs_expr(object, refs);
+            }
+            TypedExpressionKind::ArrayAccess { array, index, .. } => {
+                self.collect_var_refs_expr(array, refs);
+                self.collect_var_refs_expr(index, refs);
+            }
+            TypedExpressionKind::MethodCall { receiver, arguments, .. } => {
+                self.collect_var_refs_expr(receiver, refs);
+                for arg in arguments {
+                    self.collect_var_refs_expr(arg, refs);
+                }
             }
             TypedExpressionKind::BinaryOp { left, right, .. } => {
                 self.collect_var_refs_expr(left, refs);
@@ -2987,8 +3066,18 @@ impl<'a> TastToHirContext<'a> {
     /// Collect all locally defined variables in a statement
     fn collect_local_defs_stmt(&self, stmt: &TypedStatement, defs: &mut std::collections::HashSet<SymbolId>) {
         match stmt {
+            TypedStatement::Expression { expression, .. } => {
+                // FIX: Expression statements can contain Block expressions with local definitions
+                self.collect_local_defs_expr(expression, defs);
+            }
             TypedStatement::VarDeclaration { symbol_id, .. } => {
                 defs.insert(*symbol_id);
+            }
+            TypedStatement::Block { statements, .. } => {
+                // Recursively collect from all statements in the block
+                for s in statements {
+                    self.collect_local_defs_stmt(s, defs);
+                }
             }
             TypedStatement::If { then_branch, else_branch, .. } => {
                 self.collect_local_defs_stmt(then_branch, defs);
@@ -2999,7 +3088,56 @@ impl<'a> TastToHirContext<'a> {
             TypedStatement::While { body, .. } => {
                 self.collect_local_defs_stmt(body, defs);
             }
+            TypedStatement::For { init, body, .. } => {
+                // For loops can have init declarations
+                if let Some(init_stmt) = init {
+                    self.collect_local_defs_stmt(init_stmt, defs);
+                }
+                self.collect_local_defs_stmt(body, defs);
+            }
+            TypedStatement::ForIn { value_var, key_var, body, .. } => {
+                // For-in loops define iteration variables
+                defs.insert(*value_var);
+                if let Some(key) = key_var {
+                    defs.insert(*key);
+                }
+                self.collect_local_defs_stmt(body, defs);
+            }
             _ => {} // Other statement types
+        }
+    }
+
+    /// Collect all locally defined variables in an expression (e.g., Block expressions)
+    fn collect_local_defs_expr(&self, expr: &TypedExpression, defs: &mut std::collections::HashSet<SymbolId>) {
+        match &expr.kind {
+            TypedExpressionKind::Block { statements, .. } => {
+                for stmt in statements {
+                    self.collect_local_defs_stmt(stmt, defs);
+                }
+            }
+            TypedExpressionKind::While { then_expr, .. } => {
+                self.collect_local_defs_expr(then_expr, defs);
+            }
+            TypedExpressionKind::For { variable, body, .. } => {
+                // For expressions define iteration variable
+                defs.insert(*variable);
+                self.collect_local_defs_expr(body, defs);
+            }
+            TypedExpressionKind::ForIn { value_var, key_var, body, .. } => {
+                // For-in expressions define iteration variables
+                defs.insert(*value_var);
+                if let Some(key) = key_var {
+                    defs.insert(*key);
+                }
+                self.collect_local_defs_expr(body, defs);
+            }
+            TypedExpressionKind::Conditional { then_expr, else_expr, .. } => {
+                self.collect_local_defs_expr(then_expr, defs);
+                if let Some(else_e) = else_expr {
+                    self.collect_local_defs_expr(else_e, defs);
+                }
+            }
+            _ => {} // Other expression types don't define local variables
         }
     }
 

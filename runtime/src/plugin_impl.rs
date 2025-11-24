@@ -167,6 +167,47 @@ register_symbol!("haxe_sys_exit", crate::haxe_sys::haxe_sys_exit);
 register_symbol!("haxe_sys_time", crate::haxe_sys::haxe_sys_time);
 register_symbol!("haxe_sys_args_count", crate::haxe_sys::haxe_sys_args_count);
 
+// ============================================================================
+// Concurrency Functions (Thread, Arc, Mutex, Channel)
+// ============================================================================
+
+// Thread functions
+register_symbol!("rayzor_thread_spawn", crate::concurrency::rayzor_thread_spawn);
+register_symbol!("rayzor_thread_join", crate::concurrency::rayzor_thread_join);
+register_symbol!("rayzor_thread_is_finished", crate::concurrency::rayzor_thread_is_finished);
+register_symbol!("rayzor_thread_yield_now", crate::concurrency::rayzor_thread_yield_now);
+register_symbol!("rayzor_thread_sleep", crate::concurrency::rayzor_thread_sleep);
+register_symbol!("rayzor_thread_current_id", crate::concurrency::rayzor_thread_current_id);
+
+// Arc functions
+register_symbol!("rayzor_arc_init", crate::concurrency::rayzor_arc_init);
+register_symbol!("rayzor_arc_clone", crate::concurrency::rayzor_arc_clone);
+register_symbol!("rayzor_arc_get", crate::concurrency::rayzor_arc_get);
+register_symbol!("rayzor_arc_strong_count", crate::concurrency::rayzor_arc_strong_count);
+register_symbol!("rayzor_arc_try_unwrap", crate::concurrency::rayzor_arc_try_unwrap);
+register_symbol!("rayzor_arc_as_ptr", crate::concurrency::rayzor_arc_as_ptr);
+
+// Mutex functions
+register_symbol!("rayzor_mutex_init", crate::concurrency::rayzor_mutex_init);
+register_symbol!("rayzor_mutex_lock", crate::concurrency::rayzor_mutex_lock);
+register_symbol!("rayzor_mutex_try_lock", crate::concurrency::rayzor_mutex_try_lock);
+register_symbol!("rayzor_mutex_is_locked", crate::concurrency::rayzor_mutex_is_locked);
+register_symbol!("rayzor_mutex_guard_get", crate::concurrency::rayzor_mutex_guard_get);
+register_symbol!("rayzor_mutex_unlock", crate::concurrency::rayzor_mutex_unlock);
+
+// Channel functions
+register_symbol!("rayzor_channel_init", crate::concurrency::rayzor_channel_init);
+register_symbol!("rayzor_channel_send", crate::concurrency::rayzor_channel_send);
+register_symbol!("rayzor_channel_try_send", crate::concurrency::rayzor_channel_try_send);
+register_symbol!("rayzor_channel_receive", crate::concurrency::rayzor_channel_receive);
+register_symbol!("rayzor_channel_try_receive", crate::concurrency::rayzor_channel_try_receive);
+register_symbol!("rayzor_channel_close", crate::concurrency::rayzor_channel_close);
+register_symbol!("rayzor_channel_is_closed", crate::concurrency::rayzor_channel_is_closed);
+register_symbol!("rayzor_channel_len", crate::concurrency::rayzor_channel_len);
+register_symbol!("rayzor_channel_capacity", crate::concurrency::rayzor_channel_capacity);
+register_symbol!("rayzor_channel_is_empty", crate::concurrency::rayzor_channel_is_empty);
+register_symbol!("rayzor_channel_is_full", crate::concurrency::rayzor_channel_is_full);
+
 /// Rayzor Runtime Plugin
 pub struct RayzorRuntimePlugin;
 

@@ -28,6 +28,10 @@ pub mod effect_analysis;
 pub mod control_flow_analysis;
 pub mod null_safety_analysis;
 pub mod type_flow_guard;
+pub mod trait_checker;
+pub mod capture_analyzer;
+pub mod core_types;
+pub mod send_sync_validator;
 // pub mod type_inference;
 
 #[cfg(test)]
@@ -57,8 +61,9 @@ pub use scopes::*;
 pub use core::{TypeTable, TypeKind, Type, TypeFlags, Variance};
 pub use ast_lowering::*;
 pub use type_checker::{TypeChecker, TypeCheckError, TypeErrorKind, TypeCheckResult, AccessLevel};
-pub use node::{TypedFile, TypedClass, TypedInterface, TypedEnum, TypedExpression, TypedStatement, 
-               FunctionEffects, AsyncKind, MemoryEffects, ResourceEffects, TypedExpressionKind};
+pub use node::{TypedFile, TypedClass, TypedInterface, TypedEnum, TypedExpression, TypedStatement,
+               FunctionEffects, AsyncKind, MemoryEffects, ResourceEffects, TypedExpressionKind, MemoryAnnotation, SafetyMode, DerivedTrait,
+               PropertyAccessInfo, PropertyAccessor};
 pub use namespace::{NamespaceResolver, ImportResolver, PackageId, PackageInfo, QualifiedPath, ImportEntry};
 pub use package_access::{PackageAccessValidator, PackageAccessContext, AccessPermission};
 pub use type_flow_guard::{TypeFlowGuard, FlowSafetyError, FlowSafetyResults, FlowAnalysisMetrics};

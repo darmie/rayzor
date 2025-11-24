@@ -3,7 +3,8 @@
 //! This module provides infrastructure for managing package hierarchies,
 //! namespace resolution, and import tracking for proper type path resolution.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use super::{InternedString, SymbolId, ScopeId, StringInterner};
 
 /// Unique identifier for a package
@@ -138,18 +139,27 @@ pub struct ImportEntry {
 pub struct NamespaceResolver {
     /// All packages by ID
     packages: HashMap<PackageId, PackageInfo>,
-    
+
     /// Package lookup by full path
     package_paths: HashMap<Vec<InternedString>, PackageId>,
-    
+
     /// Current package context
     current_package: Option<PackageId>,
-    
+
     /// Next package ID
     next_package_id: u32,
-    
+
     /// String interner reference
     string_interner: *const StringInterner,
+
+    /// Files that have been loaded (to avoid reloading)
+    loaded_files: HashSet<PathBuf>,
+
+    /// Source paths for user code (checked first)
+    source_paths: Vec<PathBuf>,
+
+    /// Standard library paths (checked after source paths)
+    stdlib_paths: Vec<PathBuf>,
 }
 
 impl NamespaceResolver {
@@ -161,14 +171,80 @@ impl NamespaceResolver {
             current_package: None,
             next_package_id: 1, // 0 is reserved for root
             string_interner: string_interner as *const _,
+            loaded_files: HashSet::new(),
+            source_paths: Vec::new(),
+            stdlib_paths: Vec::new(),
         };
-        
+
         // Create root package
         let root = PackageInfo::new(Vec::new(), None);
         resolver.packages.insert(PackageId::root(), root);
         resolver.package_paths.insert(Vec::new(), PackageId::root());
-        
+
         resolver
+    }
+
+    /// Set source paths for user code (checked first during import resolution)
+    pub fn set_source_paths(&mut self, paths: Vec<PathBuf>) {
+        self.source_paths = paths;
+    }
+
+    /// Set standard library paths (checked after source paths)
+    pub fn set_stdlib_paths(&mut self, paths: Vec<PathBuf>) {
+        self.stdlib_paths = paths;
+    }
+
+    /// Mark a file as loaded
+    pub fn mark_file_loaded(&mut self, path: PathBuf) {
+        self.loaded_files.insert(path);
+    }
+
+    /// Check if a file has been loaded
+    pub fn is_file_loaded(&self, path: &PathBuf) -> bool {
+        self.loaded_files.contains(path)
+    }
+
+    /// Get all loaded files
+    pub fn loaded_files(&self) -> &HashSet<PathBuf> {
+        &self.loaded_files
+    }
+
+    /// Resolve a qualified path to a filesystem path
+    /// Example: "haxe.iterators.ArrayIterator" -> "haxe/iterators/ArrayIterator.hx"
+    ///
+    /// Lookup order:
+    /// 1. Source paths (project workspace)
+    /// 2. Standard library paths
+    ///
+    /// Returns the first existing file path found, or None if not found
+    pub fn resolve_qualified_path_to_file(&self, qualified_path: &str) -> Option<PathBuf> {
+        // Convert qualified path to file path
+        // "haxe.iterators.ArrayIterator" -> "haxe/iterators/ArrayIterator.hx"
+        let file_path = qualified_path.replace('.', "/") + ".hx";
+
+        // First check source paths (user workspace)
+        for source_path in &self.source_paths {
+            let full_path = source_path.join(&file_path);
+            if full_path.exists() && !self.is_file_loaded(&full_path) {
+                return Some(full_path);
+            }
+        }
+
+        // Then check stdlib paths
+        for stdlib_path in &self.stdlib_paths {
+            let full_path = stdlib_path.join(&file_path);
+            if full_path.exists() && !self.is_file_loaded(&full_path) {
+                return Some(full_path);
+            }
+        }
+
+        None
+    }
+
+    /// Resolve a QualifiedPath to a filesystem path
+    pub fn resolve_to_file(&self, path: &QualifiedPath, interner: &StringInterner) -> Option<PathBuf> {
+        let qualified_str = path.to_string(interner);
+        self.resolve_qualified_path_to_file(&qualified_str)
     }
 
     /// Get or create a package by path
@@ -231,6 +307,11 @@ impl NamespaceResolver {
             }
         }
         None
+    }
+
+    /// Debug: list all packages
+    pub fn debug_list_packages(&self) -> Vec<Vec<InternedString>> {
+        self.package_paths.keys().cloned().collect()
     }
 
     /// Find all symbols matching a name in the package hierarchy
@@ -333,12 +414,24 @@ impl ImportResolver {
     /// Resolve a type name in the context of imports
     pub fn resolve_type(&self, name: InternedString, scope: ScopeId) -> Vec<QualifiedPath> {
         let mut candidates = Vec::new();
-        
+
         // Check aliases first
         if let Some(path) = self.aliases.get(&(scope, name)) {
             candidates.push(path.clone());
         }
-        
+
+        // Check current package (types in same package are automatically visible)
+        // SAFETY: The namespace_resolver pointer is valid for the lifetime of ImportResolver
+        let ns = unsafe { &*self.namespace_resolver };
+        if let Some(pkg_id) = ns.current_package() {
+            if let Some(package) = ns.get_package(pkg_id) {
+                let path = QualifiedPath::new(package.full_path.clone(), name);
+                if ns.lookup_symbol(&path).is_some() {
+                    candidates.push(path);
+                }
+            }
+        }
+
         // Check explicit imports
         if let Some(imports) = self.imports_by_scope.get(&scope) {
             for import in imports {
@@ -352,7 +445,7 @@ impl ImportResolver {
                 }
             }
         }
-        
+
         candidates
     }
 

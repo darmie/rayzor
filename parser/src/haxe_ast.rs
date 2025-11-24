@@ -217,7 +217,7 @@ impl ClassDecl {
             _ => false,
         })
     }
-    
+
     /// Get all constructors (can be multiple with @:overload)
     pub fn get_constructors(&self) -> impl Iterator<Item = &ClassField> {
         self.fields.iter().filter(|field| match &field.kind {
@@ -225,7 +225,7 @@ impl ClassDecl {
             _ => false,
         })
     }
-    
+
     /// Get the primary constructor (first one found)
     pub fn get_primary_constructor(&self) -> Option<&Function> {
         self.fields.iter().find_map(|field| match &field.kind {
@@ -233,7 +233,7 @@ impl ClassDecl {
             _ => None,
         })
     }
-    
+
     /// Get all non-constructor fields
     pub fn get_non_constructor_fields(&self) -> impl Iterator<Item = &ClassField> {
         self.fields.iter().filter(|field| match &field.kind {
@@ -241,7 +241,7 @@ impl ClassDecl {
             _ => true,
         })
     }
-    
+
     /// Get all methods (excluding constructors)
     pub fn get_methods(&self) -> impl Iterator<Item = &ClassField> {
         self.fields.iter().filter(|field| match &field.kind {
@@ -249,13 +249,58 @@ impl ClassDecl {
             _ => false,
         })
     }
-    
+
     /// Get all variables and properties
     pub fn get_vars_and_properties(&self) -> impl Iterator<Item = &ClassField> {
         self.fields.iter().filter(|field| matches!(
             &field.kind,
             ClassFieldKind::Var { .. } | ClassFieldKind::Final { .. } | ClassFieldKind::Property { .. }
         ))
+    }
+
+    /// Check if class has @:derive metadata with a specific trait
+    /// Example: @:derive([Clone, Copy])
+    pub fn has_derive_trait(&self, trait_name: &str) -> bool {
+        self.get_derive_traits().iter().any(|t| t == trait_name)
+    }
+
+    /// Get all traits from @:derive metadata
+    /// Example: @:derive([Clone, Copy]) returns vec!["Clone", "Copy"]
+    pub fn get_derive_traits(&self) -> Vec<String> {
+        self.meta
+            .iter()
+            .filter(|m| m.name == "derive")
+            .flat_map(|m| {
+                m.params.iter().filter_map(|param| {
+                    // Extract trait names from array expression
+                    match &param.kind {
+                        ExprKind::Array(items) => {
+                            Some(items.iter().filter_map(|item| {
+                                match &item.kind {
+                                    ExprKind::Ident(name) => Some(name.clone()),
+                                    _ => None,
+                                }
+                            }).collect::<Vec<_>>())
+                        },
+                        ExprKind::Ident(name) => {
+                            // Also support @:derive(Clone) without array
+                            Some(vec![name.clone()])
+                        },
+                        _ => None,
+                    }
+                }).flatten()
+            })
+            .collect()
+    }
+
+    /// Check if metadata exists by name
+    pub fn has_metadata(&self, name: &str) -> bool {
+        self.meta.iter().any(|m| m.name == name)
+    }
+
+    /// Get metadata by name
+    pub fn get_metadata(&self, name: &str) -> Option<&Metadata> {
+        self.meta.iter().find(|m| m.name == name)
     }
 }
 

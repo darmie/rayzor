@@ -42,6 +42,13 @@ pub struct IrModule {
     pub next_function_id: u32,
     pub next_global_id: u32,
     pub next_typedef_id: u32,
+
+    /// Symbol-to-register mapping for memory safety validation
+    /// Maps TAST SymbolId to MIR IrId for ownership tracking
+    pub symbol_to_register: HashMap<SymbolId, IrId>,
+
+    /// Register-to-symbol reverse mapping
+    pub register_to_symbol: HashMap<IrId, SymbolId>,
 }
 
 /// Global variable identifier
@@ -296,6 +303,8 @@ impl IrModule {
             next_function_id: 0,
             next_global_id: 0,
             next_typedef_id: 0,
+            symbol_to_register: HashMap::new(),
+            register_to_symbol: HashMap::new(),
         }
     }
     

@@ -14,8 +14,8 @@
 use log::{info, error, warn, debug};
 
 use crate::tast::{
-    node::{TypedFile, FileMetadata},
-    string_intern::StringInterner,
+    node::{TypedFile, FileMetadata, SafetyMode},
+    string_intern::{StringInterner, InternedString},
     SourceLocation, TypeId, SymbolId, SymbolTable, TypeTable,
 };
 use crate::semantic_graph::{
@@ -282,9 +282,20 @@ impl CompilationError {
         let file_id = FileId::new(self.location.file_id as usize);
 
         // Calculate line/column from byte offset using SourceMap
+        // Try to underline the whole identifier/token, not just one character
         let (start_pos, end_pos) = if let Some(pos) = source_map.offset_to_position(file_id, self.location.byte_offset as usize) {
-            let end_pos = source_map.offset_to_position(file_id, (self.location.byte_offset + 1) as usize)
-                .unwrap_or_else(|| SourcePosition::new(pos.line, pos.column + 1, pos.byte_offset + 1));
+            // Estimate token length from the error message - look for variable/field names in quotes
+            // e.g., "Use after move: variable 'myResource' was moved" -> extract 'myResource'
+            let token_len = self.message
+                .split('\'')
+                .nth(1)  // Get first quoted string
+                .map(|name| name.len())
+                .unwrap_or(1)  // Default to 1 if no quoted name found
+                .max(1);  // Ensure at least 1
+
+            let end_offset = self.location.byte_offset as usize + token_len;
+            let end_pos = source_map.offset_to_position(file_id, end_offset)
+                .unwrap_or_else(|| SourcePosition::new(pos.line, pos.column + token_len, end_offset));
             (pos, end_pos)
         } else {
             // Fallback if offset calculation fails
@@ -303,6 +314,16 @@ impl CompilationError {
 
         let span = SourceSpan::new(start_pos, end_pos, file_id);
 
+        // Split multi-line suggestions into separate help items for better color coding
+        let help_items = self.suggestion.as_ref()
+            .map(|s| {
+                s.lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .map(|line| line.trim().to_string())
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default();
+
         Diagnostic {
             severity: DiagnosticSeverity::Error,
             code: Some(self.category.error_code().to_string()),
@@ -311,7 +332,7 @@ impl CompilationError {
             labels: vec![Label::primary(span, self.message.clone())],
             suggestions: vec![],
             notes: self.related_errors.clone(),
-            help: self.suggestion.as_ref().map(|s| vec![s.clone()]).unwrap_or_default(),
+            help: help_items,
         }
     }
 }
@@ -615,12 +636,39 @@ impl HaxeCompilationPipeline {
                 // Stage 2: Lower AST to TAST
                 let lowering_start = std::time::Instant::now();
                 match self.lower_ast_to_tast(ast_file, file_path.as_ref(), source, source_map) {
-                    Ok((typed_file, lowering_errors, symbol_table, type_table, scope_tree)) => {
+                    Ok((mut typed_file, lowering_errors, symbol_table, type_table, scope_tree)) => {
                         self.stats.lowering_time_us += lowering_start.elapsed().as_micros() as u64;
-                        
+
                         // Add any type errors from lowering/type checking
                         result.errors.extend(lowering_errors);
-                        
+
+                        // Stage 2b: Detect program-level safety mode (check Main class for @:safety)
+                        let program_safety_mode = typed_file.detect_program_safety_mode();
+
+                        // Stage 2c: Validate strict mode if enabled
+                        if let Some(SafetyMode::Strict) = program_safety_mode {
+                            // In strict mode, all classes must have @:safety annotation
+                            for class in &typed_file.classes {
+                                if !class.has_safety_annotation() {
+                                    let class_name = typed_file.get_string(class.name)
+                                        .unwrap_or_else(|| "<unknown>".to_string());
+                                    result.errors.push(CompilationError {
+                                        message: format!(
+                                            "Class '{}' must have @:safety annotation when program uses strict safety mode",
+                                            class_name
+                                        ),
+                                        location: class.source_location,
+                                        category: ErrorCategory::TypeError,
+                                        suggestion: Some(format!(
+                                            "Add @:safety annotation to class '{}' or use @:safety(strict=false) on Main class",
+                                            class_name
+                                        )),
+                                        related_errors: Vec::new(),
+                                    });
+                                }
+                            }
+                        }
+
                         // Stage 3: Validate TAST
                         if let Err(validation_errors) = self.validate_tast(&typed_file) {
                             result.errors.extend(validation_errors);
@@ -650,15 +698,63 @@ impl HaxeCompilationPipeline {
                                     if self.config.enable_memory_safety_analysis {
                                         let memory_safety_start = std::time::Instant::now();
                                         let memory_safety_errors = self.run_memory_safety_analysis(
-                                            &typed_file, 
-                                            &graphs, 
-                                            &symbol_table, 
+                                            &typed_file,
+                                            &graphs,
+                                            &symbol_table,
                                             &type_table
                                         );
-                                        result.errors.extend(memory_safety_errors);
+
+                                        // Check if we're in strict safety mode
+                                        if let Some(SafetyMode::Strict) = typed_file.get_program_safety_mode() {
+                                            // In strict mode, safety errors are fatal
+                                            if !memory_safety_errors.is_empty() {
+                                                result.errors.extend(memory_safety_errors);
+                                                // Add a summary error
+                                                result.errors.push(CompilationError {
+                                                    message: "Compilation stopped: Safety violations in strict mode".to_string(),
+                                                    location: SourceLocation::unknown(),
+                                                    category: ErrorCategory::OwnershipError,
+                                                    suggestion: Some("Fix all safety violations above, or use @:safety(false) for non-strict mode".to_string()),
+                                                    related_errors: Vec::new(),
+                                                });
+                                                self.stats.memory_safety_analysis_time_us += memory_safety_start.elapsed().as_micros() as u64;
+
+                                                // Store partial results and return early
+                                                result.semantic_graphs.push(Arc::new(graphs.clone()));
+                                                result.typed_files.push(typed_file);
+                                                return result;
+                                            }
+                                        } else if typed_file.uses_manual_memory() {
+                                            // Non-strict mode: Display warnings but continue
+                                            if !memory_safety_errors.is_empty() {
+                                                eprintln!("\n⚠️  Memory Safety Warnings (non-strict mode):");
+                                                eprintln!("   The following issues were found but compilation will continue.");
+                                                eprintln!("   Unannotated classes will use ARC (atomic reference counting).\n");
+                                                for err in &memory_safety_errors {
+                                                    eprintln!("   {} at {}:{}", err.message, err.location.line, err.location.column);
+                                                    if let Some(ref suggestion) = err.suggestion {
+                                                        eprintln!("     Suggestion: {}", suggestion);
+                                                    }
+                                                }
+                                                eprintln!();
+                                            }
+                                            // Convert errors to warnings for reporting
+                                            for err in memory_safety_errors {
+                                                result.warnings.push(CompilationWarning {
+                                                    message: err.message,
+                                                    location: err.location,
+                                                    category: WarningCategory::Correctness,
+                                                    suppressible: false, // Safety warnings in non-strict mode are important
+                                                });
+                                            }
+                                        } else {
+                                            // GC mode: no safety analysis was run anyway
+                                            result.errors.extend(memory_safety_errors);
+                                        }
+
                                         self.stats.memory_safety_analysis_time_us += memory_safety_start.elapsed().as_micros() as u64;
                                     }
-                                    
+
                                     result.semantic_graphs.push(Arc::new(graphs.clone()));
                                     Some(graphs)
                                 }
@@ -670,9 +766,10 @@ impl HaxeCompilationPipeline {
                         } else {
                             None
                         };
-                        
+
                         // Stage 5: Lower TAST to HIR (if enabled)
-                        if self.config.enable_hir_lowering {
+                        // Skip HIR lowering if we have fatal errors
+                        if self.config.enable_hir_lowering && result.errors.is_empty() {
                             let hir_start = std::time::Instant::now();
                             match self.lower_tast_to_hir(&typed_file, semantic_graphs.as_ref(), &symbol_table, &type_table) {
                                 Ok(hir_module) => {
@@ -705,7 +802,7 @@ impl HaxeCompilationPipeline {
                                     // Stage 8: Lower HIR to MIR (if enabled)
                                     if self.config.enable_mir_lowering {
                                         let mir_start = std::time::Instant::now();
-                                        match self.lower_hir_to_mir(&final_hir, &type_table, &symbol_table) {
+                                        match self.lower_hir_to_mir(&final_hir, &type_table, &symbol_table, semantic_graphs.as_ref(), &typed_file) {
                                             Ok(mir_module) => {
                                                 self.stats.mir_lowering_time_us += mir_start.elapsed().as_micros() as u64;
                                                 
@@ -858,12 +955,13 @@ impl HaxeCompilationPipeline {
         
         // Now proceed with AST lowering using resolved types
         let mut binding = self.string_interner.borrow_mut();
-        
+
         // Create namespace and import resolvers
         let mut namespace_resolver = crate::tast::namespace::NamespaceResolver::new(&*binding);
         let mut import_resolver = crate::tast::namespace::ImportResolver::new(&namespace_resolver);
         let mut lowering = AstLowering::new(
             &mut binding,
+            Rc::clone(&self.string_interner),
             &mut symbol_table,
             &type_table,
             &mut scope_tree,
@@ -903,7 +1001,8 @@ impl HaxeCompilationPipeline {
 
                 // Create a minimal TAST so we can continue pipeline and find more errors
                 // This allows us to report ALL errors, not just the first one
-                let minimal_tast = TypedFile::new(Rc::new(RefCell::new(StringInterner::new())));
+                // IMPORTANT: Use the same string interner as the pipeline to ensure symbol names can be resolved
+                let minimal_tast = TypedFile::new(Rc::clone(&self.string_interner));
 
                 (minimal_tast, compilation_errors)
             }
@@ -1371,6 +1470,9 @@ impl HaxeCompilationPipeline {
                     }
                 }
 
+                // Build ownership graph from TAST for safety analysis
+                self.populate_ownership_graph(&mut graphs, typed_file);
+
                 Ok(graphs)
             },
             Err(graph_error) => {
@@ -1414,7 +1516,181 @@ impl HaxeCompilationPipeline {
             }
         }
     }
-    
+
+    /// Populate ownership graph from TAST for memory safety analysis
+    fn populate_ownership_graph(&self, graphs: &mut SemanticGraphs, typed_file: &TypedFile) {
+        use crate::semantic_graph::MoveType;
+        use crate::tast::{ScopeId, TypedStatement, TypedExpressionKind};
+
+        // Walk all functions/methods to find variable declarations and assignments
+        for class in &typed_file.classes {
+            for method in &class.methods {
+                let method_scope = ScopeId::from_raw(method.symbol_id.as_raw()); // Use symbol ID as scope proxy
+
+                // Add method parameters as owned variables
+                for param in &method.parameters {
+                    graphs.ownership_graph.add_variable(
+                        param.symbol_id,
+                        param.param_type,
+                        method_scope,
+                    );
+                }
+
+                // Walk method body
+                self.populate_ownership_from_statements(&mut graphs.ownership_graph, &method.body);
+            }
+
+            // Handle constructors
+            for constructor in &class.constructors {
+                let constructor_scope = ScopeId::from_raw(constructor.symbol_id.as_raw());
+
+                for param in &constructor.parameters {
+                    graphs.ownership_graph.add_variable(
+                        param.symbol_id,
+                        param.param_type,
+                        constructor_scope,
+                    );
+                }
+
+                self.populate_ownership_from_statements(&mut graphs.ownership_graph, &constructor.body);
+            }
+        }
+
+        // Standalone functions
+        for function in &typed_file.functions {
+            let function_scope = ScopeId::from_raw(function.symbol_id.as_raw());
+
+            for param in &function.parameters {
+                graphs.ownership_graph.add_variable(
+                    param.symbol_id,
+                    param.param_type,
+                    function_scope,
+                );
+            }
+
+            self.populate_ownership_from_statements(&mut graphs.ownership_graph, &function.body);
+        }
+    }
+
+    /// Walk statements and populate ownership edges
+    fn populate_ownership_from_statements(&self, ownership_graph: &mut crate::semantic_graph::OwnershipGraph, statements: &[crate::tast::TypedStatement]) {
+        use crate::semantic_graph::MoveType;
+        use crate::tast::{ScopeId, TypedStatement, TypedExpressionKind};
+
+        for stmt in statements {
+            match stmt {
+                TypedStatement::VarDeclaration { symbol_id, var_type, initializer, .. } => {
+                    // Add variable to ownership graph
+                    let var_scope = ScopeId::from_raw(symbol_id.as_raw()); // Use symbol ID as scope proxy
+                    ownership_graph.add_variable(
+                        *symbol_id,
+                        *var_type,
+                        var_scope,
+                    );
+
+                    // Check if initialized from another variable (this is a move)
+                    if let Some(init_expr) = initializer {
+                        if let TypedExpressionKind::Variable { symbol_id: source_var } = &init_expr.kind {
+                            // This is a move: var y = x;
+                            ownership_graph.add_move(
+                                *source_var,
+                                Some(*symbol_id),
+                                init_expr.source_location,
+                                MoveType::Explicit,
+                            );
+                        }
+                    }
+                }
+                TypedStatement::Expression { expression, .. } => {
+                    // Check for member access that might use moved variables
+                    self.check_expression_for_use(ownership_graph, expression);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Check if an expression uses a variable (for use-after-move detection)
+    fn check_expression_for_use(&self, ownership_graph: &mut crate::semantic_graph::OwnershipGraph, expr: &crate::tast::TypedExpression) {
+        use crate::tast::TypedExpressionKind;
+        use crate::semantic_graph::MoveType;
+
+        match &expr.kind {
+            TypedExpressionKind::Variable { symbol_id } => {
+                // This is a use of a variable - check if it's been moved
+                // The ownership analyzer will detect use-after-move violations later
+            }
+            TypedExpressionKind::FieldAccess { object, .. } => {
+                self.check_expression_for_use(ownership_graph, object);
+            }
+            TypedExpressionKind::FunctionCall { function, arguments, .. } => {
+                self.check_expression_for_use(ownership_graph, function);
+                for arg in arguments {
+                    self.check_expression_for_use(ownership_graph, arg);
+                }
+            }
+            TypedExpressionKind::FunctionLiteral { parameters, body, .. } => {
+                // Lambda/closure captures variables - this is a MOVE!
+                // Use CaptureAnalyzer to determine what variables are captured
+                use crate::tast::capture_analyzer::CaptureAnalyzer;
+
+                // Create analyzer with a dummy scope (we just need to find captures)
+                let analyzer = CaptureAnalyzer::new(crate::tast::ScopeId::from_raw(0));
+                let capture_analysis = analyzer.analyze_function_literal(parameters, body);
+
+                // Each captured variable is moved into the closure environment
+                for captured_var in &capture_analysis.captures {
+                    eprintln!("OWNERSHIP DEBUG: Lambda captures variable {:?}, adding move to ownership graph", captured_var.symbol_id);
+                    ownership_graph.add_move(
+                        captured_var.symbol_id,
+                        None,  // Moved into closure environment (no destination variable)
+                        expr.source_location,
+                        MoveType::Explicit,
+                    );
+                }
+
+                // Also recursively check the body for nested lambdas
+                for stmt in body {
+                    self.check_statement_for_use(ownership_graph, stmt);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Check if a statement uses variables (helper for checking lambda bodies)
+    fn check_statement_for_use(&self, ownership_graph: &mut crate::semantic_graph::OwnershipGraph, stmt: &crate::tast::TypedStatement) {
+        use crate::tast::TypedStatement;
+
+        match stmt {
+            TypedStatement::Expression { expression, .. } => {
+                self.check_expression_for_use(ownership_graph, expression);
+            }
+            TypedStatement::VarDeclaration { initializer, .. } => {
+                if let Some(init_expr) = initializer {
+                    self.check_expression_for_use(ownership_graph, init_expr);
+                }
+            }
+            TypedStatement::Return { value, .. } => {
+                if let Some(ret_expr) = value {
+                    self.check_expression_for_use(ownership_graph, ret_expr);
+                }
+            }
+            TypedStatement::If { condition, then_branch, else_branch, .. } => {
+                self.check_expression_for_use(ownership_graph, condition);
+                self.check_statement_for_use(ownership_graph, then_branch);
+                if let Some(else_stmt) = else_branch {
+                    self.check_statement_for_use(ownership_graph, else_stmt);
+                }
+            }
+            TypedStatement::While { condition, body, .. } => {
+                self.check_expression_for_use(ownership_graph, condition);
+                self.check_statement_for_use(ownership_graph, body);
+            }
+            _ => {}
+        }
+    }
+
     /// Lower TAST to HIR 
     fn lower_tast_to_hir(
         &mut self,
@@ -1449,14 +1725,60 @@ impl HaxeCompilationPipeline {
     }
     
     /// Lower HIR to MIR (mid-level IR in SSA form)
+    /// Enforces memory safety rules before lowering in strict mode
     fn lower_hir_to_mir(
         &mut self,
         hir_module: &HirModule,
         type_table: &Rc<RefCell<TypeTable>>,
         symbol_table: &SymbolTable,
+        semantic_graphs: Option<&SemanticGraphs>,
+        typed_file: &TypedFile,
     ) -> Result<IrModule, Vec<CompilationError>> {
+        // MEMORY SAFETY ENFORCEMENT: Check ownership/lifetime violations before MIR lowering
+        // In strict mode (@:safety(true)), we must reject code with memory safety violations
+        if let Some(safety_mode) = typed_file.program_safety_mode {
+            if safety_mode == crate::tast::SafetyMode::Strict {
+                if let Some(graphs) = semantic_graphs {
+                    // Check for ownership violations
+                    let violations = self.check_memory_safety_violations(typed_file, graphs, symbol_table, type_table);
+                    if !violations.is_empty() {
+                        eprintln!("\n⛔ MEMORY SAFETY ENFORCEMENT: Blocking MIR lowering due to {} violation(s) in strict mode", violations.len());
+                        return Err(violations);
+                    } else {
+                        eprintln!("✅ MEMORY SAFETY: All checks passed, proceeding to MIR lowering");
+                    }
+                }
+            }
+        }
+
         match lower_hir_to_mir(hir_module, &*self.string_interner.borrow(), type_table, symbol_table) {
-            Ok(mir_module) => Ok(mir_module),
+            Ok(mir_module) => {
+                // MIR SAFETY VALIDATION: Enforce memory safety at MIR level
+                // This validates that MIR operations respect semantic analysis constraints
+                if let Some(graphs) = semantic_graphs {
+                    use crate::ir::validation::MirSafetyValidator;
+
+                    if let Err(validation_errors) = MirSafetyValidator::validate(&mir_module, graphs) {
+                        eprintln!("\n⛔ MIR SAFETY VALIDATION: Found {} violation(s)", validation_errors.len());
+
+                        let compilation_errors = validation_errors.into_iter().map(|err| {
+                            CompilationError {
+                                message: format!("MIR safety violation: {:?}", err.kind),
+                                location: SourceLocation::new(1, 1, 1, 1),
+                                category: ErrorCategory::OwnershipError,
+                                suggestion: None,
+                                related_errors: Vec::new(),
+                            }
+                        }).collect();
+
+                        return Err(compilation_errors);
+                    } else {
+                        eprintln!("✅ MIR SAFETY VALIDATION: All checks passed");
+                    }
+                }
+
+                Ok(mir_module)
+            },
             Err(lowering_errors) => {
                 let compilation_errors = lowering_errors.into_iter().map(|err| {
                     CompilationError {
@@ -1467,7 +1789,7 @@ impl HaxeCompilationPipeline {
                         related_errors: Vec::new(),
                     }
                 }).collect();
-                
+
                 Err(compilation_errors)
             }
         }
@@ -1630,6 +1952,78 @@ impl HaxeCompilationPipeline {
         errors
     }
     
+    /// Helper: Get variable name from SymbolId for diagnostics
+    fn get_variable_name(&self, symbol_id: SymbolId, symbol_table: &SymbolTable, typed_file: &TypedFile) -> String {
+        // First try symbol table
+        if let Some(sym) = symbol_table.get_symbol(symbol_id) {
+            // sym.name is an InternedString, resolve it using typed_file's string interner
+            let interner = typed_file.string_interner.borrow();
+            eprintln!("DEBUG: Trying to resolve InternedString({}) from interner with {} strings", sym.name.as_raw(), interner.len());
+            if let Some(name_str) = interner.get(sym.name) {
+                eprintln!("DEBUG get_variable_name: Symbol {} -> '{}'", symbol_id.as_raw(), name_str);
+                return name_str.to_string();
+            } else {
+                eprintln!("DEBUG get_variable_name: Symbol {} found but couldn't resolve interned string {} in interner (interner has {} strings)",
+                    symbol_id.as_raw(), sym.name.as_raw(), interner.len());
+                // Try to iterate through all strings to see what's there
+                eprintln!("DEBUG: Dumping first 100 strings in interner:");
+                for i in 0..100.min(interner.len()) {
+                    if let Some(s) = interner.get(unsafe { InternedString::from_raw(i as u32) }) {
+                        eprintln!("  [{}] = '{}'", i, s);
+                    }
+                }
+            }
+        } else {
+            eprintln!("DEBUG get_variable_name: Symbol {} NOT in symbol table", symbol_id.as_raw());
+        }
+
+        // Try to find the variable in typed_file declarations
+        // Check all functions for parameters
+        for func in &typed_file.functions {
+            for param in &func.parameters {
+                if param.symbol_id == symbol_id {
+                    return typed_file.get_string(param.name).unwrap_or_else(|| format!("param#{}", symbol_id.as_raw()));
+                }
+            }
+        }
+
+        // Check classes
+        for class in &typed_file.classes {
+            for method in &class.methods {
+                for param in &method.parameters {
+                    if param.symbol_id == symbol_id {
+                        return typed_file.get_string(param.name).unwrap_or_else(|| format!("param#{}", symbol_id.as_raw()));
+                    }
+                }
+            }
+            for constructor in &class.constructors {
+                for param in &constructor.parameters {
+                    if param.symbol_id == symbol_id {
+                        return typed_file.get_string(param.name).unwrap_or_else(|| format!("param#{}", symbol_id.as_raw()));
+                    }
+                }
+            }
+        }
+
+        // TODO: Local variables are not in the symbol table and VarDeclaration doesn't store names
+        // Need to populate symbol table with local variables during type checking
+        // For now, fall back to a readable format
+        format!("variable#{}", symbol_id.as_raw())
+    }
+
+    /// Check memory safety violations for strict mode enforcement
+    /// This is called before MIR lowering to block unsafe code
+    fn check_memory_safety_violations(
+        &self,
+        typed_file: &TypedFile,
+        semantic_graphs: &SemanticGraphs,
+        symbol_table: &SymbolTable,
+        type_table: &Rc<RefCell<TypeTable>>
+    ) -> Vec<CompilationError> {
+        // Reuse the existing memory safety analysis
+        self.run_memory_safety_analysis(typed_file, semantic_graphs, symbol_table, type_table)
+    }
+
     /// Stage 4c: Run memory safety analysis (lifetime and ownership)
     fn run_memory_safety_analysis(
         &self,
@@ -1639,9 +2033,39 @@ impl HaxeCompilationPipeline {
         type_table: &Rc<RefCell<TypeTable>>
     ) -> Vec<CompilationError> {
         let mut errors = Vec::new();
-        
+
         // Only run if ownership/lifetime analysis is enabled
         if !self.config.enable_ownership_analysis && !self.config.enable_lifetime_analysis {
+            return errors;
+        }
+
+        // For concurrent code (using threads), ALWAYS check ownership to prevent data races
+        // For non-concurrent code, only check if @:safety mode is enabled
+        // Check if any imported symbols include concurrent primitives (Thread, Channel, Mutex, Arc)
+        let uses_concurrency = typed_file.imports.iter().any(|imp| {
+            if let Some(symbols) = &imp.imported_symbols {
+                // Check if any imported symbol matches concurrent types
+                let interner = self.string_interner.borrow();
+                symbols.iter().any(|s| {
+                    if let Some(name) = interner.get(*s) {
+                        name == "Thread" || name == "Channel" || name == "Mutex" || name == "Arc"
+                    } else {
+                        false
+                    }
+                })
+            } else {
+                // Wildcard import - check module path for "concurrent"
+                let interner = self.string_interner.borrow();
+                if let Some(path) = interner.get(imp.module_path) {
+                    path.contains("concurrent")
+                } else {
+                    false
+                }
+            }
+        });
+
+        if typed_file.program_safety_mode.is_none() && !uses_concurrency {
+            // Program uses GC and doesn't use threads, skip memory safety analysis
             return errors;
         }
         
@@ -1682,88 +2106,144 @@ impl HaxeCompilationPipeline {
             let use_after_move_violations = semantic_graphs.ownership_graph.check_use_after_move();
             for violation in use_after_move_violations {
                 let (message, location, suggestion) = match violation {
-                    crate::semantic_graph::OwnershipViolation::UseAfterMove { 
-                        variable, 
-                        move_location, 
-                        move_type 
-                    } => (
-                        format!("Use after move: variable {:?} was moved ({:?})", variable, move_type),
+                    crate::semantic_graph::OwnershipViolation::UseAfterMove {
+                        variable,
                         move_location,
-                        "Consider cloning the value or restructuring to avoid the move"
-                    ),
+                        move_type
+                    } => {
+                        let var_name = self.get_variable_name(variable, symbol_table, typed_file);
+
+                        // Provide Haxe-specific suggestions
+                        let suggestion = format!(
+                            "To fix this use-after-move error, you can:\n\
+                             1. Clone the value before moving: `var y = {0}.clone();`\n\
+                             2. Use a borrow instead: Add `@:borrow` annotation to the parameter\n\
+                             3. Use the value after the move instead of before\n\
+                             4. For shared ownership, use `@:rc` or `@:arc` on the class\n\
+                             Note: Haxe variables are mutable by default (var). Use 'final' for immutable bindings.",
+                            var_name
+                        );
+
+                        (
+                            format!("Use after move: variable '{}' was moved", var_name),
+                            move_location,
+                            suggestion
+                        )
+                    },
                     crate::semantic_graph::OwnershipViolation::AliasingViolation {
                         variable,
                         mutable_borrow_locations,
                         immutable_borrow_locations,
-                    } => (
-                        format!(
-                            "Aliasing violation: variable {:?} has {} mutable and {} immutable borrows",
-                            variable, 
-                            mutable_borrow_locations.len(), 
-                            immutable_borrow_locations.len()
-                        ),
-                        // Use first mutable borrow location as the primary location
-                        mutable_borrow_locations.first()
-                            .or(immutable_borrow_locations.first())
-                            .cloned()
-                            .unwrap_or_else(|| {
-                                // Fall back to a reasonable default location
-                                SourceLocation::new(1, 1, 1, 1)
-                            }),
-                        "Ensure that mutable and immutable borrows don't overlap"
-                    ),
+                    } => {
+                        let var_name = self.get_variable_name(variable, symbol_table, typed_file);
+                        let suggestion = format!(
+                            "Aliasing violation: cannot have mutable and immutable borrows simultaneously.\n\
+                             To fix:\n\
+                             1. Use only immutable borrows (@:borrow) if you don't need to modify\n\
+                             2. Ensure mutable borrows end before creating new borrows\n\
+                             3. Consider using 'final' for read-only access\n\
+                             4. For shared mutable state, use @:atomic or @:arc with locks"
+                        );
+                        (
+                            format!(
+                                "Aliasing violation: variable '{}' has {} mutable and {} immutable borrows",
+                                var_name,
+                                mutable_borrow_locations.len(),
+                                immutable_borrow_locations.len()
+                            ),
+                            // Use first mutable borrow location as the primary location
+                            mutable_borrow_locations.first()
+                                .or(immutable_borrow_locations.first())
+                                .cloned()
+                                .unwrap_or_else(|| {
+                                    // Fall back to a reasonable default location
+                                    SourceLocation::new(1, 1, 1, 1)
+                                }),
+                            suggestion
+                        )
+                    },
                     crate::semantic_graph::OwnershipViolation::DanglingPointer {
                         variable,
                         use_location,
                         expired_lifetime,
-                    } => (
-                        format!(
-                            "Dangling pointer: variable {:?} used after lifetime {:?} expired",
-                            variable, expired_lifetime
-                        ),
-                        use_location,
-                        "Ensure that pointers remain valid for their entire lifetime"
-                    ),
+                    } => {
+                        let var_name = self.get_variable_name(variable, symbol_table, typed_file);
+                        let suggestion = format!(
+                            "Dangling pointer: reference outlives the object it points to.\n\
+                             To fix:\n\
+                             1. Extend the lifetime of the object\n\
+                             2. Clone the value instead of borrowing: `{}.clone()`\n\
+                             3. Use owned values instead of references\n\
+                             4. For shared ownership, use @:rc or @:arc on the class",
+                            var_name
+                        );
+                        (
+                            format!(
+                                "Dangling pointer: variable '{}' used after its lifetime expired",
+                                var_name
+                            ),
+                            use_location,
+                            suggestion
+                        )
+                    },
                     crate::semantic_graph::OwnershipViolation::DoubleFree {
                         variable,
                         first_free: _,
                         second_free,
-                    } => (
-                        format!(
-                            "Double free: variable {:?} was freed at two locations",
-                            variable
-                        ),
-                        second_free, // Use second free location as primary
-                        "Ensure that each resource is freed exactly once"
-                    ),
+                    } => {
+                        let var_name = self.get_variable_name(variable, symbol_table, typed_file);
+                        (
+                            format!("Double free: variable '{}' was freed at two locations", var_name),
+                            second_free, // Use second free location as primary
+                            "Ensure that each resource is freed exactly once".to_string()
+                        )
+                    },
                 };
                 
                 errors.push(CompilationError {
                     message,
                     location,
                     category: ErrorCategory::OwnershipError,
-                    suggestion: Some(suggestion.to_string()),
+                    suggestion: Some(suggestion),
                     related_errors: Vec::new(),
                 });
             }
             
             // Run detailed ownership analysis using OwnershipAnalyzer
+            // Only analyze functions in classes with @:safety annotation
             use crate::semantic_graph::analysis::ownership_analyzer::{
                 OwnershipAnalyzer, FunctionAnalysisContext as OwnershipContext
             };
-            
-            let mut ownership_analyzer = OwnershipAnalyzer::new();
-            for (function_id, cfg) in &semantic_graphs.control_flow {
-                if let Some(dfg) = semantic_graphs.data_flow.get(function_id) {
-                    let context = OwnershipContext {
-                        function_id: *function_id,
-                        cfg,
-                        dfg,
-                        call_graph: &semantic_graphs.call_graph,
-                        ownership_graph: &semantic_graphs.ownership_graph,
-                    };
-                    
-                    match ownership_analyzer.analyze_function(&context) {
+
+            // Check if any class has @:safety annotation
+            let has_safety_classes = typed_file.classes.iter().any(|c| c.has_safety_annotation());
+
+            if has_safety_classes {
+                let mut ownership_analyzer = OwnershipAnalyzer::new();
+                for (function_id, cfg) in &semantic_graphs.control_flow {
+                    // Check if this function belongs to a @:safety class
+                    let function_has_safety = typed_file.classes.iter().any(|class| {
+                        if !class.has_safety_annotation() {
+                            return false;
+                        }
+                        class.methods.iter().any(|m| m.symbol_id == *function_id) ||
+                        class.constructors.iter().any(|c| c.symbol_id == *function_id)
+                    });
+
+                    if !function_has_safety {
+                        continue; // Skip analysis for non-@:safety classes
+                    }
+
+                    if let Some(dfg) = semantic_graphs.data_flow.get(function_id) {
+                        let context = OwnershipContext {
+                            function_id: *function_id,
+                            cfg,
+                            dfg,
+                            call_graph: &semantic_graphs.call_graph,
+                            ownership_graph: &semantic_graphs.ownership_graph,
+                        };
+
+                        match ownership_analyzer.analyze_function(&context) {
                         Ok(ownership_violations) => {
                             // Process violations from ownership analysis
                             for violation in &ownership_violations {
@@ -1774,70 +2254,95 @@ impl HaxeCompilationPipeline {
                                         use_location,
                                         move_location,
                                         move_destination,
-                                    } => (
-                                        format!(
-                                            "Use after move: variable {:?} was moved at {:?} and used at {:?}{}",
-                                            variable,
-                                            move_location,
-                                            use_location,
-                                            move_destination.map(|d| format!(" (moved to {:?})", d)).unwrap_or_default()
-                                        ),
-                                        use_location.clone(),
-                                        "Consider cloning the value or restructuring to avoid the move"
-                                    ),
+                                    } => {
+                                        let var_name = self.get_variable_name(*variable, symbol_table, typed_file);
+                                        let dest_info = move_destination.map(|d| {
+                                            let dest_name = self.get_variable_name(d, symbol_table, typed_file);
+                                            format!(" (moved to '{}')", dest_name)
+                                        }).unwrap_or_default();
+                                        (
+                                            format!(
+                                                "Use after move: variable '{}' was moved at line {} and used at line {}{}",
+                                                var_name,
+                                                move_location.line,
+                                                use_location.line,
+                                                dest_info
+                                            ),
+                                            use_location.clone(),
+                                            "Consider cloning the value or restructuring to avoid the move"
+                                        )
+                                    },
                                     crate::semantic_graph::analysis::ownership_analyzer::OwnershipViolation::DoubleMove {
                                         variable,
                                         first_move,
                                         second_move,
-                                    } => (
-                                        format!(
-                                            "Double move: variable {:?} was moved at {:?} and again at {:?}",
-                                            variable, first_move, second_move
-                                        ),
-                                        second_move.clone(),
-                                        "A variable can only be moved once; consider cloning or borrowing instead"
-                                    ),
+                                    } => {
+                                        let var_name = self.get_variable_name(*variable, symbol_table, typed_file);
+                                        (
+                                            format!(
+                                                "Double move: variable '{}' was moved at line {} and again at line {}",
+                                                var_name, first_move.line, second_move.line
+                                            ),
+                                            second_move.clone(),
+                                            "A variable can only be moved once; consider cloning or borrowing instead"
+                                        )
+                                    },
                                     crate::semantic_graph::analysis::ownership_analyzer::OwnershipViolation::BorrowConflict {
                                         variable,
                                         mutable_borrow,
                                         conflicting_borrow,
                                         conflict_type,
-                                    } => (
-                                        format!(
-                                            "Borrow conflict: variable {:?} has conflicting borrows ({:?}) at {:?}",
-                                            variable, conflict_type, mutable_borrow
-                                        ),
-                                        conflicting_borrow.clone(),
-                                        "Ensure that mutable and immutable borrows don't overlap"
-                                    ),
+                                    } => {
+                                        let var_name = self.get_variable_name(*variable, symbol_table, typed_file);
+                                        let conflict_desc = match conflict_type {
+                                            crate::semantic_graph::analysis::ownership_analyzer::BorrowConflictType::MultipleMutableBorrows => "multiple mutable borrows",
+                                            crate::semantic_graph::analysis::ownership_analyzer::BorrowConflictType::MutableWithImmutable => "mutable borrow while immutably borrowed",
+                                            crate::semantic_graph::analysis::ownership_analyzer::BorrowConflictType::BorrowOfMovedVariable => "borrow of moved variable",
+                                        };
+                                        (
+                                            format!(
+                                                "Borrow conflict: variable '{}' has {} at line {}",
+                                                var_name, conflict_desc, mutable_borrow.line
+                                            ),
+                                            conflicting_borrow.clone(),
+                                            "Ensure that mutable and immutable borrows don't overlap"
+                                        )
+                                    },
                                     crate::semantic_graph::analysis::ownership_analyzer::OwnershipViolation::MoveOfBorrowedVariable {
                                         variable,
                                         move_location,
                                         active_borrows,
-                                    } => (
-                                        format!(
-                                            "Cannot move variable {:?}: it has {} active borrow(s)",
-                                            variable,
-                                            active_borrows.len()
-                                        ),
-                                        move_location.clone(),
-                                        "Cannot move a variable while it is borrowed; wait for borrows to end"
-                                    ),
+                                    } => {
+                                        let var_name = self.get_variable_name(*variable, symbol_table, typed_file);
+                                        (
+                                            format!(
+                                                "Cannot move variable '{}': it has {} active borrow(s)",
+                                                var_name,
+                                                active_borrows.len()
+                                            ),
+                                            move_location.clone(),
+                                            "Cannot move a variable while it is borrowed; wait for borrows to end"
+                                        )
+                                    },
                                     crate::semantic_graph::analysis::ownership_analyzer::OwnershipViolation::BorrowOutlivesOwner {
                                         borrowed_variable,
                                         borrower,
                                         borrow_location,
                                         owner_end_location,
-                                    } => (
-                                        format!(
-                                            "Borrow of {:?} by {:?} outlives the owner (ends at {:?})",
-                                            borrowed_variable,
-                                            borrower,
-                                            owner_end_location
-                                        ),
-                                        borrow_location.clone(),
-                                        "Ensure that borrows don't outlive the data they reference"
-                                    ),
+                                    } => {
+                                        let borrowed_name = self.get_variable_name(*borrowed_variable, symbol_table, typed_file);
+                                        let borrower_name = self.get_variable_name(*borrower, symbol_table, typed_file);
+                                        (
+                                            format!(
+                                                "Borrow of '{}' by '{}' outlives the owner (ends at line {})",
+                                                borrowed_name,
+                                                borrower_name,
+                                                owner_end_location.line
+                                            ),
+                                            borrow_location.clone(),
+                                            "Ensure that borrows don't outlive the data they reference"
+                                        )
+                                    },
                                 };
                                 
                                 errors.push(CompilationError {
@@ -1866,19 +2371,38 @@ impl HaxeCompilationPipeline {
                     }
                 }
             }
+            } // end if has_safety_classes
         }
-        
+
         // Use lifetime analysis from semantic graph analyzers
+        // Only analyze functions in classes with @:safety annotation
         if self.config.enable_lifetime_analysis {
             use crate::semantic_graph::analysis::lifetime_analyzer::LifetimeAnalyzer;
             use crate::semantic_graph::analysis::ownership_analyzer::FunctionAnalysisContext;
-            
-            // Create lifetime analyzer and run on each function
-            let mut lifetime_analyzer = LifetimeAnalyzer::new();
-            for (function_id, cfg) in &semantic_graphs.control_flow {
-                if let Some(dfg) = semantic_graphs.data_flow.get(function_id) {
-                    // Create analysis context
-                    let context = FunctionAnalysisContext {
+
+            // Check if any class has @:safety annotation
+            let has_safety_classes = typed_file.classes.iter().any(|c| c.has_safety_annotation());
+
+            if has_safety_classes {
+                // Create lifetime analyzer and run on each function
+                let mut lifetime_analyzer = LifetimeAnalyzer::new();
+                for (function_id, cfg) in &semantic_graphs.control_flow {
+                    // Check if this function belongs to a @:safety class
+                    let function_has_safety = typed_file.classes.iter().any(|class| {
+                        if !class.has_safety_annotation() {
+                            return false;
+                        }
+                        class.methods.iter().any(|m| m.symbol_id == *function_id) ||
+                        class.constructors.iter().any(|c| c.symbol_id == *function_id)
+                    });
+
+                    if !function_has_safety {
+                        continue; // Skip analysis for non-@:safety classes
+                    }
+
+                    if let Some(dfg) = semantic_graphs.data_flow.get(function_id) {
+                        // Create analysis context
+                        let context = FunctionAnalysisContext {
                         function_id: *function_id,
                         cfg,
                         dfg,
@@ -1952,8 +2476,9 @@ impl HaxeCompilationPipeline {
                     }
                 }
             }
+            } // end if has_safety_classes
         }
-        
+
         errors
     }
     

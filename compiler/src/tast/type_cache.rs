@@ -122,20 +122,32 @@ impl TypeCache {
         }
         
         // Check L2 cache
-        if let Some(entry) = self.l2_cache.borrow().get(key) {
-            entry.access_count.set(entry.access_count.get() + 1);
-            entry.last_access.set(current_access);
-            
-            if self.collect_stats {
-                self.stats.borrow_mut().hits += 1;
+        let promote_info = {
+            let l2_cache = self.l2_cache.borrow();
+            if let Some(entry) = l2_cache.get(key) {
+                entry.access_count.set(entry.access_count.get() + 1);
+                entry.last_access.set(current_access);
+
+                if self.collect_stats {
+                    self.stats.borrow_mut().hits += 1;
+                }
+
+                let type_id = entry.type_id;
+                let should_promote = entry.access_count.get() > 3;
+
+                Some((type_id, should_promote))
+            } else {
+                None
             }
-            
+        }; // Drop l2_cache borrow here
+
+        if let Some((type_id, should_promote)) = promote_info {
             // Promote to L1 if accessed frequently
-            if entry.access_count.get() > 3 {
-                self.promote_to_l1(key.clone(), entry.type_id);
+            if should_promote {
+                self.promote_to_l1(key.clone(), type_id);
             }
-            
-            return Some(entry.type_id);
+
+            return Some(type_id);
         }
         
         if self.collect_stats {

@@ -34,6 +34,11 @@ pub mod memory;
 pub mod vec_u8;
 pub mod runtime_mapping;
 
+// Rayzor concurrent primitives
+pub mod thread;
+pub mod channel;
+pub mod sync;
+
 use crate::ir::{IrModule, mir_builder::MirBuilder};
 
 // Re-export runtime mapping types
@@ -69,6 +74,11 @@ pub fn build_stdlib() -> IrModule {
 
     // Build standard types and conversions
     stdtypes::build_std_types(&mut builder);
+
+    // Build concurrent primitives
+    thread::build_thread_type(&mut builder);
+    channel::build_channel_type(&mut builder);
+    sync::build_sync_types(&mut builder);
 
     builder.finish()
 }

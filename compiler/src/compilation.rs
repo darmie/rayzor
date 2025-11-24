@@ -14,13 +14,13 @@ use crate::pipeline::{
     PipelineConfig, CompilationResult,
 };
 use crate::dependency_graph::{DependencyGraph, DependencyAnalysis, CircularDependency};
-use crate::ir::{IrModule, blade::{save_blade, load_blade, BladeMetadata}};
+use crate::ir::{IrModule, IrInstruction, blade::{save_blade, load_blade, BladeMetadata}};
 use parser::{HaxeFile, parse_haxe_file, parse_haxe_file_with_debug};
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::path::{PathBuf, Path};
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Represents a complete compilation unit with multiple source files
 pub struct CompilationUnit {
@@ -54,8 +54,14 @@ pub struct CompilationUnit {
     /// Configuration
     pub config: CompilationConfig,
 
+    /// Cache of types that failed to load on-demand (to avoid repeated attempts)
+    pub failed_type_loads: HashSet<String>,
+
     /// Internal compilation pipeline (delegates to HaxeCompilationPipeline)
     pipeline: HaxeCompilationPipeline,
+
+    /// MIR modules generated during compilation (collected from pipeline results)
+    mir_modules: Vec<std::sync::Arc<crate::ir::IrModule>>,
 }
 
 /// Configuration for compilation
@@ -91,10 +97,14 @@ impl Default for CompilationConfig {
         Self {
             stdlib_paths: Self::discover_stdlib_paths(),
             default_stdlib_imports: vec![
-                "StdTypes.hx".to_string(),
-                "Iterator.hx".to_string(), // Must come before Array since Array uses Iterator
+                "StdTypes.hx".to_string(), // Contains Iterator typedef
                 "String.hx".to_string(),
                 "Array.hx".to_string(),
+                // Concurrent types
+                "rayzor/concurrent/Thread.hx".to_string(),
+                "rayzor/concurrent/Channel.hx".to_string(),
+                "rayzor/concurrent/Mutex.hx".to_string(),
+                "rayzor/concurrent/Arc.hx".to_string(),
             ],
             load_stdlib: true,
             stdlib_root_package: Some("haxe".to_string()), // Prefix stdlib with "haxe.*" namespace
@@ -312,7 +322,9 @@ impl CompilationUnit {
             namespace_resolver,
             import_resolver,
             config,
+            failed_type_loads: HashSet::new(),
             pipeline,
+            mir_modules: Vec::new(),
         }
     }
 
@@ -330,8 +342,200 @@ impl CompilationUnit {
 
         let mut loader = StdLibLoader::new(loader_config);
 
-        // Load stdlib AST files directly into stdlib_files
-        self.stdlib_files = loader.load_default_imports();
+        // Configure namespace resolver with stdlib paths for on-demand loading
+        self.namespace_resolver.set_stdlib_paths(self.config.stdlib_paths.clone());
+
+        // DON'T load stdlib files upfront - rely entirely on on-demand loading
+        // Files will be loaded via load_import_file() when imports or qualified names are encountered
+        eprintln!("Stdlib configured for pure on-demand loading (no files loaded at startup)");
+
+        Ok(())
+    }
+
+    /// Set source paths for user code (for on-demand import loading)
+    /// These paths are checked first when resolving imports
+    pub fn set_source_paths(&mut self, paths: Vec<PathBuf>) {
+        self.namespace_resolver.set_source_paths(paths);
+    }
+
+    /// Load a single file on-demand for import resolution
+    /// This compiles the file with shared state and registers its symbols
+    /// Implements recursive dependency loading with retry logic
+    pub fn load_import_file(&mut self, qualified_path: &str) -> Result<(), String> {
+        self.load_import_file_recursive(qualified_path, 0)
+    }
+
+    /// Internal recursive function for loading files with dependency resolution
+    /// Max depth prevents infinite loops in circular dependencies
+    fn load_import_file_recursive(&mut self, qualified_path: &str, depth: usize) -> Result<(), String> {
+        const MAX_DEPTH: usize = 10;
+
+        if depth > MAX_DEPTH {
+            return Err(format!("Maximum dependency depth ({}) exceeded for: {}", MAX_DEPTH, qualified_path));
+        }
+
+        // Resolve the qualified path to a filesystem path
+        // If not found directly, try common stdlib package prefixes for unqualified names
+        let file_path = if let Some(path) = self.namespace_resolver.resolve_qualified_path_to_file(qualified_path) {
+            path
+        } else if !qualified_path.contains('.') {
+            // Unqualified name - try common stdlib packages
+            let prefixes = vec!["haxe.iterators", "haxe.ds", "haxe", "sys.thread", "sys", "haxe.exceptions", "haxe.io"];
+            let mut found_path = None;
+            for prefix in &prefixes {
+                let qualified = format!("{}.{}", prefix, qualified_path);
+                if let Some(path) = self.namespace_resolver.resolve_qualified_path_to_file(&qualified) {
+                    found_path = Some(path);
+                    break;
+                }
+            }
+            found_path.ok_or_else(|| format!("Could not resolve import: {}", qualified_path))?
+        } else {
+            return Err(format!("Could not resolve import: {}", qualified_path));
+        };
+
+        // Read the file
+        let source = std::fs::read_to_string(&file_path)
+            .map_err(|e| format!("Failed to read {:?}: {}", file_path, e))?;
+
+        let filename = file_path.to_string_lossy().to_string();
+
+        // Mark as loaded before compiling to avoid recursive loading
+        self.namespace_resolver.mark_file_loaded(file_path.clone());
+
+        // Try to compile - if it fails due to missing dependencies, extract and load them
+        match self.compile_file_with_shared_state(&filename, &source) {
+            Ok(_typed_file) => {
+                eprintln!("  ✓ Successfully compiled and registered: {}", qualified_path);
+                Ok(())
+            },
+            Err(errors) => {
+                // Extract UnresolvedType errors and try to load those dependencies
+                let mut missing_types = Vec::new();
+                for error in &errors {
+                    if let Some(type_name) = Self::extract_unresolved_type_from_error(&error.message) {
+                        // Skip generic type parameters and built-in typedefs
+                        if !Self::is_generic_type_parameter(&type_name) && !self.failed_type_loads.contains(&type_name) {
+                            missing_types.push(type_name);
+                        }
+                    }
+                }
+
+                // If we found missing types, try to load them recursively
+                if !missing_types.is_empty() {
+                    eprintln!("  Detected {} missing dependencies for {}: {:?}",
+                        missing_types.len(), qualified_path, missing_types);
+
+                    let mut load_success = false;
+                    for missing_type in &missing_types {
+                        // Try loading with the exact name first
+                        let loaded = if let Ok(_) = self.load_import_file_recursive(missing_type, depth + 1) {
+                            eprintln!("    ✓ Loaded dependency: {}", missing_type);
+                            true
+                        } else if !missing_type.contains('.') {
+                            // If unqualified name failed, try with common stdlib packages
+                            let prefixes = vec!["haxe.exceptions.", "haxe.io.", "haxe.ds."];
+                            let mut prefix_loaded = false;
+                            for prefix in prefixes {
+                                let qualified = format!("{}{}", prefix, missing_type);
+                                if let Ok(_) = self.load_import_file_recursive(&qualified, depth + 1) {
+                                    eprintln!("    ✓ Loaded dependency: {} (as {})", missing_type, qualified);
+                                    prefix_loaded = true;
+                                    break;
+                                }
+                            }
+                            prefix_loaded
+                        } else {
+                            false
+                        };
+
+                        if loaded {
+                            load_success = true;
+                        } else {
+                            eprintln!("    ✗ Could not load dependency: {}", missing_type);
+                            self.failed_type_loads.insert(missing_type.clone());
+                        }
+                    }
+
+                    // If we successfully loaded at least one dependency, retry compilation
+                    if load_success {
+                        eprintln!("  Retrying compilation of {} after loading dependencies...", qualified_path);
+                        return self.compile_file_with_shared_state(&filename, &source)
+                            .map(|_| ()) // Discard TypedFile, just return ()
+                            .map_err(|errors| {
+                                let error_msgs: Vec<String> = errors.iter()
+                                    .map(|e| e.message.clone())
+                                    .collect();
+                                format!("Errors compiling {} (after loading dependencies): {}", filename, error_msgs.join(", "))
+                            });
+                    }
+                }
+
+                // No missing types found or couldn't load them - return original error
+                let error_msgs: Vec<String> = errors.iter()
+                    .map(|e| e.message.clone())
+                    .collect();
+                Err(format!("Errors compiling {}: {}", filename, error_msgs.join(", ")))
+            }
+        }
+    }
+
+    /// Extract type name from UnresolvedType error messages
+    /// Returns Some(type_name) if this is an UnresolvedType error, None otherwise
+    fn extract_unresolved_type_from_error(error_msg: &str) -> Option<String> {
+        // Match pattern: "UnresolvedType { type_name: \"SomeType\", ..."
+        // Find the start of type_name: \" marker
+        if let Some(type_name_start) = error_msg.find("type_name: \"") {
+            // Move past 'type_name: "' to get to the actual name
+            let after_marker = &error_msg[type_name_start + 12..]; // 12 = length of 'type_name: "'
+            // Find the closing quote
+            if let Some(end) = after_marker.find('"') {
+                return Some(after_marker[..end].to_string());
+            }
+        }
+        None
+    }
+
+    /// Check if a type name looks like a generic type parameter
+    /// Returns true for single letters (T, K, V) or common parameter patterns
+    fn is_generic_type_parameter(type_name: &str) -> bool {
+        // Single uppercase letter
+        if type_name.len() == 1 && type_name.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false) {
+            return true;
+        }
+        // Common generic parameter patterns
+        matches!(type_name, "Key" | "Value" | "Item" | "Element" | "Iterator" | "KeyValueIterator" | "Iterable" | "KeyValueIterable")
+    }
+
+    /// Pre-register type declarations from a file without full compilation
+    /// This is the first pass that registers class/interface/enum names in the namespace
+    /// so they can be referenced by other files during full compilation
+    fn pre_register_file_types(&mut self, filename: &str, source: &str) -> Result<(), String> {
+        use crate::tast::ast_lowering::AstLowering;
+        use parser::parse_haxe_file_with_diagnostics;
+
+        // Parse the file
+        let parse_result = parse_haxe_file_with_diagnostics(filename, source)
+            .map_err(|e| format!("Parse error in {}: {}", filename, e))?;
+
+        let ast_file = parse_result.file;
+
+        // Create a temporary AstLowering instance just for pre-registration
+        let dummy_interner_rc = Rc::new(RefCell::new(StringInterner::new()));
+
+        let mut lowering = AstLowering::new(
+            &mut self.string_interner,
+            dummy_interner_rc,
+            &mut self.symbol_table,
+            &self.type_table,
+            &mut self.scope_tree,
+            &mut self.namespace_resolver,
+            &mut self.import_resolver,
+        );
+
+        // Pre-register only - call the pre_register_file method
+        lowering.pre_register_file(&ast_file)
+            .map_err(|e| format!("Pre-registration error in {}: {:?}", filename, e))?;
 
         Ok(())
     }
@@ -484,6 +688,322 @@ impl CompilationUnit {
         Ok(analysis)
     }
 
+    /// Compile a single file using shared state (string interner, symbol table, namespace resolver, etc.)
+    /// This ensures symbols from different files can see each other
+    ///
+    /// If `skip_pre_registration` is true, assumes types have already been pre-registered
+    /// and skips the first pass in lower_file.
+    fn compile_file_with_shared_state_ex(
+        &mut self,
+        filename: &str,
+        source: &str,
+        skip_pre_registration: bool
+    ) -> Result<TypedFile, Vec<CompilationError>> {
+        use crate::tast::ast_lowering::AstLowering;
+        use parser::parse_haxe_file_with_diagnostics;
+
+        // Parse the file
+        let parse_result = parse_haxe_file_with_diagnostics(filename, source)
+            .map_err(|e| vec![CompilationError {
+                message: format!("Parse error: {}", e),
+                location: SourceLocation::unknown(),
+                category: ErrorCategory::ParseError,
+                suggestion: None,
+                related_errors: Vec::new(),
+            }])?;
+
+        let ast_file = parse_result.file;
+        let _source_map = parse_result.source_map;
+        let file_id = diagnostics::FileId::new(0);
+
+        // Lower to TAST using the SHARED state
+        // NOTE: AstLowering needs an Rc<RefCell<StringInterner>> for TypedFile
+        // We create a dummy one here - the actual interning happens via the &mut reference
+        // TODO: Refactor CompilationUnit to store string_interner as Rc<RefCell<>> from the start
+        let dummy_interner_rc = Rc::new(RefCell::new(StringInterner::new()));
+
+        let mut lowering = AstLowering::new(
+            &mut self.string_interner,
+            dummy_interner_rc,
+            &mut self.symbol_table,
+            &self.type_table,
+            &mut self.scope_tree,
+            &mut self.namespace_resolver,
+            &mut self.import_resolver,
+        );
+
+        // Skip pre-registration if requested (types already registered by CompilationUnit)
+        lowering.set_skip_pre_registration(skip_pre_registration);
+
+        lowering.initialize_span_converter_with_filename(
+            file_id.as_usize() as u32,
+            source.to_string(),
+            filename.to_string(),
+        );
+
+        let typed_file = lowering.lower_file(&ast_file)
+            .map_err(|e| vec![CompilationError {
+                message: format!("Lowering error: {:?}", e),
+                location: SourceLocation::unknown(),
+                category: ErrorCategory::TypeError,
+                suggestion: None,
+                related_errors: Vec::new(),
+            }])?;
+
+        // Lower to HIR
+        use crate::ir::tast_to_hir::lower_tast_to_hir;
+        let hir_module = lower_tast_to_hir(
+            &typed_file,
+            &self.symbol_table,
+            &self.type_table,
+            &mut self.string_interner,
+            None, // No semantic graphs for now
+        ).map_err(|errors| {
+            errors.into_iter().map(|e| CompilationError {
+                message: format!("HIR lowering error: {:?}", e),
+                location: SourceLocation::unknown(),
+                category: ErrorCategory::InternalError,
+                suggestion: None,
+                related_errors: Vec::new(),
+            }).collect::<Vec<_>>()
+        })?;
+
+        // Lower to MIR
+        use crate::ir::hir_to_mir::lower_hir_to_mir;
+        let mut mir_module = lower_hir_to_mir(
+            &hir_module,
+            &self.string_interner,
+            &self.type_table,
+            &self.symbol_table,
+        ).map_err(|errors| {
+            errors.into_iter().map(|e| CompilationError {
+                message: format!("MIR lowering error: {:?}", e),
+                location: SourceLocation::unknown(),
+                category: ErrorCategory::InternalError,
+                suggestion: None,
+                related_errors: Vec::new(),
+            }).collect::<Vec<_>>()
+        })?;
+
+        // Only skip EXTERN stdlib files (those with Rust implementations in build_stdlib).
+        // Pure Haxe stdlib files (like ArrayIterator) must compile when imported.
+        let is_extern_stdlib_file =
+            filename.contains("rayzor/concurrent/") ||
+            filename.contains("rayzor\\concurrent\\") ||  // Windows compatibility
+            // Also skip core types that have Rust implementations
+            (filename.contains("haxe-std") && (
+                filename.ends_with("/String.hx") ||
+                filename.ends_with("\\String.hx") ||
+                filename.ends_with("/Array.hx") ||
+                filename.ends_with("\\Array.hx")
+            ));
+
+        if is_extern_stdlib_file {
+            eprintln!("DEBUG: Skipping MIR module creation for EXTERN stdlib file: {}", filename);
+            // Extern stdlib files have Rust implementations in build_stdlib().
+            // The Haxe files are just type declarations.
+            return Ok(typed_file);
+        }
+
+        let is_stdlib_file = filename.contains("haxe-std") ||
+                              filename.contains("/haxe-std/") ||
+                              filename.contains("\\haxe-std\\");
+
+        // Merge stdlib MIR (extern functions for Thread, Channel, Mutex, Arc, etc.)
+        // This ensures extern runtime functions are available
+        use crate::stdlib::build_stdlib;
+        let mut stdlib_mir = build_stdlib();
+
+        // DEBUG: Check a specific extern function signature before renumbering
+        for (func_id, func) in &stdlib_mir.functions {
+            if func.name == "rayzor_channel_init" {
+                eprintln!("DEBUG: BEFORE renumbering - rayzor_channel_init (ID {}): params={}, extern={}",
+                          func_id.0, func.signature.parameters.len(), func.cfg.blocks.is_empty());
+            }
+        }
+
+        // CRITICAL FIX: Renumber stdlib function IDs to avoid collisions with user functions
+        // Each MIR module starts function IDs from 0, so when merging stdlib and user modules,
+        // IDs will collide. For example:
+        //   - User module: IrFunctionId(2) = "indexOf"
+        //   - Stdlib module: IrFunctionId(2) = "free"
+        // Without renumbering, stdlib's "free" would be skipped, causing vec_u8_free to call "indexOf"!
+
+        // DEBUG: Print user functions before merging
+        eprintln!("DEBUG: User module has {} functions before merging:", mir_module.functions.len());
+        let mut user_func_ids: Vec<_> = mir_module.functions.keys().collect();
+        user_func_ids.sort_by_key(|id| id.0);
+        for func_id in user_func_ids.iter().take(5) {
+            let func = &mir_module.functions[func_id];
+            eprintln!("  - User IrFunctionId({}) = '{}'", func_id.0, func.name);
+        }
+
+        // Find the maximum function ID in the user module
+        let max_user_func_id = mir_module.functions.keys()
+            .map(|id| id.0)
+            .max()
+            .unwrap_or(0);
+
+        let max_user_extern_id = mir_module.extern_functions.keys()
+            .map(|id| id.0)
+            .max()
+            .unwrap_or(0);
+
+        let offset = std::cmp::max(max_user_func_id, max_user_extern_id) + 1;
+
+        eprintln!("DEBUG: Renumbering stdlib functions with offset {} (max_user_func={}, max_user_extern={})",
+                  offset, max_user_func_id, max_user_extern_id);
+
+        // Build mapping of old stdlib IDs to new renumbered IDs
+        use std::collections::HashMap;
+        use crate::ir::IrFunctionId;
+        let mut id_mapping: HashMap<IrFunctionId, IrFunctionId> = HashMap::new();
+
+        // Note: extern_functions is not used - externs are in the functions map with empty CFGs
+        // So we only need to renumber the functions map
+
+        // FIRST PASS: Build complete ID mapping for all stdlib functions
+        // We must do this BEFORE updating CallDirect instructions so that all IDs are available
+        for (old_id, _) in &stdlib_mir.functions {
+            let new_id = IrFunctionId(old_id.0 + offset);
+            id_mapping.insert(*old_id, new_id);
+        }
+
+        // SECOND PASS: Renumber functions and update their internal references
+        let mut renumbered_functions = HashMap::new();
+        for (old_id, mut func) in stdlib_mir.functions {
+            let new_id = *id_mapping.get(&old_id).unwrap();
+
+            // Update the function's own ID
+            func.id = new_id;
+
+            // Update all CallDirect instructions that reference old stdlib function IDs
+            use crate::ir::IrInstruction;
+            for block in func.cfg.blocks.values_mut() {
+                for inst in &mut block.instructions {
+                    if let IrInstruction::CallDirect { func_id, .. } = inst {
+                        if let Some(&new_func_id) = id_mapping.get(func_id) {
+                            eprintln!("DEBUG: Updated CallDirect in {} from func_id {} -> {}",
+                                      func.name, func_id.0, new_func_id.0);
+                            *func_id = new_func_id;
+                        }
+                    }
+                }
+            }
+
+            renumbered_functions.insert(new_id, func);
+            eprintln!("DEBUG: Renumbered function '{}': {} -> {}",
+                      renumbered_functions[&new_id].name, old_id.0, new_id.0);
+        }
+
+        // Merge renumbered stdlib functions - no collisions possible now!
+        // (Note: extern functions are included in the functions map with empty CFGs)
+        //
+        // IMPORTANT: Replace user functions that have the same NAME as stdlib functions
+        // The user module might have extern declarations (e.g. rayzor_channel_init) from
+        // the lowering process, but these might have incorrect signatures due to type
+        // inference issues. The stdlib version is the source of truth, so we REPLACE
+        // the user's version with the stdlib's version.
+
+        // Build map of function names to IDs in the user module (before merging)
+        let mut user_func_name_to_id: HashMap<String, IrFunctionId> = HashMap::new();
+        for (func_id, func) in &mir_module.functions {
+            user_func_name_to_id.insert(func.name.clone(), *func_id);
+        }
+
+        // Build a map of old ID -> new ID for all replacements
+        // This must be done BEFORE we start modifying the module
+        let mut id_replacements: HashMap<IrFunctionId, IrFunctionId> = HashMap::new();
+
+        for (func_id, func) in &renumbered_functions {
+            if let Some(&existing_id) = user_func_name_to_id.get(&func.name) {
+                eprintln!("DEBUG: Will replace user function '{}' (ID {}) with stdlib version (ID {})",
+                          func.name, existing_id.0, func_id.0);
+                id_replacements.insert(existing_id, *func_id);
+            }
+        }
+
+        eprintln!("DEBUG: ID replacement map has {} entries:", id_replacements.len());
+        for (old_id, new_id) in &id_replacements {
+            if let Some(func) = mir_module.functions.get(old_id) {
+                eprintln!("  {} (ID {}) -> ID {}", func.name, old_id.0, new_id.0);
+            } else {
+                eprintln!("  (unknown) ID {} -> ID {}", old_id.0, new_id.0);
+            }
+        }
+
+        // Now merge the stdlib functions
+        for (func_id, func) in renumbered_functions {
+            // DEBUG: Check signature after renumbering
+            if func.name == "rayzor_channel_init" {
+                eprintln!("DEBUG: AFTER renumbering - rayzor_channel_init (ID {}): params={}, extern={}",
+                          func_id.0, func.signature.parameters.len(), func.cfg.blocks.is_empty());
+            }
+
+            // If this function replaces an existing one, remove the old one
+            if let Some(&existing_id) = user_func_name_to_id.get(&func.name) {
+                mir_module.functions.remove(&existing_id);
+            }
+
+            mir_module.functions.insert(func_id, func);
+        }
+
+        // Update ALL instructions that reference replaced function IDs
+        // This is done AFTER all merging to avoid ID conflicts
+        if !id_replacements.is_empty() {
+            for (_, caller_func) in mir_module.functions.iter_mut() {
+                for block in caller_func.cfg.blocks.values_mut() {
+                    for instr in &mut block.instructions {
+                        match instr {
+                            IrInstruction::CallDirect { func_id: ref mut called_func_id, .. } => {
+                                if let Some(&new_id) = id_replacements.get(called_func_id) {
+                                    eprintln!("DEBUG: Updated CallDirect in {} from func_id {} -> {}",
+                                              caller_func.name, called_func_id.0, new_id.0);
+                                    *called_func_id = new_id;
+                                }
+                            }
+                            IrInstruction::FunctionRef { func_id: ref mut ref_func_id, .. } => {
+                                if let Some(&new_id) = id_replacements.get(ref_func_id) {
+                                    eprintln!("DEBUG: Updated FunctionRef in {} from func_id {} -> {}",
+                                              caller_func.name, ref_func_id.0, new_id.0);
+                                    *ref_func_id = new_id;
+                                }
+                            }
+                            IrInstruction::MakeClosure { func_id: ref mut closure_func_id, .. } => {
+                                if let Some(&new_id) = id_replacements.get(closure_func_id) {
+                                    eprintln!("DEBUG: Updated MakeClosure in {} from func_id {} -> {}",
+                                              caller_func.name, closure_func_id.0, new_id.0);
+                                    *closure_func_id = new_id;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+
+        // DEBUG: Print all function IDs in the merged module
+        eprintln!("DEBUG: Merged module has {} functions:", mir_module.functions.len());
+        let mut func_ids: Vec<_> = mir_module.functions.keys().collect();
+        func_ids.sort_by_key(|id| id.0);
+        for func_id in func_ids.iter().take(10) {  // Print first 10
+            let func = &mir_module.functions[func_id];
+            eprintln!("  - IrFunctionId({}) = '{}' (extern: {})",
+                      func_id.0, func.name, func.cfg.blocks.is_empty());
+        }
+
+        // Store the MIR module
+        self.mir_modules.push(std::sync::Arc::new(mir_module));
+
+        Ok(typed_file)
+    }
+
+    /// Compile a single file using shared state (backward-compatible wrapper)
+    fn compile_file_with_shared_state(&mut self, filename: &str, source: &str) -> Result<TypedFile, Vec<CompilationError>> {
+        self.compile_file_with_shared_state_ex(filename, source, false)
+    }
+
     /// Lower all files (stdlib + user) to TAST with full pipeline analysis
     ///
     /// This method delegates to HaxeCompilationPipeline for each file to leverage
@@ -497,6 +1017,9 @@ impl CompilationUnit {
     /// 1. Stdlib files (with haxe.* package)
     /// 2. Import.hx files (for global imports)
     /// 3. User files (in dependency order - dependencies first)
+    ///
+    /// On-demand loading: If a type is unresolved, attempts to load and compile
+    /// the file that should contain it based on qualified path resolution.
     ///
     /// IMPORTANT: On error, this automatically prints formatted diagnostics to stderr
     pub fn lower_to_tast(&mut self) -> Result<Vec<TypedFile>, Vec<CompilationError>> {
@@ -512,44 +1035,120 @@ impl CompilationUnit {
         let mut all_typed_files = Vec::new();
         let mut all_errors = Vec::new();
 
-        // Step 2: Compile stdlib files through pipeline
-        for stdlib_file in &self.stdlib_files {
-            if let Some(ref source) = stdlib_file.input {
-                let result = self.pipeline.compile_file(&stdlib_file.filename, source);
+        // Step 2: Stdlib files loaded on-demand via imports (no upfront compilation)
 
-                // Collect errors
-                all_errors.extend(result.errors);
+        // Step 3: Compile import.hx files using SHARED state
+        let import_sources: Vec<(String, String)> = self.import_hx_files.iter()
+            .filter_map(|f| f.input.as_ref().map(|s| (f.filename.clone(), s.clone())))
+            .collect();
 
-                // Add typed files
-                all_typed_files.extend(result.typed_files);
+        for (filename, source) in import_sources {
+            match self.compile_file_with_shared_state(&filename, &source) {
+                Ok(typed_file) => {
+                    all_typed_files.push(typed_file);
+                }
+                Err(errors) => {
+                    all_errors.extend(errors);
+                }
             }
         }
 
-        // Step 3: Compile import.hx files through pipeline
-        for import_file in &self.import_hx_files {
-            if let Some(ref source) = import_file.input {
-                let result = self.pipeline.compile_file(&import_file.filename, source);
+        // Step 4: Compile user files in dependency order using SHARED state
+        // This ensures user files can see symbols from stdlib and other user files
+        let user_sources: Vec<(String, String)> = analysis.compilation_order.iter()
+            .filter_map(|&idx| {
+                let file = &self.user_files[idx];
+                file.input.as_ref().map(|s| (file.filename.clone(), s.clone()))
+            })
+            .collect();
 
-                all_errors.extend(result.errors);
-                all_typed_files.extend(result.typed_files);
-            }
-        }
+        for (filename, source) in user_sources {
+            match self.compile_file_with_shared_state(&filename, &source) {
+                Ok(typed_file) => {
+                    all_typed_files.push(typed_file);
+                }
+                Err(errors) => {
+                    // Check if any errors are unresolved types that we can try to load on-demand
+                    let (loadable, other): (Vec<_>, Vec<_>) = errors.into_iter().partition(|e| {
+                        e.message.contains("Unresolved type") || e.message.contains("UnresolvedType")
+                    });
 
-        // Step 4: Compile user files in dependency order through pipeline
-        // The pipeline will run:
-        // - Parse → TAST lowering
-        // - Type checking with diagnostics
-        // - Semantic graph construction (CFG, DFG, CallGraph, OwnershipGraph)
-        // - Basic flow analysis
-        // - Enhanced flow analysis (if enabled)
-        // - Memory safety analysis: ownership + lifetime (if enabled)
-        for &file_index in &analysis.compilation_order {
-            let user_file = &self.user_files[file_index];
-            if let Some(ref source) = user_file.input {
-                let result = self.pipeline.compile_file(&user_file.filename, source);
+                    // Try to load unresolved types on-demand
+                    let mut any_loaded = false;
+                    for error in loadable {
+                        if let Some(type_name) = self.extract_type_name_from_error(&error.message) {
+                            // Skip if we already tried to load this type and it failed
+                            if self.failed_type_loads.contains(&type_name) {
+                                all_errors.push(error);
+                                continue;
+                            }
+                            if let Err(load_err) = self.load_import_file(&type_name) {
+                                eprintln!("On-demand load failed for {}: {}", type_name, load_err);
+                                self.failed_type_loads.insert(type_name.clone());
+                                all_errors.push(error);
+                            } else {
+                                // Successfully loaded! Mark that we should retry
+                                any_loaded = true;
+                            }
+                        } else {
+                            all_errors.push(error);
+                        }
+                    }
 
-                all_errors.extend(result.errors);
-                all_typed_files.extend(result.typed_files);
+                    // If we successfully loaded any dependencies, retry compiling this file
+                    if any_loaded {
+                        eprintln!("  Retrying {} after loading dependencies...", filename);
+                        match self.compile_file_with_shared_state(&filename, &source) {
+                            Ok(typed_file) => {
+                                all_typed_files.push(typed_file);
+                            }
+                            Err(retry_errors) => {
+                                // Still failed after loading dependencies
+                                // Check if retry revealed NEW unresolved types that need loading
+                                let (retry_loadable, retry_other): (Vec<_>, Vec<_>) = retry_errors.into_iter().partition(|e| {
+                                    e.message.contains("Unresolved type") || e.message.contains("UnresolvedType")
+                                });
+
+                                let mut retry_loaded = false;
+                                for error in retry_loadable {
+                                    if let Some(type_name) = self.extract_type_name_from_error(&error.message) {
+                                        if !self.failed_type_loads.contains(&type_name) {
+                                            if let Err(load_err) = self.load_import_file(&type_name) {
+                                                eprintln!("On-demand load failed for {}: {}", type_name, load_err);
+                                                self.failed_type_loads.insert(type_name.clone());
+                                                all_errors.push(error);
+                                            } else {
+                                                retry_loaded = true;
+                                            }
+                                        } else {
+                                            all_errors.push(error);
+                                        }
+                                    } else {
+                                        all_errors.push(error);
+                                    }
+                                }
+
+                                // If we loaded more dependencies on retry, try ONE more time
+                                if retry_loaded {
+                                    eprintln!("  Second retry of {} after loading more dependencies...", filename);
+                                    match self.compile_file_with_shared_state(&filename, &source) {
+                                        Ok(typed_file) => {
+                                            all_typed_files.push(typed_file);
+                                        }
+                                        Err(final_errors) => {
+                                            all_errors.extend(final_errors);
+                                        }
+                                    }
+                                } else {
+                                    all_errors.extend(retry_other);
+                                }
+                            }
+                        }
+                    } else {
+                        // No dependencies loaded, keep original errors
+                        all_errors.extend(other);
+                    }
+                }
             }
         }
 
@@ -560,6 +1159,51 @@ impl CompilationUnit {
         }
 
         Ok(all_typed_files)
+    }
+
+    /// Extract the type name from an unresolved type error message
+    fn extract_type_name_from_error(&self, message: &str) -> Option<String> {
+        // Try to extract type name from error message formats:
+        // "UnresolvedType { type_name: \"haxe.iterators.ArrayIterator\", ... }"
+        // "Unresolved type: haxe.iterators.ArrayIterator"
+        let type_name = if let Some(start) = message.find("type_name: \"") {
+            let start = start + "type_name: \"".len();
+            if let Some(end) = message[start..].find('"') {
+                Some(message[start..start + end].to_string())
+            } else {
+                None
+            }
+        } else if let Some(start) = message.find("Unresolved type: ") {
+            let start = start + "Unresolved type: ".len();
+            let end = message[start..].find(|c: char| !c.is_alphanumeric() && c != '.')
+                .unwrap_or(message.len() - start);
+            Some(message[start..start + end].to_string())
+        } else {
+            None
+        };
+
+        // Filter out generic type parameters and built-in typedefs:
+        // - Single uppercase letters (T, K, V, E, R, etc.)
+        // - Short names like "TKey", "TValue", etc.
+        // - Built-in typedefs from StdTypes.hx (Iterator, KeyValueIterator, etc.)
+        // These should NOT be treated as importable types
+        if let Some(ref name) = type_name {
+            // Skip single uppercase letter type parameters
+            if name.len() == 1 && name.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false) {
+                return None;
+            }
+            // Skip common generic type parameter patterns
+            if name == "Key" || name == "Value" || name == "Item" || name == "Element" {
+                return None;
+            }
+            // Skip built-in typedefs from StdTypes.hx (these are already loaded)
+            if name == "Iterator" || name == "KeyValueIterator" || name == "Iterable" || name == "KeyValueIterable" {
+                eprintln!("  Filtering out StdTypes typedef: {}", name);
+                return None;
+            }
+        }
+
+        type_name
     }
 
     /// Try to load a cached MIR module from a BLADE file
@@ -739,6 +1383,12 @@ impl CompilationUnit {
         }
 
         stats
+    }
+
+    /// Get the MIR modules that were generated during compilation
+    /// Returns a vector of MIR modules corresponding to the compiled files
+    pub fn get_mir_modules(&self) -> Vec<std::sync::Arc<crate::ir::IrModule>> {
+        self.mir_modules.clone()
     }
 }
 

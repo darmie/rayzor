@@ -170,7 +170,7 @@ impl MirBuilder {
     }
 
     /// Get the type of a register
-    fn get_register_type(&self, reg: IrId) -> Option<IrType> {
+    pub fn get_register_type(&self, reg: IrId) -> Option<IrType> {
         let func_id = self.current_function?;
         let func = self.module.functions.get(&func_id)?;
         func.register_types.get(&reg).cloned()
@@ -286,17 +286,34 @@ impl MirBuilder {
 
     /// Call a function directly
     pub fn call(&mut self, func_id: IrFunctionId, args: Vec<IrId>) -> Option<IrId> {
-        let func = self.module.functions.get(&func_id).expect("Function not found");
-        let return_ty = func.signature.return_type.clone();
-        let has_return = !matches!(return_ty, IrType::Void);
+        // Clone the function signature data we need before any mutable borrows
+        let (return_ty, is_c_extern, param_types) = {
+            let func = self.module.functions.get(&func_id).expect("Function not found");
+            let is_extern = func.signature.calling_convention == CallingConvention::C
+                && func.attributes.linkage == Linkage::External
+                && !cfg!(target_os = "windows");
+            let params: Vec<IrType> = func.signature.parameters.iter().map(|p| p.ty.clone()).collect();
+            (func.signature.return_type.clone(), is_extern, params)
+        };
 
+        let has_return = !matches!(return_ty, IrType::Void);
         let dest = if has_return {
             Some(self.alloc_reg_typed(return_ty))
         } else {
             None
         };
 
-        self.insert_inst(IrInstruction::CallDirect { dest, func_id, args });
+        // For C calling convention extern functions on non-Windows platforms,
+        // we need to extend i32/u32 arguments to i64 to match the ABI.
+        // However, we DON'T do this extension at the MIR level because:
+        // 1. The Cranelift backend already handles ABI extension at call sites
+        // 2. Doing it in both places causes double-extension errors
+        // So we just pass the args as-is and let Cranelift handle the ABI.
+        let adjusted_args = args;
+
+        // Default to Move ownership for all arguments
+        let arg_ownership = adjusted_args.iter().map(|_| crate::ir::instructions::OwnershipMode::Move).collect();
+        self.insert_inst(IrInstruction::CallDirect { dest, func_id, args: adjusted_args, arg_ownership });
         dest
     }
 
@@ -535,11 +552,12 @@ impl MirBuilder {
         });
     }
 
-    /// Mark a function as extern by clearing its CFG blocks
-    /// This is used for runtime intrinsics like malloc/realloc/free
+    /// Mark a function as extern by clearing its CFG blocks and setting External linkage
+    /// This is used for runtime intrinsics like malloc/realloc/free and extern C functions
     pub fn mark_as_extern(&mut self, func_id: IrFunctionId) {
         if let Some(func) = self.module.functions.get_mut(&func_id) {
             func.cfg.blocks.clear();
+            func.attributes.linkage = crate::ir::Linkage::External;
         }
     }
 

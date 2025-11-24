@@ -29,6 +29,7 @@ pub mod haxe_string;     // Comprehensive String API
 pub mod haxe_array;      // Dynamic Array API
 pub mod haxe_math;       // Math functions
 pub mod haxe_sys;        // System/IO functions
+pub mod concurrency;     // Concurrency primitives (Thread, Arc, Mutex, Channel)
 
 pub mod plugin_impl;     // Plugin registration
 

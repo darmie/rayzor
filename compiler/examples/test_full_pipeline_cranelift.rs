@@ -13,15 +13,8 @@
 /// 7. Execute and verify results
 
 use compiler::codegen::CraneliftBackend;
-use compiler::tast::{
-    TypeTable, StringInterner, SymbolTable,
-    ast_lowering::AstLowering,
-    scopes::ScopeTree,
-};
-use compiler::ir::{tast_to_hir::lower_tast_to_hir, hir_to_mir::lower_hir_to_mir};
-use parser::haxe_parser::parse_haxe_file;
-use std::rc::Rc;
-use std::cell::RefCell;
+use compiler::compilation::{CompilationUnit, CompilationConfig};
+use rayzor_runtime;
 
 fn main() -> Result<(), String> {
     println!("=== Full Pipeline Test: Haxe → Native Code ===\n");
@@ -82,7 +75,13 @@ class TestMath {
 
     // Compile with Cranelift
     println!("\nCompiling MIR → Cranelift IR → Native...");
-    let mut backend = CraneliftBackend::new()?;
+
+    // Get runtime symbols from the plugin system
+    let plugin = rayzor_runtime::plugin_impl::get_plugin();
+    let symbols = plugin.runtime_symbols();
+    let symbols_ref: Vec<(&str, *const u8)> = symbols.iter().map(|(n, p)| (*n, *p)).collect();
+
+    let mut backend = CraneliftBackend::with_symbols(&symbols_ref)?;
     backend.compile_module(&mir_module)?;
     println!("✓ Compilation successful");
 
@@ -156,7 +155,13 @@ class TestMath {
 
     // Compile with Cranelift
     println!("\nCompiling MIR → Cranelift IR → Native...");
-    let mut backend = CraneliftBackend::new()?;
+
+    // Get runtime symbols from the plugin system
+    let plugin = rayzor_runtime::plugin_impl::get_plugin();
+    let symbols = plugin.runtime_symbols();
+    let symbols_ref: Vec<(&str, *const u8)> = symbols.iter().map(|(n, p)| (*n, *p)).collect();
+
+    let mut backend = CraneliftBackend::with_symbols(&symbols_ref)?;
     backend.compile_module(&mir_module)?;
     println!("✓ Compilation successful");
 
@@ -237,7 +242,13 @@ class Math {
 
     // Compile with Cranelift
     println!("\nCompiling MIR → Cranelift IR → Native...");
-    let mut backend = CraneliftBackend::new()?;
+
+    // Get runtime symbols from the plugin system
+    let plugin = rayzor_runtime::plugin_impl::get_plugin();
+    let symbols = plugin.runtime_symbols();
+    let symbols_ref: Vec<(&str, *const u8)> = symbols.iter().map(|(n, p)| (*n, *p)).collect();
+
+    let mut backend = CraneliftBackend::with_symbols(&symbols_ref)?;
     backend.compile_module(&mir_module)?;
     println!("✓ Compilation successful");
 
@@ -276,88 +287,31 @@ class Math {
 
 /// Compile Haxe source through the full pipeline to MIR
 fn compile_haxe_to_mir(source: &str) -> Result<compiler::ir::IrModule, String> {
-    // Step 1: Parse
-    let ast = parse_haxe_file("test.hx", source, false)
-        .map_err(|e| format!("Parse error: {}", e))?;
+    // Create compilation unit with default config (loads stdlib)
+    let mut config = CompilationConfig::default();
+    config.load_stdlib = false; // Don't load stdlib for simple tests
 
-    // Step 2: Lower AST to TAST
-    let mut string_interner = StringInterner::new();
-    let mut symbol_table = SymbolTable::new();
-    let type_table = Rc::new(RefCell::new(TypeTable::new()));
-    let mut scope_tree = ScopeTree::new(compiler::tast::ScopeId::from_raw(0));
-    let mut namespace_resolver = compiler::tast::namespace::NamespaceResolver::new(&string_interner);
-    let mut import_resolver = compiler::tast::namespace::ImportResolver::new(&namespace_resolver);
+    let mut unit = CompilationUnit::new(config);
 
-    let mut ast_lowering = AstLowering::new(
-        &mut string_interner,
-        &mut symbol_table,
-        &type_table,
-        &mut scope_tree,
-        &mut namespace_resolver,
-        &mut import_resolver,
-    );
+    // Add the test source file
+    unit.add_file(source, "test.hx")?;
 
-    let mut typed_file = ast_lowering.lower_file(&ast)
-        .map_err(|e| format!("TAST lowering error: {:?}", e))?;
-
-    // Debug: Print TAST functions and classes
-    for func in &typed_file.functions {
-        let func_name = string_interner.get(func.name).unwrap_or("?");
-        eprintln!("  TAST function: {}", func_name);
-    }
-    for class in &typed_file.classes {
-        let class_name = string_interner.get(class.name).unwrap_or("?");
-        eprintln!("  TAST class: {} with {} methods", class_name, class.methods.len());
-        for method in &class.methods {
-            let method_name = string_interner.get(method.name).unwrap_or("?");
-            eprintln!("    Method: {} (interned ID: {:?})", method_name, method.name);
-        }
-    }
-
-    // Step 3: Lower TAST to HIR
-    let string_interner_rc = Rc::new(RefCell::new(string_interner));
-    typed_file.string_interner = Rc::clone(&string_interner_rc);
-
-    let hir_module = lower_tast_to_hir(
-        &typed_file,
-        &symbol_table,
-        &type_table,
-        &mut *string_interner_rc.borrow_mut(),
-        None, // No semantic graphs for now
-    ).map_err(|errors| {
-        let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
-        format!("HIR lowering errors: {}", messages.join(", "))
-    })?;
-
-    // Debug: Print HIR functions and class methods
-    for (symbol_id, func) in &hir_module.functions {
-        eprintln!("  HIR function: {} (symbol {:?}), has_body: {}",
-            func.name, symbol_id, func.body.is_some());
-    }
-
-    for (type_id, type_decl) in &hir_module.types {
-        match type_decl {
-            compiler::ir::hir::HirTypeDecl::Class(class) => {
-                eprintln!("  HIR class: {} with {} methods", class.name, class.methods.len());
-                for method in &class.methods {
-                    eprintln!("    Method: {}, has_body: {}",
-                        method.function.name, method.function.body.is_some());
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // Step 4: Lower HIR to MIR (this produces proper SSA!)
-    let mir_module = lower_hir_to_mir(&hir_module, &*string_interner_rc.borrow(), &type_table, &symbol_table)
+    // Lower to TAST (also generates HIR and MIR internally via pipeline)
+    unit.lower_to_tast()
         .map_err(|errors| {
             let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
-            format!("MIR lowering errors: {}", messages.join(", "))
+            format!("Compilation errors: {}", messages.join(", "))
         })?;
 
-    for func in mir_module.functions.values() {
-        eprintln!("  MIR function: {}", func.name);
+    // Get the MIR modules (pipeline generates them automatically)
+    let mir_modules = unit.get_mir_modules();
+    if mir_modules.is_empty() {
+        return Err("No MIR modules generated".to_string());
     }
 
-    Ok(mir_module)
+    // Get the last module (the user's test file)
+    let mir_module = mir_modules.last().unwrap();
+
+    // Clone the Arc to get owned IrModule
+    Ok((**mir_module).clone())
 }

@@ -72,41 +72,48 @@ pub fn parse_haxe_file_with_debug(file_name:&str, input: &str, recovery:bool, de
 
 /// Convert enhanced incremental parse result to HaxeFile
 fn convert_enhanced_incremental_to_haxe_file(
-    result: crate::incremental_parser_enhanced::IncrementalParseResult, 
-    file_name: &str, 
+    result: crate::incremental_parser_enhanced::IncrementalParseResult,
+    file_name: &str,
     input: &str,
     is_import_file: bool,
     debug: bool
 ) -> Result<HaxeFile, String> {
     use crate::incremental_parser_enhanced::ParsedElement;
     use crate::haxe_ast::{HaxeFile, Span};
-    
+
     // If there are errors but no parsed elements, format and return all errors
     if result.parsed_elements.is_empty() && result.has_errors() {
         let formatted_errors = result.format_diagnostics(true);
         return Err(format!("Parse failed with errors:\n{}", formatted_errors));
     }
-    
+
     // Extract components from parsed elements
     let mut package = None;
     let mut imports = Vec::new();
     let mut using = Vec::new();
     let mut module_fields = Vec::new();
     let mut declarations = Vec::new();
+
     
+
     for element in result.parsed_elements {
         match element {
             ParsedElement::Package(pkg) => package = Some(pkg),
             ParsedElement::Import(imp) => imports.push(imp),
             ParsedElement::Using(use_stmt) => using.push(use_stmt),
             ParsedElement::ModuleField(field) => module_fields.push(field),
-            ParsedElement::TypeDeclaration(decl) => declarations.push(decl),
+            ParsedElement::TypeDeclaration(decl) => {
+                declarations.push(decl);
+               
+            }
             ParsedElement::ConditionalBlock(_) => {
                 // Skip conditional blocks for now
             }
         }
     }
-    
+
+   
+
     // For import.hx files, only imports are relevant
     if is_import_file {
         Ok(HaxeFile {
@@ -223,18 +230,24 @@ pub fn parse_haxe_file_with_enhanced_errors(input: &str, file_name:&str, is_impo
 
 /// Parse a Haxe file and always return diagnostics along with the result
 pub fn parse_haxe_file_with_diagnostics(file_name: &str, input: &str) -> Result<ParseResult, String> {
+    // Preprocess to handle conditional compilation directives
+    let preprocessor_config = crate::preprocessor::PreprocessorConfig::default();
+    let preprocessed_source = crate::preprocessor::preprocess(input, &preprocessor_config);
+
     // Check if this is an import.hx file
     let is_import_file = file_name.ends_with("import.hx") || file_name.ends_with("/import.hx") || file_name == "import.hx";
-    
+
     // Use enhanced incremental parser for better error recovery with diagnostics
-    let incremental_result = crate::incremental_parser_enhanced::parse_incrementally_enhanced(file_name, input);
+    // Parse the preprocessed source instead of the original
+    let incremental_result = crate::incremental_parser_enhanced::parse_incrementally_enhanced(file_name, &preprocessed_source);
     
     // Extract the diagnostics and source map
     let diagnostics = incremental_result.diagnostics.clone();
     let source_map = incremental_result.source_map.clone();
     
     // Try to convert to HaxeFile
-    match convert_enhanced_incremental_to_haxe_file(incremental_result, file_name, input, is_import_file, false) {
+    // Use preprocessed source so the file has the correct content
+    match convert_enhanced_incremental_to_haxe_file(incremental_result, file_name, &preprocessed_source, is_import_file, false) {
         Ok(file) => {
             Ok(ParseResult {
                 file,
@@ -593,6 +606,7 @@ pub fn ws(input: &str) -> PResult<()> {
             value((), multispace1),
             value((), line_comment),
             value((), block_comment),
+            value((), preprocessor_directive),
         )))
     ).parse(input)
 }
@@ -605,8 +619,204 @@ pub fn ws1(input: &str) -> PResult<()> {
             value((), multispace1),
             value((), line_comment),
             value((), block_comment),
+            value((), preprocessor_directive),
         )))
     ).parse(input)
+}
+
+/// Preprocessor directive: #if condition ... #else ... #end
+/// For Rayzor, we skip the #if branch and take #else if present
+/// For negated conditions like #if !eval, we take the #if branch
+/// NOTE: This only handles block-level preprocessor directives (start of line).
+/// Inline preprocessor directives (within expressions) are handled by inline_preprocessor_expr.
+fn preprocessor_directive(input: &str) -> PResult<&str> {
+    // Only handle preprocessor directives that appear on their own line (block-level).
+    // Inline preprocessor (within expressions) should be handled by inline_preprocessor_expr.
+    // We detect inline by checking if #if/# else/#end appears after non-whitespace on the same line.
+    // If the directive is inline (has content before it on the line), fail immediately so
+    // the expression parser can handle it.
+    // Actually, we can't easily check this here because we're called from ws which has already
+    // consumed whitespace. Instead, we'll check if we can see #end on the same line - if so,
+    // it's likely an inline directive.
+    if input.starts_with("#if") {
+        // Quick check: if we find #end before finding a newline, it's an inline preprocessor
+        if let Some(newline_pos) = input.find('\n') {
+            if let Some(end_pos) = input.find("#end") {
+                if end_pos < newline_pos {
+                    // This is an inline preprocessor directive - don't handle it here
+                    return Err(nom::Err::Error(ContextualError::new(input, nom::error::ErrorKind::Tag)));
+                }
+            }
+        } else if input.find("#end").is_some() {
+            // No newline found but #end exists - entire thing is on one line
+            return Err(nom::Err::Error(ContextualError::new(input, nom::error::ErrorKind::Tag)));
+        }
+    }
+
+    // Handle standalone #end (from a previous #else that we returned)
+    if input.starts_with("#end") && (input.len() == 4 || !input.chars().nth(4).map(|c| c.is_alphanumeric()).unwrap_or(false)) {
+        let mut rest = &input[4..];
+        // Skip to end of line
+        while !rest.is_empty() && !rest.starts_with('\n') {
+            rest = &rest[1..];
+        }
+        if rest.starts_with('\n') {
+            rest = &rest[1..];
+        }
+        return Ok((rest, &input[..input.len() - rest.len()]));
+    }
+
+    // Handle standalone #else (when we took the #if branch due to negation)
+    // We need to skip from #else to #end
+    if input.starts_with("#else") && (input.len() == 5 || !input.chars().nth(5).map(|c| c.is_alphanumeric()).unwrap_or(false)) {
+        let mut current = &input[5..];
+        let mut depth = 1;
+
+        while depth > 0 && !current.is_empty() {
+            if current.starts_with("#if") && (current.len() == 3 || !current.chars().nth(3).map(|c| c.is_alphanumeric()).unwrap_or(false)) {
+                depth += 1;
+                current = &current[3..];
+            } else if current.starts_with("#end") && (current.len() == 4 || !current.chars().nth(4).map(|c| c.is_alphanumeric()).unwrap_or(false)) {
+                depth -= 1;
+                if depth == 0 {
+                    current = &current[4..];
+                    // Skip to end of line
+                    while !current.is_empty() && !current.starts_with('\n') {
+                        current = &current[1..];
+                    }
+                    if current.starts_with('\n') {
+                        current = &current[1..];
+                    }
+                    break;
+                }
+                current = &current[4..];
+            } else {
+                let mut chars = current.chars();
+                chars.next();
+                current = chars.as_str();
+            }
+        }
+
+        return Ok((current, &input[..input.len() - current.len()]));
+    }
+
+    // Must start with #if
+    let (input, _) = tag("#if")(input)?;
+
+    // Skip the condition (identifier, !identifier, or parenthesized expression)
+    let (mut input, _) = take_while(|c: char| c.is_whitespace() && c != '\n')(input)?;
+
+    // Check if condition is negated - if so, we include the #if branch
+    let is_negated = input.starts_with('!');
+
+    // Skip condition - can be: identifier, !identifier, (expr)
+    if input.starts_with('(') {
+        // Parenthesized expression - find matching closing paren
+        let mut depth = 1;
+        let mut pos = 1;
+        for (i, c) in input[1..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        pos = i + 2; // +1 for starting after '(', +1 for the ')'
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        input = &input[pos..];
+    } else {
+        // Simple identifier or !identifier
+        if input.starts_with('!') {
+            input = &input[1..];
+        }
+        let (rest, _) = take_while(|c: char| c.is_alphanumeric() || c == '_')(input)?;
+        input = rest;
+    }
+
+    // If negated (like #if !eval), include the #if branch content
+    // by just skipping the #if line and returning - content will be parsed normally
+    if is_negated {
+        // Skip to end of line
+        let (input, _) = take_while(|c: char| c != '\n')(input)?;
+        let input = if input.starts_with('\n') { &input[1..] } else { input };
+        // Return - the #if branch content will be parsed normally
+        // We'll handle #else and #end when we encounter them
+        return Ok((input, ""));
+    }
+
+    // Skip to end of line
+    let (input, _) = take_while(|c: char| c != '\n')(input)?;
+    let input = if input.starts_with('\n') { &input[1..] } else { input };
+
+    // Now we need to find the matching #end, handling nesting
+    // We skip the #if branch content and take #else content if present
+    let start = input;
+    let mut current = input;
+    let mut depth = 1;
+    let mut else_start: Option<&str> = None;
+
+    while depth > 0 && !current.is_empty() {
+        if current.starts_with("#if") && (current.len() == 3 || !current.chars().nth(3).map(|c| c.is_alphanumeric()).unwrap_or(false)) {
+            depth += 1;
+            current = &current[3..];
+        } else if current.starts_with("#elseif") && depth == 1 {
+            // At our level, treat #elseif like #else - skip the directive and return
+            // so the content after it gets parsed normally
+            current = &current[7..];
+            // Skip condition
+            while !current.is_empty() && !current.starts_with('\n') {
+                current = &current[1..];
+            }
+            if current.starts_with('\n') {
+                current = &current[1..];
+            }
+            // Return here - the content after #elseif will be parsed normally
+            // until we hit the next preprocessor directive
+            break;
+        } else if current.starts_with("#else") && depth == 1 && (current.len() == 5 || !current.chars().nth(5).map(|c| c.is_alphanumeric()).unwrap_or(false)) {
+            // Found #else at our level - skip the #else keyword and newline
+            // The content after it will be parsed normally
+            current = &current[5..];
+            while !current.is_empty() && !current.starts_with('\n') {
+                current = &current[1..];
+            }
+            if current.starts_with('\n') {
+                current = &current[1..];
+            }
+            // Return here - the #else content will be parsed normally
+            break;
+        } else if current.starts_with("#end") && (current.len() == 4 || !current.chars().nth(4).map(|c| c.is_alphanumeric()).unwrap_or(false)) {
+            depth -= 1;
+            if depth == 0 {
+                // Skip #end and rest of line
+                current = &current[4..];
+                while !current.is_empty() && !current.starts_with('\n') {
+                    current = &current[1..];
+                }
+                if current.starts_with('\n') {
+                    current = &current[1..];
+                }
+                break;
+            }
+            current = &current[4..];
+        } else {
+            // Move to next character
+            let mut chars = current.chars();
+            chars.next();
+            current = chars.as_str();
+        }
+    }
+
+    // Calculate how much we consumed
+    let consumed_len = start.len() - current.len();
+    let consumed = &start[..consumed_len];
+
+    // Return the remaining input
+    Ok((current, consumed))
 }
 
 /// Line comment: // comment
@@ -843,10 +1053,11 @@ fn identifier_or_keyword(input: &str) -> PResult<String> {
 }
 
 /// Dot-separated path: `com.example.Class`
+/// Note: Allows keywords in path segments (e.g., haxe.macro, haxe.extern)
 pub fn dot_path(input: &str) -> PResult<Vec<String>> {
     separated_list1(
         symbol("."),
-        identifier
+        identifier_or_keyword
     ).parse(input)
 }
 

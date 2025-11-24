@@ -303,7 +303,10 @@ impl ErrorFormatter {
     
     pub fn format_diagnostic(&self, diagnostic: &Diagnostic, source_map: &SourceMap) -> String {
         let mut output = String::new();
-        
+
+        // Add blank line before error for better separation
+        output.push('\n');
+
         // Header
         if self.use_colors {
             let color = match diagnostic.severity {
@@ -314,20 +317,22 @@ impl ErrorFormatter {
             };
             output.push_str(color);
             output.push_str(&format!("{}", diagnostic.severity));
-            
+
             if let Some(code) = &diagnostic.code {
                 output.push_str(&format!("[{}]", code));
             }
-            
-            output.push_str("\x1b[0m");
-            output.push_str(&format!(": {}\n", diagnostic.message));
+
+            // Use white/bright color for the message to make it stand out
+            output.push_str("\x1b[0m: \x1b[1;97m");
+            output.push_str(&diagnostic.message);
+            output.push_str("\x1b[0m\n");
         } else {
             output.push_str(&format!("{}", diagnostic.severity));
-            
+
             if let Some(code) = &diagnostic.code {
                 output.push_str(&format!("[{}]", code));
             }
-            
+
             output.push_str(&format!(": {}\n", diagnostic.message));
         }
         
@@ -368,7 +373,7 @@ impl ErrorFormatter {
                 
                 // Underline
                 let padding = " ".repeat(diagnostic.span.start.column - 1);
-                let underline_len = if diagnostic.span.start.line == diagnostic.span.end.line {
+                let mut underline_len = if diagnostic.span.start.line == diagnostic.span.end.line {
                     diagnostic.span.end.column - diagnostic.span.start.column
                 } else {
                     // For multi-line spans, underline from start column to end of line
@@ -378,6 +383,22 @@ impl ErrorFormatter {
                         1
                     }
                 };
+
+                // If underline_len is 0 or 1 (single position), try to detect the token length from source
+                if underline_len <= 1 && diagnostic.span.start.column > 0 {
+                    let start_col = diagnostic.span.start.column - 1; // Convert to 0-based
+                    if start_col < line.len() {
+                        let remaining = &line[start_col..];
+                        // Find the length of the identifier (alphanumeric + underscore)
+                        let detected_len = remaining.chars()
+                            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+                            .count();
+                        if detected_len >= 1 {  // Changed from > 1 to >= 1
+                            underline_len = detected_len;
+                        }
+                    }
+                }
+
                 let underline = if self.use_colors {
                     format!("\x1b[31m{}\x1b[0m", "^".repeat(underline_len.max(1)))
                 } else {
@@ -392,10 +413,15 @@ impl ErrorFormatter {
                         "", padding, underline, width = line_num_width));
                 }
                 
-                // Primary label message
+                // Primary label message - underlined and bold for visibility
                 if let Some(label) = diagnostic.labels.iter()
                     .find(|l| l.style == LabelStyle::Primary) {
-                    output.push_str(&format!(" {}", label.message));
+                    if self.use_colors {
+                        // Bold + underlined red text for the error message
+                        output.push_str(&format!(" \x1b[1;4;31m{}\x1b[0m", label.message));
+                    } else {
+                        output.push_str(&format!(" {}", label.message));
+                    }
                 }
                 output.push('\n');
             }
@@ -436,15 +462,18 @@ impl ErrorFormatter {
             output.push_str("\n");
         }
         
-        // Help messages
+        // Help messages - indented for better readability with yellow/golden color
         for help_msg in &diagnostic.help {
             if self.use_colors {
-                output.push_str("\x1b[32mhelp\x1b[0m: ");
+                // Green 'help:' label, yellow/golden message text
+                output.push_str("     \x1b[32mhelp\x1b[0m: \x1b[33m");
+                output.push_str(help_msg);
+                output.push_str("\x1b[0m\n");
             } else {
-                output.push_str("help: ");
+                output.push_str("     help: ");
+                output.push_str(help_msg);
+                output.push_str("\n");
             }
-            output.push_str(help_msg);
-            output.push_str("\n");
         }
         
         // Notes

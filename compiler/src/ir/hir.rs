@@ -296,6 +296,9 @@ pub enum HirExprKind {
         class_type: TypeId,
         type_args: Vec<TypeId>,
         args: Vec<HirExpr>,
+        /// Optional class name for cases where TypeId is invalid (e.g., extern stdlib classes)
+        /// This preserves the class name for proper constructor resolution during MIR lowering
+        class_name: Option<InternedString>,
     },
     
     // === Operators ===
@@ -592,6 +595,7 @@ pub struct HirClassField {
     pub visibility: HirVisibility,
     pub is_static: bool,
     pub is_final: bool,
+    pub property_access: Option<crate::tast::PropertyAccessInfo>,  // Property accessor info from TAST
 }
 
 #[derive(Debug, Clone)]
@@ -656,6 +660,7 @@ pub struct HirFieldInit {
 pub struct HirCapture {
     pub symbol: SymbolId,
     pub mode: HirCaptureMode,
+    pub ty: TypeId,
 }
 
 #[derive(Debug, Clone, Copy)]

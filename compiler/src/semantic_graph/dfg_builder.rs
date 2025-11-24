@@ -991,6 +991,7 @@ impl DfgBuilder {
                 class_type,
                 arguments,
                 type_arguments,
+                class_name: _,
             } => self.build_new_expression(node_id, *class_type, arguments, expression),
             TypedExpressionKind::This { this_type } => {
                 self.build_this_expression(node_id, *this_type, expression)

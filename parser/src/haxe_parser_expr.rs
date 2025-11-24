@@ -15,7 +15,7 @@ use nom::{
 use crate::haxe_ast::*;
 use crate::haxe_parser::{ws, symbol, keyword, identifier, PResult, position};
 use crate::custom_error::ContextualError;
-use crate::haxe_parser_expr2::{identifier_expr, this_expr, super_expr, null_expr, new_expr, cast_expr, untyped_expr, array_expr, object_expr, block_expr, if_expr, switch_expr, for_expr, while_expr, do_while_expr, macro_expr, reify_expr, compiler_specific_expr};
+use crate::haxe_parser_expr2::{identifier_expr, this_expr, super_expr, null_expr, new_expr, cast_expr, untyped_expr, inline_preprocessor_expr, array_expr, object_expr, block_expr, if_expr, switch_expr, for_expr, while_expr, do_while_expr, macro_expr, reify_expr, compiler_specific_expr};
 use crate::haxe_parser_expr3::{try_expr, function_expr, return_expr, break_expr, continue_expr, throw_expr, var_expr, paren_expr, metadata_expr, arrow_params};
 
 /// Parse any expression
@@ -58,9 +58,15 @@ pub fn assignment_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
         let (rest, _) = ws(rest)?; // Skip whitespace before arrow
         if let Ok((rest, _)) = symbol("->")(rest) {
             let (rest, _) = ws(rest)?; // Skip whitespace after arrow
-            let (rest, body) = assignment_expr(full, rest)?; // Right-associative
+     
+            // Try block expression first, then fall back to assignment expression
+            let (rest, body) = alt((
+                |i| block_expr(full, i),
+                |i| assignment_expr(full, i),
+            )).parse(rest)?;
+           
             let end = position(full, rest);
-            
+
             return Ok((rest, Expr {
                 kind: ExprKind::Arrow {
                     params,
@@ -433,6 +439,7 @@ fn primary_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
             |i| new_expr(full, i),
             |i| cast_expr(full, i),
             |i| untyped_expr(full, i),
+            |i| inline_preprocessor_expr(full, i),
             |i| array_expr(full, i),
         )).parse(i),
         |i| alt((

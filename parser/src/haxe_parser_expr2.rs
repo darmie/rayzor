@@ -11,7 +11,7 @@ use crate::haxe_parser::{ws, symbol, keyword, identifier, PResult, position, com
 use crate::custom_error::ContextualError;
 use nom::error::{ContextError, ParseError};
 use crate::haxe_parser_types::type_expr;
-use crate::haxe_parser_expr::expression;
+use crate::haxe_parser_expr::{expression, postfix_expr};
 
 // Simple expressions
 
@@ -205,9 +205,30 @@ pub fn new_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
 pub fn cast_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let start = position(full, input);
     let (input, _) = keyword("cast").parse(input)?;
-    
+
     alt((
-        // cast(expr, Type)
+        // cast(expr : Type) - type annotation style in parentheses
+        map(
+            delimited(
+                symbol("("),
+                pair(
+                    |i| expression(full, i),
+                    opt(preceded(symbol(":"), |i| type_expr(full, i)))
+                ),
+                symbol(")")
+            ),
+            move |(expr, type_hint)| {
+                let end = position(full, input);
+                Expr {
+                    kind: ExprKind::Cast {
+                        expr: Box::new(expr),
+                        type_hint,
+                    },
+                    span: Span::new(start, end),
+                }
+            }
+        ),
+        // cast(expr, Type) - comma style
         map(
             delimited(
                 symbol("("),
@@ -228,15 +249,18 @@ pub fn cast_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
                 }
             }
         ),
-        // cast expr
+        // cast expr : Type - type annotation without parentheses
         map(
-            |i| expression(full, i),
-            move |expr| {
+            pair(
+                |i| postfix_expr(full, i),  // Use postfix_expr to avoid infinite recursion with unary
+                opt(preceded(symbol(":"), |i| type_expr(full, i)))
+            ),
+            move |(expr, type_hint)| {
                 let end = position(full, input);
                 Expr {
                     kind: ExprKind::Cast {
                         expr: Box::new(expr),
-                        type_hint: None,
+                        type_hint,
                     },
                     span: Span::new(start, end),
                 }
@@ -251,11 +275,150 @@ pub fn untyped_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let (input, _) = keyword("untyped").parse(input)?;
     let (input, expr) = expression(full, input)?;
     let end = position(full, input);
-    
+
     Ok((input, Expr {
         kind: ExprKind::Untyped(Box::new(expr)),
         span: Span::new(start, end),
     }))
+}
+
+/// Parse inline preprocessor conditional: `#if cond expr1 #else expr2 #end`
+/// For Rayzor, we skip the #if branch and return the #else branch expression
+pub fn inline_preprocessor_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
+    use nom::bytes::complete::{tag, take_while};
+
+    // Skip any leading whitespace (but not newlines)
+    let (input, _) = take_while(|c: char| c.is_whitespace() && c != '\n')(input)?;
+
+    // Must start with #if
+    let (input, _) = tag("#if")(input)?;
+
+    // Skip whitespace
+    let (mut input, _) = take_while(|c: char| c.is_whitespace() && c != '\n')(input)?;
+
+    // Skip condition - can be: identifier, !identifier, (expr)
+    if input.starts_with('(') {
+        // Parenthesized expression - find matching closing paren
+        let mut depth = 1;
+        let mut pos = 1;
+        for (i, c) in input[1..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        pos = i + 2;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        input = &input[pos..];
+    } else {
+        // Simple identifier or !identifier
+        if input.starts_with('!') {
+            input = &input[1..];
+        }
+        let (rest, _) = take_while(|c: char| c.is_alphanumeric() || c == '_')(input)?;
+        input = rest;
+    }
+
+    // Skip whitespace
+    let (input, _) = take_while(|c: char| c.is_whitespace())(input)?;
+
+    // Now we need to find #else, handling nested #if...#end
+    let mut current = input;
+    let mut depth = 1;
+
+    while depth > 0 && !current.is_empty() {
+        if current.starts_with("#if") && (current.len() == 3 || !current.chars().nth(3).map(|c| c.is_alphanumeric()).unwrap_or(false)) {
+            depth += 1;
+            current = &current[3..];
+        } else if current.starts_with("#else") && depth == 1 && (current.len() == 5 || !current.chars().nth(5).map(|c| c.is_alphanumeric()).unwrap_or(false)) {
+            // Found #else at our level
+            current = &current[5..];
+            // Skip whitespace
+            while !current.is_empty() && current.starts_with(char::is_whitespace) {
+                current = &current[1..];
+            }
+            break;
+        } else if current.starts_with("#end") && (current.len() == 4 || !current.chars().nth(4).map(|c| c.is_alphanumeric()).unwrap_or(false)) {
+            depth -= 1;
+            if depth == 0 {
+                // No #else found, just skip to end
+                current = &current[4..];
+                break;
+            }
+            current = &current[4..];
+        } else {
+            let mut chars = current.chars();
+            chars.next();
+            current = chars.as_str();
+        }
+    }
+
+    // The #else branch content is a block - parse everything up to #end
+    // This block can contain multiple statements with semicolons
+    // Example: return #if flash x; #else y; #end
+    // The #else branch is "y;" which includes the semicolon
+
+    let start_pos = position(full, current);
+    let else_start = current;
+
+    // Find the matching #end for this conditional
+    let mut current_scan = current;
+    let mut depth = 1;
+    let mut end_offset = 0;
+
+    while depth > 0 && !current_scan.is_empty() {
+        if current_scan.starts_with("#if") {
+            depth += 1;
+            current_scan = &current_scan[3..];
+            end_offset += 3;
+        } else if current_scan.starts_with("#end") && (current_scan.len() == 4 || !current_scan.chars().nth(4).map(|c| c.is_alphanumeric()).unwrap_or(false)) {
+            depth -= 1;
+            if depth == 0 {
+                // Found the matching #end
+                break;
+            }
+            current_scan = &current_scan[4..];
+            end_offset += 4;
+        } else {
+            let ch = current_scan.chars().next().unwrap();
+            current_scan = &current_scan[ch.len_utf8()..];
+            end_offset += ch.len_utf8();
+        }
+    }
+
+    // Parse the #else branch content as an expression
+    let (after_expr, expr) = expression(full, else_start)?;
+
+    // Skip whitespace and check for semicolon
+    let (mut remaining, _) = take_while(|c: char| c.is_whitespace() && c != '\n')(after_expr)?;
+    let has_semicolon = remaining.starts_with(';');
+    if has_semicolon {
+        remaining = &remaining[1..];
+    }
+    let (remaining, _) = take_while(|c: char| c.is_whitespace())(remaining)?;
+
+    // Now we should be at #end
+    if !remaining.starts_with("#end") {
+        return Err(nom::Err::Error(ContextualError::new(remaining, nom::error::ErrorKind::Tag)));
+    }
+    // Skip "#end"
+    let mut input = &remaining[4..];
+
+    // HACK: If the #else branch had a semicolon, we need to provide one to the caller
+    // because both #if and #else branches should have the same syntax.
+    // We do this by creating a synthetic input string with a semicolon prepended.
+    if has_semicolon {
+        // Create a string "; " + input and use Box::leak to get a 'static lifetime
+        let synthetic = Box::leak(format!(";{}", input).into_boxed_str());
+        input = synthetic;
+    }
+
+    Ok((input, expr))
 }
 
 // Collection literals
@@ -428,10 +591,15 @@ fn object_field<'a>(full: &'a str, input: &'a str) -> PResult<'a, ObjectField> {
 pub fn block_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let start = position(full, input);
     let (input, _) = context("[E0003] expected '{' to start block", symbol("{")).parse(input)?;
+
+  
+
     let (input, elements) = context("[E0004] expected block contents | help: provide statements or expressions inside the block", many0(|i|block_element(full, i))).parse(input)?;
+
+   
     let (input, _) = context("[E0005] expected '}' to close block | help: blocks must be properly closed with '}'", symbol("}")).parse(input)?;
     let end = position(full, input);
-    
+
     Ok((input, Expr {
         kind: ExprKind::Block(elements),
         span: Span::new(start, end),
@@ -460,10 +628,23 @@ fn block_element<'a>(full: &'a str, input: &'a str) -> PResult<'a, BlockElement>
             |i| {
                 let (input, expr) = expression(full, i)?;
                 // Check if this is a control flow statement that doesn't need semicolon
+                // Helper to check if an expression is a brace-terminated control flow
+                fn is_brace_terminated(kind: &ExprKind) -> bool {
+                    match kind {
+                        ExprKind::If { .. } | ExprKind::Switch { .. } | ExprKind::For { .. } |
+                        ExprKind::While { .. } | ExprKind::DoWhile { .. } | ExprKind::Try { .. } |
+                        ExprKind::Block(_) => true,
+                        _ => false,
+                    }
+                }
+
                 let needs_semicolon = match &expr.kind {
-                    ExprKind::If { .. } | ExprKind::Switch { .. } | ExprKind::For { .. } | 
-                    ExprKind::While { .. } | ExprKind::DoWhile { .. } | ExprKind::Try { .. } |
-                    ExprKind::Block(_) => false,
+                    // Direct control flow statements don't need semicolon
+                    k if is_brace_terminated(k) => false,
+                    // Return/throw with brace-terminated expression don't need semicolon
+                    // e.g., return switch { } or return if (cond) { } else { }
+                    ExprKind::Return(Some(inner)) if is_brace_terminated(&inner.kind) => false,
+                    ExprKind::Throw(inner) if is_brace_terminated(&inner.kind) => false,
                     _ => true,
                 };
                 
@@ -500,14 +681,19 @@ pub fn if_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let (input, cond) = expression(full, input)?;
     let (input, _) = symbol(")").parse(input)?;
     let (input, then_branch) = expression(full, input)?;
-    
+
+    // In Haxe, if-expressions can have an optional semicolon after the then-branch
+    // before the else clause: if (cond) expr; else expr2
+    // We consume the optional semicolon here before checking for else
+    let (input, _) = opt(symbol(";")).parse(input)?;
+
     let (input, else_branch) = opt(preceded(
         keyword("else"),
         |i| expression(full, i)
     )).parse(input)?;
-    
+
     let end = position(full, input);
-    
+
     Ok((input, Expr {
         kind: ExprKind::If {
             cond: Box::new(cond),
@@ -553,8 +739,10 @@ pub fn switch_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
 fn case<'a>(full: &'a str, input: &'a str) -> PResult<'a, Case> {
     let start = position(full, input);
     let (input, _) = keyword("case").parse(input)?;
-    let (input, patterns) = context("[E0025] expected pattern(s) after 'case' | help: provide a pattern to match against", 
-        separated_list1(symbol("|"), |i| pattern(full, i))
+    // Haxe allows patterns to be separated by either '|' or ','
+    // e.g., case "a" | "b": or case "a", "b":
+    let (input, patterns) = context("[E0025] expected pattern(s) after 'case' | help: provide a pattern to match against",
+        separated_list1(alt((symbol("|"), symbol(","))), |i| pattern(full, i))
     ).parse(input)?;
     
     // Try to parse guard - if we see 'if', we require proper guard syntax

@@ -23,3 +23,19 @@ target
 # Rayzor build artifacts
 /target/
 *.blade
+
+# Haxe platform-specific standard libraries (not needed for Rayzor target)
+compiler/haxe-std/cpp/
+compiler/haxe-std/cs/
+compiler/haxe-std/eval/
+compiler/haxe-std/flash/
+compiler/haxe-std/hl/
+compiler/haxe-std/java/
+compiler/haxe-std/js/
+compiler/haxe-std/jvm/
+compiler/haxe-std/lua/
+compiler/haxe-std/neko/
+compiler/haxe-std/php/
+compiler/haxe-std/python/
+# Note: sys/ is NOT ignored - we maintain it for Rayzor runtime
+

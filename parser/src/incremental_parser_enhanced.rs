@@ -1,27 +1,26 @@
 //! Enhanced incremental parsing module for Haxe files using diagnostics crate
-//! 
+//!
 //! This module provides utilities for parsing Haxe files incrementally,
 //! with rich error reporting using the diagnostics crate.
 
+use crate::custom_error::{clear_full_input, set_full_input};
 use crate::haxe_ast::*;
 use crate::haxe_parser::{
-    type_declaration, import_decl, using_decl, 
-    package_decl, module_field, ws
+    import_decl, module_field, package_decl, type_declaration, using_decl, ws,
 };
-use crate::custom_error::{set_full_input, clear_full_input};
 
-use diagnostics::{
-    SourceMap, SourceSpan, SourcePosition, FileId, Diagnostics, 
-    DiagnosticBuilder, Diagnostic, ErrorFormatter
-};
 use diagnostics::haxe::HaxeDiagnostics;
+use diagnostics::{
+    Diagnostic, DiagnosticBuilder, Diagnostics, ErrorFormatter, FileId, SourceMap, SourcePosition,
+    SourceSpan,
+};
 use nom::{
-    combinator::{peek, opt},
-    bytes::complete::tag,
-    sequence::preceded,
     branch::alt,
+    bytes::complete::tag,
+    combinator::{opt, peek},
     multi::many0,
-    IResult, Parser
+    sequence::preceded,
+    IResult, Parser,
 };
 
 /// Result of incremental parsing
@@ -43,7 +42,7 @@ impl IncrementalParseResult {
     pub fn new(file_name: String, input: &str) -> Self {
         let mut source_map = SourceMap::new();
         source_map.add_file(file_name, input.to_string());
-        
+
         Self {
             parsed_elements: Vec::new(),
             diagnostics: Diagnostics::new(),
@@ -52,11 +51,11 @@ impl IncrementalParseResult {
             in_error_recovery: false,
         }
     }
-    
+
     pub fn has_errors(&self) -> bool {
         self.diagnostics.has_errors()
     }
-    
+
     pub fn format_diagnostics(&self, use_colors: bool) -> String {
         let formatter = if use_colors {
             ErrorFormatter::with_colors()
@@ -83,7 +82,11 @@ fn calculate_position(full_input: &str, remaining: &str) -> SourcePosition {
     let consumed = full_input.len() - remaining.len();
     let consumed_str = &full_input[..consumed];
     let line = consumed_str.lines().count().max(1);
-    let column = consumed_str.lines().last().map(|l| l.len() + 1).unwrap_or(1);
+    let column = consumed_str
+        .lines()
+        .last()
+        .map(|l| l.len() + 1)
+        .unwrap_or(1);
     SourcePosition::new(line, column, consumed)
 }
 
@@ -95,7 +98,7 @@ fn extract_context_diagnostic(
     file_id: FileId,
 ) -> Option<Diagnostic> {
     use crate::custom_error::get_deepest_error;
-    
+
     // Check if we have a deepest error stored and use its offset
     let byte_offset = if let Some((_, offset)) = get_deepest_error() {
         // println!("Using deepest error offset {} for span calculation", offset);
@@ -103,7 +106,7 @@ fn extract_context_diagnostic(
     } else {
         error.byte_offset
     };
-    
+
     // Use the preserved byte offset if available, otherwise calculate from error.input
     let (start, end) = if let Some(byte_offset) = byte_offset {
         // println!("Using preserved byte offset: {}", byte_offset);
@@ -119,15 +122,20 @@ fn extract_context_diagnostic(
         let end = calculate_position(full_input, &error.input[1.min(error.input.len())..]);
         (start, end)
     };
-    
+
     let span = SourceSpan::new(start, end, file_id);
-    
+
     // Convert the ContextualError to a proper diagnostic
     Some(error.to_diagnostic(span))
 }
 
 /// Create a span for an error at the current position
-fn create_error_span(full_input: &str, remaining: &str, length: usize, file_id: FileId) -> SourceSpan {
+fn create_error_span(
+    full_input: &str,
+    remaining: &str,
+    length: usize,
+    file_id: FileId,
+) -> SourceSpan {
     let start = calculate_position(full_input, remaining);
     let end = calculate_position(full_input, &remaining[length.min(remaining.len())..]);
     SourceSpan::new(start, end, file_id)
@@ -143,61 +151,68 @@ fn create_syntax_diagnostic(
 ) -> Diagnostic {
     let trimmed = remaining.trim();
     let span = create_error_span(full_input, remaining, keyword.len(), file_id);
-    
+
     // If we're in error recovery mode, add a note about it
     let mut diagnostic = match keyword {
         "import" => {
             if !trimmed.contains('.') {
-                DiagnosticBuilder::error(
-                    "missing package path in import statement",
-                    span.clone(),
-                )
-                .code("E0030")
-                .label(span, "import statement requires a package path")
-                .help("use format: import package.name.ClassName;")
-                .build()
+                DiagnosticBuilder::error("missing package path in import statement", span.clone())
+                    .code("E0030")
+                    .label(span, "import statement requires a package path")
+                    .help("use format: import package.name.ClassName;")
+                    .build()
             } else if !find_statement_end(trimmed).1 {
                 let end_span = create_error_span(
-                    full_input, 
-                    &remaining[trimmed.len().saturating_sub(1)..], 
-                    1, 
-                    file_id
+                    full_input,
+                    &remaining[trimmed.len().saturating_sub(1)..],
+                    1,
+                    file_id,
                 );
                 HaxeDiagnostics::missing_semicolon(end_span, "import statement")
             } else if trimmed.contains("..") {
-                DiagnosticBuilder::error(
-                    "invalid double dots in import path",
-                    span.clone(),
-                )
-                .code("E0031")
-                .label(span, "'..' is not valid in import paths")
-                .build()
+                DiagnosticBuilder::error("invalid double dots in import path", span.clone())
+                    .code("E0031")
+                    .label(span, "'..' is not valid in import paths")
+                    .build()
             } else {
-                HaxeDiagnostics::unexpected_token(span, keyword, &["valid import statement".to_string()])
-            }
-        },
-        "using" => {
-            if !trimmed.contains('.') && !trimmed.split_whitespace().nth(1).map_or(false, |s| s.chars().next().unwrap_or(' ').is_uppercase()) {
-                DiagnosticBuilder::error(
-                    "missing package path in using statement",
-                    span.clone(),
+                HaxeDiagnostics::unexpected_token(
+                    span,
+                    keyword,
+                    &["valid import statement".to_string()],
                 )
-                .code("E0032")
-                .label(span, "using statement requires a package path or class name")
-                .help("use format: using StringTools; or using haxe.macro.Tools;")
-                .build()
+            }
+        }
+        "using" => {
+            if !trimmed.contains('.')
+                && !trimmed
+                    .split_whitespace()
+                    .nth(1)
+                    .map_or(false, |s| s.chars().next().unwrap_or(' ').is_uppercase())
+            {
+                DiagnosticBuilder::error("missing package path in using statement", span.clone())
+                    .code("E0032")
+                    .label(
+                        span,
+                        "using statement requires a package path or class name",
+                    )
+                    .help("use format: using StringTools; or using haxe.macro.Tools;")
+                    .build()
             } else if !find_statement_end(trimmed).1 {
                 let end_span = create_error_span(
-                    full_input, 
-                    &remaining[trimmed.len().saturating_sub(1)..], 
-                    1, 
-                    file_id
+                    full_input,
+                    &remaining[trimmed.len().saturating_sub(1)..],
+                    1,
+                    file_id,
                 );
                 HaxeDiagnostics::missing_semicolon(end_span, "using statement")
             } else {
-                HaxeDiagnostics::unexpected_token(span, keyword, &["valid using statement".to_string()])
+                HaxeDiagnostics::unexpected_token(
+                    span,
+                    keyword,
+                    &["valid using statement".to_string()],
+                )
             }
-        },
+        }
         "class" => create_class_diagnostic(full_input, remaining, file_id),
         "interface" => {
             if !trimmed.contains('{') {
@@ -206,12 +221,17 @@ fn create_syntax_diagnostic(
                 HaxeDiagnostics::missing_closing_delimiter(brace_span.clone(), span, '{')
             } else if trimmed.matches('{').count() != trimmed.matches('}').count() {
                 let last_char_pos = trimmed.len().saturating_sub(1);
-                let closing_span = create_error_span(full_input, &remaining[last_char_pos..], 1, file_id);
+                let closing_span =
+                    create_error_span(full_input, &remaining[last_char_pos..], 1, file_id);
                 HaxeDiagnostics::missing_closing_delimiter(closing_span, span, '}')
             } else {
-                HaxeDiagnostics::unexpected_token(span, keyword, &["valid interface declaration".to_string()])
+                HaxeDiagnostics::unexpected_token(
+                    span,
+                    keyword,
+                    &["valid interface declaration".to_string()],
+                )
             }
-        },
+        }
         "enum" => {
             if !trimmed.contains('{') {
                 let name_end = trimmed.find(' ').unwrap_or(keyword.len());
@@ -219,66 +239,77 @@ fn create_syntax_diagnostic(
                 HaxeDiagnostics::missing_closing_delimiter(brace_span.clone(), span, '{')
             } else if trimmed.matches('{').count() != trimmed.matches('}').count() {
                 let last_char_pos = trimmed.len().saturating_sub(1);
-                let closing_span = create_error_span(full_input, &remaining[last_char_pos..], 1, file_id);
+                let closing_span =
+                    create_error_span(full_input, &remaining[last_char_pos..], 1, file_id);
                 HaxeDiagnostics::missing_closing_delimiter(closing_span, span, '}')
             } else {
-                HaxeDiagnostics::unexpected_token(span, keyword, &["valid enum declaration".to_string()])
+                HaxeDiagnostics::unexpected_token(
+                    span,
+                    keyword,
+                    &["valid enum declaration".to_string()],
+                )
             }
-        },
+        }
         "typedef" => {
             if !trimmed.contains('=') {
-                DiagnosticBuilder::error(
-                    "missing equals sign in typedef",
-                    span.clone(),
-                )
-                .code("E0033")
-                .label(span, "typedef requires '=' after the name")
-                .help("use format: typedef MyType = String;")
-                .build()
+                DiagnosticBuilder::error("missing equals sign in typedef", span.clone())
+                    .code("E0033")
+                    .label(span, "typedef requires '=' after the name")
+                    .help("use format: typedef MyType = String;")
+                    .build()
             } else if !find_statement_end(trimmed).1 {
                 let end_span = create_error_span(
-                    full_input, 
-                    &remaining[trimmed.len().saturating_sub(1)..], 
-                    1, 
-                    file_id
+                    full_input,
+                    &remaining[trimmed.len().saturating_sub(1)..],
+                    1,
+                    file_id,
                 );
                 HaxeDiagnostics::missing_semicolon(end_span, "typedef statement")
             } else {
-                HaxeDiagnostics::unexpected_token(span, keyword, &["valid typedef declaration".to_string()])
+                HaxeDiagnostics::unexpected_token(
+                    span,
+                    keyword,
+                    &["valid typedef declaration".to_string()],
+                )
             }
-        },
+        }
         "abstract" => {
             if !trimmed.contains('(') || !trimmed.contains(')') {
-                DiagnosticBuilder::error(
-                    "missing parentheses for abstract type",
-                    span.clone(),
-                )
-                .code("E0034")
-                .label(span, "abstract requires underlying type in parentheses")
-                .help("use format: abstract MyInt(Int) { ... }")
-                .build()
+                DiagnosticBuilder::error("missing parentheses for abstract type", span.clone())
+                    .code("E0034")
+                    .label(span, "abstract requires underlying type in parentheses")
+                    .help("use format: abstract MyInt(Int) { ... }")
+                    .build()
             } else if !trimmed.contains('{') {
                 let paren_end = trimmed.find(')').unwrap_or(keyword.len()) + 1;
                 let brace_span = create_error_span(full_input, &remaining[paren_end..], 1, file_id);
                 HaxeDiagnostics::missing_closing_delimiter(brace_span.clone(), span, '{')
             } else {
-                HaxeDiagnostics::unexpected_token(span, keyword, &["valid abstract declaration".to_string()])
+                HaxeDiagnostics::unexpected_token(
+                    span,
+                    keyword,
+                    &["valid abstract declaration".to_string()],
+                )
             }
-        },
-        _ => HaxeDiagnostics::unexpected_token(span, keyword, &["valid declaration".to_string()])
+        }
+        _ => HaxeDiagnostics::unexpected_token(span, keyword, &["valid declaration".to_string()]),
     };
-    
+
     if in_recovery {
         // Add a note if we're in error recovery mode
         if let Some(note) = diagnostic.notes.first() {
             if !note.contains("error recovery") {
-                diagnostic.notes.push("this error may be a consequence of the previous syntax error".to_string());
+                diagnostic.notes.push(
+                    "this error may be a consequence of the previous syntax error".to_string(),
+                );
             }
         } else {
-            diagnostic.notes.push("this error may be a consequence of the previous syntax error".to_string());
+            diagnostic
+                .notes
+                .push("this error may be a consequence of the previous syntax error".to_string());
         }
     }
-    
+
     diagnostic
 }
 
@@ -286,40 +317,48 @@ fn create_syntax_diagnostic(
 fn create_class_diagnostic(full_input: &str, remaining: &str, file_id: FileId) -> Diagnostic {
     let trimmed = remaining.trim();
     let span = create_error_span(full_input, remaining, 5, file_id); // "class" length
-    
+
     if !trimmed.contains('{') {
         let name_end = trimmed.find(' ').unwrap_or(5);
         let brace_span = create_error_span(full_input, &remaining[name_end..], 1, file_id);
         return HaxeDiagnostics::missing_closing_delimiter(brace_span.clone(), span, '{');
     }
-    
+
     // Look for common issues within class body
     if let Some(body_start) = trimmed.find('{') {
         let body = &trimmed[body_start..];
-        
+
         // Check for switch expression without semicolon
         if body.contains("switch") && body.contains("case") {
             if let Some(switch_start) = body.find("switch") {
                 let after_switch = &body[switch_start..];
                 if let Some(brace_start) = after_switch.find('{') {
                     if let Some(brace_end) = find_matching_brace(&after_switch[brace_start..]) {
-                        let after_switch_block = &after_switch[brace_start + brace_end + 1..].trim_start();
-                        
+                        let after_switch_block =
+                            &after_switch[brace_start + brace_end + 1..].trim_start();
+
                         if !after_switch_block.starts_with(';') && !after_switch_block.is_empty() {
                             let error_pos = body_start + switch_start + brace_start + brace_end + 1;
-                            let error_span = create_error_span(full_input, &remaining[error_pos..], 1, file_id);
-                            return HaxeDiagnostics::missing_semicolon(error_span, "switch expression");
+                            let error_span =
+                                create_error_span(full_input, &remaining[error_pos..], 1, file_id);
+                            return HaxeDiagnostics::missing_semicolon(
+                                error_span,
+                                "switch expression",
+                            );
                         }
                     }
                 }
             }
         }
-        
+
         // Check for variable declarations missing semicolons
         let lines: Vec<&str> = body.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             let trimmed_line = line.trim();
-            if trimmed_line.starts_with("var ") && !trimmed_line.ends_with(';') && !trimmed_line.ends_with('{') {
+            if trimmed_line.starts_with("var ")
+                && !trimmed_line.ends_with(';')
+                && !trimmed_line.ends_with('{')
+            {
                 // Calculate the position of this line
                 let line_start = body.lines().take(i).map(|l| l.len() + 1).sum::<usize>();
                 let var_end = line_start + trimmed_line.len();
@@ -329,7 +368,7 @@ fn create_class_diagnostic(full_input: &str, remaining: &str, file_id: FileId) -
             }
         }
     }
-    
+
     // Check for mismatched braces
     if trimmed.matches('{').count() != trimmed.matches('}').count() {
         let last_char_pos = trimmed.len().saturating_sub(1);
@@ -341,20 +380,27 @@ fn create_class_diagnostic(full_input: &str, remaining: &str, file_id: FileId) -
             if let Some(first_char) = name.chars().next() {
                 if !first_char.is_uppercase() {
                     let name_start = trimmed.find(name).unwrap_or(5);
-                    let name_span = create_error_span(full_input, &remaining[name_start..], name.len(), file_id);
-                    return HaxeDiagnostics::naming_convention(name_span, "class", name, "PascalCase");
+                    let name_span = create_error_span(
+                        full_input,
+                        &remaining[name_start..],
+                        name.len(),
+                        file_id,
+                    );
+                    return HaxeDiagnostics::naming_convention(
+                        name_span,
+                        "class",
+                        name,
+                        "PascalCase",
+                    );
                 }
             }
         }
-        
-        DiagnosticBuilder::error(
-            "syntax error in class body",
-            span.clone(),
-        )
-        .code("E0035")
-        .label(span, "invalid syntax")
-        .help("check for missing semicolons, braces, or invalid syntax")
-        .build()
+
+        DiagnosticBuilder::error("syntax error in class body", span.clone())
+            .code("E0035")
+            .label(span, "invalid syntax")
+            .help("check for missing semicolons, braces, or invalid syntax")
+            .build()
     }
 }
 
@@ -362,13 +408,13 @@ fn create_class_diagnostic(full_input: &str, remaining: &str, file_id: FileId) -
 fn find_statement_end(input: &str) -> (usize, bool) {
     let mut in_string = false;
     let mut escape = false;
-    
+
     for (i, ch) in input.char_indices() {
         if escape {
             escape = false;
             continue;
         }
-        
+
         match ch {
             '\\' if in_string => escape = true,
             '"' => in_string = !in_string,
@@ -377,7 +423,7 @@ fn find_statement_end(input: &str) -> (usize, bool) {
             _ => {}
         }
     }
-    
+
     (input.len(), false)
 }
 
@@ -387,20 +433,20 @@ fn find_matching_brace(input: &str) -> Option<usize> {
     let mut in_string = false;
     let mut escape = false;
     let mut chars = input.char_indices();
-    
+
     // Skip the opening brace
     if let Some((_, '{')) = chars.next() {
         depth = 1;
     } else {
         return None;
     }
-    
+
     for (i, ch) in chars {
         if escape {
             escape = false;
             continue;
         }
-        
+
         match ch {
             '\\' if in_string => escape = true,
             '"' => in_string = !in_string,
@@ -421,17 +467,17 @@ fn find_matching_brace(input: &str) -> Option<usize> {
 pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> IncrementalParseResult {
     // Set the full input for automatic byte offset calculation in error contexts
     set_full_input(input);
-    
+
     let mut result = IncrementalParseResult::new(file_name.to_string(), input);
     let file_id = FileId::new(0); // First file in source map
     let mut current_input = input;
     let full_input = input;
-    
+
     // Skip leading whitespace
     if let Ok((input, _)) = ws(current_input) {
         current_input = input;
     }
-    
+
     // Try to parse package declaration
     match package_decl(full_input, current_input) {
         Ok((remaining, pkg)) => {
@@ -442,11 +488,13 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> Incremental
             // Package is optional, continue
         }
     }
-    
+
     // Parse remaining elements
+    let mut loop_iteration = 0;
     while !current_input.trim().is_empty() {
+        loop_iteration += 1;
         let _input_before = current_input;
-        
+
         // Skip whitespace
         if let Ok((input, _)) = ws(current_input) {
             current_input = input;
@@ -454,15 +502,19 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> Incremental
                 break;
             }
         }
-        
+
         // If we're in error recovery mode and this looks like it's inside a class/function,
         // skip to the next potential top-level declaration
         if result.in_error_recovery {
             let trimmed = current_input.trim_start();
             // Check if this line looks like it's inside a block (starts with case, return, etc.)
-            if trimmed.starts_with("case ") || trimmed.starts_with("return ") || 
-               trimmed.starts_with("};") || trimmed.starts_with("}") ||
-               trimmed.starts_with("\"") || trimmed.starts_with("default") {
+            if trimmed.starts_with("case ")
+                || trimmed.starts_with("return ")
+                || trimmed.starts_with("};")
+                || trimmed.starts_with("}")
+                || trimmed.starts_with("\"")
+                || trimmed.starts_with("default")
+            {
                 // Skip this line - it's part of the errored structure
                 if let Some(newline_pos) = current_input.find('\n') {
                     current_input = &current_input[newline_pos + 1..];
@@ -471,9 +523,18 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> Incremental
                     break;
                 }
             }
-            
+
             // Look for the next class/interface/enum/typedef/abstract keyword
-            let keywords = ["class ", "interface ", "enum ", "typedef ", "abstract ", "import ", "using ", "package "];
+            let keywords = [
+                "class ",
+                "interface ",
+                "enum ",
+                "typedef ",
+                "abstract ",
+                "import ",
+                "using ",
+                "package ",
+            ];
             let mut found_keyword_pos = None;
             for keyword in &keywords {
                 if let Some(pos) = current_input.find(keyword) {
@@ -484,7 +545,7 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> Incremental
                     }
                 }
             }
-            
+
             if let Some(pos) = found_keyword_pos {
                 current_input = &current_input[pos..];
                 result.in_error_recovery = false; // Reset recovery flag
@@ -493,32 +554,36 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> Incremental
                 break;
             }
         }
-        
+
         // Try imports
         if let Ok((remaining, import)) = import_decl(full_input, current_input) {
             result.parsed_elements.push(ParsedElement::Import(import));
             current_input = remaining;
             continue;
         }
-        
+
         // Try using
         if let Ok((remaining, using)) = using_decl(full_input, current_input) {
             result.parsed_elements.push(ParsedElement::Using(using));
             current_input = remaining;
             continue;
         }
-        
+
         // Try module fields
         if let Ok((remaining, module_field)) = module_field(full_input, current_input) {
-            result.parsed_elements.push(ParsedElement::ModuleField(module_field));
+            result
+                .parsed_elements
+                .push(ParsedElement::ModuleField(module_field));
             current_input = remaining;
             continue;
         }
-        
+
         // Try type declarations
         match type_declaration(full_input, current_input) {
             Ok((remaining, type_decl)) => {
-                result.parsed_elements.push(ParsedElement::TypeDeclaration(type_decl));
+                result
+                    .parsed_elements
+                    .push(ParsedElement::TypeDeclaration(type_decl));
                 current_input = remaining;
                 // Reset error recovery flag on successful parse
                 result.in_error_recovery = false;
@@ -528,18 +593,14 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> Incremental
                 // Only report the error if we're not already in error recovery
                 if !result.in_error_recovery {
                     // Extract context from nom VerboseError and convert to diagnostic
-                    // println!("Error caught in incremental parser: {} contexts", e.contexts.len());
-                    // for ctx in &e.contexts {
-                    //     println!("  - '{}' at offset {}", ctx.context, ctx.byte_offset);
-                    // }
-                    if let Some(diagnostic) = extract_context_diagnostic(&e, full_input, current_input, file_id) {
-                        // println!("Captured context diagnostic: {:?}", diagnostic);
+                    if let Some(diagnostic) =
+                        extract_context_diagnostic(&e, full_input, current_input, file_id)
+                    {
                         result.diagnostics.push(diagnostic);
                         result.in_error_recovery = true;
-                        
                     }
                 }
-                
+
                 // Skip to next line for error recovery
                 if let Some(newline_pos) = current_input.find('\n') {
                     current_input = &current_input[newline_pos + 1..];
@@ -552,31 +613,31 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> Incremental
                 break;
             }
         }
-        
+
         // // If we get here, we have a parse error
         // let trimmed = current_input.trim_start();
-        
+
         // // Check for specific keywords
         // let keywords = ["import", "using", "class", "interface", "enum", "typedef", "abstract"];
         // let mut found_keyword = None;
-        
+
         // for keyword in &keywords {
         //     if trimmed.starts_with(keyword) {
         //         found_keyword = Some(*keyword);
         //         break;
         //     }
         // }
-        
+
         // if let Some(keyword) = found_keyword {
         //     // Create diagnostic for this specific error
         //     let diagnostic = create_syntax_diagnostic(full_input, current_input, keyword, file_id, result.in_error_recovery);
         //     result.diagnostics.push(diagnostic);
-            
+
         //     // Set error recovery flag after first error
         //     if !result.in_error_recovery {
         //         result.in_error_recovery = true;
         //     }
-            
+
         //     // Try to recover by finding the next declaration
         //     let mut next_pos = None;
         //     for search_keyword in &keywords {
@@ -586,7 +647,7 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> Incremental
         //             }
         //         }
         //     }
-            
+
         //     if let Some(pos) = next_pos {
         //         current_input = &current_input[pos..];
         //     } else {
@@ -611,18 +672,18 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> Incremental
         //             Err(_) => {
         //                 // If parsing fails, this might be an actual metadata syntax error
         //                 let span = create_error_span(full_input, current_input, 1, file_id);
-                        
+
         //                 // Check if there's a recognizable declaration keyword after the metadata
         //                 let mut found_decl_keyword = None;
         //                 let decl_keywords = ["abstract", "class", "interface", "enum", "typedef"];
-                        
+
         //                 for keyword in &decl_keywords {
         //                     if trimmed.contains(keyword) {
         //                         found_decl_keyword = Some(*keyword);
         //                         break;
         //                     }
         //                 }
-                        
+
         //                 let diagnostic = if let Some(keyword) = found_decl_keyword {
         //                     DiagnosticBuilder::error(
         //                         format!("malformed metadata before {} declaration", keyword),
@@ -642,9 +703,9 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> Incremental
         //                     .help("use format: @:metadata abstract MyType {}")
         //                     .build()
         //                 };
-                        
+
         //                 result.diagnostics.push(diagnostic);
-                        
+
         //                 // Try to find the next valid declaration for recovery
         //                 let mut next_pos = None;
         //                 let all_keywords = ["import", "using", "class", "interface", "enum", "typedef", "abstract"];
@@ -655,7 +716,7 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> Incremental
         //                         }
         //                     }
         //                 }
-                        
+
         //                 if let Some(pos) = next_pos {
         //                     current_input = &current_input[pos..];
         //                 } else {
@@ -668,11 +729,11 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> Incremental
         //                 }
         //             }
         //         }
-                
+
         //         result.in_error_recovery = true;
         //         continue;
         //     }
-            
+
         //     // Handle conditional compilation blocks
         //     if trimmed.starts_with("#if") {
         //         if let Some(end_pos) = current_input.find("#end") {
@@ -682,11 +743,11 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> Incremental
         //             continue;
         //         }
         //     }
-            
+
         //     // Unknown syntax error
         //     let span = create_error_span(full_input, current_input, 1, file_id);
         //     let first_token = trimmed.split_whitespace().next().unwrap_or("");
-            
+
         //     let mut diagnostic = if first_token.is_empty() {
         //         DiagnosticBuilder::error("unexpected end of input", span)
         //             .code("E0036")
@@ -707,10 +768,10 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> Incremental
         //             "improt" => Some("import"),
         //             _ => None
         //         } {
-        //             HaxeDiagnostics::invalid_identifier(span, first_token, 
+        //             HaxeDiagnostics::invalid_identifier(span, first_token,
         //                 &format!("did you mean '{}'?", suggestion))
         //         } else {
-        //             HaxeDiagnostics::unexpected_token(span, first_token, 
+        //             HaxeDiagnostics::unexpected_token(span, first_token,
         //                 &["type declaration".to_string(), "import".to_string(), "using".to_string()])
         //         }
         //     } else {
@@ -721,16 +782,16 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> Incremental
         //         .code("E0038")
         //         .build()
         //     };
-            
+
         //     // Add note if in error recovery
         //     if result.in_error_recovery {
         //         diagnostic.notes.push("this error may be a consequence of the previous syntax error".to_string());
         //     } else {
         //         result.in_error_recovery = true;
         //     }
-            
+
         //     result.diagnostics.push(diagnostic);
-            
+
         //     // Skip to next line for recovery
         //     if let Some(newline_pos) = current_input.find('\n') {
         //         current_input = &current_input[newline_pos + 1..];
@@ -738,7 +799,7 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> Incremental
         //         break;
         //     }
         // }
-        
+
         // // Safety check to prevent infinite loops
         // if current_input == input_before {
         //     if current_input.len() > 1 {
@@ -748,12 +809,12 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> Incremental
         //     }
         // }
     }
-    
+
     // Check if we consumed all input
     result.complete = current_input.trim().is_empty();
-    
+
     // Clear the full input after parsing
     clear_full_input();
-    
+
     result
 }

@@ -56,6 +56,10 @@ pub struct TypedFile {
     /// File-level metadata
     pub metadata: FileMetadata,
 
+    /// Program-level safety mode (determined by main class annotation)
+    /// None means GC runtime, Some(mode) means manual memory management
+    pub program_safety_mode: Option<SafetyMode>,
+
     /// String interner for efficient string management throughout compilation
     pub string_interner: Rc<RefCell<StringInterner>>,
 }
@@ -94,6 +98,7 @@ impl TypedFile {
             using_statements: Vec::new(),
             metadata: FileMetadata::default(),
             string_interner,
+            program_safety_mode: None, // Will be determined during analysis
         }
     }
 
@@ -110,6 +115,31 @@ impl TypedFile {
     /// Get a string from an interned string using the file's string interner
     pub fn get_string(&self, interned: InternedString) -> Option<String> {
         self.string_interner.borrow().get(interned).map(|s| s.to_string())
+    }
+
+    /// Detect and set the program-level safety mode by checking for a Main class with @:safety annotation
+    /// Returns the detected safety mode (None for GC, Some(mode) for manual memory)
+    pub fn detect_program_safety_mode(&mut self) -> Option<SafetyMode> {
+        // SIMPLIFIED APPROACH: Just find the first class with @:safety annotation
+        // In practice, this should only be on the Main class anyway
+        let safety_mode = self.classes.iter()
+            .find_map(|c| {
+                c.memory_annotations.iter()
+                    .find_map(|annotation| annotation.safety_mode())
+            });
+
+        self.program_safety_mode = safety_mode;
+        safety_mode
+    }
+
+    /// Get the current program safety mode
+    pub fn get_program_safety_mode(&self) -> Option<SafetyMode> {
+        self.program_safety_mode
+    }
+
+    /// Check if the program uses manual memory management
+    pub fn uses_manual_memory(&self) -> bool {
+        self.program_safety_mode.is_some()
     }
 }
 
@@ -263,6 +293,269 @@ pub struct MethodOverload {
     pub source_location: SourceLocation,
 }
 
+/// Safety mode for @:safety annotation
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SafetyMode {
+    /// Strict mode - all classes must have @:safety annotation
+    /// Compilation fails if any class lacks manual memory annotations
+    Strict,
+
+    /// Non-strict mode - unannotated classes are auto-wrapped in Rc
+    /// Allows mixing manual memory classes with legacy code
+    NonStrict,
+}
+
+impl Default for SafetyMode {
+    fn default() -> Self {
+        SafetyMode::NonStrict
+    }
+}
+
+/// Memory safety annotations for types, functions, and variables
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MemoryAnnotation {
+    /// @:safety or @:safety(strict=true/false) - Opt-in to manual memory management
+    /// When applied to main class, enables manual memory management for entire program
+    /// - strict=true: All classes must have @:safety (compilation error otherwise)
+    /// - strict=false (default): Unannotated classes auto-wrapped in Rc
+    SafetyWithMode(SafetyMode),
+
+    /// @:managed - Explicitly mark class as garbage collected (this is the default)
+    /// Use this to be explicit about memory management strategy
+    Managed,
+
+    /// @:move - Type uses move semantics (ownership transferred on assignment)
+    /// Requires @:safety on the class
+    Move,
+
+    /// @:unique - Type must have unique ownership (no aliasing allowed)
+    /// Requires @:safety on the class
+    Unique,
+
+    /// @:borrow - Parameter is borrowed (reference semantics, not owned)
+    /// Used with @:safety classes
+    Borrow,
+
+    /// @:owned - Parameter takes ownership (consumes the argument)
+    /// Used with @:safety classes
+    Owned,
+
+    /// @:linear - Type must be used exactly once (linear types)
+    /// Requires @:safety on the class
+    Linear,
+
+    /// @:affine - Type can be used at most once (affine types)
+    /// Requires @:safety on the class
+    Affine,
+
+    /// @:box - Type is heap-allocated with unique ownership (like Rust's Box)
+    /// Requires @:safety on the class
+    Box,
+
+    /// @:arc - Type is heap-allocated with shared ownership via atomic reference counting
+    /// Can be used with or without @:safety
+    Arc,
+
+    /// @:atomic - Type supports atomic operations (thread-safe shared mutable state)
+    /// Can be used with or without @:safety
+    Atomic,
+
+    /// @:rc - Type is heap-allocated with shared ownership via reference counting (non-atomic)
+    /// Can be used with or without @:safety
+    Rc,
+}
+
+impl MemoryAnnotation {
+    /// Parse annotation from metadata name
+    /// For @:safety without parameters, defaults to non-strict mode
+    pub fn from_metadata_name(name: &str) -> Option<Self> {
+        match name {
+            "safety" => Some(MemoryAnnotation::SafetyWithMode(SafetyMode::NonStrict)),
+            "managed" => Some(MemoryAnnotation::Managed),
+            "move" => Some(MemoryAnnotation::Move),
+            "unique" => Some(MemoryAnnotation::Unique),
+            "borrow" => Some(MemoryAnnotation::Borrow),
+            "owned" => Some(MemoryAnnotation::Owned),
+            "linear" => Some(MemoryAnnotation::Linear),
+            "affine" => Some(MemoryAnnotation::Affine),
+            "box" => Some(MemoryAnnotation::Box),
+            "arc" => Some(MemoryAnnotation::Arc),
+            "atomic" => Some(MemoryAnnotation::Atomic),
+            "rc" => Some(MemoryAnnotation::Rc),
+            _ => None,
+        }
+    }
+
+    /// Parse @:safety with mode parameter (positional)
+    /// e.g., @:safety(true) for strict mode, @:safety(false) for non-strict
+    pub fn from_metadata_with_params(name: &str, params: &[String]) -> Option<Self> {
+        if name == "safety" {
+            // First positional parameter indicates strict mode
+            let mode = params.first()
+                .and_then(|value| {
+                    match value.as_str() {
+                        "true" => Some(SafetyMode::Strict),
+                        "false" => Some(SafetyMode::NonStrict),
+                        _ => None
+                    }
+                })
+                .unwrap_or(SafetyMode::NonStrict); // Default to non-strict if no params
+
+            Some(MemoryAnnotation::SafetyWithMode(mode))
+        } else {
+            Self::from_metadata_name(name)
+        }
+    }
+
+    /// Returns true if this annotation opts into manual memory management
+    pub fn is_manual_memory_management(&self) -> bool {
+        matches!(self, MemoryAnnotation::SafetyWithMode(_))
+    }
+
+    /// Get the safety mode if this is a Safety annotation
+    pub fn safety_mode(&self) -> Option<SafetyMode> {
+        match self {
+            MemoryAnnotation::SafetyWithMode(mode) => Some(*mode),
+            _ => None,
+        }
+    }
+
+    /// Returns true if this annotation implies move semantics
+    pub fn implies_move_semantics(&self) -> bool {
+        matches!(self, MemoryAnnotation::Move | MemoryAnnotation::Unique |
+                      MemoryAnnotation::Box | MemoryAnnotation::Linear |
+                      MemoryAnnotation::Affine)
+    }
+
+    /// Returns true if this annotation implies shared ownership
+    pub fn implies_shared_ownership(&self) -> bool {
+        matches!(self, MemoryAnnotation::Arc | MemoryAnnotation::Rc)
+    }
+
+    /// Returns true if this annotation requires atomic operations
+    pub fn requires_atomic(&self) -> bool {
+        matches!(self, MemoryAnnotation::Arc | MemoryAnnotation::Atomic)
+    }
+}
+
+/// Derived traits from @:derive([Clone, Copy, ...])
+/// Similar to Rust's #[derive(...)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DerivedTrait {
+    /// @:derive(Clone) - Type can be explicitly cloned via .clone()
+    /// Automatically generates a clone() method that performs deep copy
+    Clone,
+
+    /// @:derive(Copy) - Type can be implicitly copied (bitwise copy is safe)
+    /// Only valid for types with all Copy fields (primitives, etc.)
+    /// Copy types don't move, they are duplicated on assignment
+    Copy,
+
+    /// @:derive(Debug) - Type can be formatted for debugging
+    /// Generates toString() implementation
+    Debug,
+
+    /// @:derive(Default) - Type has a default value
+    /// Generates a static default() method
+    Default,
+
+    /// @:derive(PartialEq) - Type can be compared for equality
+    /// Generates == and != operators
+    PartialEq,
+
+    /// @:derive(Eq) - Type has full equivalence relation (reflexive, symmetric, transitive)
+    /// Implies PartialEq
+    Eq,
+
+    /// @:derive(PartialOrd) - Type can be ordered (partial ordering)
+    /// Generates <, <=, >, >= operators
+    PartialOrd,
+
+    /// @:derive(Ord) - Type has total ordering
+    /// Implies PartialOrd and Eq
+    Ord,
+
+    /// @:derive(Hash) - Type can be hashed
+    /// Generates hash() method for use in HashMap
+    Hash,
+
+    /// @:derive(Send) - Type can be transferred between threads
+    /// Required for Thread.spawn() captures and Channel<T> element types
+    /// Auto-derived if all fields are Send
+    Send,
+
+    /// @:derive(Sync) - Type can be safely shared between threads
+    /// Required for Arc<T> element types
+    /// Auto-derived if all fields are Sync
+    Sync,
+}
+
+impl DerivedTrait {
+    /// Parse trait from string (case-insensitive)
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "clone" => Some(DerivedTrait::Clone),
+            "copy" => Some(DerivedTrait::Copy),
+            "debug" => Some(DerivedTrait::Debug),
+            "default" => Some(DerivedTrait::Default),
+            "partialeq" => Some(DerivedTrait::PartialEq),
+            "eq" => Some(DerivedTrait::Eq),
+            "partialord" => Some(DerivedTrait::PartialOrd),
+            "ord" => Some(DerivedTrait::Ord),
+            "hash" => Some(DerivedTrait::Hash),
+            "send" => Some(DerivedTrait::Send),
+            "sync" => Some(DerivedTrait::Sync),
+            _ => None,
+        }
+    }
+
+    /// Get the trait name as a string
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DerivedTrait::Clone => "Clone",
+            DerivedTrait::Copy => "Copy",
+            DerivedTrait::Debug => "Debug",
+            DerivedTrait::Default => "Default",
+            DerivedTrait::PartialEq => "PartialEq",
+            DerivedTrait::Eq => "Eq",
+            DerivedTrait::PartialOrd => "PartialOrd",
+            DerivedTrait::Ord => "Ord",
+            DerivedTrait::Hash => "Hash",
+            DerivedTrait::Send => "Send",
+            DerivedTrait::Sync => "Sync",
+        }
+    }
+
+    /// Check if this trait requires another trait to be implemented
+    pub fn requires(&self) -> Vec<DerivedTrait> {
+        match self {
+            DerivedTrait::Eq => vec![DerivedTrait::PartialEq],
+            DerivedTrait::Ord => vec![DerivedTrait::PartialOrd, DerivedTrait::Eq],
+            DerivedTrait::PartialOrd => vec![DerivedTrait::PartialEq],
+            _ => vec![],
+        }
+    }
+
+    /// Check if this trait is valid for types with the given properties
+    pub fn is_valid_for_type(
+        &self,
+        has_non_copy_fields: bool,
+        has_custom_implementation: bool,
+    ) -> Result<(), String> {
+        match self {
+            DerivedTrait::Copy => {
+                if has_non_copy_fields {
+                    return Err(
+                        "Cannot derive Copy for types with non-Copy fields".to_string()
+                    );
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 /// Function metadata
 #[derive(Debug, Clone, Default)]
 pub struct FunctionMetadata {
@@ -277,7 +570,7 @@ pub struct FunctionMetadata {
 
     /// Call count (for optimization)
     pub call_count: u32,
-    
+
     /// Whether function is marked with override modifier
     pub is_override: bool,
 
@@ -290,6 +583,9 @@ pub struct FunctionMetadata {
 
     /// Whether this function is marked with @:arrayAccess
     pub is_array_access: bool,
+
+    /// Memory safety annotations
+    pub memory_annotations: Vec<MemoryAnnotation>,
 }
 
 /// Generic type parameter with variance support
@@ -838,6 +1134,8 @@ pub enum TypedExpressionKind {
         class_type: TypeId,
         arguments: Vec<TypedExpression>,
         type_arguments: Vec<TypeId>,
+        /// Original class name from source code (preserved for extern stdlib classes where TypeId may be invalid)
+        class_name: Option<InternedString>,
     },
 
     /// This reference
@@ -1161,6 +1459,57 @@ pub struct TypedClass {
 
     /// Source location
     pub source_location: SourceLocation,
+
+    /// Memory safety annotations (@:move, @:unique, @:box, @:arc, etc.)
+    pub memory_annotations: Vec<MemoryAnnotation>,
+
+    /// Derived traits from @:derive([Clone, Copy, ...])
+    pub derived_traits: Vec<DerivedTrait>,
+}
+
+impl TypedClass {
+    /// Check if this class has @:safety annotation (opts into manual memory management)
+    pub fn has_safety_annotation(&self) -> bool {
+        self.memory_annotations.iter().any(|a| a.is_manual_memory_management())
+    }
+
+    /// Check if this class is explicitly marked as @:managed (garbage collected)
+    pub fn is_managed(&self) -> bool {
+        self.memory_annotations.contains(&MemoryAnnotation::Managed)
+    }
+
+    /// Check if this class uses manual memory management
+    /// Returns true if @:safety is present, false if @:managed or no annotation (default is GC)
+    pub fn uses_manual_memory(&self) -> bool {
+        self.has_safety_annotation()
+    }
+
+    /// Check if class derives a specific trait
+    /// Example: class.derives(DerivedTrait::Clone)
+    pub fn derives(&self, trait_: DerivedTrait) -> bool {
+        self.derived_traits.contains(&trait_)
+    }
+
+    /// Check if class is Copy (can be implicitly copied)
+    pub fn is_copy(&self) -> bool {
+        self.derives(DerivedTrait::Copy)
+    }
+
+    /// Check if class is Clone (can be explicitly cloned via .clone())
+    pub fn is_clone(&self) -> bool {
+        self.derives(DerivedTrait::Clone)
+    }
+
+    /// Get all derived traits
+    pub fn get_derived_traits(&self) -> &[DerivedTrait] {
+        &self.derived_traits
+    }
+
+    /// Check if all required traits are derived
+    /// For example, Ord requires PartialOrd and Eq
+    pub fn has_required_traits_for(&self, trait_: DerivedTrait) -> bool {
+        trait_.requires().iter().all(|req| self.derives(*req))
+    }
 }
 
 /// Interface definition
@@ -1242,6 +1591,38 @@ pub struct TypedEnumVariant {
     pub source_location: SourceLocation,
 }
 
+/// Property accessor information for Haxe properties
+///
+/// Haxe properties can have custom getter/setter methods:
+/// ```haxe
+/// var x(get, set):Int;
+/// function get_x():Int { return _x; }
+/// function set_x(v:Int):Int { _x = v; return v; }
+/// ```
+#[derive(Debug, Clone)]
+pub struct PropertyAccessInfo {
+    /// Getter accessor
+    pub getter: PropertyAccessor,
+    /// Setter accessor
+    pub setter: PropertyAccessor,
+}
+
+/// Property accessor mode
+#[derive(Debug, Clone)]
+pub enum PropertyAccessor {
+    /// Default - direct field access
+    Default,
+    /// Null - no access allowed
+    Null,
+    /// Never - never allow access
+    Never,
+    /// Dynamic - dynamic access (not statically checked)
+    Dynamic,
+    /// Method - call specific getter/setter method by name
+    /// The name is stored as InternedString and resolved to SymbolId during MIR lowering
+    Method(InternedString),
+}
+
 /// Field definition
 #[derive(Debug, Clone)]
 pub struct TypedField {
@@ -1265,6 +1646,9 @@ pub struct TypedField {
 
     /// Whether field is static
     pub is_static: bool,
+
+    /// Property accessor info (Some for properties, None for regular fields)
+    pub property_access: Option<PropertyAccessInfo>,
 
     /// Source location
     pub source_location: SourceLocation,

@@ -12,6 +12,7 @@ pub mod haxe_parser_expr2;
 pub mod haxe_parser_expr3;
 pub mod incremental_parser;
 pub mod incremental_parser_enhanced;
+pub mod preprocessor;
 
 // Modules that provide enhanced error context
 pub mod enhanced_context;

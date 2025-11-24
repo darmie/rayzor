@@ -7,13 +7,14 @@ use super::{
     TypeChecker, TypeCheckError, TypeErrorKind,
     type_diagnostics::{TypeDiagnosticEmitter, TypeErrorContext},
     node::{TypedFile, TypedClass, TypedInterface, TypedEnum, TypedExpression, TypedStatement,
-           TypedExpressionKind, TypedFunction, TypedMethodSignature, BinaryOperator, CastKind, 
+           TypedExpressionKind, TypedFunction, TypedMethodSignature, BinaryOperator, CastKind,
            StringInterpolationPart, TypedField},
     TypeTable, SymbolTable, StringInterner, TypeId, SymbolId, SourceLocation,
     ScopeTree, InternedString, TypeKind, Visibility, AccessLevel,
     type_checker::TypeCompatibility,
     PackageAccessValidator, PackageAccessContext, NamespaceResolver,
     TypeFlowGuard, FlowSafetyError, FlowSafetyResults,
+    send_sync_validator::{SendSyncValidator, SendSyncError},
 };
 use diagnostics::{Diagnostics, SourceMap};
 use source_map::{SourceSpan, SourcePosition};
@@ -26,6 +27,10 @@ pub struct TypeCheckingPhase<'a> {
     diagnostic_emitter: TypeDiagnosticEmitter<'a>,
     diagnostics: &'a mut Diagnostics,
     string_interner: &'a StringInterner,
+    /// Type table (stored separately for SendSyncValidator)
+    type_table: &'a Rc<RefCell<TypeTable>>,
+    /// Symbol table (stored separately for SendSyncValidator)
+    symbol_table: &'a SymbolTable,
     /// Stack of expected return types for nested function contexts
     expected_return_types: Vec<TypeId>,
     /// Temporary reference to the typed file for constraint validation
@@ -67,6 +72,8 @@ impl<'a> TypeCheckingPhase<'a> {
             diagnostic_emitter,
             diagnostics,
             string_interner,
+            type_table,
+            symbol_table,
             expected_return_types: Vec::new(),
             current_typed_file: None,
             current_method_context: None,
@@ -135,7 +142,10 @@ impl<'a> TypeCheckingPhase<'a> {
         if self.enable_flow_analysis {
             self.run_flow_analysis(typed_file)?;
         }
-        
+
+        // Phase 7: Send/Sync validation for thread safety
+        self.run_send_sync_validation(typed_file)?;
+
         // Return error if we collected any error diagnostics
         if self.diagnostics.has_errors() {
             Err(format!("Type checking failed with {} errors", self.diagnostics.errors().count()))
@@ -254,7 +264,52 @@ impl<'a> TypeCheckingPhase<'a> {
         
         Ok(())
     }
-    
+
+    /// Run Send/Sync validation for thread safety
+    ///
+    /// Validates that:
+    /// - Thread::spawn captures only Send types
+    /// - Channel<T> has T: Send
+    /// - Arc<T> has T: Send + Sync
+    fn run_send_sync_validation(&mut self, typed_file: &TypedFile) -> Result<(), String> {
+        // Create the validator
+        let validator = SendSyncValidator::new(
+            self.type_table,
+            self.symbol_table,
+            &typed_file.classes,
+        );
+
+        // Validate all classes
+        for class in &typed_file.classes {
+            if let Err(error) = validator.validate_class(class) {
+                self.emit_send_sync_error(error);
+            }
+        }
+
+        // Validate all module-level functions
+        for function in &typed_file.functions {
+            if let Err(error) = validator.validate_function(function) {
+                self.emit_send_sync_error(error);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Emit a Send/Sync validation error as a diagnostic
+    fn emit_send_sync_error(&mut self, error: SendSyncError) {
+        use crate::tast::SourceLocation;
+
+        self.emit_error(TypeCheckError {
+            kind: TypeErrorKind::UndefinedType {
+                name: self.string_interner.intern("send_sync_violation"),
+            },
+            location: SourceLocation::unknown(), // TODO: Get from error when source location added
+            context: error.message.clone(),
+            suggestion: Some("Add @:derive([Send]) or @:derive([Send, Sync]) to the type".to_string()),
+        });
+    }
+
     /// Convert flow safety results to diagnostics
     fn emit_flow_safety_diagnostics(&mut self, results: &FlowSafetyResults) {
         // Emit errors
@@ -1792,7 +1847,7 @@ impl<'a> TypeCheckingPhase<'a> {
                         // Pop expected return type
                         self.expected_return_types.pop();
                     }
-            TypedExpressionKind::New { class_type, arguments, type_arguments } => {
+            TypedExpressionKind::New { class_type, arguments, type_arguments, class_name: _ } => {
                         // Check constructor arguments
                         for arg in arguments {
                             self.check_expression(arg)?;
@@ -2360,17 +2415,20 @@ TypedExpressionKind::Await { expression, await_type } => todo!(),
     /// Check if a field is accessible from the current context
     fn check_field_accessibility(&mut self, class_symbol: &SymbolId, field_symbol: SymbolId, location: SourceLocation, is_static_access: bool) -> Result<(), String> {
         // Debug output
-        eprintln!("DEBUG check_field_accessibility: class_symbol={:?}, field_symbol={:?}, is_static_access={}", 
+        eprintln!("DEBUG check_field_accessibility: class_symbol={:?}, field_symbol={:?}, is_static_access={}",
             class_symbol, field_symbol, is_static_access);
-        
+
         // Get field information and extract needed data to avoid borrow conflicts
         let (field_name, field_visibility, is_static) = if let Some(field_info) = self.find_field_by_symbol(field_symbol) {
+            eprintln!("DEBUG check_field_accessibility: Found field, visibility={:?}", field_info.visibility);
             (field_info.name, field_info.visibility, field_info.is_static)
         } else {
+            eprintln!("DEBUG check_field_accessibility: Field not found!");
             return Ok(());
         };
-        
+
         let field_name_str = self.string_interner.get(field_name).unwrap_or("<field>");
+        eprintln!("DEBUG check_field_accessibility: field_name='{}', visibility={:?}", field_name_str, field_visibility);
         
         // Get class name for error messages
         let class_name = if let Some(class_def) = self.find_class_by_symbol(*class_symbol) {

@@ -6,29 +6,82 @@
 
 use super::{
     IrModule, IrFunction, IrBasicBlock, IrInstruction, IrTerminator,
-    IrType, IrId, IrBlockId, IrFunctionId, IrValue,
+    IrType, IrId, IrBlockId, IrFunctionId, IrValue, LifetimeId,
 };
 use std::collections::{HashMap, HashSet};
+
+/// Ownership state of a register
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnershipState {
+    /// Register is valid and can be used
+    Valid,
+
+    /// Register has been moved and cannot be used
+    Moved,
+
+    /// Register is immutably borrowed
+    Borrowed,
+
+    /// Register is mutably borrowed (exclusive)
+    MutablyBorrowed,
+
+    /// Register has been dropped
+    Dropped,
+
+    /// Register is uninitialized
+    Uninitialized,
+}
+
+/// Borrow information for a register
+#[derive(Debug, Clone)]
+pub struct BorrowInfo {
+    /// The borrowed register
+    pub source: IrId,
+
+    /// The borrow (reference) register
+    pub borrow: IrId,
+
+    /// Is this a mutable borrow?
+    pub is_mutable: bool,
+
+    /// Lifetime of the borrow
+    pub lifetime: LifetimeId,
+
+    /// Is the borrow still active?
+    pub active: bool,
+}
 
 /// HIR validation context
 pub struct ValidationContext {
     /// Current module being validated
     module: *const IrModule,
-    
+
     /// Current function being validated
     current_function: Option<IrFunctionId>,
-    
+
     /// Errors found during validation
     errors: Vec<ValidationError>,
-    
+
     /// Type information for each register
     register_types: HashMap<IrId, IrType>,
-    
+
     /// Defined registers
     defined_registers: HashSet<IrId>,
-    
+
     /// Used registers
     used_registers: HashSet<IrId>,
+
+    /// Ownership state of each register
+    ownership_states: HashMap<IrId, OwnershipState>,
+
+    /// Active borrows for each register
+    active_borrows: HashMap<IrId, Vec<BorrowInfo>>,
+
+    /// Track where each register was moved
+    move_locations: HashMap<IrId, String>,
+
+    /// Track active lifetimes
+    active_lifetimes: HashMap<LifetimeId, IrId>,
 }
 
 /// Validation error
@@ -92,6 +145,64 @@ pub enum ValidationErrorKind {
         register: IrId,
         reason: String,
     },
+
+    /// Memory safety violation: use after move
+    UseAfterMove {
+        register: IrId,
+        moved_at: String,
+    },
+
+    /// Memory safety violation: use of moved value
+    UseOfMovedValue {
+        register: IrId,
+    },
+
+    /// Memory safety violation: double move
+    DoubleMove {
+        register: IrId,
+        first_move: String,
+    },
+
+    /// Borrow checking violation: mutable borrow while immutable borrows exist
+    MutableBorrowConflict {
+        register: IrId,
+        existing_borrows: Vec<IrId>,
+    },
+
+    /// Borrow checking violation: multiple mutable borrows
+    MultipleMutableBorrows {
+        register: IrId,
+        existing_borrow: IrId,
+    },
+
+    /// Borrow checking violation: use while mutably borrowed
+    UseWhileMutablyBorrowed {
+        register: IrId,
+        borrow: IrId,
+    },
+
+    /// Lifetime violation: borrow outlives owner
+    BorrowOutlivesOwner {
+        borrow: IrId,
+        owner: IrId,
+    },
+
+    /// Lifetime violation: dangling reference
+    DanglingReference {
+        reference: IrId,
+        dropped_value: IrId,
+    },
+
+    /// Drop of already dropped value
+    DoubleDropind {
+        register: IrId,
+    },
+
+    /// Drop of borrowed value
+    DropWhileBorrowed {
+        register: IrId,
+        borrows: Vec<IrId>,
+    },
 }
 
 impl ValidationContext {
@@ -104,6 +215,10 @@ impl ValidationContext {
             register_types: HashMap::new(),
             defined_registers: HashSet::new(),
             used_registers: HashSet::new(),
+            ownership_states: HashMap::new(),
+            active_borrows: HashMap::new(),
+            move_locations: HashMap::new(),
+            active_lifetimes: HashMap::new(),
         }
     }
     
@@ -436,9 +551,10 @@ fn validate_instruction(ctx: &mut ValidationContext, inst: &IrInstruction) {
             }
         }
         
-        CallDirect { dest, func_id, args } => {
+        CallDirect { dest, func_id, args, arg_ownership: _, } => {
             // For direct calls, we'd need to look up the function signature from the module
             // For now, just validate that arguments are valid registers
+            // TODO: Validate ownership modes match function signature
             for &arg in args {
                 ctx.use_register(arg);
             }
@@ -449,7 +565,7 @@ fn validate_instruction(ctx: &mut ValidationContext, inst: &IrInstruction) {
             }
         }
 
-        CallIndirect { dest, func_ptr, args, signature } => {
+        CallIndirect { dest, func_ptr, args, signature, arg_ownership: _, } => {
             // Validate function pointer
             ctx.use_register(*func_ptr);
 
@@ -636,6 +752,200 @@ fn unary_op_result_type(op: super::UnaryOp, operand_ty: &IrType) -> IrType {
     match op {
         Neg | Not => operand_ty.clone(),
         FNeg => operand_ty.clone(),
+    }
+}
+
+// ============================================================================
+// MIR Safety Validator
+// ============================================================================
+
+use crate::semantic_graph::SemanticGraphs;
+use crate::tast::SymbolId;
+
+/// MIR Safety Validator - enforces ownership and memory safety at MIR level
+///
+/// This validator CONSUMES semantic analysis results instead of re-analyzing.
+/// It maps MIR registers to TAST symbols and checks that MIR operations
+/// respect the constraints discovered during semantic analysis.
+pub struct MirSafetyValidator<'a> {
+    /// Semantic analysis results (includes OwnershipGraph, LifetimeAnalyzer, etc.)
+    semantic_graphs: &'a SemanticGraphs,
+
+    /// Map from TAST symbols to MIR registers (from module)
+    symbol_to_register: &'a HashMap<SymbolId, IrId>,
+
+    /// Reverse mapping: MIR register to TAST symbol
+    register_to_symbol: &'a HashMap<IrId, SymbolId>,
+
+    /// Validation errors
+    errors: Vec<ValidationError>,
+}
+
+impl<'a> MirSafetyValidator<'a> {
+    /// Create a new MIR safety validator
+    pub fn new(
+        semantic_graphs: &'a SemanticGraphs,
+        symbol_to_register: &'a HashMap<SymbolId, IrId>,
+        register_to_symbol: &'a HashMap<IrId, SymbolId>,
+    ) -> Self {
+        Self {
+            semantic_graphs,
+            symbol_to_register,
+            register_to_symbol,
+            errors: Vec::new(),
+        }
+    }
+
+    /// Validate a MIR module against semantic analysis results
+    pub fn validate(
+        mir_module: &'a IrModule,
+        semantic_graphs: &'a SemanticGraphs,
+    ) -> Result<(), Vec<ValidationError>> {
+        let mut validator = Self::new(
+            semantic_graphs,
+            &mir_module.symbol_to_register,
+            &mir_module.register_to_symbol,
+        );
+
+        // Validate all functions in the module
+        for (_func_id, function) in &mir_module.functions {
+            validator.validate_function(function);
+        }
+
+        if validator.errors.is_empty() {
+            Ok(())
+        } else {
+            Err(validator.errors)
+        }
+    }
+
+    /// Validate a single function
+    fn validate_function(&mut self, function: &IrFunction) {
+        // Iterate through all basic blocks
+        for (_block_id, block) in &function.cfg.blocks {
+            self.validate_block(block);
+        }
+    }
+
+    /// Validate a single basic block
+    fn validate_block(&mut self, block: &IrBasicBlock) {
+        // Check each instruction
+        for instr in &block.instructions {
+            self.validate_instruction(instr);
+        }
+
+        // Check terminator
+        self.validate_terminator(&block.terminator);
+    }
+
+    /// Validate a single instruction against ownership rules
+    fn validate_instruction(&mut self, instr: &IrInstruction) {
+        use super::IrInstruction::*;
+
+        match instr {
+            // Move operations: check if source has been moved
+            Copy { dest: _, src } | Move { dest: _, src } => {
+                if let Some(&symbol_id) = self.register_to_symbol.get(src) {
+                    self.check_not_moved(symbol_id, *src);
+                }
+            }
+
+            // Store operations: check both source and destination
+            Store { ptr, value } => {
+                if let Some(&symbol_id) = self.register_to_symbol.get(value) {
+                    self.check_not_moved(symbol_id, *value);
+                }
+                if let Some(&symbol_id) = self.register_to_symbol.get(ptr) {
+                    self.check_not_moved(symbol_id, *ptr);
+                }
+            }
+
+            // Load operations: check pointer validity
+            Load { dest: _, ptr, ty: _ } => {
+                if let Some(&symbol_id) = self.register_to_symbol.get(ptr) {
+                    self.check_not_moved(symbol_id, *ptr);
+                }
+            }
+
+            // Binary/Unary operations: check operands
+            BinOp { dest: _, op: _, left, right } => {
+                if let Some(&symbol_id) = self.register_to_symbol.get(left) {
+                    self.check_not_moved(symbol_id, *left);
+                }
+                if let Some(&symbol_id) = self.register_to_symbol.get(right) {
+                    self.check_not_moved(symbol_id, *right);
+                }
+            }
+
+            UnOp { dest: _, op: _, operand } => {
+                if let Some(&symbol_id) = self.register_to_symbol.get(operand) {
+                    self.check_not_moved(symbol_id, *operand);
+                }
+            }
+
+            // Function calls: check all arguments
+            CallDirect { dest: _, func_id: _, args, arg_ownership: _ } |
+            CallIndirect { dest: _, func_ptr: _, args, signature: _, arg_ownership: _ } => {
+                for arg in args {
+                    if let Some(&symbol_id) = self.register_to_symbol.get(arg) {
+                        self.check_not_moved(symbol_id, *arg);
+                    }
+                }
+            }
+
+            // Other instructions don't directly affect ownership
+            _ => {}
+        }
+    }
+
+    /// Validate a terminator instruction
+    fn validate_terminator(&mut self, terminator: &IrTerminator) {
+        use super::IrTerminator::*;
+
+        match terminator {
+            Return { value: Some(val) } => {
+                if let Some(&symbol_id) = self.register_to_symbol.get(val) {
+                    self.check_not_moved(symbol_id, *val);
+                }
+            }
+
+            CondBranch { condition, .. } => {
+                if let Some(&symbol_id) = self.register_to_symbol.get(condition) {
+                    self.check_not_moved(symbol_id, *condition);
+                }
+            }
+
+            Switch { value, .. } => {
+                if let Some(&symbol_id) = self.register_to_symbol.get(value) {
+                    self.check_not_moved(symbol_id, *value);
+                }
+            }
+
+            _ => {}
+        }
+    }
+
+    /// Check if a symbol has been moved (use-after-move detection)
+    fn check_not_moved(&mut self, symbol_id: SymbolId, register: IrId) {
+        // Query the ownership graph from semantic analysis
+        if let Some(ownership_node) = self.semantic_graphs.ownership_graph.variables.get(&symbol_id) {
+            use crate::semantic_graph::OwnershipKind;
+
+            // If the ownership kind indicates the value was moved, report error
+            if matches!(ownership_node.ownership_kind, OwnershipKind::Moved) {
+                self.errors.push(ValidationError {
+                    kind: ValidationErrorKind::UseOfMovedValue { register },
+                    function: None,
+                    block: None,
+                    instruction: None,
+                });
+            }
+        }
+    }
+
+    /// Get symbol ID for a register
+    fn _register_to_symbol(&self, register: IrId) -> Option<SymbolId> {
+        self.register_to_symbol.get(&register).copied()
     }
 }
 

@@ -1002,14 +1002,33 @@ impl<'a> TypeDiagnosticEmitter<'a> {
     }
 
     /// Helper: Convert SourceLocation to SourceSpan
+    /// If token_name is provided, creates a span covering the full token length
     fn location_to_span(&self, location: SourceLocation) -> SourceSpan {
+        self.location_to_span_with_length(location, None)
+    }
+
+    /// Helper: Convert SourceLocation to SourceSpan with optional token name for proper underlining
+    fn location_to_span_with_length(&self, location: SourceLocation, token_name: Option<&str>) -> SourceSpan {
         let file_id = FileId::new(location.file_id as usize);
-        let pos = SourcePosition::new(
+        let start_pos = SourcePosition::new(
             location.line as usize,
             location.column as usize,
             location.byte_offset as usize,
         );
-        SourceSpan::single_position(pos, file_id)
+
+        // If we have a token name, calculate the span to cover the whole token
+        if let Some(name) = token_name {
+            let token_len = name.len().max(1);
+            let end_pos = SourcePosition::new(
+                location.line as usize,
+                location.column as usize + token_len,
+                location.byte_offset as usize + token_len,
+            );
+            SourceSpan::new(start_pos, end_pos, file_id)
+        } else {
+            // Default to single character span
+            SourceSpan::single_position(start_pos, file_id)
+        }
     }
 
     /// Helper: Create a diagnostic with a given span (avoids move issues)
@@ -1158,7 +1177,13 @@ impl<'a> TypeDiagnosticEmitter<'a> {
 
     /// Helper: Get symbol name for display
     fn get_symbol_name(&self, symbol_id: SymbolId) -> String {
-        // TODO: Look up symbol name from symbol table
+        // Look up symbol name from symbol table and resolve via string interner
+        if let Some(symbol) = self.symbol_table.get_symbol(symbol_id) {
+            if let Some(name_str) = self.string_interner.get(symbol.name) {
+                return name_str.to_string();
+            }
+        }
+        // Fallback if symbol or name not found
         format!("symbol#{}", symbol_id.as_raw())
     }
 }

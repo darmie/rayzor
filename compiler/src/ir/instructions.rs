@@ -6,6 +6,35 @@
 use super::{IrId, IrType, IrValue, IrSourceLocation, IrFunctionId};
 use serde::{Serialize, Deserialize};
 
+/// Ownership transfer semantics for values
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OwnershipMode {
+    /// Transfer ownership (move semantics)
+    Move,
+    /// Borrow immutably (shared reference)
+    BorrowImmutable,
+    /// Borrow mutably (exclusive reference)
+    BorrowMutable,
+    /// Copy value (for Copy types)
+    Copy,
+    /// Clone value (explicit deep copy)
+    Clone,
+}
+
+/// Lifetime annotation for borrowed values
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LifetimeId(pub u32);
+
+impl LifetimeId {
+    pub fn static_lifetime() -> Self {
+        Self(0)
+    }
+
+    pub fn new(id: u32) -> Self {
+        Self(id)
+    }
+}
+
 /// IR instruction
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum IrInstruction {
@@ -17,10 +46,41 @@ pub enum IrInstruction {
         value: IrValue,
     },
     
-    /// Copy value from one register to another
+    /// Copy value from one register to another (for Copy types)
     Copy {
         dest: IrId,
         src: IrId,
+    },
+
+    /// Move value (transfer ownership)
+    Move {
+        dest: IrId,
+        src: IrId,
+    },
+
+    /// Create immutable borrow/reference
+    BorrowImmutable {
+        dest: IrId,
+        src: IrId,
+        lifetime: LifetimeId,
+    },
+
+    /// Create mutable borrow/reference
+    BorrowMutable {
+        dest: IrId,
+        src: IrId,
+        lifetime: LifetimeId,
+    },
+
+    /// Clone value (explicit deep copy)
+    Clone {
+        dest: IrId,
+        src: IrId,
+    },
+
+    /// End borrow/drop reference (for explicit lifetime management)
+    EndBorrow {
+        borrow: IrId,
     },
     
     /// Load value from memory
@@ -87,6 +147,8 @@ pub enum IrInstruction {
         dest: Option<IrId>,
         func_id: IrFunctionId,
         args: Vec<IrId>,
+        /// Ownership mode for each argument (Move, BorrowImmutable, BorrowMutable, Copy, Clone)
+        arg_ownership: Vec<OwnershipMode>,
     },
 
     /// Indirect function call (callee computed at runtime)
@@ -95,6 +157,8 @@ pub enum IrInstruction {
         func_ptr: IrId,
         args: Vec<IrId>,
         signature: IrType,
+        /// Ownership mode for each argument
+        arg_ownership: Vec<OwnershipMode>,
     },
     
     /// Return from function

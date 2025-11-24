@@ -95,8 +95,9 @@ impl CraneliftBackend {
                 _ => return Err(format!("Invalid float comparison: {:?}", op)),
             };
             let cmp = builder.ins().fcmp(cc, lhs, rhs);
-            // Extend i8 boolean result to i32
-            Ok(builder.ins().uextend(types::I32, cmp))
+            // Return the i8 boolean result directly - don't extend to i32
+            // Bool is represented as i8 in the type system
+            Ok(cmp)
         } else {
             // Integer comparisons
             let cc = match op {
@@ -113,8 +114,9 @@ impl CraneliftBackend {
                 _ => return Err(format!("Invalid int comparison: {:?}", op)),
             };
             let cmp = builder.ins().icmp(cc, lhs, rhs);
-            // Extend i8 boolean result to i32
-            Ok(builder.ins().uextend(types::I32, cmp))
+            // Return the i8 boolean result directly - don't extend to i32
+            // Bool is represented as i8 in the type system
+            Ok(cmp)
         }
     }
 
@@ -219,6 +221,38 @@ impl CraneliftBackend {
         })?;
         let rhs = *value_map.get(&right).ok_or_else(|| format!("Right operand {:?} not found in value_map", right))?;
 
+        // Check if operands have matching types and cast if needed
+        let lhs_ty = builder.func.dfg.value_type(lhs);
+        let rhs_ty = builder.func.dfg.value_type(rhs);
+        let (lhs, rhs) = if lhs_ty != rhs_ty {
+            let lhs_bits = lhs_ty.bits();
+            let rhs_bits = rhs_ty.bits();
+
+            // Cast the smaller type to the larger type
+            if lhs_bits < rhs_bits {
+                // Extend lhs to match rhs
+                let extended_lhs = if ty.is_signed() {
+                    builder.ins().sextend(rhs_ty, lhs)
+                } else {
+                    builder.ins().uextend(rhs_ty, lhs)
+                };
+                (extended_lhs, rhs)
+            } else if rhs_bits < lhs_bits {
+                // Extend rhs to match lhs
+                let extended_rhs = if ty.is_signed() {
+                    builder.ins().sextend(lhs_ty, rhs)
+                } else {
+                    builder.ins().uextend(lhs_ty, rhs)
+                };
+                (lhs, extended_rhs)
+            } else {
+                // Same bit width but different types (e.g., i64 vs u64) - no conversion needed for operations
+                (lhs, rhs)
+            }
+        } else {
+            (lhs, rhs)
+        };
+
         let value = match op {
             BinaryOp::Add => builder.ins().iadd(lhs, rhs),
             BinaryOp::Sub => builder.ins().isub(lhs, rhs),
@@ -292,7 +326,9 @@ impl CraneliftBackend {
                 _ => return Err(format!("Invalid float comparison: {:?}", op)),
             };
             let cmp = builder.ins().fcmp(cc, lhs, rhs);
-            Ok(builder.ins().uextend(types::I32, cmp))
+            // Return the i8 boolean result directly - don't extend to i32
+            // Bool is represented as i8 in the type system
+            Ok(cmp)
         } else {
             let cc = match op {
                 CompareOp::Eq => IntCC::Equal,
@@ -308,7 +344,9 @@ impl CraneliftBackend {
                 _ => return Err(format!("Invalid int comparison: {:?}", op)),
             };
             let cmp = builder.ins().icmp(cc, lhs, rhs);
-            Ok(builder.ins().uextend(types::I32, cmp))
+            // Return the i8 boolean result directly - don't extend to i32
+            // Bool is represented as i8 in the type system
+            Ok(cmp)
         }
     }
 
@@ -375,7 +413,15 @@ impl CraneliftBackend {
         let alloc_size = if let Some(c) = count {
             size * c
         } else {
-            size
+            // WORKAROUND: For complex types (Any, Ptr, etc.) that might be dynamic arrays,
+            // allocate extra space to avoid stack corruption.
+            // Arrays should really be heap-allocated, but for now we allocate enough
+            // stack space for reasonable array sizes (up to 16 elements).
+            if matches!(ty, IrType::Any | IrType::Ptr(_) | IrType::Ref(_)) {
+                size * 16  // Allocate space for up to 16 pointers/elements
+            } else {
+                size
+            }
         };
 
         let slot_data = StackSlotData::new(StackSlotKind::ExplicitSlot, alloc_size, 8);
