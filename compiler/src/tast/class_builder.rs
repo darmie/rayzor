@@ -11,7 +11,7 @@ pub struct ClassHierarchyBuilder {
 impl ClassHierarchyBuilder {
     pub fn new() -> Self {
         Self {
-            hierarchies: HashMap::new(),
+            hierarchies: HashMap::with_capacity(32), // Most projects have <32 classes
         }
     }
     
@@ -35,10 +35,10 @@ impl ClassHierarchyBuilder {
     /// Compute transitive closure of supertypes for all classes
     pub fn compute_transitive_closure(&mut self, type_table: &RefCell<TypeTable>) {
         // First pass: collect all direct relationships
-        let mut direct_supers: HashMap<SymbolId, Vec<TypeId>> = HashMap::new();
+        let mut direct_supers: HashMap<SymbolId, Vec<TypeId>> = HashMap::with_capacity(self.hierarchies.len());
         
         for (&class_id, info) in &self.hierarchies {
-            let mut supers = Vec::new();
+            let mut supers = Vec::with_capacity(1 + info.interfaces.len()); // Superclass + interfaces
             
             if let Some(superclass) = info.superclass {
                 supers.push(superclass);

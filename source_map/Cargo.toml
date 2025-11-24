@@ -1,0 +1,8 @@
+[package]
+name = "source_map"
+version = "0.1.0"
+edition = "2021"
+description = "Source mapping utilities for multi-file compilation"
+authors = ["Haxe Compiler Team"]
+
+[dependencies]

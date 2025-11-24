@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use parser::enhanced_parser::parse_haxe_enhanced;
+    use parser::parse_incrementally_enhanced;
     use parser::haxe_ast::{TypeDeclaration, ExprKind, ClassFieldKind};
 
     #[test]
@@ -75,7 +75,7 @@ extern class PhpClass {
 }
 "#;
 
-        let result = parse_haxe_enhanced(input, Some("test_native_paths.hx"));
+        let result = parse_incrementally_enhanced("test_native_paths.hx", input);
         assert!(result.errors.errors.is_empty(), "Parsing failed: {:?}", result.errors.errors);
         
         let ast = result.ast.expect("Expected AST");
@@ -169,7 +169,7 @@ extern class PhpClass {
         ];
         
         for (input, expected_native) in edge_cases {
-            let result = parse_haxe_enhanced(input, Some("edge_case.hx"));
+            let result = parse_incrementally_enhanced("edge_case.hx", input);
             assert!(result.errors.errors.is_empty(), "Failed to parse: {}", input);
             
             let ast = result.ast.expect("Expected AST");
@@ -199,7 +199,7 @@ extern class PhpClass {
         ];
         
         for input in invalid_cases {
-            let result = parse_haxe_enhanced(input, Some("invalid.hx"));
+            let result = parse_incrementally_enhanced("invalid.hx", input);
             assert!(result.errors.errors.is_empty(), "Parser should accept any string content: {}", input);
         }
     }

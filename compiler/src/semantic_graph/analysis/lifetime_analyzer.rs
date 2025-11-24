@@ -433,6 +433,9 @@ impl LifetimeAnalyzer {
                         node,
                     )?);
                 }
+                DataFlowNodeKind::StaticFieldAccess { .. } => {
+                    // Static field access doesn't involve instance lifetime constraints
+                }
                 DataFlowNodeKind::ArrayAccess { array, index } => {
                     // Array access creates a reference: array must outlive element reference
                     constraints
@@ -1491,6 +1494,7 @@ impl LifetimeAnalyzer {
         if let Some(node) = dfg.nodes.get(&node_id) {
             match &node.kind {
                 DataFlowNodeKind::FieldAccess { .. } => true,
+                DataFlowNodeKind::StaticFieldAccess { .. } => false,  // Static fields don't create references
                 DataFlowNodeKind::ArrayAccess { .. } => true,
                 DataFlowNodeKind::Load { .. } => true,
                 DataFlowNodeKind::Store { .. } => true,

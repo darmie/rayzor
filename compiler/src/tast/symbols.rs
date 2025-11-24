@@ -267,6 +267,10 @@ pub struct Symbol {
     pub documentation: Option<InternedString>,
     /// Additional flags for symbol properties
     pub flags: SymbolFlags,
+    /// Package ID this symbol belongs to
+    pub package_id: Option<super::namespace::PackageId>,
+    /// Full qualified name (e.g., "com.example.MyClass")
+    pub qualified_name: Option<InternedString>,
 }
 
 /// Bitflags for various symbol properties
@@ -346,6 +350,8 @@ impl Symbol {
             is_exported: false,
             documentation: None,
             flags: SymbolFlags::default(),
+            package_id: None,
+            qualified_name: None,
         }
     }
 
@@ -458,8 +464,12 @@ pub struct SymbolTable {
     pub (crate) class_hierarchies: HashMap<SymbolId, ClassHierarchyInfo>,
     /// Type ID to Symbol ID mapping for hierarchy lookups
     type_to_symbol: HashMap<TypeId, SymbolId>,
+    /// Symbol ID to Type ID reverse mapping for fast lookups
+    symbol_to_type: HashMap<SymbolId, TypeId>,
     /// Cache for computed hierarchy queries
     supertype_cache: HashMap<SymbolId, HashSet<TypeId>>,
+    /// Map from enum symbol to its variants
+    enum_variants: HashMap<SymbolId, Vec<SymbolId>>,
 }
 
 impl SymbolTable {
@@ -475,7 +485,9 @@ impl SymbolTable {
             total_symbols: 0,
             class_hierarchies: HashMap::new(),
             type_to_symbol: HashMap::new(),
+            symbol_to_type: HashMap::new(),
             supertype_cache: HashMap::new(),
+            enum_variants: HashMap::new(),
         }
     }
 
@@ -491,7 +503,9 @@ impl SymbolTable {
             total_symbols: 0,
             class_hierarchies: HashMap::with_capacity(capacity),
             type_to_symbol: HashMap::with_capacity(capacity),
+            symbol_to_type: HashMap::with_capacity(capacity),
             supertype_cache: HashMap::with_capacity(capacity),
+            enum_variants: HashMap::with_capacity(capacity / 20), // Estimate fewer enums
         }
     }
 
@@ -531,6 +545,7 @@ impl SymbolTable {
     /// Register a type ID to symbol ID mapping
     pub fn register_type_symbol_mapping(&mut self, type_id: TypeId, symbol_id: SymbolId) {
         self.type_to_symbol.insert(type_id, symbol_id);
+        self.symbol_to_type.insert(symbol_id, type_id);
     }
 
     /// Get symbol ID from a type ID
@@ -541,6 +556,36 @@ impl SymbolTable {
     /// Get a symbol by its ID
     pub fn get_symbol(&self, id: SymbolId) -> Option<&Symbol> {
         self.symbols_by_id.get(&id).copied()
+    }
+    
+    /// Get a mutable symbol by its ID
+    pub fn get_symbol_mut(&mut self, id: SymbolId) -> Option<&mut Symbol> {
+        self.symbols_by_id.get(&id).and_then(|&symbol_ptr| {
+            // SAFETY: We maintain exclusive ownership of symbols in the arena
+            // and this method has &mut self, ensuring exclusive access
+            unsafe { 
+                let mutable_ptr = symbol_ptr as *const Symbol as *mut Symbol;
+                mutable_ptr.as_mut()
+            }
+        })
+    }
+    
+    /// Update a symbol's type
+    pub fn update_symbol_type(&mut self, id: SymbolId, type_id: TypeId) -> bool {
+        // We need to find the symbol and update it
+        // Since we use an arena, we can't directly mutate, but we can use unsafe code
+        // to update the type_id field which doesn't affect memory layout
+        
+        if let Some(&symbol_ref) = self.symbols_by_id.get(&id) {
+            unsafe {
+                // SAFETY: We're only modifying the type_id field which doesn't affect
+                // the memory layout or any references. The symbol's identity remains the same.
+                let symbol_ptr = symbol_ref as *const Symbol as *mut Symbol;
+                (*symbol_ptr).type_id = type_id;
+            }
+            return true;
+        }
+        false
     }
 
     /// Look up a symbol by name in a specific scope
@@ -658,6 +703,8 @@ impl SymbolTable {
             is_exported: false,
             documentation: None,
             flags: SymbolFlags::NONE,
+            package_id: None,
+            qualified_name: None,
         };
 
         // Add the symbol to the table
@@ -668,6 +715,10 @@ impl SymbolTable {
 
     /// Create a class symbol
     pub fn create_class(&mut self, name: InternedString) -> SymbolId {
+        self.create_class_in_scope(name, ScopeId::invalid())
+    }
+
+    pub fn create_class_in_scope(&mut self, name: InternedString, scope_id: ScopeId) -> SymbolId {
         // Generate a new symbol ID
         let symbol_id = SymbolId::from_raw(self.total_symbols as u32);
 
@@ -677,7 +728,7 @@ impl SymbolTable {
             name,
             kind: SymbolKind::Class,
             type_id: TypeId::invalid(), // Will be set when type is created
-            scope_id: ScopeId::invalid(), // Will be set when added to scope
+            scope_id: scope_id, // Set to the correct scope
             lifetime_id: LifetimeId::invalid(),
             visibility: Visibility::Public, // Classes are typically public by default
             mutability: Mutability::Immutable, // Class definitions are immutable
@@ -686,6 +737,8 @@ impl SymbolTable {
             is_exported: false,
             documentation: None,
             flags: SymbolFlags::NONE,
+            package_id: None,
+            qualified_name: None,
         };
 
         // Add the symbol to the table
@@ -696,6 +749,10 @@ impl SymbolTable {
 
     /// Create a interface symbol
     pub fn create_interfce(&mut self, name: InternedString) -> SymbolId {
+        self.create_interface_in_scope(name, ScopeId::invalid())
+    }
+
+    pub fn create_interface_in_scope(&mut self, name: InternedString, scope_id: ScopeId) -> SymbolId {
         // Generate a new symbol ID
         let symbol_id = SymbolId::from_raw(self.total_symbols as u32);
 
@@ -705,7 +762,7 @@ impl SymbolTable {
             name,
             kind: SymbolKind::Interface,
             type_id: TypeId::invalid(), // Will be set when type is created
-            scope_id: ScopeId::invalid(), // Will be set when added to scope
+            scope_id: scope_id, // Set to the correct scope
             lifetime_id: LifetimeId::invalid(),
             visibility: Visibility::Public, 
             mutability: Mutability::Immutable,
@@ -714,6 +771,8 @@ impl SymbolTable {
             is_exported: false,
             documentation: None,
             flags: SymbolFlags::NONE,
+            package_id: None,
+            qualified_name: None,
         };
 
         // Add the symbol to the table
@@ -740,6 +799,8 @@ impl SymbolTable {
             is_exported: false,
             documentation: None,
             flags: SymbolFlags::NONE,
+            package_id: None,
+            qualified_name: None,
         };
         
         self.add_symbol(symbol);
@@ -748,12 +809,48 @@ impl SymbolTable {
 
     /// Create a variable symbol
     pub fn create_variable(&mut self, name: InternedString) -> SymbolId {
+        self.create_variable_in_scope(name, ScopeId::invalid())
+    }
+    
+    /// Create a variable symbol in a specific scope
+    pub fn create_variable_in_scope(&mut self, name: InternedString, scope_id: ScopeId) -> SymbolId {
+        self.create_variable_with_type(name, scope_id, TypeId::invalid())
+    }
+    
+    /// Create a variable symbol with a specific type
+    pub fn create_variable_with_type(&mut self, name: InternedString, scope_id: ScopeId, type_id: TypeId) -> SymbolId {
         let symbol_id = SymbolId::from_raw(self.total_symbols as u32);
         
         let symbol = Symbol {
             id: symbol_id,
             name,
             kind: SymbolKind::Variable,
+            type_id,
+            scope_id,
+            lifetime_id: LifetimeId::invalid(),
+            visibility: Visibility::Public,
+            mutability: Mutability::Mutable,
+            definition_location: SourceLocation::unknown(),
+            is_used: false,
+            is_exported: false,
+            documentation: None,
+            flags: SymbolFlags::NONE,
+            package_id: None,
+            qualified_name: None,
+        };
+        
+        self.add_symbol(symbol);
+        symbol_id
+    }
+
+    /// Create a field symbol
+    pub fn create_field(&mut self, name: InternedString) -> SymbolId {
+        let symbol_id = SymbolId::from_raw(self.total_symbols as u32);
+        
+        let symbol = Symbol {
+            id: symbol_id,
+            name,
+            kind: SymbolKind::Field,
             type_id: TypeId::invalid(),
             scope_id: ScopeId::invalid(),
             lifetime_id: LifetimeId::invalid(),
@@ -764,14 +861,20 @@ impl SymbolTable {
             is_exported: false,
             documentation: None,
             flags: SymbolFlags::NONE,
+            package_id: None,
+            qualified_name: None,
         };
         
         self.add_symbol(symbol);
         symbol_id
     }
-
+    
     /// Create an enum symbol
     pub fn create_enum(&mut self, name: InternedString) -> SymbolId {
+        self.create_enum_in_scope(name, ScopeId::invalid())
+    }
+
+    pub fn create_enum_in_scope(&mut self, name: InternedString, scope_id: ScopeId) -> SymbolId {
         let symbol_id = SymbolId::from_raw(self.total_symbols as u32);
         
         let symbol = Symbol {
@@ -779,7 +882,7 @@ impl SymbolTable {
             name,
             kind: SymbolKind::Enum,
             type_id: TypeId::invalid(),
-            scope_id: ScopeId::invalid(),
+            scope_id: scope_id, // Set to the correct scope
             lifetime_id: LifetimeId::invalid(),
             visibility: Visibility::Public,
             mutability: Mutability::Immutable,
@@ -788,10 +891,54 @@ impl SymbolTable {
             is_exported: false,
             documentation: None,
             flags: SymbolFlags::NONE,
+            package_id: None,
+            qualified_name: None,
         };
         
         self.add_symbol(symbol);
         symbol_id
+    }
+    
+    /// Create an enum variant symbol linked to its parent enum
+    pub fn create_enum_variant_in_scope(&mut self, name: InternedString, scope_id: ScopeId, parent_enum: SymbolId) -> SymbolId {
+        let symbol_id = SymbolId::from_raw(self.total_symbols as u32);
+        
+        let symbol = Symbol {
+            id: symbol_id,
+            name,
+            kind: SymbolKind::EnumVariant,
+            type_id: TypeId::invalid(),
+            scope_id: scope_id,
+            lifetime_id: LifetimeId::invalid(),
+            visibility: Visibility::Public,
+            mutability: Mutability::Immutable,
+            definition_location: SourceLocation::unknown(),
+            is_used: false,
+            is_exported: false,
+            documentation: None,
+            flags: SymbolFlags::NONE,
+            package_id: None,
+            qualified_name: None,
+        };
+        
+        self.add_symbol(symbol);
+        
+        // Store the relationship between variant and parent enum
+        self.enum_variants.entry(parent_enum)
+            .or_insert_with(Vec::new)
+            .push(symbol_id);
+        
+        symbol_id
+    }
+    
+    /// Find the parent enum symbol for a given enum constructor
+    pub fn find_parent_enum_for_constructor(&self, constructor_symbol: SymbolId) -> Option<SymbolId> {
+        for (enum_symbol, variants) in &self.enum_variants {
+            if variants.contains(&constructor_symbol) {
+                return Some(*enum_symbol);
+            }
+        }
+        None
     }
 
     /// Get all used symbols
@@ -836,7 +983,7 @@ impl SymbolTable {
 
     /// Get all direct subclasses of a class
     pub fn get_direct_subclasses(&self, class_id: SymbolId) -> Vec<SymbolId> {
-        let mut subclasses = Vec::new();
+        let mut subclasses = Vec::with_capacity(4); // Most classes have few direct subclasses
         
         // Get the type ID for this class
         let class_type = self.find_type_for_symbol(class_id);
@@ -855,15 +1002,13 @@ impl SymbolTable {
     
     /// Find type ID for a symbol (helper method)
     fn find_type_for_symbol(&self, symbol_id: SymbolId) -> Option<TypeId> {
-        // Reverse lookup in type_to_symbol mapping
-        self.type_to_symbol.iter()
-            .find(|(_, &sym)| sym == symbol_id)
-            .map(|(&type_id, _)| type_id)
+        // Use O(1) reverse lookup
+        self.symbol_to_type.get(&symbol_id).copied()
     }
     
     /// Get all interfaces implemented by a class (including inherited)
     pub fn get_all_interfaces(&self, class_id: SymbolId) -> Vec<SymbolId> {
-        let mut interfaces = Vec::new();
+        let mut interfaces = Vec::with_capacity(8); // Estimate for interface collection
         let mut seen = HashSet::new();
         let mut queue = VecDeque::new();
         queue.push_back(class_id);
@@ -922,7 +1067,7 @@ impl SymbolTable {
     
     /// Validate that there are no cycles in the class hierarchy
     pub fn validate_no_inheritance_cycles(&self) -> Result<(), Vec<String>> {
-        let mut errors = Vec::new();
+        let mut errors = Vec::with_capacity(4); // Most checks produce few errors
         
         for &class_id in self.class_hierarchies.keys() {
             if self.has_inheritance_cycle(class_id) {

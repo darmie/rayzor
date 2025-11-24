@@ -586,6 +586,7 @@ mod tests {
                 }
             ],
             visibility: Visibility::Public,
+            is_static: false,
             effects: FunctionEffects::default(),
             type_parameters: vec![],
             source_location: SourceLocation::unknown(),
@@ -634,6 +635,7 @@ mod tests {
                 }
             ],
             visibility: Visibility::Public,
+            is_static: false,
             effects: FunctionEffects::default(),
             type_parameters: vec![],
             source_location: SourceLocation::unknown(),

@@ -126,10 +126,10 @@ struct GenericOperationCache {
 impl GenericOperationCache {
     fn new() -> Self {
         Self {
-            bounds_cache: HashMap::new(),
-            subtype_cache: HashMap::new(),
-            method_cache: HashMap::new(),
-            resolution_cache: HashMap::new(),
+            bounds_cache: HashMap::with_capacity(128), // Typical bounds checks
+            subtype_cache: HashMap::with_capacity(256), // Common subtype queries
+            method_cache: HashMap::with_capacity(64), // Method lookups
+            resolution_cache: HashMap::with_capacity(128), // Type resolutions
             hits: 0,
             misses: 0,
         }
@@ -333,7 +333,7 @@ impl<'a> GenericsEngine<'a> {
 
         self.operation_cache.misses += 1;
 
-        let mut violations = Vec::new();
+        let mut violations = Vec::with_capacity(constraints.len()); // At most one violation per constraint
         let mut all_satisfied = true;
 
         for constraint in constraints {

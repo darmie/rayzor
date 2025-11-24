@@ -40,26 +40,45 @@ fn type_param<'a>(full: &'a str, input: &'a str) -> PResult<'a, TypeParam> {
     
     let (input, name) = identifier(input)?;
     
-    // Optional constraints: `:Type` or `:Type & Type` or `:(Type1, Type2)`
-    let (input, constraints) = opt(preceded(
-        symbol(":"),
-        alt((
-            // Multiple constraints separated by &
-            separated_list1(symbol("&"), |i| type_expr(full, i)),
-            // Multiple constraints in parens
-            delimited(
-                symbol("("),
-                separated_list1(symbol(","), |i| type_expr(full, i)),
-                symbol(")")
-            )
-        ))
+    // Optional constraints: `:Type` or `:Type & Type` or `:(Type1, Type2)` or `Type & Type`
+    let (input, constraints) = alt((
+        // Standard colon-prefixed constraints: `:Type` or `:Type & Type` or `:(Type1, Type2)`
+        preceded(
+            symbol(":"),
+            alt((
+                // Multiple constraints separated by &
+                separated_list1(symbol("&"), |i| type_expr(full, i)),
+                // Multiple constraints in parens
+                delimited(
+                    symbol("("),
+                    separated_list1(symbol(","), |i| type_expr(full, i)),
+                    symbol(")")
+                )
+            ))
+        ),
+        // Direct intersection constraint: `U & Comparable<U>` (without colon)
+        preceded(
+            symbol("&"),
+            |i| {
+                let (i, first_constraint) = type_expr(full, i)?;
+                // Keep parsing more & constraints if they exist
+                let (i, rest) = opt(separated_list1(symbol("&"), |j| type_expr(full, j))).parse(i)?;
+                let mut constraints = vec![first_constraint];
+                if let Some(mut additional) = rest {
+                    constraints.append(&mut additional);
+                }
+                Ok((i, constraints))
+            }
+        ),
+        // No constraints
+        |i| Ok((i, vec![])),
     )).parse(input)?;
     
     let end = position(full, input);
     
     Ok((input, TypeParam {
         name,
-        constraints: constraints.unwrap_or_default(),
+        constraints,
         variance: variance.unwrap_or(Variance::Invariant),
         span: Span::new(start, end),
     }))

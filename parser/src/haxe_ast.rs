@@ -26,6 +26,9 @@ impl Span {
 /// A complete Haxe source file
 #[derive(Debug, Clone, PartialEq)]
 pub struct HaxeFile {
+    pub filename: String,
+    /// Source input preserved only when debug flag is enabled to minimize memory usage
+    pub input: Option<String>,
     pub package: Option<Package>,
     pub imports: Vec<Import>,
     pub using: Vec<Using>,
@@ -308,7 +311,7 @@ pub struct AbstractDecl {
     pub modifiers: Vec<Modifier>,
     pub name: String,
     pub type_params: Vec<TypeParam>,
-    pub underlying: Type,
+    pub underlying: Option<Type>,
     pub from: Vec<Type>,
     pub to: Vec<Type>,
     pub fields: Vec<ClassField>,

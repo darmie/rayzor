@@ -7,7 +7,18 @@ description = "Rayzor Haxe Language Parser"
 [dependencies]
 nom = "8.0.0"
 nom_locate = "5.0.0"
+diagnostics = { path = "../diagnostics" }
+
 
 [[bin]]
 name = "demo_enhanced_errors"
 path = "tests/demo_enhanced_errors.rs"
+
+[[bin]]
+name = "test_new_parse"
+path = "test_new_parse.rs"
+
+
+[[example]]
+name = "test_metadata"
+path = "examples/test_metadata.rs"

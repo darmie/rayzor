@@ -18,10 +18,19 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 name = "compiler"
 version = "0.1.0"
 dependencies = [
+ "diagnostics",
  "fxhash",
  "parser",
  "serde",
  "serde_json",
+ "source_map",
+]
+
+[[package]]
+name = "diagnostics"
+version = "0.1.0"
+dependencies = [
+ "source_map",
 ]
 
 [[package]]
@@ -69,6 +78,7 @@ dependencies = [
 name = "parser"
 version = "0.1.0"
 dependencies = [
+ "diagnostics",
  "nom",
  "nom_locate",
 ]
@@ -95,6 +105,7 @@ dependencies = [
 name = "rayzor"
 version = "0.1.0"
 dependencies = [
+ "compiler",
  "parser",
 ]
 
@@ -135,6 +146,10 @@ dependencies = [
  "ryu",
  "serde",
 ]
+
+[[package]]
+name = "source_map"
+version = "0.1.0"
 
 [[package]]
 name = "syn"

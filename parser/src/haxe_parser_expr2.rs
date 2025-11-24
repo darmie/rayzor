@@ -8,6 +8,7 @@ use nom::{
     bytes::complete::tag,
     character::complete::char,
     combinator::{map, opt, value, recognize},
+    error::context,
     multi::{many0, many1, separated_list0, separated_list1},
     sequence::{pair, tuple, preceded, terminated, delimited},
     Parser,
@@ -432,9 +433,9 @@ fn object_field<'a>(full: &'a str, input: &'a str) -> PResult<'a, ObjectField> {
 
 pub fn block_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let start = position(full, input);
-    let (input, _) = symbol("{").parse(input)?;
-    let (input, elements) = many0(|i|block_element(full, i)).parse(input)?;
-    let (input, _) = symbol("}").parse(input)?;
+    let (input, _) = context("expected '{' to start block", symbol("{")).parse(input)?;
+    let (input, elements) = context("expected block contents", many0(|i|block_element(full, i))).parse(input)?;
+    let (input, _) = context("expected '}' to close block", symbol("}")).parse(input)?;
     let end = position(full, input);
     
     Ok((input, Expr {
@@ -473,7 +474,19 @@ fn block_element<'a>(full: &'a str, input: &'a str) -> PResult<'a, BlockElement>
                 };
                 
                 if needs_semicolon {
-                    let (input, _) = symbol(";").parse(input)?;
+                    // Provide specific context based on the expression type
+                    let error_msg = match &expr.kind {
+                        ExprKind::Var { .. } => "expected ';' after variable declaration",
+                        ExprKind::Final { .. } => "expected ';' after final variable declaration", 
+                        ExprKind::Assign { .. } => "expected ';' after assignment",
+                        ExprKind::Call { .. } => "expected ';' after function call",
+                        ExprKind::Return { .. } => "expected ';' after return statement",
+                        ExprKind::Break { .. } => "expected ';' after break statement",
+                        ExprKind::Continue { .. } => "expected ';' after continue statement",
+                        ExprKind::Throw { .. } => "expected ';' after throw statement",
+                        _ => "expected ';' after statement",
+                    };
+                    let (input, _) = context(error_msg, symbol(";")).parse(input)?;
                     Ok((input, expr))
                 } else {
                     // Optional semicolon for control flow statements
@@ -514,19 +527,22 @@ pub fn if_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
 pub fn switch_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let start = position(full, input);
     let (input, _) = keyword("switch").parse(input)?;
-    let (input, _) = symbol("(").parse(input)?;
-    let (input, expr) = expression(full, input)?;
-    let (input, _) = symbol(")").parse(input)?;
-    let (input, _) = symbol("{").parse(input)?;
+    let (input, _) = context("expected '(' after 'switch'", symbol("(")).parse(input)?;
+    let (input, expr) = context("expected expression inside switch parentheses", |i| expression(full, i)).parse(input)?;
+    let (input, _) = context("expected ')' after switch expression", symbol(")")).parse(input)?;
+    let (input, _) = context("expected '{' to start switch body", symbol("{")).parse(input)?;
     
-    let (input, cases) = many0(|i| case(full, i)).parse(input)?;
+    let (input, cases) = context("expected switch cases", many0(|i| case(full, i))).parse(input)?;
     
     let (input, default) = opt(preceded(
         keyword("default"),
-        preceded(symbol(":"), |i| parse_case_body(full, i))
+        preceded(
+            context("expected ':' after 'default'", symbol(":")), 
+            context("expected default case body", |i| parse_case_body(full, i))
+        )
     )).parse(input)?;
     
-    let (input, _) = symbol("}").parse(input)?;
+    let (input, _) = context("expected '}' to close switch body", symbol("}")).parse(input)?;
     let end = position(full, input);
     
     Ok((input, Expr {
@@ -542,21 +558,23 @@ pub fn switch_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
 fn case<'a>(full: &'a str, input: &'a str) -> PResult<'a, Case> {
     let start = position(full, input);
     let (input, _) = keyword("case").parse(input)?;
-    let (input, patterns) = separated_list1(symbol("|"), |i| pattern(full, i)).parse(input)?;
+    let (input, patterns) = context("expected pattern(s) after 'case'", 
+        separated_list1(symbol("|"), |i| pattern(full, i))
+    ).parse(input)?;
     
     let (input, guard) = opt(preceded(
         keyword("if"),
         delimited(
-            symbol("("),
-            |i| expression(full, i),
-            symbol(")")
+            context("expected '(' after 'if' in case guard", symbol("(")),
+            context("expected guard expression", |i| expression(full, i)),
+            context("expected ')' after guard expression", symbol(")"))
         )
     )).parse(input)?;
     
-    let (input, _) = symbol(":").parse(input)?;
+    let (input, _) = context("expected ':' after case pattern", symbol(":")).parse(input)?;
     
     // Parse case body as a sequence of statements until next case/default/}
-    let (input, body) = parse_case_body(full, input)?;
+    let (input, body) = context("expected case body", |i| parse_case_body(full, i)).parse(input)?;
     let end = position(full, input);
     
     Ok((input, Case {

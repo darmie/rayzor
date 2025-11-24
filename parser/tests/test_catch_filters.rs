@@ -1,4 +1,4 @@
-use parser::parse_haxe_file;
+use parser::haxe_parser::parse_haxe_file_with_debug;
 
 #[test]
 fn test_catch_with_filter() {
@@ -14,7 +14,7 @@ class Test {
 }
 "#;
 
-    match parse_haxe_file("test.hx", input, false) {
+    match parse_haxe_file_with_debug("test.hx", input, true, true) {
         Ok(result) => {
             // Extract the try-catch from the AST
             if let Some(class_decl) = result.declarations.first() {
@@ -33,7 +33,12 @@ class Test {
                                             
                                             // Check if the filter is a binary comparison
                                             if let Some(filter) = &catch_block.filter {
-                                                match &filter.kind {
+                                                // Handle parenthesized expressions - the filter is wrapped in parentheses
+                                                let actual_filter = match &filter.kind {
+                                                    parser::haxe_ast::ExprKind::Paren(inner) => inner,
+                                                    _ => filter,
+                                                };
+                                                match &actual_filter.kind {
                                                     parser::haxe_ast::ExprKind::Binary { left, op, right } => {
                                                         assert_eq!(*op, parser::haxe_ast::BinaryOp::Gt);
                                                         // left should be field access e.length
@@ -91,7 +96,7 @@ class Test {
 }
 "#;
 
-    match parse_haxe_file("test.hx", input, false) {
+    match parse_haxe_file_with_debug("test.hx", input, true, true) {
         Ok(result) => {
             // Extract the try-catch from the AST
             if let Some(class_decl) = result.declarations.first() {
@@ -142,7 +147,7 @@ class Test {
 }
 "#;
 
-    match parse_haxe_file("test.hx", input, false) {
+    match parse_haxe_file_with_debug("test.hx", input, true, true) {
         Ok(result) => {
             // Extract the try-catch from the AST
             if let Some(class_decl) = result.declarations.first() {

@@ -4,7 +4,8 @@
 //! which adds type information, symbol resolution, and ownership tracking
 //! to the syntax tree for advanced static analysis.
 
-use crate::tast::{InternedString, Mutability, ScopeId, SourceLocation, StringInterner, SymbolId, TypeId, Visibility};
+use crate::tast::{InternedString, ScopeId, SourceLocation, StringInterner, SymbolId, TypeId, Visibility};
+use crate::tast::symbols::Mutability;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -135,6 +136,9 @@ pub struct TypedFunction {
 
     /// Generic type parameters
     pub type_parameters: Vec<TypedTypeParameter>,
+    
+    /// Whether function is static
+    pub is_static: bool,
 
     /// Source location
     pub source_location: SourceLocation,
@@ -184,6 +188,17 @@ pub struct FunctionEffects {
     pub is_inline: bool,
 }
 
+/// Method overload signature information
+#[derive(Debug, Clone)]
+pub struct MethodOverload {
+    /// Parameter types for this overload
+    pub parameter_types: Vec<TypeId>,
+    /// Return type for this overload
+    pub return_type: TypeId,
+    /// Source location of the overload metadata
+    pub source_location: SourceLocation,
+}
+
 /// Function metadata
 #[derive(Debug, Clone, Default)]
 pub struct FunctionMetadata {
@@ -198,6 +213,12 @@ pub struct FunctionMetadata {
 
     /// Call count (for optimization)
     pub call_count: u32,
+    
+    /// Whether function is marked with override modifier
+    pub is_override: bool,
+    
+    /// Method overload signatures from @:overload metadata
+    pub overload_signatures: Vec<MethodOverload>,
 }
 
 /// Generic type parameter with variance support
@@ -207,7 +228,7 @@ pub struct TypedTypeParameter {
     pub symbol_id: SymbolId,
 
     /// Parameter name (T, U, etc.)
-    pub name: String,
+    pub name: InternedString,
 
     /// Type constraints
     pub constraints: Vec<TypeId>,
@@ -633,6 +654,12 @@ pub enum TypedExpressionKind {
         object: Box<TypedExpression>,
         field_symbol: SymbolId,
     },
+    
+    /// Static field access: Class.field
+    StaticFieldAccess {
+        class_symbol: SymbolId,
+        field_symbol: SymbolId,
+    },
 
     /// Array access: arr[index]
     ArrayAccess {
@@ -650,6 +677,14 @@ pub enum TypedExpressionKind {
     /// Method call
     MethodCall {
         receiver: Box<TypedExpression>,
+        method_symbol: SymbolId,
+        arguments: Vec<TypedExpression>,
+        type_arguments: Vec<TypeId>,
+    },
+    
+    /// Static method call
+    StaticMethodCall {
+        class_symbol: SymbolId,
         method_symbol: SymbolId,
         arguments: Vec<TypedExpression>,
         type_arguments: Vec<TypeId>,
@@ -701,6 +736,11 @@ pub enum TypedExpressionKind {
     /// Array literal: [1, 2, 3]
     ArrayLiteral {
         elements: Vec<TypedExpression>,
+    },
+
+    /// Map literal: ["key1" => value1, "key2" => value2]
+    MapLiteral {
+        entries: Vec<TypedMapEntry>,
     },
 
     /// Object literal: { field1: value1, field2: value2 }
@@ -758,6 +798,20 @@ pub enum TypedExpressionKind {
     Break,
     Continue,
 
+    /// Variable declaration as expression: `var x = 5` (returns 5)
+    VarDeclarationExpr {
+        symbol_id: SymbolId,
+        var_type: TypeId,
+        initializer: Box<TypedExpression>,
+    },
+
+    /// Final declaration as expression: `final x = 5` (returns 5)
+    FinalDeclarationExpr {
+        symbol_id: SymbolId,
+        var_type: TypeId,
+        initializer: Box<TypedExpression>,
+    },
+
     // Haxe-specific expressions
     /// String interpolation
     StringInterpolation {
@@ -792,7 +846,27 @@ pub enum TypedExpressionKind {
         target: InternedString,
         code: Box<TypedExpression>,
     },
+
+    /// Switch expression: `switch (expr) { case pattern: body; default: defaultBody; }`
+    Switch {
+        discriminant: Box<TypedExpression>,
+        cases: Vec<TypedSwitchCase>,
+        default_case: Option<Box<TypedExpression>>,
+    },
+
+    /// Try-catch expression: `try expr catch (e:Type) handler`
+    Try {
+        try_expr: Box<TypedExpression>,
+        catch_clauses: Vec<TypedCatchClause>,
+    },
+
+    /// Pattern placeholder for complex patterns that need later compilation
+    PatternPlaceholder {
+        pattern: parser::Pattern,
+        source_location: SourceLocation,
+    },
 }
+
 
 /// Literal values
 #[derive(Debug, Clone)]
@@ -829,6 +903,19 @@ pub struct TypedObjectField {
     pub name: InternedString,
 
     /// Field value
+    pub value: TypedExpression,
+
+    /// Source location
+    pub source_location: SourceLocation,
+}
+
+/// Map entry in map literal
+#[derive(Debug, Clone)]
+pub struct TypedMapEntry {
+    /// Key expression
+    pub key: TypedExpression,
+
+    /// Value expression
     pub value: TypedExpression,
 
     /// Source location
@@ -965,7 +1052,7 @@ pub struct TypedInterface {
     pub symbol_id: SymbolId,
 
     /// Interface name
-    pub name: String,
+    pub name: InternedString,
 
     /// Extended interfaces
     pub extends: Vec<TypeId>,
@@ -987,7 +1074,7 @@ pub struct TypedInterface {
 #[derive(Debug, Clone)]
 pub struct TypedMethodSignature {
     /// Method name
-    pub name: String,
+    pub name: InternedString,
 
     /// Parameters
     pub parameters: Vec<TypedParameter>,
@@ -1009,7 +1096,7 @@ pub struct TypedEnum {
     pub symbol_id: SymbolId,
 
     /// Enum name
-    pub name: String,
+    pub name: InternedString,
 
     /// Enum variants
     pub variants: Vec<TypedEnumVariant>,
@@ -1028,7 +1115,7 @@ pub struct TypedEnum {
 #[derive(Debug, Clone)]
 pub struct TypedEnumVariant {
     /// Variant name
-    pub name: String,
+    pub name: InternedString,
 
     /// Variant parameters (for complex enums)
     pub parameters: Vec<TypedParameter>,
@@ -1044,7 +1131,7 @@ pub struct TypedField {
     pub symbol_id: SymbolId,
 
     /// Field name
-    pub name: String,
+    pub name: InternedString,
 
     /// Field type
     pub field_type: TypeId,
@@ -1072,7 +1159,7 @@ pub struct TypedTypeAlias {
     pub symbol_id: SymbolId,
 
     /// Alias name
-    pub name: String,
+    pub name: InternedString,
 
     /// Target type
     pub target_type: TypeId,

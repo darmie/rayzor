@@ -16,9 +16,18 @@ use nom::{
 };
 
 use crate::haxe_ast::*;
+use diagnostics;
 
 /// Parser result type
 pub type PResult<'a, T> = IResult<&'a str, T>;
+
+/// Result of parsing that includes diagnostics
+#[derive(Debug)]
+pub struct ParseResult {
+    pub file: HaxeFile,
+    pub diagnostics: diagnostics::Diagnostics,
+    pub source_map: diagnostics::SourceMap,
+}
 
 /// Helper enum for parsing imports or using statements
 #[derive(Debug, Clone)]
@@ -37,211 +46,211 @@ enum ImportUsingOrConditional {
 
 /// Parse a complete Haxe file
 pub fn parse_haxe_file(file_name:&str, input: &str, recovery:bool) -> Result<HaxeFile, String> {
+    parse_haxe_file_with_debug(file_name, input, recovery, false)
+}
+
+/// Parse a complete Haxe file with debug flag for preserving source input
+pub fn parse_haxe_file_with_debug(file_name:&str, input: &str, recovery:bool, debug: bool) -> Result<HaxeFile, String> {
    // Check if this is an import.hx file
    let is_import_file = file_name.ends_with("import.hx") || file_name.ends_with("/import.hx") || file_name == "import.hx";
    
    if recovery {
     parse_haxe_file_with_enhanced_errors(input, file_name, is_import_file)
-        .map_err(|(errors, source_map)| format_enhanced_errors_with_source_map(errors, source_map))
+        .map_err(|(diagnostics, source_map)| {
+            let formatter = diagnostics::ErrorFormatter::with_colors();
+            formatter.format_diagnostics(&diagnostics, &source_map)
+        })
    }else {
-    let full_input = input;
-    let parse_result = if is_import_file {
-        all_consuming(|i| import_hx_file(full_input, i)).parse(input)
-    } else {
-        all_consuming(|i| haxe_file(full_input, i)).parse(input)
-    };
+    // Use enhanced incremental parser with diagnostics for better error reporting
+    let incremental_result = crate::incremental_parser_enhanced::parse_incrementally_enhanced(file_name, input);
     
-    match parse_result {
-        Ok((_, file)) => Ok(file),
-        Err(e) => Err(e.to_string())
-    }
+    // Convert enhanced result to HaxeFile
+    convert_enhanced_incremental_to_haxe_file(incremental_result, file_name, input, is_import_file, debug)
    }
 }
 
-/// Parse a Haxe file with enhanced error reporting
-pub fn parse_haxe_file_with_enhanced_errors(input: &str, file_name:&str, is_import_file: bool) -> Result<HaxeFile, (crate::error::ParseErrors, crate::error::SourceMap)> {
-    use crate::error::{ParseError, ParseErrors, SourceMap, SourceSpan, SourcePosition, FileId};
+/// Convert enhanced incremental parse result to HaxeFile
+fn convert_enhanced_incremental_to_haxe_file(
+    result: crate::incremental_parser_enhanced::IncrementalParseResult, 
+    file_name: &str, 
+    input: &str,
+    is_import_file: bool,
+    debug: bool
+) -> Result<HaxeFile, String> {
+    use crate::incremental_parser_enhanced::ParsedElement;
+    use crate::haxe_ast::{HaxeFile, Span};
     
-    let full_input = input;
+    // If there are errors but no parsed elements, format and return all errors
+    if result.parsed_elements.is_empty() && result.has_errors() {
+        let formatted_errors = result.format_diagnostics(true);
+        return Err(format!("Parse failed with errors:\n{}", formatted_errors));
+    }
     
-    // Create source map for error reporting
-    let mut source_map = SourceMap::new();
-    let file_id = source_map.add_file(file_name.to_string(), input.to_string());
+    // Extract components from parsed elements
+    let mut package = None;
+    let mut imports = Vec::new();
+    let mut using = Vec::new();
+    let mut module_fields = Vec::new();
+    let mut declarations = Vec::new();
     
-    let parse_result = if is_import_file {
-        all_consuming(|i| import_hx_file(full_input, i)).parse(input)
+    for element in result.parsed_elements {
+        match element {
+            ParsedElement::Package(pkg) => package = Some(pkg),
+            ParsedElement::Import(imp) => imports.push(imp),
+            ParsedElement::Using(use_stmt) => using.push(use_stmt),
+            ParsedElement::ModuleField(field) => module_fields.push(field),
+            ParsedElement::TypeDeclaration(decl) => declarations.push(decl),
+            ParsedElement::ConditionalBlock(_) => {
+                // Skip conditional blocks for now
+            }
+        }
+    }
+    
+    // For import.hx files, only imports are relevant
+    if is_import_file {
+        Ok(HaxeFile {
+            filename: file_name.to_string(),
+            input: if debug { Some(input.to_string()) } else { None },
+            package: None,
+            imports,
+            using: Vec::new(),
+            module_fields: Vec::new(),
+            declarations: Vec::new(),
+            span: Span::default(),
+        })
     } else {
-        all_consuming(|i| haxe_file(full_input, i)).parse(input)
-    };
+        // If we have errors but managed to parse some content, we can still return a partial result
+        // This is the key improvement - we don't fail completely on partial parsing issues
+        Ok(HaxeFile {
+            filename: file_name.to_string(),
+            input: if debug { Some(input.to_string()) } else { None },
+            package,
+            imports,
+            using,
+            module_fields,
+            declarations,
+            span: Span::default(),
+        })
+    }
+}
+
+/// Convert old incremental parse result to HaxeFile (for backward compatibility)
+fn convert_incremental_to_haxe_file(
+    result: crate::incremental_parser::IncrementalParseResult, 
+    file_name: &str, 
+    input: &str,
+    is_import_file: bool,
+    debug: bool
+) -> Result<HaxeFile, String> {
+    use crate::incremental_parser::ParsedElement;
+    use crate::haxe_ast::{HaxeFile, Span};
     
-    match parse_result {
-        Ok((_, file)) => Ok(file),
+    // If there are errors but no parsed elements, format and return all errors
+    if result.parsed_elements.is_empty() && !result.errors.is_empty() {
+        let formatted_errors = result.errors.iter()
+            .map(|error| format!("{}:{} - {}", error.line, error.column, error.message))
+            .collect::<Vec<_>>()
+            .join("\n");
+        
+        return Err(format!("Parse failed with {} errors:\n{}", result.errors.len(), formatted_errors));
+    }
+    
+    // Extract components from parsed elements
+    let mut package = None;
+    let mut imports = Vec::new();
+    let mut using = Vec::new();
+    let mut module_fields = Vec::new();
+    let mut declarations = Vec::new();
+    
+    for element in result.parsed_elements {
+        match element {
+            ParsedElement::Package(pkg) => package = Some(pkg),
+            ParsedElement::Import(imp) => imports.push(imp),
+            ParsedElement::Using(use_stmt) => using.push(use_stmt),
+            ParsedElement::ModuleField(field) => module_fields.push(field),
+            ParsedElement::TypeDeclaration(decl) => declarations.push(decl),
+            ParsedElement::ConditionalBlock(_) => {
+                // Skip conditional blocks for now
+            }
+        }
+    }
+    
+    // For import.hx files, only imports are relevant
+    if is_import_file {
+        Ok(HaxeFile {
+            filename: file_name.to_string(),
+            input: if debug { Some(input.to_string()) } else { None },
+            package: None,
+            imports,
+            using: Vec::new(),
+            module_fields: Vec::new(),
+            declarations: Vec::new(),
+            span: Span::default(),
+        })
+    } else {
+        // If we have errors but managed to parse some content, we can still return a partial result
+        Ok(HaxeFile {
+            filename: file_name.to_string(),
+            input: if debug { Some(input.to_string()) } else { None },
+            package,
+            imports,
+            using,
+            module_fields,
+            declarations,
+            span: Span::default(),
+        })
+    }
+}
+
+/// Parse a Haxe file with enhanced error reporting
+pub fn parse_haxe_file_with_enhanced_errors(input: &str, file_name:&str, is_import_file: bool) -> Result<HaxeFile, (diagnostics::Diagnostics, diagnostics::SourceMap)> {
+    // Use enhanced incremental parser for better error recovery with diagnostics
+    let incremental_result = crate::incremental_parser_enhanced::parse_incrementally_enhanced(file_name, input);
+    
+    // Extract the diagnostics and source map from the result
+    let diagnostics = incremental_result.diagnostics.clone();
+    let source_map = incremental_result.source_map.clone();
+    
+    // If parsing succeeded, return the file
+    if let Ok(file) = convert_enhanced_incremental_to_haxe_file(incremental_result, file_name, input, is_import_file, false) {
+        return Ok(file);
+    }
+    
+    // Otherwise, return the diagnostics and source map
+    Err((diagnostics, source_map))
+}
+
+/// Parse a Haxe file and always return diagnostics along with the result
+pub fn parse_haxe_file_with_diagnostics(file_name: &str, input: &str) -> Result<ParseResult, String> {
+    // Check if this is an import.hx file
+    let is_import_file = file_name.ends_with("import.hx") || file_name.ends_with("/import.hx") || file_name == "import.hx";
+    
+    // Use enhanced incremental parser for better error recovery with diagnostics
+    let incremental_result = crate::incremental_parser_enhanced::parse_incrementally_enhanced(file_name, input);
+    
+    // Extract the diagnostics and source map
+    let diagnostics = incremental_result.diagnostics.clone();
+    let source_map = incremental_result.source_map.clone();
+    
+    // Try to convert to HaxeFile
+    match convert_enhanced_incremental_to_haxe_file(incremental_result, file_name, input, is_import_file, false) {
+        Ok(file) => {
+            Ok(ParseResult {
+                file,
+                diagnostics,
+                source_map,
+            })
+        }
         Err(e) => {
-            // Use enhanced error analysis like enhanced_parser.rs but simpler
-            let mut errors = ParseErrors::new();
-            analyze_syntax_errors_enhanced(input, file_id, &mut errors);
-            
-            Err((errors, source_map))
-        }
-    }
-}
-
-/// Format enhanced errors into a user-friendly string using the provided source map
-fn format_enhanced_errors_with_source_map(errors: crate::error::ParseErrors, source_map: crate::error::SourceMap) -> String {
-    use crate::error_formatter::{ErrorFormatter, FormatConfig};
-    
-    let formatter = ErrorFormatter::new(FormatConfig::default());
-    formatter.format_errors(&errors, &source_map)
-}
-
-/// Analyze syntax errors using patterns from enhanced_parser.rs but without circular dependency
-fn analyze_syntax_errors_enhanced(content: &str, file_id: crate::error::FileId, errors: &mut crate::error::ParseErrors) {
-    use crate::error::{ParseError, SourceSpan, SourcePosition};
-    
-    let lines: Vec<&str> = content.lines().collect();
-    let mut brace_count = 0;
-    let mut paren_count = 0;
-    
-    for (line_num, line) in lines.iter().enumerate() {
-        let line_number = line_num + 1;
-        let trimmed = line.trim();
-        
-        // Skip empty lines and comments
-        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("/*") {
-            continue;
-        }
-        
-        // Check for keyword typos (simplified version of enhanced_parser logic)
-        check_keyword_typos_simple(line, line_number, file_id, errors);
-        
-        // Check for missing semicolons
-        if (trimmed.starts_with("package ") || trimmed.starts_with("import ")) && !trimmed.ends_with(';') {
-            let error_position = SourcePosition::new(line_number, line.len() + 1, 0);
-            let span = SourceSpan::single_char(error_position, file_id);
-            
-            errors.push(ParseError::MissingToken {
-                expected: ";".to_string(),
-                after: span,
-                suggestion: Some("add a semicolon at the end of this line".to_string()),
-            });
-        }
-        
-        // Track delimiter balance
-        for ch in line.chars() {
-            match ch {
-                '{' => brace_count += 1,
-                '}' => brace_count -= 1,
-                '(' => paren_count += 1,
-                ')' => paren_count -= 1,
-                _ => {}
+            // If we have diagnostics, format them nicely
+            if !diagnostics.is_empty() {
+                let formatter = diagnostics::ErrorFormatter::with_colors();
+                Err(formatter.format_diagnostics(&diagnostics, &source_map))
+            } else {
+                Err(e)
             }
         }
     }
-    
-    // Check for unclosed delimiters at the end
-    if brace_count > 0 {
-        add_unclosed_delimiter_error_simple(content, file_id, errors, '{');
-    }
-    if paren_count > 0 {
-        add_unclosed_delimiter_error_simple(content, file_id, errors, '(');
-    }
-}
-
-/// Simplified keyword typo checking
-fn check_keyword_typos_simple(line: &str, line_number: usize, file_id: crate::error::FileId, errors: &mut crate::error::ParseErrors) {
-    use crate::error::{ParseError, SourceSpan, SourcePosition};
-    
-    let words: Vec<&str> = line.split_whitespace().collect();
-    
-    for &word in words.iter() {
-        let clean_word = word.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_');
-        
-        // Skip empty words or known keywords
-        if clean_word.is_empty() || is_haxe_keyword(clean_word) {
-            continue;
-        }
-        
-        // Check for common typos
-        if let Some(suggestion) = suggest_keyword_simple(clean_word) {
-            if let Some(column) = line.find(clean_word) {
-                let error_position = SourcePosition::new(line_number, column + 1, 0);
-                let span = SourceSpan::new(
-                    error_position,
-                    SourcePosition::new(line_number, column + 1 + clean_word.len(), 0),
-                    file_id,
-                );
-                
-                errors.push(ParseError::InvalidIdentifier {
-                    name: clean_word.to_string(),
-                    span,
-                    reason: "unknown keyword, did you mean something else?".to_string(),
-                    suggestion: Some(suggestion),
-                });
-            }
-        }
-    }
-}
-
-/// Simplified keyword suggestion
-fn suggest_keyword_simple(input: &str) -> Option<String> {
-    let suggestions = [
-        ("fucntion", "function"),
-        ("classe", "class"),
-        ("publik", "public"),
-        ("privat", "private"),
-        ("statik", "static"),
-        ("retur", "return"),
-        ("abstrak", "abstract"),
-        ("interfac", "interface"),
-    ];
-    
-    for (typo, correct) in &suggestions {
-        if input.to_lowercase() == *typo {
-            return Some(correct.to_string());
-        }
-    }
-    
-    None
-}
-
-/// Simple unclosed delimiter error
-fn add_unclosed_delimiter_error_simple(content: &str, file_id: crate::error::FileId, errors: &mut crate::error::ParseErrors, delimiter: char) {
-    use crate::error::{ParseError, SourceSpan, SourcePosition};
-    
-    let lines: Vec<&str> = content.lines().collect();
-    
-    // Find the last occurrence of the opening delimiter
-    for (line_num, line) in lines.iter().enumerate().rev() {
-        if line.contains(delimiter) {
-            if let Some(column) = line.rfind(delimiter) {
-                let error_position = SourcePosition::new(line_num + 1, column + 1, 0);
-                let span = SourceSpan::single_char(error_position, file_id);
-                
-                errors.push(ParseError::UnclosedDelimiter {
-                    delimiter,
-                    opened_at: span.clone(),
-                    expected_close_at: SourceSpan::single_char(
-                        SourcePosition::new(lines.len(), lines.last().map(|l| l.len()).unwrap_or(0) + 1, 0),
-                        file_id,
-                    ),
-                });
-                break;
-            }
-        }
-    }
-}
-
-/// Check if a word is a Haxe keyword
-fn is_haxe_keyword(word: &str) -> bool {
-    matches!(
-        word,
-        "abstract" | "break" | "case" | "cast" | "catch" | "class" | "continue" | "default"
-            | "do" | "dynamic" | "else" | "enum" | "extends" | "extern" | "false" | "final"
-            | "for" | "function" | "if" | "implements" | "import" | "in" | "inline" | "interface"
-            | "macro" | "new" | "null" | "override" | "package" | "private" | "public"
-            | "return" | "static" | "super" | "switch" | "this" | "throw" | "true" | "try"
-            | "typedef" | "untyped" | "using" | "var" | "while"
-    )
 }
 
 /// Helper function to flatten conditional imports/using into regular vectors
@@ -280,239 +289,12 @@ fn flatten_conditional_imports_using(
     }
 }
 
-/// Convert nom parsing error to enhanced ParseError with better context
-fn convert_nom_error_to_enhanced(
-    nom_error: nom::Err<nom::error::Error<&str>>,
-    full_input: &str,
-    file_id: crate::error::FileId,
-) -> crate::error::ParseError {
-    use crate::error::{ParseError, SourceSpan, SourcePosition};
-    
-    match nom_error {
-        nom::Err::Error(e) | nom::Err::Failure(e) => {
-            // Calculate position of error
-            let error_pos = full_input.len() - e.input.len();
-            let (line, column) = calculate_line_column(full_input, error_pos);
-            
-            // For EOF errors, adjust position to the actual end of meaningful content
-            let (final_pos, final_line, final_column) = if e.input.is_empty() && error_pos < full_input.len() {
-                // Find the last non-whitespace character for more accurate positioning
-                let mut last_meaningful_pos = full_input.len();
-                for (i, ch) in full_input.char_indices().rev() {
-                    if !ch.is_whitespace() {
-                        last_meaningful_pos = i + ch.len_utf8();
-                        break;
-                    }
-                }
-                let (adj_line, adj_col) = calculate_line_column(full_input, last_meaningful_pos);
-                (last_meaningful_pos, adj_line, adj_col)
-            } else {
-                (error_pos, line, column)
-            };
-            
-            let position = SourcePosition::new(final_line, final_column, final_pos);
-            let span = SourceSpan {
-                start: position,
-                end: position,
-                file_id,
-            };
-            
-            // Generate helpful error message based on error kind
-            match e.code {
-                nom::error::ErrorKind::Eof => {
-                    let expected = infer_expected_tokens(e.input, full_input);
-                    ParseError::UnexpectedEof { expected, span }
-                }
-                nom::error::ErrorKind::Tag => {
-                    let expected = infer_expected_tokens(e.input, full_input);
-                    let found = get_found_token(e.input);
-                    ParseError::UnexpectedToken { expected, found, span }
-                }
-                nom::error::ErrorKind::Char => {
-                    let expected = vec!["expected character".to_string()];
-                    let found = get_found_token(e.input);
-                    ParseError::UnexpectedToken { expected, found, span }
-                }
-                _ => {
-                    ParseError::InvalidSyntax {
-                        message: format!("Parse error: {:?}", e.code),
-                        span,
-                        suggestion: generate_suggestion(e.input, full_input),
-                    }
-                }
-            }
-        }
-        nom::Err::Incomplete(_) => {
-            // This shouldn't happen with complete parsers, but handle it
-            let position = SourcePosition::new(1, 1, 0);
-            let span = SourceSpan {
-                start: position,
-                end: position,
-                file_id,
-            };
-            ParseError::UnexpectedEof {
-                expected: vec!["more input".to_string()],
-                span,
-            }
-        }
-    }
-}
-
-/// Calculate line and column number from byte offset
-fn calculate_line_column(full_input: &str, byte_offset: usize) -> (usize, usize) {
-    let mut line = 1;
-    let mut column = 1;
-    
-    for (i, ch) in full_input.char_indices() {
-        if i >= byte_offset {
-            break;
-        }
-        
-        if ch == '\n' {
-            line += 1;
-            column = 1;
-        } else {
-            column += 1;
-        }
-    }
-    
-    (line, column)
-}
-
-/// Infer what tokens might be expected at the current position
-fn infer_expected_tokens(remaining_input: &str, full_input: &str) -> Vec<String> {
-    let mut expected = Vec::new();
-    
-    // Look at the context to infer what might be expected
-    let consumed = &full_input[..full_input.len() - remaining_input.len()];
-    
-    // Check if we're at the end of input
-    if remaining_input.is_empty() {
-        // Analyze the full input to detect common syntax errors
-        return analyze_full_input_for_errors(full_input);
-    }
-    
-    // Check if we're in a class context
-    if consumed.contains("class") && !consumed.contains('{') {
-        expected.push("class body '{'".to_string());
-    }
-    
-    // Check if we're in a function context
-    if consumed.contains("function") && !consumed.contains('{') {
-        expected.push("function body '{'".to_string());
-    }
-    
-    // Check if we need a semicolon
-    if consumed.trim_end().ends_with('}') || consumed.trim_end().ends_with(')') {
-        expected.push("semicolon ';'".to_string());
-    }
-    
-    // Generic expectations
-    if expected.is_empty() {
-        expected.push("valid Haxe syntax".to_string());
-    }
-    
-    expected
-}
-
-/// Analyze the full input to detect common syntax errors when EOF is encountered
-fn analyze_full_input_for_errors(full_input: &str) -> Vec<String> {
-    let mut expected = Vec::new();
-    
-    // Look at the last few lines to understand context
-    let lines: Vec<&str> = full_input.lines().collect();
-    
-    // Check for missing semicolon by looking at the last non-empty line
-    for line in lines.iter().rev() {
-        let trimmed = line.trim();
-        if !trimmed.is_empty() {
-            // Common patterns that suggest missing semicolon
-            if (trimmed.starts_with("var ") || 
-                trimmed.starts_with("return ") ||
-                trimmed.contains(" = ")) && 
-               !trimmed.ends_with(';') && 
-               !trimmed.ends_with('{') && 
-               !trimmed.ends_with('}') {
-                expected.push("semicolon ';'".to_string());
-                return expected;
-            }
-            break;
-        }
-    }
-    
-    // Check for missing closing brace
-    let open_braces = full_input.matches('{').count();
-    let close_braces = full_input.matches('}').count();
-    if open_braces > close_braces {
-        expected.push("closing brace '}'".to_string());
-        return expected;
-    }
-    
-    // Check for missing closing parenthesis
-    let open_parens = full_input.matches('(').count();
-    let close_parens = full_input.matches(')').count();
-    if open_parens > close_parens {
-        expected.push("closing parenthesis ')'".to_string());
-        return expected;
-    }
-    
-    // Default fallback
-    expected.push("end of input".to_string());
-    expected
-}
-
-/// Get the token that was actually found
-fn get_found_token(remaining_input: &str) -> String {
-    if remaining_input.is_empty() {
-        "end of input".to_string()
-    } else {
-        // Get the first few characters as the found token
-        let first_word = remaining_input
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .chars()
-            .take(10)
-            .collect::<String>();
-        
-        if first_word.is_empty() {
-            "whitespace".to_string()
-        } else {
-            format!("'{}'", first_word)
-        }
-    }
-}
-
-/// Generate helpful suggestions for common mistakes
-fn generate_suggestion(remaining_input: &str, full_input: &str) -> Option<String> {
-    let consumed = &full_input[..full_input.len() - remaining_input.len()];
-    
-    // Missing semicolon
-    if consumed.trim_end().ends_with('}') || consumed.trim_end().ends_with(')') {
-        if !consumed.trim_end().ends_with(';') {
-            return Some("Try adding a semicolon ';' after the statement".to_string());
-        }
-    }
-    
-    // Missing closing brace
-    let open_braces = consumed.matches('{').count();
-    let close_braces = consumed.matches('}').count();
-    if open_braces > close_braces {
-        return Some("Try adding a closing brace '}'".to_string());
-    }
-    
-    // Missing closing parenthesis
-    let open_parens = consumed.matches('(').count();
-    let close_parens = consumed.matches(')').count();
-    if open_parens > close_parens {
-        return Some("Try adding a closing parenthesis ')'".to_string());
-    }
-    
-    None
-}
-
 /// Parser for import.hx files - only allows imports and using statements
-pub fn import_hx_file<'a>(full: &'a str, input: &'a str) -> PResult<'a, HaxeFile> {
+pub fn import_hx_file<'a>(file_name: &str, full: &'a str, input: &'a str) -> PResult<'a, HaxeFile> {
+    import_hx_file_with_debug(file_name, full, input, false)
+}
+
+pub fn import_hx_file_with_debug<'a>(file_name: &str, full: &'a str, input: &'a str, debug: bool) -> PResult<'a, HaxeFile> {
     context("import.hx file", |input| {
     let start = position(full, input);
     
@@ -575,6 +357,8 @@ pub fn import_hx_file<'a>(full: &'a str, input: &'a str) -> PResult<'a, HaxeFile
     let end = position(full, input);
     
     Ok((input, HaxeFile {
+        filename: file_name.to_string(),
+        input: if debug { Some(full.to_string()) } else { None },
         package: None,  // import.hx files don't have package declarations
         imports,
         using,
@@ -586,7 +370,11 @@ pub fn import_hx_file<'a>(full: &'a str, input: &'a str) -> PResult<'a, HaxeFile
 }
 
 /// Main file parser
-pub fn haxe_file<'a>(full: &'a str, input: &'a str) -> PResult<'a, HaxeFile> {
+pub fn haxe_file<'a>(file_name: &str, full: &'a str, input: &'a str) -> PResult<'a, HaxeFile> {
+    haxe_file_with_debug(file_name, full, input, false)
+}
+
+pub fn haxe_file_with_debug<'a>(file_name: &str, full: &'a str, input: &'a str, debug: bool) -> PResult<'a, HaxeFile> {
     context("haxe file", |input| {
     let start = position(full, input);
     
@@ -687,6 +475,8 @@ pub fn haxe_file<'a>(full: &'a str, input: &'a str) -> PResult<'a, HaxeFile> {
     let end = position(full, input);
     
     Ok((input, HaxeFile {
+        filename: file_name.to_string(),
+        input: if debug { Some(full.to_string()) } else { None },
         package,
         imports,
         using,
@@ -741,16 +531,16 @@ pub fn module_field<'a>(full: &'a str, input: &'a str) -> PResult<'a, ModuleFiel
 
 /// Parse module-level function
 fn module_field_function<'a>(full: &'a str, input: &'a str) -> PResult<'a, ModuleFieldKind> {
-    let (input, _) = keyword("function").parse(input)?;
-    let (input, name) = function_name(input)?;
+    let (input, _) = context("expected 'function' keyword", keyword("function")).parse(input)?;
+    let (input, name) = context("expected function name", function_name).parse(input)?;
     let (input, type_params) = type_params(full, input)?;
     
-    let (input, _) = symbol("(").parse(input)?;
-    let (input, params) = separated_list0(symbol(","), |i| function_param(full, i)).parse(input)?;
+    let (input, _) = context("expected '(' to start parameter list", symbol("(")).parse(input)?;
+    let (input, params) = context("expected function parameters", separated_list0(symbol(","), |i| function_param(full, i))).parse(input)?;
     let (input, _) = opt(symbol(",")).parse(input)?; // Trailing comma
-    let (input, _) = symbol(")").parse(input)?;
+    let (input, _) = context("expected ')' to close parameter list", symbol(")")).parse(input)?;
     
-    let (input, return_type) = opt(preceded(symbol(":"), |i| type_expr(full, i))).parse(input)?;
+    let (input, return_type) = opt(preceded(context("expected ':' before return type", symbol(":")), |i| type_expr(full, i))).parse(input)?;
     
     let (input, body) = opt(|i| block_expr(full, i)).parse(input)?;
     
@@ -766,15 +556,21 @@ fn module_field_function<'a>(full: &'a str, input: &'a str) -> PResult<'a, Modul
 
 /// Parse module-level variable or final field
 fn module_field_var_or_final<'a>(full: &'a str, input: &'a str, has_final_modifier: bool) -> PResult<'a, ModuleFieldKind> {
-    let (input, is_final) = alt((
-        value(true, keyword("final")),
-        value(false, keyword("var")),
-    )).parse(input)?;
+    let (input, is_final) = if has_final_modifier {
+        // If final was already parsed as a modifier, don't parse keywords again
+        (input, true)
+    } else {
+        // Parse either final or var keyword
+        alt((
+            value(true, context("expected 'final' keyword", keyword("final"))),
+            value(false, context("expected 'var' keyword", keyword("var"))),
+        )).parse(input)?
+    };
     
-    let (input, name) = identifier(input)?;
-    let (input, type_hint) = opt(preceded(symbol(":"), |i| type_expr(full, i))).parse(input)?;
-    let (input, expr) = opt(preceded(symbol("="), |i| expression(full, i))).parse(input)?;
-    let (input, _) = symbol(";").parse(input)?;
+    let (input, name) = context("expected variable name", identifier).parse(input)?;
+    let (input, type_hint) = opt(preceded(context("expected ':' before type annotation", symbol(":")), |i| type_expr(full, i))).parse(input)?;
+    let (input, expr) = opt(preceded(context("expected '=' before initializer", symbol("=")), |i| expression(full, i))).parse(input)?;
+    let (input, _) = context("expected ';' after variable declaration", symbol(";")).parse(input)?;
     
     if is_final || has_final_modifier {
         Ok((input, ModuleFieldKind::Final { name, type_hint, expr }))
@@ -935,9 +731,9 @@ pub fn symbol<'a>(sym: &'static str) -> impl FnMut(&'a str) -> PResult<'a, &'a s
 pub fn package_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, Package> {
     context("package declaration", |input| {
     let start = position(full, input);
-    let (input, _) = keyword("package")(input)?;
-    let (input, path) = dot_path(input)?;
-    let (input, _) = symbol(";")(input)?;
+    let (input, _) = context("expected 'package' keyword", keyword("package")).parse(input)?;
+    let (input, path) = context("expected package path (e.g., 'com.example')", dot_path).parse(input)?;
+    let (input, _) = context("expected ';' after package declaration", symbol(";")).parse(input)?;
     let end = position(full, input);
     
     Ok((input, Package {
@@ -951,22 +747,22 @@ pub fn package_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, Package> {
 pub fn import_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, Import> {
     context("import declaration", |input| {
     let start = position(full, input);
-    let (input, _) = keyword("import")(input)?;
+    let (input, _) = context("expected 'import' keyword", keyword("import")).parse(input)?;
     
     // Parse the import path and mode
-    let (input, (path, mode)) = alt((
+    let (input, (path, mode)) = context("expected import path (e.g., 'haxe.ds.StringMap')", alt((
         // import path.* or import path.* except ...
         |input| {
             let (input, path) = import_path_until_wildcard(input)?;
-            let (input, _) = symbol(".*")(input)?;
+            let (input, _) = context("expected '.*' for wildcard import", symbol(".*")).parse(input)?;
             
             // Check if there's an "except" clause
             if let Ok((input_after_except, _)) = keyword("except")(input) {
                 // Parse the exclusion list
-                let (input, exclusions) = separated_list1(
+                let (input, exclusions) = context("expected comma-separated list of excluded identifiers", separated_list1(
                     symbol(","),
                     identifier
-                ).parse(input_after_except)?;
+                )).parse(input_after_except)?;
                 Ok((input, (path, ImportMode::WildcardWithExclusions(exclusions))))
             } else {
                 Ok((input, (path, ImportMode::Wildcard)))
@@ -980,7 +776,7 @@ pub fn import_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, Import> {
             // Check what comes after the path
             if let Ok((input_after_as, _)) = keyword("as")(input_after_path) {
                 // This is an alias import
-                let (input, alias) = identifier(input_after_as)?;
+                let (input, alias) = context("expected alias identifier after 'as'", identifier).parse(input_after_as)?;
                 Ok((input, (full_path, ImportMode::Alias(alias))))
             } else if let Ok((input_before_semicolon, _)) = symbol(";")(input_after_path) {
                 // If we can see a semicolon, check if the last part might be a field
@@ -1005,9 +801,9 @@ pub fn import_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, Import> {
                 Ok((input_after_path, (full_path, ImportMode::Normal)))
             }
         }
-    )).parse(input)?;
+    ))).parse(input)?;
     
-    let (input, _) = symbol(";")(input)?;
+    let (input, _) = context("expected ';' after import statement", symbol(";")).parse(input)?;
     let end = position(full, input);
     
     Ok((input, Import {
@@ -1022,9 +818,9 @@ pub fn import_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, Import> {
 pub fn using_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, Using> {
     context("using declaration", |input| {
     let start = position(full, input);
-    let (input, _) = keyword("using")(input)?;
-    let (input, path) = import_path(input)?;
-    let (input, _) = symbol(";")(input)?;
+    let (input, _) = context("expected 'using' keyword", keyword("using")).parse(input)?;
+    let (input, path) = context("expected type path (e.g., 'StringTools')", import_path).parse(input)?;
+    let (input, _) = context("expected ';' after using statement", symbol(";")).parse(input)?;
     let end = position(full, input);
     
     Ok((input, Using {

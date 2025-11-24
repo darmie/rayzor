@@ -11,7 +11,7 @@ use crate::tast::collections::{new_id_map, new_id_set, IdMap, IdSet};
 use crate::tast::core::{TypeKind, TypeTable};
 use crate::tast::node::{
     BinaryOperator, CastKind as TastCastKind, HasSourceLocation, LiteralValue, TypedExpression,
-    TypedExpressionKind, TypedFunction, TypedObjectField, TypedParameter, TypedStatement,
+    TypedExpressionKind, TypedFunction, TypedMapEntry, TypedObjectField, TypedParameter, TypedStatement,
     UnaryOperator,
 };
 use crate::tast::type_checker::{TypeChecker, TypeCompatibility};
@@ -757,6 +757,26 @@ impl DfgBuilder {
                 object,
                 field_symbol,
             } => self.build_field_access_expression(node_id, object, *field_symbol, expression),
+            TypedExpressionKind::StaticFieldAccess {
+                class_symbol,
+                field_symbol,
+            } => {
+                // Build static field access - no object to evaluate
+                Ok(DataFlowNode {
+                    id: node_id,
+                    kind: DataFlowNodeKind::StaticFieldAccess {
+                        class_symbol: *class_symbol,
+                        field_symbol: *field_symbol,
+                    },
+                    value_type: expression.expr_type,
+                    source_location: expression.source_location,
+                    operands: vec![],
+                    uses: new_id_set(),
+                    defines: None,
+                    basic_block: self.ssa_state.current_block,
+                    metadata: NodeMetadata::default(),
+                })
+            }
             TypedExpressionKind::ArrayAccess { array, index } => {
                 self.build_array_access_expression(node_id, array, index, expression)
             }
@@ -777,6 +797,51 @@ impl DfgBuilder {
                 arguments,
                 expression,
             ),
+            TypedExpressionKind::StaticMethodCall {
+                class_symbol,
+                method_symbol,
+                arguments,
+                type_arguments,
+            } => {
+                // Build static method call - no receiver to evaluate
+                let arg_nodes = arguments
+                    .iter()
+                    .map(|arg| self.build_expression(arg))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                // Create a placeholder function node for the static method
+                let static_method_node_id = self.allocate_node_id();
+                let static_method_node = DataFlowNode {
+                    id: static_method_node_id,
+                    kind: DataFlowNodeKind::Constant {
+                        value: ConstantValue::String(format!("static_method_{:?}", method_symbol)),
+                    },
+                    value_type: expression.expr_type,
+                    source_location: expression.source_location,
+                    operands: vec![],
+                    uses: new_id_set(),
+                    defines: None,
+                    basic_block: self.ssa_state.current_block,
+                    metadata: NodeMetadata::default(),
+                };
+                self.dfg.nodes.insert(static_method_node_id, static_method_node);
+
+                Ok(DataFlowNode {
+                    id: node_id,
+                    kind: DataFlowNodeKind::Call {
+                        function: static_method_node_id,
+                        arguments: arg_nodes.clone(),
+                        call_type: CallType::Static,
+                    },
+                    value_type: expression.expr_type,
+                    source_location: expression.source_location,
+                    operands: arg_nodes,
+                    uses: new_id_set(),
+                    defines: None,
+                    basic_block: self.ssa_state.current_block,
+                    metadata: NodeMetadata::default(),
+                })
+            }
             TypedExpressionKind::BinaryOp {
                 left,
                 operator,
@@ -798,6 +863,9 @@ impl DfgBuilder {
             ),
             TypedExpressionKind::ArrayLiteral { elements } => {
                 self.build_array_literal_expression(node_id, elements, expression)
+            }
+            TypedExpressionKind::MapLiteral { entries } => {
+                self.build_map_literal_expression(node_id, entries, expression)
             }
             TypedExpressionKind::ObjectLiteral { fields } => {
                 self.build_object_literal_expression(node_id, fields, expression)
@@ -1049,6 +1117,225 @@ impl DfgBuilder {
                     value_type: expression.expr_type,
                     source_location: expression.source_location,
                     operands: vec![code_node],
+                    uses: new_id_set(),
+                    defines: None,
+                    basic_block: self.ssa_state.current_block,
+                    metadata: NodeMetadata::default(),
+                })
+            }
+            
+            TypedExpressionKind::Switch { discriminant, cases, default_case } => {
+                // Build switch expression as a multi-way conditional
+                let discriminant_node = self.build_expression(discriminant)?;
+                
+                // For now, simplify switch to a conditional expression
+                // TODO: Implement proper switch semantics with pattern matching
+                let mut operands = vec![discriminant_node];
+                
+                // Build case expressions
+                for case in cases {
+                    let case_value_node = self.build_expression(&case.case_value)?;
+                    operands.push(case_value_node);
+                    // Note: case body is a statement, would need different handling
+                }
+                
+                // Build default case if present
+                if let Some(default) = default_case {
+                    let default_node = self.build_expression(default)?;
+                    operands.push(default_node);
+                }
+                
+                Ok(DataFlowNode {
+                    id: node_id,
+                    kind: DataFlowNodeKind::Block {
+                        statements: operands.clone(),
+                    },
+                    value_type: expression.expr_type,
+                    source_location: expression.source_location,
+                    operands,
+                    uses: new_id_set(),
+                    defines: None,
+                    basic_block: self.ssa_state.current_block,
+                    metadata: NodeMetadata::default(),
+                })
+            }
+            
+            TypedExpressionKind::Try { try_expr, catch_clauses } => {
+                // Build try-catch expression
+                let try_node = self.build_expression(try_expr)?;
+                
+                // For now, simplify try-catch to the try expression
+                // TODO: Implement proper exception handling semantics
+                let mut operands = vec![try_node];
+                
+                // Build catch handlers
+                for catch in catch_clauses {
+                    // Extract expression from catch body statement
+                    let handler_expr = match &catch.body {
+                        TypedStatement::Expression { expression, .. } => expression,
+                        _ => {
+                            // For non-expression statements, we need to handle them differently
+                            // For now, skip complex catch bodies in expressions
+                            continue;
+                        }
+                    };
+                    
+                    let handler_node = self.build_expression(handler_expr)?;
+                    operands.push(handler_node);
+                    
+                    // Build filter if present
+                    if let Some(filter) = &catch.filter {
+                        let filter_node = self.build_expression(filter)?;
+                        operands.push(filter_node);
+                    }
+                }
+                
+                // For now, represent try-catch as a block containing try and catch handlers
+                // TODO: Add proper Try variant to DataFlowNodeKind
+                Ok(DataFlowNode {
+                    id: node_id,
+                    kind: DataFlowNodeKind::Block {
+                        statements: operands.clone(),
+                    },
+                    value_type: expression.expr_type,
+                    source_location: expression.source_location,
+                    operands,
+                    uses: new_id_set(),
+                    defines: None,
+                    basic_block: self.ssa_state.current_block,
+                    metadata: NodeMetadata::default(),
+                })
+            }
+            
+            TypedExpressionKind::VarDeclarationExpr { symbol_id, var_type, initializer } => {
+                // Variable declaration as expression - evaluates to the initializer value
+                let init_node = self.build_expression(initializer)?;
+                
+                // Create allocation for the variable (similar to VarDeclaration statement)
+                let alloc_node_id = self.allocate_node_id();
+                let alloc_node = DataFlowNode {
+                    id: alloc_node_id,
+                    kind: DataFlowNodeKind::Allocation {
+                        allocation_type: *var_type,
+                        size: None,
+                        allocation_kind: AllocationKind::Stack,
+                    },
+                    value_type: *var_type,
+                    source_location: expression.source_location,
+                    operands: vec![],
+                    uses: new_id_set(),
+                    defines: None,
+                    basic_block: self.ssa_state.current_block,
+                    metadata: NodeMetadata::default(),
+                };
+                self.dfg.add_node(alloc_node);
+
+                // Store the initializer value
+                let store_node_id = self.allocate_node_id();
+                let store_node = DataFlowNode {
+                    id: store_node_id,
+                    kind: DataFlowNodeKind::Store {
+                        address: alloc_node_id,
+                        value: init_node,
+                        memory_type: MemoryType::Stack,
+                    },
+                    value_type: TypeId::from_raw(0), // Store has void type
+                    source_location: expression.source_location,
+                    operands: vec![alloc_node_id, init_node],
+                    uses: new_id_set(),
+                    defines: None,
+                    basic_block: self.ssa_state.current_block,
+                    metadata: NodeMetadata::default(),
+                };
+                self.dfg.add_node(store_node);
+
+                // The expression evaluates to the initializer value
+                Ok(DataFlowNode {
+                    id: node_id,
+                    kind: DataFlowNodeKind::Load {
+                        address: init_node,
+                        memory_type: MemoryType::Stack,
+                    },
+                    value_type: expression.expr_type,
+                    source_location: expression.source_location,
+                    operands: vec![init_node],
+                    uses: new_id_set(),
+                    defines: None,
+                    basic_block: self.ssa_state.current_block,
+                    metadata: NodeMetadata::default(),
+                })
+            }
+            
+            TypedExpressionKind::FinalDeclarationExpr { symbol_id, var_type, initializer } => {
+                // Final declaration as expression - evaluates to the initializer value
+                // Similar to var declaration but immutable
+                let init_node = self.build_expression(initializer)?;
+                
+                // Create allocation for the final variable
+                let alloc_node_id = self.allocate_node_id();
+                let alloc_node = DataFlowNode {
+                    id: alloc_node_id,
+                    kind: DataFlowNodeKind::Allocation {
+                        allocation_type: *var_type,
+                        size: None,
+                        allocation_kind: AllocationKind::Stack,
+                    },
+                    value_type: *var_type,
+                    source_location: expression.source_location,
+                    operands: vec![],
+                    uses: new_id_set(),
+                    defines: None,
+                    basic_block: self.ssa_state.current_block,
+                    metadata: NodeMetadata::default(),
+                };
+                self.dfg.add_node(alloc_node);
+
+                // Store the initializer value (final = immutable after first assignment)
+                let store_node_id = self.allocate_node_id();
+                let store_node = DataFlowNode {
+                    id: store_node_id,
+                    kind: DataFlowNodeKind::Store {
+                        address: alloc_node_id,
+                        value: init_node,
+                        memory_type: MemoryType::Stack,
+                    },
+                    value_type: TypeId::from_raw(0), // Store has void type
+                    source_location: expression.source_location,
+                    operands: vec![alloc_node_id, init_node],
+                    uses: new_id_set(),
+                    defines: None,
+                    basic_block: self.ssa_state.current_block,
+                    metadata: NodeMetadata::default(),
+                };
+                self.dfg.add_node(store_node);
+
+                // The expression evaluates to the initializer value
+                Ok(DataFlowNode {
+                    id: node_id,
+                    kind: DataFlowNodeKind::Load {
+                        address: init_node,
+                        memory_type: MemoryType::Stack,
+                    },
+                    value_type: expression.expr_type,
+                    source_location: expression.source_location,
+                    operands: vec![init_node],
+                    uses: new_id_set(),
+                    defines: None,
+                    basic_block: self.ssa_state.current_block,
+                    metadata: NodeMetadata::default(),
+                })
+            }
+            TypedExpressionKind::PatternPlaceholder { .. } => {
+                // Pattern placeholders are handled in later compilation phases
+                // For now, create a placeholder constant node
+                Ok(DataFlowNode {
+                    id: node_id,
+                    kind: DataFlowNodeKind::Constant {
+                        value: ConstantValue::Void,
+                    },
+                    value_type: expression.expr_type,
+                    source_location: expression.source_location,
+                    operands: Vec::new(),
                     uses: new_id_set(),
                     defines: None,
                     basic_block: self.ssa_state.current_block,
@@ -1778,6 +2065,94 @@ impl DfgBuilder {
         })
     }
 
+    fn build_map_literal_expression(
+        &mut self,
+        node_id: DataFlowNodeId,
+        entries: &[TypedMapEntry],
+        expression: &TypedExpression,
+    ) -> Result<DataFlowNode, GraphConstructionError> {
+        // Build key and value expressions first
+        let mut entry_nodes = Vec::new();
+        for entry in entries {
+            let key_node = self.build_expression(&entry.key)?;
+            let value_node = self.build_expression(&entry.value)?;
+            entry_nodes.push((key_node, value_node));
+        }
+
+        // Create size constant  
+        let size_node_id = self.allocate_node_id();
+        let size_node = DataFlowNode {
+            id: size_node_id,
+            kind: DataFlowNodeKind::Constant {
+                value: ConstantValue::Int(entries.len() as i64),
+            },
+            value_type: TypeId::from_raw(1), // Assuming int type
+            source_location: expression.source_location,
+            operands: vec![],
+            uses: new_id_set(),
+            defines: None,
+            basic_block: self.ssa_state.current_block,
+            metadata: NodeMetadata::default(),
+        };
+        self.dfg.add_node(size_node);
+
+        // Create allocation node for the map
+        let alloc_node_id = self.allocate_node_id();
+        let alloc_node = DataFlowNode {
+            id: alloc_node_id,
+            kind: DataFlowNodeKind::Allocation {
+                allocation_type: expression.expr_type,
+                size: Some(size_node_id),
+                allocation_kind: AllocationKind::Heap, // Maps are heap allocated
+            },
+            value_type: expression.expr_type,
+            source_location: expression.source_location,
+            operands: vec![size_node_id],
+            uses: new_id_set(),
+            defines: None,
+            basic_block: self.ssa_state.current_block,
+            metadata: NodeMetadata::default(),
+        };
+        self.dfg.add_node(alloc_node);
+
+        // Create store nodes for each key-value pair
+        for (key_node, value_node) in entry_nodes {
+            let store_node_id = self.allocate_node_id();
+            let store_node = DataFlowNode {
+                id: store_node_id,
+                kind: DataFlowNodeKind::Store {
+                    address: alloc_node_id,
+                    value: value_node,
+                    memory_type: MemoryType::Heap,
+                },
+                value_type: TypeId::from_raw(0), // Store has void type
+                source_location: expression.source_location,
+                operands: vec![alloc_node_id, key_node, value_node],
+                uses: new_id_set(),
+                defines: None,
+                basic_block: self.ssa_state.current_block,
+                metadata: NodeMetadata::default(),
+            };
+            self.dfg.add_node(store_node);
+        }
+
+        // Return the allocation as the result
+        Ok(DataFlowNode {
+            id: node_id,
+            kind: DataFlowNodeKind::Load {
+                address: alloc_node_id,
+                memory_type: MemoryType::Heap,
+            },
+            value_type: expression.expr_type,
+            source_location: expression.source_location,
+            operands: vec![alloc_node_id],
+            uses: new_id_set(),
+            defines: None,
+            basic_block: self.ssa_state.current_block,
+            metadata: NodeMetadata::default(),
+        })
+    }
+
     fn build_object_literal_expression(
         &mut self,
         node_id: DataFlowNodeId,
@@ -2425,6 +2800,15 @@ impl DfgBuilder {
                 ..
             } => {
                 self.collect_modified_variables_recursive(receiver, modified)?;
+                for arg in arguments {
+                    self.collect_modified_variables_recursive(arg, modified)?;
+                }
+            }
+            TypedExpressionKind::StaticMethodCall {
+                arguments,
+                ..
+            } => {
+                // Static method calls don't have a receiver
                 for arg in arguments {
                     self.collect_modified_variables_recursive(arg, modified)?;
                 }
@@ -3217,6 +3601,7 @@ mod tests {
             type_parameters: vec![],
             source_location: SourceLocation::unknown(),
             visibility: Visibility::Public,
+            is_static: false,
             effects: FunctionEffects {
                 is_async: false,
                 can_throw: false,
@@ -3478,6 +3863,7 @@ mod tests {
             body: vec![block_stmt],
             type_parameters: vec![],
             source_location: SourceLocation::unknown(),
+            is_static: false,
             effects: FunctionEffects::default(),
             metadata: FunctionMetadata::default(),
             visibility: Visibility::Public,

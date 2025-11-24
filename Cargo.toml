@@ -1,7 +1,9 @@
 [workspace]
 members = [
     "parser",
-    "compiler"
+    "compiler",
+    "diagnostics",
+    "source_map"
 ]
 
 [package]
@@ -11,6 +13,7 @@ edition = "2021"
 
 [dependencies]
 parser = { path = "parser" }
+compiler = { path = "compiler" }
 
 
 
@@ -290,3 +293,11 @@ path = "debug_tests/test_comprehensive_error_patterns.rs"
 [[bin]]
 name = "test_parser_error_summary"
 path = "debug_tests/test_parser_error_summary.rs"
+
+[[bin]]
+name = "test_for_in_keyvalue_debug"
+path = "test_for_in_keyvalue_debug.rs"
+
+[[bin]]
+name = "test_for_in_compilation"
+path = "test_for_in_compilation.rs"

@@ -105,6 +105,11 @@ pub enum TypeKind {
     /// Error type (for error recovery during type checking)
     Error,
     
+    /// Placeholder type (for forward references during AST lowering)
+    Placeholder { 
+        name: InternedString 
+    },
+    
     // === Generic Types ===
     /// Type parameter: T, U, etc.
     TypeParameter { 
@@ -567,7 +572,7 @@ impl TypeTable {
         
         // Create new type
         let type_id = TypeId::from_raw(self.types.len() as u32);
-        let new_type = self.arena.alloc(Type::with_location(type_id, kind.clone(), location));
+        let new_type = self.arena.alloc(Type::with_location(type_id, kind, location));
         
         // SAFETY: Arena ensures this reference is valid for the lifetime of TypeTable
         let static_type_ref: &'static Type = unsafe { std::mem::transmute(new_type) };
@@ -601,6 +606,9 @@ impl TypeTable {
             TypeKind::Float | TypeKind::String | TypeKind::Dynamic | 
             TypeKind::Unknown | TypeKind::Error => {
                 // No additional data to hash
+            }
+            TypeKind::Placeholder { name } => {
+                name.hash(&mut hasher);
             }
             TypeKind::Class { symbol_id, type_args } |
             TypeKind::Interface { symbol_id, type_args } |
@@ -764,19 +772,28 @@ impl TypeTable {
     
     /// Create a generic instance with caching
     pub fn create_generic_instance(&mut self, base_type: TypeId, type_args: Vec<TypeId>) -> TypeId {
-        let cache_key = (base_type, type_args.clone());
+        // Use a temporary key for lookup to avoid cloning unless necessary
+        let temp_key = (base_type, &type_args);
         
-        if let Some(&cached_id) = self.generic_cache.get(&cache_key) {
-            return cached_id;
+        // Check if this combination already exists
+        for ((cached_base, cached_args), &cached_id) in &self.generic_cache {
+            if *cached_base == base_type && cached_args == &type_args {
+                return cached_id;
+            }
         }
+        
+        // Not in cache, create new instance
+        // Clone type_args only once for both the TypeKind and the cache
+        let type_args_clone = type_args.clone();
         
         let instance_id = self.intern_type(TypeKind::GenericInstance { 
             base_type, 
-            type_args: type_args.clone(),
+            type_args,
             instantiation_cache_id: None,
         });
         
-        self.generic_cache.insert(cache_key, instance_id);
+        // Store in cache using the already cloned args
+        self.generic_cache.insert((base_type, type_args_clone), instance_id);
         instance_id
     }
     
@@ -784,15 +801,12 @@ impl TypeTable {
     pub fn create_type_parameter(
         &mut self, 
         symbol_id: SymbolId, 
-        constraints: Vec<super::type_checker::ConstraintKind>, 
+        constraints: Vec<TypeId>, 
         variance: Variance
     ) -> TypeId {
-        // Convert ConstraintKind to TypeId constraints (simplified for now)
-        let type_constraints = Vec::new(); // TODO: Convert constraint kinds to constraint type IDs
-        
         self.intern_type(TypeKind::TypeParameter { 
             symbol_id, 
-            constraints: type_constraints,
+            constraints,
             variance,
         })
     }
@@ -1029,6 +1043,7 @@ impl fmt::Display for TypeKind {
             TypeKind::Dynamic => write!(f, "Dynamic"),
             TypeKind::Unknown => write!(f, "?"),
             TypeKind::Error => write!(f, "<error>"),
+            TypeKind::Placeholder { name } => write!(f, "<placeholder:{:?}>", name),
             
             TypeKind::Class { symbol_id, type_args } => {
                 write!(f, "Class({:?}", symbol_id)?;

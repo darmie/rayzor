@@ -43,6 +43,7 @@ fn create_test_function(body: Vec<TypedStatement>) -> TypedFunction {
         visibility: Visibility::Private,
         effects: FunctionEffects::default(),
         type_parameters: vec![],
+        is_static: false,
         source_location: SourceLocation::unknown(),
         metadata: FunctionMetadata::default(),
     }
@@ -287,6 +288,7 @@ mod haxe_specific_tests {
             exception_variable: SymbolId::from_raw(30),
             body: create_test_statement(),
             source_location: SourceLocation::unknown(),
+            filter: None
         };
         
         let finally_block = Some(Box::new(create_test_statement()));
@@ -474,6 +476,7 @@ mod complex_scenarios_tests {
             exception_variable: SymbolId::from_raw(50),
             body: create_test_statement(),
             source_location: SourceLocation::unknown(),
+            filter: None
         };
         
         let try_stmt = TypedStatement::Try {
@@ -731,6 +734,8 @@ mod performance_tests {
 
 #[cfg(test)]
 mod integration_tests {
+    use std::{cell::RefCell, rc::Rc};
+
     use super::*;
 
     #[test]
@@ -782,6 +787,7 @@ mod integration_tests {
                         source_location: SourceLocation::unknown(),
                     },
                     source_location: SourceLocation::unknown(),
+                    filter: None
                 }],
                 finally_block: Some(Box::new(create_test_statement())),
                 source_location: SourceLocation::unknown(),
@@ -834,6 +840,11 @@ mod integration_tests {
             type_aliases: vec![],
             imports: vec![],
             metadata: FileMetadata::default(),
+            abstracts: vec![],
+            module_fields: vec![],
+            using_statements: vec![],
+            string_interner: Rc::new(RefCell::new(StringInterner::new())),
+            
         };
         
         let cfgs = builder.build_file(&file).unwrap();

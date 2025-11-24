@@ -46,28 +46,28 @@ pub fn class_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, ClassDecl> {
     let (input, modifiers) = modifiers(input)?;
     
     // class keyword and name
-    let (input, _) = keyword("class")(input)?;
-    let (input, name) = identifier(input)?;
+    let (input, _) = context("expected 'class' keyword", keyword("class")).parse(input)?;
+    let (input, name) = context("expected class name", identifier).parse(input)?;
     
     // Type parameters
     let (input, type_params) = type_params(full, input)?;
     
     // Extends clause
     let (input, extends) = opt(preceded(
-        keyword("extends"),
-        |i| type_expr(full, i)
+        context("expected 'extends' keyword", keyword("extends")),
+        context("expected parent class type", |i| type_expr(full, i))
     )).parse(input)?;
     
     // Implements clause
     let (input, implements) = opt(preceded(
-        keyword("implements"),
-        separated_list1(symbol(","), |i| type_expr(full, i))
+        context("expected 'implements' keyword", keyword("implements")),
+        context("expected comma-separated list of interface types", separated_list1(symbol(","), |i| type_expr(full, i)))
     )).parse(input)?;
     
     // Class body
-    let (input, _) = symbol("{").parse(input)?;
-    let (input, fields) = class_fields(full, input)?;
-    let (input, _) = symbol("}").parse(input)?;
+    let (input, _) = context("expected '{' to start class body", symbol("{")).parse(input)?;
+    let (input, fields) = context("expected class members (fields, methods, properties)", |i| class_fields(full, i)).parse(input)?;
+    let (input, _) = context("expected '}' to close class body", symbol("}")).parse(input)?;
     
     let end = position(full, input);
     
@@ -228,10 +228,18 @@ pub fn abstract_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, AbstractD
     let (input, name) = identifier(input)?;
     let (input, type_params) = type_params(full, input)?;
     
-    // Underlying type
-    let (input, _) = symbol("(").parse(input)?;
-    let (input, underlying) = type_expr(full, input)?;
-    let (input, _) = symbol(")").parse(input)?;
+    // Underlying type (optional for @:coreType abstracts)
+    let has_core_type = meta.iter().any(|m| m.name == "coreType");
+    let (input, underlying) = if has_core_type {
+        // @:coreType abstracts don't need an underlying type
+        (input, None)
+    } else {
+        // Regular abstracts require an underlying type in parentheses
+        let (input, _) = symbol("(").parse(input)?;
+        let (input, underlying) = type_expr(full, input)?;
+        let (input, _) = symbol(")").parse(input)?;
+        (input, Some(underlying))
+    };
     
     // From/to clauses
     let (input, from) = many0(preceded(
@@ -397,16 +405,16 @@ fn interface_field<'a>(full: &'a str, input: &'a str) -> PResult<'a, ClassField>
 
 /// Parse function field
 fn field_function<'a>(full: &'a str, input: &'a str) -> PResult<'a, ClassFieldKind> {
-    let (input, _) = keyword("function").parse(input)?;
-    let (input, name) = function_name(input)?;
+    let (input, _) = context("expected 'function' keyword", keyword("function")).parse(input)?;
+    let (input, name) = context("expected function name", function_name).parse(input)?;
     let (input, type_params) = type_params(full, input)?;
     
-    let (input, _) = symbol("(").parse(input)?;
-    let (input, params) = separated_list0(symbol(","), |i| function_param(full, i)).parse(input)?;
+    let (input, _) = context("expected '(' to start parameter list", symbol("(")).parse(input)?;
+    let (input, params) = context("expected function parameters", separated_list0(symbol(","), |i| function_param(full, i))).parse(input)?;
     let (input, _) = opt(symbol(",")).parse(input)?; // Trailing comma
-    let (input, _) = symbol(")").parse(input)?;
+    let (input, _) = context("expected ')' to close parameter list", symbol(")")).parse(input)?;
     
-    let (input, return_type) = opt(preceded(symbol(":"), |i| type_expr(full, i))).parse(input)?;
+    let (input, return_type) = opt(preceded(context("expected ':' before return type", symbol(":")), |i| type_expr(full, i))).parse(input)?;
     
     // Body is optional (for interfaces and extern functions)
     let (input, body) = opt(|i| function_body(full, i)).parse(input)?;
@@ -419,13 +427,13 @@ fn field_function<'a>(full: &'a str, input: &'a str) -> PResult<'a, ClassFieldKi
                 input
             } else {
                 // Single expression body needs semicolon
-                let (input, _) = symbol(";").parse(input)?;
+                let (input, _) = context("expected ';' after function expression", symbol(";")).parse(input)?;
                 input
             }
         }
         None => {
             // No body, semicolon required (interface/extern functions)
-            let (input, _) = symbol(";").parse(input)?;
+            let (input, _) = context("expected ';' after function declaration", symbol(";")).parse(input)?;
             input
         }
     };
@@ -448,10 +456,10 @@ fn field_var_or_final<'a>(full: &'a str, input: &'a str, has_final_modifier: boo
         // If final was already parsed as a modifier, expect an identifier (no keyword)
         map(
             tuple((
-                |i| identifier(i),
-                opt(preceded(symbol(":"), |i| type_expr(full, i))),
-                opt(preceded(symbol("="), |i| expression(full, i))),
-                symbol(";")
+                context("expected field name", identifier),
+                opt(preceded(context("expected ':' before type annotation", symbol(":")), |i| type_expr(full, i))),
+                opt(preceded(context("expected '=' before initializer", symbol("=")), |i| expression(full, i))),
+                context("expected ';' after final field declaration", symbol(";"))
             )),
             |(name, type_hint, expr, _)| ClassFieldKind::Final {
                 name,
@@ -464,11 +472,11 @@ fn field_var_or_final<'a>(full: &'a str, input: &'a str, has_final_modifier: boo
             // var field
             map(
                 tuple((
-                    keyword("var"),
-                    |i| identifier(i),
-                    opt(preceded(symbol(":"), |i| type_expr(full, i))),
-                    opt(preceded(symbol("="), |i| expression(full, i))),
-                    symbol(";")
+                    context("expected 'var' keyword", keyword("var")),
+                    context("expected field name", identifier),
+                    opt(preceded(context("expected ':' before type annotation", symbol(":")), |i| type_expr(full, i))),
+                    opt(preceded(context("expected '=' before initializer", symbol("=")), |i| expression(full, i))),
+                    context("expected ';' after variable field declaration", symbol(";"))
                 )),
                 |(_, name, type_hint, expr, _)| ClassFieldKind::Var {
                     name,
@@ -479,11 +487,11 @@ fn field_var_or_final<'a>(full: &'a str, input: &'a str, has_final_modifier: boo
             // final field (standalone)
             map(
                 tuple((
-                    keyword("final"),
-                    |i| identifier(i),
-                    opt(preceded(symbol(":"), |i| type_expr(full, i))),
-                    opt(preceded(symbol("="), |i| expression(full, i))),
-                    symbol(";")
+                    context("expected 'final' keyword", keyword("final")),
+                    context("expected field name", identifier),
+                    opt(preceded(context("expected ':' before type annotation", symbol(":")), |i| type_expr(full, i))),
+                    opt(preceded(context("expected '=' before initializer", symbol("=")), |i| expression(full, i))),
+                    context("expected ';' after final field declaration", symbol(";"))
                 )),
                 |(_, name, type_hint, expr, _)| ClassFieldKind::Final {
                     name,

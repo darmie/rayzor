@@ -36,10 +36,11 @@ fn function_body<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
 // Exception handling
 
 pub fn try_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
+    use nom::error::context;
     let start = position(full, input);
-    let (input, _) = keyword("try").parse(input)?;
-    let (input, expr) = expression(full, input)?;
-    let (input, catches) = many1(|i| catch_clause(full, i)).parse(input)?;
+    let (input, _) = context("expected 'try' keyword", keyword("try")).parse(input)?;
+    let (input, expr) = context("expected expression after 'try'", |i| expression(full, i)).parse(input)?;
+    let (input, catches) = context("expected at least one 'catch' clause after try expression", many1(|i| catch_clause(full, i))).parse(input)?;
     let end = position(full, input);
     
     Ok((input, Expr {
@@ -52,14 +53,15 @@ pub fn try_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
 }
 
 fn catch_clause<'a>(full: &'a str, input: &'a str) -> PResult<'a, Catch> {
+    use nom::error::context;
     let start = position(full, input);
-    let (input, _) = keyword("catch").parse(input)?;
-    let (input, _) = symbol("(").parse(input)?;
-    let (input, var) = identifier(input)?;
-    let (input, type_hint) = opt(preceded(symbol(":"), |i| type_expr(full, i))).parse(input)?;
-    let (input, _) = symbol(")").parse(input)?;
-    let (input, filter) = opt(preceded(keyword("if"), |i| expression(full, i))).parse(input)?;
-    let (input, body) = expression(full, input)?;
+    let (input, _) = context("expected 'catch' keyword", keyword("catch")).parse(input)?;
+    let (input, _) = context("expected '(' after 'catch'", symbol("(")).parse(input)?;
+    let (input, var) = context("expected variable name in catch clause", identifier).parse(input)?;
+    let (input, type_hint) = opt(preceded(context("expected ':' before exception type", symbol(":")), |i| type_expr(full, i))).parse(input)?;
+    let (input, _) = context("expected ')' to close catch parameter list", symbol(")")).parse(input)?;
+    let (input, filter) = opt(preceded(context("expected 'if' keyword for catch filter", keyword("if")), |i| expression(full, i))).parse(input)?;
+    let (input, body) = context("expected catch body expression", |i| expression(full, i)).parse(input)?;
     let end = position(full, input);
     
     Ok((input, Catch {
@@ -193,16 +195,17 @@ pub fn throw_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
 // Variable declarations
 
 pub fn var_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
+    use nom::error::context;
     let start = position(full, input);
     
     let (input, is_final) = alt((
-        value(true, keyword("final")),
-        value(false, keyword("var")),
+        value(true, context("expected 'final' keyword", keyword("final"))),
+        value(false, context("expected 'var' keyword", keyword("var"))),
     )).parse(input)?;
     
-    let (input, name) = identifier(input)?;
-    let (input, type_hint) = opt(preceded(symbol(":"), |i| type_expr(full, i))).parse(input)?;
-    let (input, expr) = opt(preceded(symbol("="), |i| expression(full, i))).parse(input)?;
+    let (input, name) = context("expected variable name", identifier).parse(input)?;
+    let (input, type_hint) = opt(preceded(context("expected ':' before type annotation", symbol(":")), |i| type_expr(full, i))).parse(input)?;
+    let (input, expr) = opt(preceded(context("expected '=' before initializer", symbol("=")), |i| expression(full, i))).parse(input)?;
     
     let end = position(full, input);
     

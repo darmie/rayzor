@@ -47,6 +47,9 @@ pub enum TypeErrorKind {
     /// Undefined type reference
     UndefinedType { name: InternedString },
 
+    /// Undefined symbol reference
+    UndefinedSymbol { name: InternedString },
+
     /// Invalid type arguments for generic type
     InvalidTypeArguments {
         base_type: TypeId,
@@ -83,6 +86,43 @@ pub enum TypeErrorKind {
 
     /// Generic type inference failed
     InferenceFailed { reason: String },
+    
+    /// Interface implementation is missing or incorrect
+    InterfaceNotImplemented {
+        interface_type: TypeId,
+        class_type: TypeId,
+        missing_method: InternedString,
+    },
+    
+    /// Method signature doesn't match interface requirement
+    MethodSignatureMismatch {
+        expected: TypeId,
+        actual: TypeId,
+        method_name: InternedString,
+    },
+    
+    /// Missing override modifier on overriding method
+    MissingOverride {
+        method_name: InternedString,
+        parent_class: InternedString,
+    },
+    
+    /// Invalid override - no parent method to override
+    InvalidOverride {
+        method_name: InternedString,
+    },
+    
+    /// Accessing static member through instance
+    StaticAccessFromInstance {
+        member_name: InternedString,
+        class_name: InternedString,
+    },
+    
+    /// Accessing instance member through static context
+    InstanceAccessFromStatic {
+        member_name: InternedString,
+        class_name: InternedString,
+    },
 }
 
 /// Access levels for visibility checking
@@ -90,6 +130,7 @@ pub enum TypeErrorKind {
 pub enum AccessLevel {
     Private,
     Protected,
+    Internal,
     Public,
 }
 
@@ -1071,7 +1112,6 @@ impl<'a> TypeChecker<'a> {
         source_id: TypeId,
         _target_id: TypeId,
     ) -> TypeCompatibility {
-        println!("{:?} => {:?}", source, target);
         match (&source, &target) {
             // === Identity Cases ===
             (TypeKind::Void, TypeKind::Void)
@@ -1193,7 +1233,8 @@ impl<'a> TypeChecker<'a> {
 
             // === Error Recovery ===
             (TypeKind::Error, _) | (_, TypeKind::Error) => TypeCompatibility::Assignable,
-            (TypeKind::Unknown, _) | (_, TypeKind::Unknown) => TypeCompatibility::Assignable,
+            // Unknown types should trigger type errors to help find bugs
+            (TypeKind::Unknown, _) | (_, TypeKind::Unknown) => TypeCompatibility::Incompatible,
 
             // === Default: Incompatible ===
             _ => TypeCompatibility::Incompatible,
@@ -1663,20 +1704,69 @@ impl<'a> TypeChecker<'a> {
         if source_args.len() != target_args.len() {
             return TypeCompatibility::Incompatible;
         }
-
-        // For now, use invariance (exact match required)
-        // TODO: Implement proper variance checking
-        for (source_arg, target_arg) in source_args.iter().zip(target_args.iter()) {
-            if source_arg != target_arg {
-                // Could check for compatibility here with variance
-                let compat = self.check_compatibility(*source_arg, *target_arg);
-                if compat == TypeCompatibility::Incompatible {
-                    return TypeCompatibility::Incompatible;
+        
+        // Apply variance checking for each type argument
+        let mut overall_compat = TypeCompatibility::Identical;
+        
+        for (i, (source_arg, target_arg)) in source_args.iter().zip(target_args.iter()).enumerate() {
+            // For now, use conservative variance rules:
+            // - Most generic types use covariance for "output" types (like Array<T>, return types)
+            // - Function parameter types are contravariant
+            // - In absence of explicit variance annotations, use sound defaults
+            
+            let variance = self.infer_type_parameter_variance(i, source_args.len());
+            
+            let arg_compat = match variance {
+                super::core::Variance::Covariant => {
+                    // Source type argument can be more specific than target
+                    // T <: U means Generic<T> <: Generic<U>
+                    self.check_compatibility(*source_arg, *target_arg)
+                },
+                super::core::Variance::Contravariant => {
+                    // Source type argument can be more general than target
+                    // T :> U means Generic<T> <: Generic<U>
+                    self.check_compatibility(*target_arg, *source_arg)
+                },
+                super::core::Variance::Invariant => {
+                    // Type arguments must be exactly the same
+                    if source_arg == target_arg {
+                        TypeCompatibility::Identical
+                    } else {
+                        TypeCompatibility::Incompatible
+                    }
+                }
+            };
+            
+            match arg_compat {
+                TypeCompatibility::Incompatible => return TypeCompatibility::Incompatible,
+                TypeCompatibility::Identical if overall_compat == TypeCompatibility::Identical => {
+                    // Keep as Identical
+                },
+                TypeCompatibility::Assignable | TypeCompatibility::Convertible => {
+                    overall_compat = TypeCompatibility::Assignable;
+                },
+                _ => {
+                    overall_compat = TypeCompatibility::Assignable;
                 }
             }
         }
-
-        TypeCompatibility::Assignable
+        
+        overall_compat
+    }
+    
+    /// Infer variance for a type parameter position based on common patterns
+    fn infer_type_parameter_variance(&self, parameter_index: usize, total_params: usize) -> super::core::Variance {
+        // Use safe defaults that are common in object-oriented languages:
+        // - For most generic types (Array<T>, List<T>, etc.), use covariance
+        // - This allows Array<Dog> to be treated as Array<Animal> when Dog extends Animal
+        // - This is sound for immutable/read-only access patterns
+        
+        // In the future, this could be improved by:
+        // 1. Looking up actual variance annotations from type definitions
+        // 2. Using variance inference based on how type parameters are used
+        // 3. Supporting explicit variance annotations in Haxe syntax
+        
+        super::core::Variance::Covariant
     }
 
     /// Check type arguments when inheriting (with substitution)
@@ -1746,12 +1836,78 @@ impl<'a> TypeChecker<'a> {
         initial_args: &[TypeId],
         chain: &[SymbolId],
     ) -> Vec<TypeId> {
-        // This is a simplified version - full implementation would need
-        // to track type parameter mappings through the inheritance chain
-
-        // For now, just return the initial arguments
-        // TODO: Implement proper type substitution
-        initial_args.to_vec()
+        if chain.is_empty() {
+            return initial_args.to_vec();
+        }
+        
+        let mut current_args = initial_args.to_vec();
+        
+        // Walk through the inheritance chain and apply type substitutions
+        for i in 0..chain.len() - 1 {
+            let current_class = chain[i];
+            let next_class = chain[i + 1];
+            
+            // Apply type substitution from current_class to next_class
+            current_args = self.substitute_type_arguments_to_parent(
+                current_class,
+                &current_args,
+                next_class,
+            );
+        }
+        
+        current_args
+    }
+    
+    /// Substitute type arguments from a child class to its direct parent
+    fn substitute_type_arguments_to_parent(
+        &self,
+        child_class: SymbolId,
+        child_args: &[TypeId],
+        parent_class: SymbolId,
+    ) -> Vec<TypeId> {
+        // Get the hierarchy info for the child class
+        if let Some(hierarchy) = self.symbol_table.get_class_hierarchy(child_class) {
+            if let Some(superclass_type) = hierarchy.superclass {
+                // Get the parent class symbol and type arguments from the superclass type
+                if let Some(parent_sym) = self.symbol_table.get_symbol_from_type(superclass_type) {
+                    if parent_sym == parent_class {
+                        // This is the direct parent - extract its type arguments
+                        return self.extract_type_arguments_from_type(superclass_type);
+                    }
+                }
+                
+                // Check interfaces as well
+                for &interface_type in &hierarchy.interfaces {
+                    if let Some(interface_sym) = self.symbol_table.get_symbol_from_type(interface_type) {
+                        if interface_sym == parent_class {
+                            // This is the target interface - extract its type arguments
+                            return self.extract_type_arguments_from_type(interface_type);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Fallback: return child arguments unchanged
+        // This happens when we can't find the exact inheritance relationship
+        child_args.to_vec()
+    }
+    
+    /// Extract type arguments from a generic type
+    fn extract_type_arguments_from_type(&self, type_id: TypeId) -> Vec<TypeId> {
+        if let Some(type_info) = self.type_table.borrow().get(type_id) {
+            match &type_info.kind {
+                super::core::TypeKind::Class { type_args, .. } |
+                super::core::TypeKind::Interface { type_args, .. } |
+                super::core::TypeKind::Enum { type_args, .. } => {
+                    return type_args.clone();
+                },
+                _ => {}
+            }
+        }
+        
+        // No type arguments found
+        vec![]
     }
 
     /// Check interface implementation with type arguments
@@ -1825,8 +1981,10 @@ impl<'a> TypeChecker<'a> {
         arg_types: &[TypeId],
         call_location: SourceLocation,
     ) -> TypeCheckResult<TypeId> {
-        let func_kind = match self.type_table.borrow().get(function_type) {
-            Some(t) => t.kind.clone(), // Clone the TypeKind
+        // Check if it's a function type and extract needed info
+        let type_table = self.type_table.borrow();
+        let func_type = match type_table.get(function_type) {
+            Some(t) => t,
             None => {
                 return Err(TypeCheckError {
                     kind: TypeErrorKind::UndefinedType {
@@ -1839,25 +1997,33 @@ impl<'a> TypeChecker<'a> {
             }
         };
 
-        match &func_kind {
+        match &func_type.kind {
             TypeKind::Function {
                 params,
                 return_type,
                 ..
             } => {
+                // Extract values we need before dropping the borrow
+                let expected_params = params.clone();
+                let expected_return = *return_type;
+                let void_type = type_table.void_type();
+                
+                // Drop the borrow before doing more work
+                drop(type_table);
+                
                 // Check parameter count
-                if params.len() != arg_types.len() {
+                if expected_params.len() != arg_types.len() {
                     return Err(TypeCheckError {
                         kind: TypeErrorKind::SignatureMismatch {
-                            expected_params: params.clone(),
+                            expected_params,
                             actual_params: arg_types.to_vec(),
-                            expected_return: *return_type,
-                            actual_return: self.type_table.borrow().void_type(),
+                            expected_return,
+                            actual_return: void_type,
                         },
                         location: call_location,
                         context: format!(
                             "Expected {} arguments, got {}",
-                            params.len(),
+                            expected_params.len(),
                             arg_types.len()
                         ),
                         suggestion: Some("Check the function signature".to_string()),
@@ -1866,7 +2032,7 @@ impl<'a> TypeChecker<'a> {
 
                 // Check each parameter type
                 for (i, (expected_param, actual_arg)) in
-                    params.iter().zip(arg_types.iter()).enumerate()
+                    expected_params.iter().zip(arg_types.iter()).enumerate()
                 {
                     let compat = self.check_compatibility(*actual_arg, *expected_param);
                     if compat == TypeCompatibility::Incompatible {
@@ -1882,7 +2048,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                Ok(*return_type)
+                Ok(expected_return)
             }
 
             _ => Err(TypeCheckError {

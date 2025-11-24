@@ -154,6 +154,12 @@ pub enum DataFlowNodeKind {
         field_symbol: SymbolId,
     },
     
+    /// Static field access
+    StaticFieldAccess {
+        class_symbol: SymbolId,
+        field_symbol: SymbolId,
+    },
+    
     /// Array access
     ArrayAccess {
         array: DataFlowNodeId,

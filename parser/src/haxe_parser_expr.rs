@@ -24,14 +24,15 @@ pub fn expression<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
 
 /// Parse ternary expression: `cond ? then : else`
 fn ternary_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
+    use nom::error::context;
     let start = position(full, input);
     let (input, cond) = assignment_expr(full, input)?;
     
     // Check for ternary
     if let Ok((input, _)) = symbol("?")(input) {
-        let (input, then_expr) = ternary_expr(full, input)?;
-        let (input, _) = symbol(":")(input)?;
-        let (input, else_expr) = ternary_expr(full, input)?;
+        let (input, then_expr) = context("expected expression after '?' in ternary operator", |i| ternary_expr(full, i)).parse(input)?;
+        let (input, _) = context("expected ':' after then expression in ternary operator", symbol(":")).parse(input)?;
+        let (input, else_expr) = context("expected expression after ':' in ternary operator", |i| ternary_expr(full, i)).parse(input)?;
         let end = position(full, input);
         
         Ok((input, Expr {
@@ -330,7 +331,17 @@ pub fn postfix_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     
     // Parse postfix operations
     let mut input = input;
+    let mut loop_counter = 0;
+    const MAX_POSTFIX_ITERATIONS: usize = 100; // Safety limit
+    
     loop {
+        loop_counter += 1;
+        if loop_counter > MAX_POSTFIX_ITERATIONS {
+            // Emergency brake - break the loop if we're stuck
+            break;
+        }
+        
+        let input_before = input;
         // Try each postfix operation
         // Check for field access but ensure we don't consume ... operator
         if let Ok((rest, _)) = symbol(".").parse(input) {
@@ -393,6 +404,12 @@ pub fn postfix_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
             input = rest;
         } else {
             // No more postfix operations
+            break;
+        }
+        
+        // Safety check: ensure we consumed some input to prevent infinite loops
+        if input == input_before {
+            // If we didn't advance the input, break to prevent infinite loop
             break;
         }
     }

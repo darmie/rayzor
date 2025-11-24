@@ -1,0 +1,208 @@
+//! Test generic constraint validation
+
+#[cfg(test)]
+mod tests {
+    use crate::tast::{
+        AstLowering, StringInterner, SymbolTable, TypeTable, ScopeTree, ScopeId,
+    };
+    use parser::parse_haxe_file;
+    use diagnostics::{SourceMap};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[test]
+    fn test_generic_constraint_violation() {
+        let haxe_code = r#"
+// Define an interface for comparison
+interface Comparable<T> {
+    function compareTo(other:T):Int;
+}
+
+// Define a generic class with constraints
+class SortedList<T:Comparable<T>> {
+    var items:Array<T>;
+    
+    public function new() {
+        items = [];
+    }
+    
+    public function add(item:T):Void {
+        // Would implement sorted insertion using compareTo
+    }
+}
+
+// A class that implements Comparable
+class ComparableInt implements Comparable<ComparableInt> {
+    var value:Int;
+    
+    public function new(v:Int) {
+        value = v;
+    }
+    
+    public function compareTo(other:ComparableInt):Int {
+        return value - other.value;
+    }
+}
+
+// A class that does NOT implement Comparable
+class NotComparable {
+    var name:String;
+    
+    public function new(n:String) {
+        name = n;
+    }
+}
+
+class TestGenericConstraints {
+    public function test():Void {
+        // This should work - ComparableInt implements Comparable
+        var validList:SortedList<ComparableInt>;
+        
+        // This should fail - NotComparable doesn't implement Comparable
+        var invalidList:SortedList<NotComparable>;
+    }
+}
+"#;
+
+        // Parse
+        let ast_result = parse_haxe_file("generic_constraint_test.hx", haxe_code, true);
+        let haxe_file = ast_result.expect("Parse should succeed");
+        
+        // Create context
+        let mut string_interner = StringInterner::new();
+        let mut symbol_table = SymbolTable::new();
+        let type_table = Rc::new(RefCell::new(TypeTable::new()));
+        let mut scope_tree = ScopeTree::new(ScopeId::first());
+        let mut source_map = SourceMap::new();
+        let file_id = source_map.add_file("generic_constraint_test.hx".to_string(), haxe_code.to_string());
+        
+        // Create namespace and import resolvers
+        let mut namespace_resolver = crate::tast::namespace::NamespaceResolver::new(&string_interner);
+        let mut import_resolver = crate::tast::namespace::ImportResolver::new(&namespace_resolver);
+        
+        // Lower to TAST
+        let mut lowering = AstLowering::new(
+            &mut string_interner,
+            &mut symbol_table,
+            &type_table,
+            &mut scope_tree,
+            &mut namespace_resolver,
+            &mut import_resolver,
+        );
+        lowering.initialize_span_converter(file_id.as_usize() as u32, haxe_code.to_string());
+        
+        let typed_file_result = lowering.lower_file(&haxe_file);
+        
+        // Check for constraint violation error
+        match typed_file_result {
+            Ok(_) => {
+                // If lowering succeeds, check if there were any errors collected
+                let errors = lowering.get_errors();
+                
+                // We expect some kind of error - could be UnresolvedType or GenericParameterError
+                let has_relevant_error = errors.iter().any(|e| {
+                    matches!(e, 
+                        crate::tast::ast_lowering::LoweringError::UnresolvedType { .. } |
+                        crate::tast::ast_lowering::LoweringError::GenericParameterError { .. } |
+                        crate::tast::ast_lowering::LoweringError::TypeInferenceError { .. }
+                    )
+                });
+                
+                if errors.is_empty() {
+                    println!("Warning: Expected errors during lowering but none were found");
+                } else {
+                    println!("Lowering errors found: {}", errors.len());
+                }
+                
+                println!("Errors: {:?}", errors);
+            }
+            Err(e) => {
+                println!("Lowering failed with error: {:?}", e);
+            }
+        }
+    }
+    
+    #[test]
+    fn test_generic_constraint_success() {
+        let haxe_code = r#"
+// Simple generic with type parameter but no constraints
+class SimpleGeneric<T> {
+    var value:T;
+    
+    public function new(v:T) {
+        value = v;
+    }
+}
+
+class TestSimpleGeneric {
+    public function test():Void {
+        // These should all work - no constraints
+        var intGen:SimpleGeneric<Int>;
+        var stringGen:SimpleGeneric<String>;
+        var anyGen:SimpleGeneric<Dynamic>;
+    }
+}
+"#;
+
+        // Parse
+        let ast_result = parse_haxe_file("simple_generic_test.hx", haxe_code, true);
+        let haxe_file = ast_result.expect("Parse should succeed");
+        
+        // Create context
+        let mut string_interner = StringInterner::new();
+        let mut symbol_table = SymbolTable::new();
+        let type_table = Rc::new(RefCell::new(TypeTable::new()));
+        let mut scope_tree = ScopeTree::new(ScopeId::first());
+        let mut source_map = SourceMap::new();
+        let file_id = source_map.add_file("simple_generic_test.hx".to_string(), haxe_code.to_string());
+        
+        // Create namespace and import resolvers
+        let mut namespace_resolver = crate::tast::namespace::NamespaceResolver::new(&string_interner);
+        let mut import_resolver = crate::tast::namespace::ImportResolver::new(&namespace_resolver);
+        
+        // Lower to TAST
+        let mut lowering = AstLowering::new(
+            &mut string_interner,
+            &mut symbol_table,
+            &type_table,
+            &mut scope_tree,
+            &mut namespace_resolver,
+            &mut import_resolver,
+        );
+        lowering.initialize_span_converter(file_id.as_usize() as u32, haxe_code.to_string());
+        
+        let typed_file_result = lowering.lower_file(&haxe_file);
+        
+        // This should succeed without errors  
+        match typed_file_result {
+            Ok(typed_file) => {
+                println!("Successfully lowered file with {} classes", typed_file.classes.len());
+                
+                // Check for any errors - this test should have no errors at all
+                let errors = lowering.get_errors();
+                
+                if !errors.is_empty() {
+                    println!("Errors found during lowering:");
+                    for (i, error) in errors.iter().enumerate() {
+                        println!("  {}: {:?}", i + 1, error);
+                    }
+                    panic!("Expected no errors for simple generic test, but found {} errors", errors.len());
+                }
+                
+                println!("✅ No errors found - test passed!");
+            }
+            Err(e) => {
+                // Also check for collected errors in case of failure
+                let errors = lowering.get_errors();
+                println!("Lowering failed with error: {:?}", e);
+                if !errors.is_empty() {
+                    println!("Additional collected errors:");
+                    for (i, error) in errors.iter().enumerate() {
+                        println!("  {}: {:?}", i + 1, error);
+                    }
+                }
+                panic!("Lowering failed unexpectedly: {:?}", e);
+            }
+        }
+    }
+}

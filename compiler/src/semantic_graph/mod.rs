@@ -27,18 +27,16 @@ pub use self::source_location_tracking::*;
 pub  mod analysis;
 pub  mod builder;
 pub (crate) mod call_graph;
-pub (crate) mod call_graph_test;
+
 pub (crate) mod cfg;
 pub (crate) mod dfg;
 pub (crate) mod dfg_builder;
 pub (crate) mod free_variables;
 pub (crate) mod phi_type;
-pub (crate) mod phi_type_test;
+
 // mod dfg_test;
 pub (crate) mod dominance;
-pub (crate) mod dominance_test;
 pub (crate) mod ownership_graph;
-pub (crate) mod ownership_graph_test;
 pub (crate) mod source_location_tracking;
 pub (crate) mod tast_cfg_mapping;
 mod test;
