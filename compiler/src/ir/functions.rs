@@ -9,40 +9,48 @@ use super::{
 };
 use crate::tast::SymbolId;
 use std::collections::HashMap;
+use serde::{Serialize, Deserialize};
 
 /// HIR function representation
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrFunction {
     /// Unique identifier for this function
     pub id: IrFunctionId,
-    
+
     /// Original symbol from TAST
     pub symbol_id: SymbolId,
-    
+
     /// Function name (mangled if necessary)
     pub name: String,
-    
+
+    /// Fully qualified name (e.g., "com.example.MyClass.myMethod") for debugging and profiling
+    pub qualified_name: Option<String>,
+
     /// Function signature
     pub signature: IrFunctionSignature,
-    
+
     /// Control flow graph (function body)
     pub cfg: IrControlFlowGraph,
-    
+
     /// Local variable declarations
     pub locals: HashMap<IrId, IrLocal>,
-    
+
+    /// Type information for all registers (parameters and intermediate values)
+    /// This is populated by MirBuilder to enable type inference in backends
+    pub register_types: HashMap<IrId, IrType>,
+
     /// Function attributes
     pub attributes: FunctionAttributes,
-    
+
     /// Source location for debugging
     pub source_location: IrSourceLocation,
-    
-    /// Next available register ID
-    next_reg_id: u32,
+
+    /// Next available register ID (pub for MIR builder)
+    pub next_reg_id: u32,
 }
 
 /// Unique identifier for functions
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct IrFunctionId(pub u32);
 
 impl std::fmt::Display for IrFunctionId {
@@ -52,26 +60,30 @@ impl std::fmt::Display for IrFunctionId {
 }
 
 /// Function signature
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrFunctionSignature {
     /// Parameter types and names
     pub parameters: Vec<IrParameter>,
-    
+
     /// Return type
     pub return_type: IrType,
-    
+
     /// Calling convention
     pub calling_convention: CallingConvention,
-    
+
     /// Whether this function can throw
     pub can_throw: bool,
-    
+
     /// Generic type parameters (if any)
     pub type_params: Vec<IrTypeParam>,
+
+    /// Whether this function uses sret (structure return) convention
+    /// When true, caller allocates space for return value and passes pointer as first param
+    pub uses_sret: bool,
 }
 
 /// Function parameter
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrParameter {
     /// Parameter name
     pub name: String,
@@ -87,7 +99,7 @@ pub struct IrParameter {
 }
 
 /// Generic type parameter
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrTypeParam {
     /// Type parameter name
     pub name: String,
@@ -97,7 +109,7 @@ pub struct IrTypeParam {
 }
 
 /// Local variable declaration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrLocal {
     /// Variable name (for debugging)
     pub name: String,
@@ -116,7 +128,7 @@ pub struct IrLocal {
 }
 
 /// Allocation hint for local variables
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AllocationHint {
     /// Allocate on stack
     Stack,
@@ -132,7 +144,7 @@ pub enum AllocationHint {
 }
 
 /// Function attributes and metadata
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionAttributes {
     /// Linkage type
     pub linkage: Linkage,
@@ -154,7 +166,7 @@ pub struct FunctionAttributes {
 }
 
 /// Inline hint for functions
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InlineHint {
     /// Never inline
     Never,
@@ -194,19 +206,23 @@ impl IrFunction {
             id,
             symbol_id,
             name,
+            qualified_name: None, // Set later during lowering
             signature,
             cfg: IrControlFlowGraph::new(),
             locals: HashMap::new(),
+            register_types: HashMap::new(),
             attributes: FunctionAttributes::default(),
             source_location: IrSourceLocation::unknown(),
             next_reg_id: 0,
         };
-        
-        // Allocate registers for parameters
+
+        // Allocate registers for parameters and register their types
         let param_count = function.signature.parameters.len();
         for i in 0..param_count {
             let reg = function.alloc_reg();
+            let param_ty = function.signature.parameters[i].ty.clone();
             function.signature.parameters[i].reg = reg;
+            function.register_types.insert(reg, param_ty);
         }
         
         function
@@ -250,7 +266,7 @@ impl IrFunction {
         for block in self.cfg.blocks.values() {
             for inst in &block.instructions {
                 match inst {
-                    IrInstruction::Call { .. } |
+                    IrInstruction::CallDirect { .. } |
                     IrInstruction::CallIndirect { .. } => return false,
                     _ => {}
                 }
@@ -276,18 +292,23 @@ impl IrFunction {
     
     /// Verify function integrity
     pub fn verify(&self) -> Result<(), String> {
+        // Skip verification for extern functions (no body/blocks)
+        if self.cfg.blocks.is_empty() {
+            return Ok(());
+        }
+
         // Verify CFG
         self.cfg.verify()?;
-        
+
         // Verify entry block has no phi nodes
         if let Some(entry) = self.cfg.get_block(self.cfg.entry_block) {
             if !entry.phi_nodes.is_empty() {
                 return Err("Entry block cannot have phi nodes".to_string());
             }
         }
-        
+
         // TODO: Add more verification (type checking, register usage, etc.)
-        
+
         Ok(())
     }
 }
@@ -354,6 +375,7 @@ mod tests {
             calling_convention: CallingConvention::Haxe,
             can_throw: false,
             type_params: Vec::new(),
+            uses_sret: false,
         };
         
         let func = IrFunction::new(
@@ -379,6 +401,7 @@ mod tests {
             calling_convention: CallingConvention::Haxe,
             can_throw: false,
             type_params: Vec::new(),
+            uses_sret: false,
         };
         
         let mut func = IrFunction::new(

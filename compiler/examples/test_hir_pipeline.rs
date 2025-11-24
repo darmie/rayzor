@@ -192,6 +192,7 @@ abstract AbstractInt(Int) from Int to Int {
         &typed_file,
         &symbol_table,
         &type_table,
+        &mut *string_interner_rc.borrow_mut(),
         None, // No semantic graphs for now
     ) {
         Ok(hir) => {
@@ -227,7 +228,7 @@ abstract AbstractInt(Int) from Int to Int {
     
     // Step 5: Lower HIR to MIR
     println!("\n5. Lowering HIR to MIR...");
-    match lower_hir_to_mir(&hir_module) {
+    match lower_hir_to_mir(&hir_module, &*string_interner_rc.borrow()) {
         Ok(mir) => {
             println!("   ✓ Successfully lowered to MIR");
             println!("   - Module: {}", mir.name);

@@ -6,6 +6,23 @@
 //! - Type annotation processing
 //! - Scope management
 //! - Error collection and reporting
+//!
+//! ## Error Recovery
+//!
+//! This module implements error recovery to collect all errors within a file
+//! before stopping compilation. When lowering encounters errors, it:
+//! - Collects errors in `collected_errors` and `context.errors` vectors
+//! - Continues processing to find additional errors
+//! - Returns all collected errors to the pipeline
+//!
+//! **Implementation Details**:
+//! - Top-level declarations (imports, using, module fields, type declarations) use error collection
+//! - Expression-level and function body errors still use early returns (future enhancement)
+//! - The pipeline extracts all errors from `context.errors` when lowering fails
+//!
+//! **Future Enhancement**: Extend error recovery into function bodies and expressions
+//! to collect all errors within individual functions. This requires placeholder values
+//! for failed expressions to maintain type safety.
 
 use crate::tast::node::HasSourceLocation;
 use crate::tast::{core::*, node::*, node::MemoryEffects, type_resolution_improvements::TypeResolutionImprovements, *};
@@ -193,6 +210,110 @@ impl fmt::Display for LoweringError {
     }
 }
 
+impl LoweringError {
+    /// Convert LoweringError to CompilationError for formatted diagnostic output
+    pub fn to_compilation_error(&self) -> crate::pipeline::CompilationError {
+        use crate::pipeline::{CompilationError, ErrorCategory};
+
+        match self {
+            LoweringError::UnresolvedSymbol { name, location } => CompilationError {
+                message: format!("Cannot find name '{}'", name),
+                location: location.clone(),
+                category: ErrorCategory::SymbolError,
+                suggestion: Some(format!("Check if '{}' is imported or defined", name)),
+                related_errors: vec![],
+            },
+            LoweringError::UnresolvedType { type_name, location } => CompilationError {
+                message: format!("Cannot find type '{}'", type_name),
+                location: location.clone(),
+                category: ErrorCategory::TypeError,
+                suggestion: Some(format!("Check if type '{}' is imported or defined", type_name)),
+                related_errors: vec![],
+            },
+            LoweringError::DuplicateSymbol { name, original_location, duplicate_location } => CompilationError {
+                message: format!("Duplicate definition of '{}'", name),
+                location: duplicate_location.clone(),
+                category: ErrorCategory::SymbolError,
+                suggestion: Some("Remove or rename one of the conflicting definitions".to_string()),
+                related_errors: vec![format!("First defined at {}:{}", original_location.line, original_location.column)],
+            },
+            LoweringError::InvalidModifiers { modifiers, location } => CompilationError {
+                message: format!("Invalid modifier combination: {}", modifiers.join(", ")),
+                location: location.clone(),
+                category: ErrorCategory::TypeError,
+                suggestion: Some("Check Haxe documentation for valid modifier combinations".to_string()),
+                related_errors: vec![],
+            },
+            LoweringError::GenericParameterError { message, location } => CompilationError {
+                message: message.clone(),
+                location: location.clone(),
+                category: ErrorCategory::TypeError,
+                suggestion: None,
+                related_errors: vec![],
+            },
+            LoweringError::InternalError { message, location } => CompilationError {
+                message: format!("Internal compiler error: {}", message),
+                location: location.clone(),
+                category: ErrorCategory::TypeError,
+                suggestion: Some("This is a compiler bug - please report it".to_string()),
+                related_errors: vec![],
+            },
+            LoweringError::TypeInferenceError { expression, location } => CompilationError {
+                message: format!("Cannot infer type for expression: {}", expression),
+                location: location.clone(),
+                category: ErrorCategory::TypeError,
+                suggestion: Some("Add an explicit type annotation".to_string()),
+                related_errors: vec![],
+            },
+            LoweringError::LifetimeError { message, location } => {
+                // Provide context-sensitive suggestions for lifetime errors
+                let suggestion = if message.contains("dangling") || message.contains("outlive") {
+                    Some("Consider extending the lifetime of the referenced data or copying the value".to_string())
+                } else if message.contains("borrow") {
+                    Some("Ensure borrows do not outlive the data they reference".to_string())
+                } else {
+                    Some("Review lifetime annotations and ensure data lifetimes are compatible".to_string())
+                };
+
+                CompilationError {
+                    message: message.clone(),
+                    location: location.clone(),
+                    category: ErrorCategory::LifetimeError,
+                    suggestion,
+                    related_errors: vec![],
+                }
+            },
+            LoweringError::OwnershipError { message, location } => {
+                // Provide context-sensitive suggestions for ownership errors
+                let suggestion = if message.contains("moved") || message.contains("use after move") {
+                    Some("Value was moved - consider cloning the value or restructuring to avoid the move".to_string())
+                } else if message.contains("borrow") && message.contains("mutable") {
+                    Some("Cannot have mutable and immutable borrows simultaneously - resolve conflicting borrows".to_string())
+                } else if message.contains("borrow") {
+                    Some("Borrow checker violation - ensure borrows follow Rust-style ownership rules".to_string())
+                } else {
+                    Some("Review ownership rules: each value has one owner, moves transfer ownership".to_string())
+                };
+
+                CompilationError {
+                    message: message.clone(),
+                    location: location.clone(),
+                    category: ErrorCategory::OwnershipError,
+                    suggestion,
+                    related_errors: vec![],
+                }
+            },
+            LoweringError::IncompleteImplementation { feature, location } => CompilationError {
+                message: format!("Feature not yet implemented: {}", feature),
+                location: location.clone(),
+                category: ErrorCategory::TypeError,
+                suggestion: Some("This feature is planned for a future release".to_string()),
+                related_errors: vec![],
+            },
+        }
+    }
+}
+
 /// Result type for lowering operations
 pub type LoweringResult<T> = Result<T, LoweringError>;
 
@@ -317,10 +438,27 @@ impl<'a> LoweringContext<'a> {
         self.errors.push(error);
     }
 
+    /// Clear the current package context (used for stdlib loading)
+    pub fn clear_package_context(&mut self) {
+        self.current_package = None;
+    }
+
     /// Enter a new scope
     pub fn enter_scope(&mut self, _scope_kind: ScopeKind) -> ScopeId {
         let new_scope = self.scope_tree.create_scope(Some(self.current_scope));
         self.current_scope = new_scope;
+        new_scope
+    }
+
+    /// Enter a new named scope (for classes, interfaces, etc.)
+    pub fn enter_named_scope(&mut self, scope_kind: ScopeKind, name: InternedString) -> ScopeId {
+        let new_scope = self.scope_tree.create_scope(Some(self.current_scope));
+        self.current_scope = new_scope;
+        // Set the name and kind on the scope
+        if let Some(scope) = self.scope_tree.get_scope_mut(new_scope) {
+            scope.name = Some(name);
+            scope.kind = scope_kind;
+        }
         new_scope
     }
 
@@ -385,6 +523,11 @@ impl<'a> LoweringContext<'a> {
         self.create_location_from_span(*span)
     }
 
+    /// Update the qualified name for a symbol based on its scope chain
+    pub fn update_symbol_qualified_name(&mut self, symbol_id: SymbolId) {
+        self.symbol_table.update_qualified_name(symbol_id, self.scope_tree, self.string_interner);
+    }
+
     /// Initialize the span converter with source text
     pub fn initialize_span_converter(&mut self, file_id: u32, source_text: String) {
         self.initialize_span_converter_with_filename(
@@ -415,6 +558,10 @@ pub struct AstLowering<'a> {
     /// Temporary storage for classes being built (symbol_id -> class methods)
     class_methods: HashMap<SymbolId, Vec<(InternedString, SymbolId, bool)>>, // (name, symbol, is_static)
     class_fields: HashMap<SymbolId, Vec<(InternedString, SymbolId, bool)>>, // (name, symbol, is_static)
+    /// Skip internal stdlib loading (used when CompilationUnit handles it)
+    skip_stdlib_loading: bool,
+    /// Collected errors during lowering (for error recovery)
+    pub collected_errors: Vec<LoweringError>,
 }
 
 impl<'a> AstLowering<'a> {
@@ -695,7 +842,39 @@ impl<'a> AstLowering<'a> {
             resolution_state: TypeResolutionState::default(),
             class_methods: HashMap::new(),
             class_fields: HashMap::new(),
+            skip_stdlib_loading: false,
+            collected_errors: Vec::new(),
         }
+    }
+
+    /// Set whether to skip internal stdlib loading (for CompilationUnit)
+    pub fn set_skip_stdlib_loading(&mut self, skip: bool) {
+        self.skip_stdlib_loading = skip;
+    }
+
+    /// Get all collected errors from both context and collected_errors
+    pub fn get_all_errors(&self) -> Vec<LoweringError> {
+        let mut all_errors = Vec::new();
+        all_errors.extend(self.context.errors.clone());
+        all_errors.extend(self.collected_errors.clone());
+        all_errors
+    }
+
+    /// Set the package context explicitly (used for stdlib loading with "haxe" package)
+    pub fn set_package_context(&mut self, package_name: &str) {
+        let package_path: Vec<_> = package_name
+            .split('.')
+            .map(|s| self.context.string_interner.intern(s))
+            .collect();
+        let package_id = self.context
+            .namespace_resolver
+            .get_or_create_package(package_path);
+        self.context.current_package = Some(package_id);
+    }
+
+    /// Clear the current package context (used for root scope)
+    pub fn clear_package_context(&mut self) {
+        self.context.clear_package_context();
     }
 
     /// Initialize span converter for proper source location tracking
@@ -732,8 +911,13 @@ impl<'a> AstLowering<'a> {
             let package_id = self
                 .context
                 .namespace_resolver
-                .get_or_create_package(package_path);
+                .get_or_create_package(package_path.clone());
             self.context.current_package = Some(package_id);
+
+            // Create package scope with full qualified name
+            let package_name_str = package.path.join(".");
+            let package_name_interned = self.context.string_interner.intern(&package_name_str);
+            let package_scope = self.context.enter_named_scope(ScopeKind::Package, package_name_interned);
         }
 
         // Set file metadata
@@ -751,31 +935,45 @@ impl<'a> AstLowering<'a> {
         }
 
         // Load standard library types from source files
-        self.load_standard_library()?;
+        // (skip if CompilationUnit is handling stdlib loading)
+        if !self.skip_stdlib_loading {
+            self.load_standard_library()?;
+        }
 
         // Process import.hx files in the current directory hierarchy
-        self.process_import_hx_files(&file)?;
+        if let Err(e) = self.process_import_hx_files(&file) {
+            self.collected_errors.push(e);
+        }
 
-        // Process imports
+        // Process imports - collect errors but continue
         for import in &file.imports {
-            typed_file.imports.push(self.lower_import(import)?);
+            match self.lower_import(import) {
+                Ok(typed_import) => typed_file.imports.push(typed_import),
+                Err(e) => self.collected_errors.push(e),
+            }
         }
 
-        // Process using statements
+        // Process using statements - collect errors but continue
         for using in &file.using {
-            typed_file.using_statements.push(self.lower_using(using)?);
+            match self.lower_using(using) {
+                Ok(typed_using) => typed_file.using_statements.push(typed_using),
+                Err(e) => self.collected_errors.push(e),
+            }
         }
 
-        // Process module-level fields
+        // Process module-level fields - collect errors but continue
         for module_field in &file.module_fields {
-            typed_file
-                .module_fields
-                .push(self.lower_module_field(module_field)?);
+            match self.lower_module_field(module_field) {
+                Ok(typed_field) => typed_file.module_fields.push(typed_field),
+                Err(e) => self.collected_errors.push(e),
+            }
         }
 
         // First pass: Pre-register all type declarations in the symbol table
         for declaration in &file.declarations {
-            self.pre_register_declaration(declaration)?;
+            if let Err(e) = self.pre_register_declaration(declaration) {
+                self.collected_errors.push(e);
+            }
         }
 
         // Second pass: Process declarations with full type resolution
@@ -796,11 +994,21 @@ impl<'a> AstLowering<'a> {
         }
 
         // Resolve any deferred type references (second pass)
-        self.resolve_deferred_types()?;
+        if let Err(e) = self.resolve_deferred_types() {
+            self.collected_errors.push(e);
+        }
 
-        // Check for errors
-        if !self.context.errors.is_empty() {
-            return Err(self.context.errors.clone().into_iter().next().unwrap());
+        // Combine all errors from both context and collected_errors
+        let mut all_errors = Vec::new();
+        all_errors.extend(self.context.errors.clone());
+        all_errors.extend(self.collected_errors.clone());
+
+
+        // Check for errors - if any, return the first one but all are collected
+        if !all_errors.is_empty() {
+            // Store all errors in context for pipeline to access
+            self.context.errors = all_errors.clone();
+            return Err(all_errors.into_iter().next().unwrap());
         }
 
         Ok(typed_file)
@@ -889,6 +1097,9 @@ impl<'a> AstLowering<'a> {
                     .symbol_table
                     .create_class_in_scope(interned_name, ScopeId::first());
 
+                // Update qualified name
+                self.context.update_symbol_qualified_name(imported_symbol);
+
                 // Add to root scope so it can be resolved globally
                 self.context
                     .scope_tree
@@ -915,11 +1126,15 @@ impl<'a> AstLowering<'a> {
         use crate::tast::stdlib_loader::{StdLibConfig, StdLibLoader};
         use std::path::PathBuf;
 
+        // IMPORTANT: Save current package context and clear it for stdlib loading
+        // Standard library symbols should NOT inherit the current file's package prefix
+        let saved_package = self.context.current_package.take();
+
         // Configure standard library paths
         let mut config = StdLibConfig::default();
         config.std_paths = vec![
             // Look for standard library files in our project
-            PathBuf::from("/Users/amaterasu/Vibranium/rayzor/compiler/haxe-std"),
+            PathBuf::from("/Users/amaterasu/Vibranium/rayzor/compiler/src/../haxe-std"),
         ];
         config.default_imports = vec![
             "StdTypes.hx".to_string(),
@@ -951,11 +1166,11 @@ impl<'a> AstLowering<'a> {
                     TypeDeclaration::Class(class_decl) => {
                         // Check if this is the Array class
                         if class_decl.name == "Array" {
-                            println!("DEBUG: Processing Array class from standard library");
-                            println!("DEBUG: Array has {} fields", class_decl.fields.len());
+                            // println!("DEBUG: Processing Array class from standard library");
+                            // println!("DEBUG: Array has {} fields", class_decl.fields.len());
                             for field in &class_decl.fields {
                                 if let ClassFieldKind::Function(func) = &field.kind {
-                                    println!("DEBUG: Array method: {}", func.name);
+                                    // println!("DEBUG: Array method: {}", func.name);
                                 }
                             }
                         }
@@ -1011,6 +1226,9 @@ impl<'a> AstLowering<'a> {
                 .symbol_table
                 .create_class_in_scope(interned_name, ScopeId::first());
 
+            // Update qualified name
+            self.context.update_symbol_qualified_name(builtin_symbol);
+
             // Add to root scope for global resolution
             self.context
                 .scope_tree
@@ -1026,7 +1244,6 @@ impl<'a> AstLowering<'a> {
 
         for (func_name, param_types, return_type) in builtin_functions {
             let func_name_interned = self.context.intern_string(func_name);
-            eprintln!("DEBUG: Registering built-in function: {}", func_name);
 
             // Create parameter types
             let mut param_type_ids = Vec::new();
@@ -1096,6 +1313,9 @@ impl<'a> AstLowering<'a> {
                 .add_symbol(func_symbol_id, func_name_interned);
         }
 
+        // Restore the original package context
+        self.context.current_package = saved_package;
+
         Ok(())
     }
 
@@ -1150,7 +1370,7 @@ impl<'a> AstLowering<'a> {
                     .symbol_table
                     .create_class_in_scope(class_name, ScopeId::first());
 
-                // Register symbol with package information
+                // Register symbol with package information (also sets qualified name)
                 self.register_symbol_with_package(class_symbol, &class_decl.name);
 
                 // Create the corresponding type for this class
@@ -1185,7 +1405,7 @@ impl<'a> AstLowering<'a> {
                     .symbol_table
                     .create_interface_in_scope(interface_name, ScopeId::first());
 
-                // Register symbol with package information
+                // Register symbol with package information (also sets qualified name)
                 self.register_symbol_with_package(interface_symbol, &interface_decl.name);
 
                 // Create the corresponding type for this interface
@@ -1220,7 +1440,7 @@ impl<'a> AstLowering<'a> {
                     .symbol_table
                     .create_enum_in_scope(enum_name, ScopeId::first());
 
-                // Register symbol with package information
+                // Register symbol with package information (also sets qualified name)
                 self.register_symbol_with_package(enum_symbol, &enum_decl.name);
 
                 // Add to root scope for global resolution
@@ -1237,7 +1457,7 @@ impl<'a> AstLowering<'a> {
                     .symbol_table
                     .create_class_in_scope(typedef_name, ScopeId::first()); // Reuse class for typedefs
 
-                // Register symbol with package information
+                // Register symbol with package information (also sets qualified name)
                 self.register_symbol_with_package(typedef_symbol, &typedef_decl.name);
 
                 // Add to root scope for global resolution
@@ -1254,7 +1474,7 @@ impl<'a> AstLowering<'a> {
                     .symbol_table
                     .create_class_in_scope(abstract_name, ScopeId::first()); // Reuse class for abstracts
 
-                // Register symbol with package information
+                // Register symbol with package information (also sets qualified name)
                 self.register_symbol_with_package(abstract_symbol, &abstract_decl.name);
 
                 // Add to root scope for global resolution
@@ -1350,6 +1570,9 @@ impl<'a> AstLowering<'a> {
                     .context
                     .symbol_table
                     .create_class_in_scope(symbol_name, ScopeId::first());
+
+                // Update qualified name (full path including class hierarchy)
+                self.context.update_symbol_qualified_name(imported_symbol);
 
                 // Add to root scope so it can be resolved
                 self.context
@@ -1496,6 +1719,8 @@ impl<'a> AstLowering<'a> {
                 .context
                 .symbol_table
                 .create_class_in_scope(class_name, ScopeId::first());
+            // Update qualified name (full path including class hierarchy)
+            self.context.update_symbol_qualified_name(new_symbol);
             // Add class to the root scope so it can be resolved for forward references
             self.context
                 .scope_tree
@@ -1505,9 +1730,9 @@ impl<'a> AstLowering<'a> {
             new_symbol
         };
 
-        // Enter class scope
-        let class_scope = self.context.enter_scope(ScopeKind::Class);
-        
+        // Enter class scope with name
+        let class_scope = self.context.enter_named_scope(ScopeKind::Class, class_name);
+
         // Note: The class symbol remains in the parent scope, while its members are in class_scope
         // This is correct because the class name should be accessible from outside
 
@@ -1554,6 +1779,16 @@ impl<'a> AstLowering<'a> {
             None
         };
 
+        // Copy parent FIELDS and METHODS before processing child's members
+        // This ensures:
+        // 1. Field inheritance works (constructor can access parent fields)
+        // 2. Method inheritance works (child methods can call parent methods)
+        // 3. Method overriding works (child methods will replace parent methods during processing)
+        if let Some(parent_type_id) = extends {
+            self.copy_parent_fields(parent_type_id, class_symbol);
+            self.copy_parent_methods(parent_type_id, class_symbol);
+        }
+
         // Process implements clause
         let implements = class_decl
             .implements
@@ -1581,11 +1816,23 @@ impl<'a> AstLowering<'a> {
                                 if let Some(methods_list) =
                                     self.class_methods.get_mut(&class_symbol)
                                 {
-                                    methods_list.push((
-                                        method_name,
-                                        method_symbol,
-                                        typed_function.is_static,
-                                    ));
+                                    // Check if a method with this name already exists (from parent)
+                                    // If so, replace it (method overriding)
+                                    if let Some(existing_idx) = methods_list.iter().position(|(name, _, _)| *name == method_name) {
+                                        // Override parent method
+                                        methods_list[existing_idx] = (
+                                            method_name,
+                                            method_symbol,
+                                            typed_function.is_static,
+                                        );
+                                    } else {
+                                        // New method, add to list
+                                        methods_list.push((
+                                            method_name,
+                                            method_symbol,
+                                            typed_function.is_static,
+                                        ));
+                                    }
                                 }
                                 methods.push(typed_function);
                             }
@@ -1602,6 +1849,11 @@ impl<'a> AstLowering<'a> {
                 }
             }
         }
+
+        // Note: Parent fields and methods were already copied before processing members
+        // This ensures:
+        // 1. Field/method inheritance works (child can access parent members)
+        // 2. Method overriding works (child methods replace parent methods during processing)
 
         // Process modifiers
         let modifiers = self.lower_modifiers(&class_decl.modifiers)?;
@@ -1648,6 +1900,8 @@ impl<'a> AstLowering<'a> {
                 .context
                 .symbol_table
                 .create_interface_in_scope(interface_name, ScopeId::first());
+            // Update qualified name (full path including class hierarchy)
+            self.context.update_symbol_qualified_name(new_symbol);
             // Add interface to the root scope so it can be resolved for forward references
             self.context
                 .scope_tree
@@ -1657,8 +1911,8 @@ impl<'a> AstLowering<'a> {
             new_symbol
         };
 
-        // Enter interface scope
-        let interface_scope = self.context.enter_scope(ScopeKind::Interface);
+        // Enter interface scope with name
+        let interface_scope = self.context.enter_named_scope(ScopeKind::Interface, interface_name);
 
         // Process type parameters
         let type_params = self.lower_type_parameters(&interface_decl.type_params)?;
@@ -1744,6 +1998,9 @@ impl<'a> AstLowering<'a> {
             .symbol_table
             .create_enum_in_scope(enum_name, ScopeId::first());
 
+        // Update qualified name (full path including class hierarchy)
+        self.context.update_symbol_qualified_name(enum_symbol);
+
         // Add enum to the root scope so it can be resolved for forward references
         self.context
             .scope_tree
@@ -1751,8 +2008,8 @@ impl<'a> AstLowering<'a> {
             .expect("Root scope should exist")
             .add_symbol(enum_symbol, enum_name);
 
-        // Enter enum scope
-        let enum_scope = self.context.enter_scope(ScopeKind::Enum);
+        // Enter enum scope with name
+        let enum_scope = self.context.enter_named_scope(ScopeKind::Enum, enum_name);
 
         // Process type parameters
         let type_params = self.lower_type_parameters(&enum_decl.type_params)?;
@@ -1827,11 +2084,35 @@ impl<'a> AstLowering<'a> {
 
         let typedef_symbol = self.context.symbol_table.create_class(typedef_name); // Reuse class creation
 
-        // Process target type
+        // Process type parameters FIRST and push them onto the stack
+        let type_params = self.lower_type_parameters(&typedef_decl.type_params)?;
+
+        // Build type parameter map for the stack
+        let mut type_param_map = HashMap::new();
+        for type_param in &type_params {
+            // Type parameter already has a symbol_id from lower_type_parameters
+            // Create a TypeId for this parameter
+            let variance = match type_param.variance {
+                TypeVariance::Covariant => Variance::Covariant,
+                TypeVariance::Contravariant => Variance::Contravariant,
+                TypeVariance::Invariant => Variance::Invariant,
+            };
+            let type_var = self.context.type_table.borrow_mut().create_type_parameter(
+                type_param.symbol_id,
+                type_param.constraints.clone(),
+                variance,
+            );
+            type_param_map.insert(type_param.name, type_var);
+        }
+
+        // Push type parameters onto stack so they're available when lowering the typedef body
+        self.context.push_type_parameters(type_param_map);
+
+        // Now process target type (can reference type parameters)
         let target_type = self.lower_type(&typedef_decl.type_def)?;
 
-        // Process type parameters
-        let type_params = self.lower_type_parameters(&typedef_decl.type_params)?;
+        // Pop type parameters from stack
+        self.context.pop_type_parameters();
 
         let typed_typedef = TypedTypeAlias {
             symbol_id: typedef_symbol,
@@ -1855,7 +2136,10 @@ impl<'a> AstLowering<'a> {
         let abstract_symbol = self
             .context
             .symbol_table
-            .create_class_in_scope(abstract_name, ScopeId::first());
+            .create_abstract_in_scope(abstract_name, ScopeId::first());
+
+        // Update qualified name (full path including class hierarchy)
+        self.context.update_symbol_qualified_name(abstract_symbol);
 
         // Add abstract to the root scope so it can be resolved for forward references
         self.context
@@ -1864,8 +2148,8 @@ impl<'a> AstLowering<'a> {
             .expect("Root scope should exist")
             .add_symbol(abstract_symbol, abstract_name);
 
-        // Enter abstract scope
-        let abstract_scope = self.context.enter_scope(ScopeKind::Class);
+        // Enter abstract scope with name
+        let abstract_scope = self.context.enter_named_scope(ScopeKind::Class, abstract_name);
 
         // Process type parameters
         let type_params = self.lower_type_parameters(&abstract_decl.type_params)?;
@@ -2419,7 +2703,10 @@ impl<'a> AstLowering<'a> {
         
         // Create the function symbol in the class scope
         let function_symbol = self.context.symbol_table.create_function_in_scope(function_name, class_scope);
-        
+
+        // Update qualified name (full path including class hierarchy)
+        self.context.update_symbol_qualified_name(function_symbol);
+
         // Also track this method in our class_fields for field resolution
         if let Some(class_symbol) = current_class {
             if let Some(fields_list) = self.class_fields.get_mut(&class_symbol) {
@@ -2489,7 +2776,22 @@ impl<'a> AstLowering<'a> {
 
         // Process body
         let body = if let Some(body_expr) = &func.body {
-            vec![self.lower_expression_as_statement(body_expr)?]
+            // Check if the body is a block expression with multiple statements
+            // If so, extract the statements instead of wrapping the whole block
+            let typed_expr = self.lower_expression(body_expr)?;
+            match typed_expr.kind {
+                TypedExpressionKind::Block { statements, .. } => {
+                    // Extract statements from the block
+                    statements
+                }
+                _ => {
+                    // Single expression, wrap it as a statement
+                    vec![TypedStatement::Expression {
+                        expression: typed_expr,
+                        source_location: self.context.span_to_location(&body_expr.span),
+                    }]
+                }
+            }
         } else {
             Vec::new()
         };
@@ -2500,6 +2802,12 @@ impl<'a> AstLowering<'a> {
 
         // Process @:overload metadata
         let overload_signatures = self.process_overload_metadata(&field.meta)?;
+
+        // Process @:op metadata for operator overloading
+        let operator_metadata = self.process_operator_metadata(&field.meta)?;
+
+        // Check for @:arrayAccess metadata
+        let is_array_access = self.has_array_access_metadata(&field.meta);
 
         self.context.pop_type_parameters();
         self.context.exit_scope();
@@ -2532,6 +2840,8 @@ impl<'a> AstLowering<'a> {
                 call_count: 0,
                 is_override: modifier_info.is_override,
                 overload_signatures,
+                operator_metadata,
+                is_array_access,
             },
         })
     }
@@ -3088,6 +3398,51 @@ impl<'a> AstLowering<'a> {
         }
     }
 
+    /// Copy parent class fields to child class for field resolution
+    /// This ensures that inherited fields can be resolved correctly in the child class
+    /// Call this BEFORE processing child's members so fields are available in constructors
+    fn copy_parent_fields(&mut self, parent_type_id: TypeId, child_symbol: SymbolId) {
+        // Get the parent class symbol from the type
+        if let Some(parent_symbol) = self.resolve_type_to_class_symbol(parent_type_id) {
+            // Copy this parent's fields
+            // Note: If the parent itself inherits from a grandparent, its class_fields
+            // will already contain the grandparent's fields (since we process classes in order)
+            if let Some(parent_fields) = self.class_fields.get(&parent_symbol).cloned() {
+                // Clone to avoid borrow conflicts
+                if let Some(child_fields) = self.class_fields.get_mut(&child_symbol) {
+                    // Add parent fields to the beginning of child's field list
+                    // This maintains the correct field order: parent fields first, then child fields
+                    for parent_field in parent_fields.iter().rev() {
+                        // Insert at beginning to maintain order
+                        child_fields.insert(0, *parent_field);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Copy parent class methods to child class for method resolution
+    /// This enables method inheritance and overriding
+    /// Call this AFTER processing child's members so child methods come first for overriding
+    fn copy_parent_methods(&mut self, parent_type_id: TypeId, child_symbol: SymbolId) {
+        // Get the parent class symbol from the type
+        if let Some(parent_symbol) = self.resolve_type_to_class_symbol(parent_type_id) {
+            // Copy this parent's methods
+            // Parent methods are added to the child's method list before child methods are processed
+            // When child methods are added, they will replace parent methods with the same name (override)
+            if let Some(parent_methods) = self.class_methods.get(&parent_symbol).cloned() {
+                // Clone to avoid borrow conflicts
+                if let Some(child_methods) = self.class_methods.get_mut(&child_symbol) {
+                    // Add parent methods to child's method list
+                    // Child methods will override these when they're processed
+                    for parent_method in parent_methods.iter() {
+                        child_methods.push(*parent_method);
+                    }
+                }
+            }
+        }
+    }
+
     /// Resolve a method symbol for a given receiver and method name
     fn resolve_method_symbol(
         &mut self,
@@ -3197,7 +3552,7 @@ impl<'a> AstLowering<'a> {
                     self.resolve_symbol_in_scope_hierarchy(id_name)
                         .ok_or_else(|| LoweringError::UnresolvedSymbol {
                             name: name.clone(),
-                            location: self.context.create_location(),
+                            location: self.context.create_location_from_span(expression.span),
                         })?;
 
                 // Check if this is an enum variant and handle it specially
@@ -3234,7 +3589,6 @@ impl<'a> AstLowering<'a> {
                 }
             }
             ExprKind::Call { expr, args } => {
-                eprintln!("DEBUG: Processing function call at {:?}", expression.span);
                 let arg_exprs = args
                     .iter()
                     .map(|arg| self.lower_expression(arg))
@@ -3363,13 +3717,11 @@ impl<'a> AstLowering<'a> {
                     }
                     _ => {
                         // Regular function call
-                        eprintln!("DEBUG: Creating regular function call");
                         let mut func_expr = self.lower_expression(expr)?;
                         eprintln!(
                             "DEBUG: Function expression: {:?} at {:?}",
                             func_expr.kind, func_expr.source_location
                         );
-                        eprintln!("DEBUG: Function expression type: {:?}", func_expr.expr_type);
 
                         // Check if this is an enum constructor call and instantiate its type
                         if let TypedExpressionKind::Variable { symbol_id } = &func_expr.kind {
@@ -3638,7 +3990,7 @@ impl<'a> AstLowering<'a> {
                 }
             }
             ExprKind::Block(block_elements) => {
-                // Handle block expressions
+                // Handle block expressions with error recovery
                 let mut statements = Vec::new();
                 let block_scope = self.context.enter_scope(ScopeKind::Block);
 
@@ -3649,48 +4001,84 @@ impl<'a> AstLowering<'a> {
                             match &expr.kind {
                                 parser::ExprKind::Var { .. } | parser::ExprKind::Final { .. } => {
                                     // Variable declaration - lower as expression and convert to statement
-                                    let typed_expr = self.lower_expression(expr)?;
-
-                                    // Extract the declaration info to create a proper statement
-                                    if let TypedExpressionKind::VarDeclarationExpr {
-                                        symbol_id,
-                                        var_type,
-                                        initializer,
-                                    } = typed_expr.kind
-                                    {
-                                        statements.push(TypedStatement::VarDeclaration {
-                                            symbol_id,
-                                            var_type,
-                                            initializer: Some(*initializer),
-                                            mutability: crate::tast::symbols::Mutability::Mutable,
-                                            source_location: self
-                                                .context
-                                                .span_to_location(&expr.span),
-                                        });
-                                    } else if let TypedExpressionKind::FinalDeclarationExpr {
-                                        symbol_id,
-                                        var_type,
-                                        initializer,
-                                    } = typed_expr.kind
-                                    {
-                                        statements.push(TypedStatement::VarDeclaration {
-                                            symbol_id,
-                                            var_type,
-                                            initializer: Some(*initializer),
-                                            mutability: crate::tast::symbols::Mutability::Immutable,
-                                            source_location: self
-                                                .context
-                                                .span_to_location(&expr.span),
-                                        });
+                                    match self.lower_expression(expr) {
+                                        Ok(typed_expr) => {
+                                            // Extract the declaration info to create a proper statement
+                                            if let TypedExpressionKind::VarDeclarationExpr {
+                                                symbol_id,
+                                                var_type,
+                                                initializer,
+                                            } = typed_expr.kind
+                                            {
+                                                statements.push(TypedStatement::VarDeclaration {
+                                                    symbol_id,
+                                                    var_type,
+                                                    initializer: Some(*initializer),
+                                                    mutability: crate::tast::symbols::Mutability::Mutable,
+                                                    source_location: self
+                                                        .context
+                                                        .span_to_location(&expr.span),
+                                                });
+                                            } else if let TypedExpressionKind::FinalDeclarationExpr {
+                                                symbol_id,
+                                                var_type,
+                                                initializer,
+                                            } = typed_expr.kind
+                                            {
+                                                statements.push(TypedStatement::VarDeclaration {
+                                                    symbol_id,
+                                                    var_type,
+                                                    initializer: Some(*initializer),
+                                                    mutability: crate::tast::symbols::Mutability::Immutable,
+                                                    source_location: self
+                                                        .context
+                                                        .span_to_location(&expr.span),
+                                                });
+                                            }
+                                        }
+                                        Err(e) => {
+                                            // Collect error and continue processing other statements
+                                            self.collected_errors.push(e);
+                                        }
+                                    }
+                                }
+                                parser::ExprKind::Return(_) => {
+                                    // Return expression - convert to Return statement
+                                    match self.lower_expression(expr) {
+                                        Ok(typed_expr) => {
+                                            if let TypedExpressionKind::Return { value } = typed_expr.kind {
+                                                statements.push(TypedStatement::Return {
+                                                    value: value.map(|v| *v),
+                                                    source_location: self.context.span_to_location(&expr.span),
+                                                });
+                                            } else {
+                                                // Fallback: wrap as expression statement
+                                                statements.push(TypedStatement::Expression {
+                                                    expression: typed_expr,
+                                                    source_location: self.context.span_to_location(&expr.span),
+                                                });
+                                            }
+                                        }
+                                        Err(e) => {
+                                            // Collect error and continue processing other statements
+                                            self.collected_errors.push(e);
+                                        }
                                     }
                                 }
                                 _ => {
                                     // Regular expression - lower and wrap in statement
-                                    let typed_expr = self.lower_expression(expr)?;
-                                    statements.push(TypedStatement::Expression {
-                                        expression: typed_expr,
-                                        source_location: self.context.span_to_location(&expr.span),
-                                    });
+                                    match self.lower_expression(expr) {
+                                        Ok(typed_expr) => {
+                                            statements.push(TypedStatement::Expression {
+                                                expression: typed_expr,
+                                                source_location: self.context.span_to_location(&expr.span),
+                                            });
+                                        }
+                                        Err(e) => {
+                                            // Collect error and continue processing other statements
+                                            self.collected_errors.push(e);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -5307,7 +5695,6 @@ impl<'a> AstLowering<'a> {
                         _ => {
                             // Non-expression statements in switch expression context
                             // This shouldn't happen for valid switch expressions
-                            eprintln!("DEBUG: Switch case has non-expression statement");
                             self.context.errors.push(LoweringError::InternalError {
                                 message: "Switch expression case must be an expression".to_string(),
                                 location: case.source_location,
@@ -5331,7 +5718,6 @@ impl<'a> AstLowering<'a> {
 
                 // If no branches have expressions, it's a void switch
                 if branch_types.is_empty() {
-                    eprintln!("DEBUG: Switch has no branch types, returning void");
                     return Ok(self.context.type_table.borrow().void_type());
                 }
 
@@ -5345,7 +5731,6 @@ impl<'a> AstLowering<'a> {
 
                 if non_void_types.is_empty() {
                     // All branches are void, return void (but errors should have been generated above)
-                    eprintln!("DEBUG: All switch branches are void, returning void");
                     return Ok(void_type);
                 }
 
@@ -6641,7 +7026,7 @@ impl<'a> AstLowering<'a> {
     ) -> Result<Vec<TypedStatement>, LoweringError> {
         match &body.kind {
             parser::ExprKind::Block(elements) => {
-                // Function body is a block - lower all elements
+                // Function body is a block - lower all elements with error recovery
                 let mut statements = Vec::new();
                 for element in elements {
                     match element {
@@ -6650,48 +7035,61 @@ impl<'a> AstLowering<'a> {
                             match &expr.kind {
                                 parser::ExprKind::Var { .. } | parser::ExprKind::Final { .. } => {
                                     // Variable declaration - lower as expression and convert to statement
-                                    let typed_expr = self.lower_expression(expr)?;
-
-                                    // Extract the declaration info to create a proper statement
-                                    if let TypedExpressionKind::VarDeclarationExpr {
-                                        symbol_id,
-                                        var_type,
-                                        initializer,
-                                    } = typed_expr.kind
-                                    {
-                                        statements.push(TypedStatement::VarDeclaration {
-                                            symbol_id,
-                                            var_type,
-                                            initializer: Some(*initializer),
-                                            mutability: crate::tast::symbols::Mutability::Mutable,
-                                            source_location: self
-                                                .context
-                                                .span_to_location(&expr.span),
-                                        });
-                                    } else if let TypedExpressionKind::FinalDeclarationExpr {
-                                        symbol_id,
-                                        var_type,
-                                        initializer,
-                                    } = typed_expr.kind
-                                    {
-                                        statements.push(TypedStatement::VarDeclaration {
-                                            symbol_id,
-                                            var_type,
-                                            initializer: Some(*initializer),
-                                            mutability: crate::tast::symbols::Mutability::Immutable,
-                                            source_location: self
-                                                .context
-                                                .span_to_location(&expr.span),
-                                        });
+                                    match self.lower_expression(expr) {
+                                        Ok(typed_expr) => {
+                                            // Extract the declaration info to create a proper statement
+                                            if let TypedExpressionKind::VarDeclarationExpr {
+                                                symbol_id,
+                                                var_type,
+                                                initializer,
+                                            } = typed_expr.kind
+                                            {
+                                                statements.push(TypedStatement::VarDeclaration {
+                                                    symbol_id,
+                                                    var_type,
+                                                    initializer: Some(*initializer),
+                                                    mutability: crate::tast::symbols::Mutability::Mutable,
+                                                    source_location: self
+                                                        .context
+                                                        .span_to_location(&expr.span),
+                                                });
+                                            } else if let TypedExpressionKind::FinalDeclarationExpr {
+                                                symbol_id,
+                                                var_type,
+                                                initializer,
+                                            } = typed_expr.kind
+                                            {
+                                                statements.push(TypedStatement::VarDeclaration {
+                                                    symbol_id,
+                                                    var_type,
+                                                    initializer: Some(*initializer),
+                                                    mutability: crate::tast::symbols::Mutability::Immutable,
+                                                    source_location: self
+                                                        .context
+                                                        .span_to_location(&expr.span),
+                                                });
+                                            }
+                                        }
+                                        Err(e) => {
+                                            // Collect error and continue processing other statements
+                                            self.collected_errors.push(e);
+                                        }
                                     }
                                 }
                                 _ => {
                                     // Regular expression - lower and wrap in statement
-                                    let typed_expr = self.lower_expression(expr)?;
-                                    statements.push(TypedStatement::Expression {
-                                        expression: typed_expr,
-                                        source_location: self.context.span_to_location(&expr.span),
-                                    });
+                                    match self.lower_expression(expr) {
+                                        Ok(typed_expr) => {
+                                            statements.push(TypedStatement::Expression {
+                                                expression: typed_expr,
+                                                source_location: self.context.span_to_location(&expr.span),
+                                            });
+                                        }
+                                        Err(e) => {
+                                            // Collect error and continue processing other statements
+                                            self.collected_errors.push(e);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -6707,11 +7105,19 @@ impl<'a> AstLowering<'a> {
             }
             _ => {
                 // Single expression body - wrap in expression statement
-                let typed_expr = self.lower_expression(body)?;
-                Ok(vec![TypedStatement::Expression {
-                    expression: typed_expr,
-                    source_location: self.context.span_to_location(&body.span),
-                }])
+                match self.lower_expression(body) {
+                    Ok(typed_expr) => {
+                        Ok(vec![TypedStatement::Expression {
+                            expression: typed_expr,
+                            source_location: self.context.span_to_location(&body.span),
+                        }])
+                    }
+                    Err(e) => {
+                        // Collect error and return empty statement list
+                        self.collected_errors.push(e);
+                        Ok(vec![])
+                    }
+                }
             }
         }
     }
@@ -6742,6 +7148,62 @@ impl<'a> AstLowering<'a> {
         }
 
         Ok(overload_signatures)
+    }
+
+    /// Process @:op metadata for operator overloading
+    /// Extracts operator expressions like "A + B", "A * B", etc.
+    fn process_operator_metadata(
+        &mut self,
+        metadata: &[parser::Metadata],
+    ) -> LoweringResult<Vec<(String, Vec<String>)>> {
+        let mut operator_metadata = Vec::new();
+
+        for meta in metadata {
+            if meta.name == "op" {
+                // @:op(A + B) - operator expression is the first parameter
+                if !meta.params.is_empty() {
+                    // Extract the operator expression as a string
+                    let operator_expr = self.expr_to_string(&meta.params[0]);
+
+                    // Store the operator expression and any additional parameters
+                    let additional_params: Vec<String> = meta.params[1..]
+                        .iter()
+                        .map(|e| self.expr_to_string(e))
+                        .collect();
+
+                    operator_metadata.push((operator_expr, additional_params));
+                }
+            }
+        }
+
+        Ok(operator_metadata)
+    }
+
+    /// Check if function has @:arrayAccess metadata
+    fn has_array_access_metadata(&self, metadata: &[parser::Metadata]) -> bool {
+        metadata.iter().any(|m| m.name == "arrayAccess")
+    }
+
+    /// Convert a parser expression to a string representation
+    /// Used for extracting metadata parameter values
+    fn expr_to_string(&self, expr: &parser::Expr) -> String {
+        match &expr.kind {
+            parser::ExprKind::String(s) => s.clone(),
+            parser::ExprKind::Ident(id) => id.clone(),
+            parser::ExprKind::Int(n) => n.to_string(),
+            parser::ExprKind::Float(f) => f.to_string(),
+            parser::ExprKind::Bool(b) => b.to_string(),
+            parser::ExprKind::Binary { left, op, right } => {
+                format!("{} {:?} {}", self.expr_to_string(left), op, self.expr_to_string(right))
+            }
+            parser::ExprKind::Unary { op, expr: operand } => {
+                format!("{:?}{}", op, self.expr_to_string(operand))
+            }
+            parser::ExprKind::Paren(inner) => {
+                format!("({})", self.expr_to_string(inner))
+            }
+            _ => format!("{:?}", expr.kind), // Fallback for complex expressions
+        }
     }
 
     /// Parse a function signature string from @:overload metadata

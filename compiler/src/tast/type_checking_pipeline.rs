@@ -808,7 +808,15 @@ impl<'a> TypeCheckingPhase<'a> {
             TypedExpressionKind::BinaryOp { left, right, operator:op } => {
                         let lhs_type = self.check_expression(left)?;
                         let rhs_type = self.check_expression(right)?;
-                
+
+                        // OPERATOR OVERLOADING: Check if left operand has an abstract type with @:op metadata
+                        if let Some((method_symbol, _abstract_symbol)) = self.find_operator_method(lhs_type, op) {
+                            eprintln!("DEBUG: Found operator method for {:?} on type {:?}: method symbol {:?}",
+                                      op, lhs_type, method_symbol);
+                            // TODO: For now, just log that we found it - actual rewriting will be done in AST lowering
+                            // The HIR lowering will automatically inline the method call
+                        }
+
                         // Check operand compatibility for the operator
                         match op {
                             BinaryOperator::Add => {
@@ -1836,10 +1844,7 @@ impl<'a> TypeCheckingPhase<'a> {
                     }
             TypedExpressionKind::VarDeclarationExpr { var_type, initializer, .. } |
                     TypedExpressionKind::FinalDeclarationExpr { var_type, initializer, .. } => {
-                        eprintln!("DEBUG: Checking var declaration with var_type: {:?}", var_type);
-                        eprintln!("DEBUG: Initializer expr_type before check: {:?}", initializer.expr_type);
                         let init_type = self.check_expression(initializer)?;
-                        eprintln!("DEBUG: Initializer type after check: {:?}", init_type);
                 
                         // Check variable type matches initializer
                         let compatibility = self.type_checker.check_compatibility(init_type, *var_type);
@@ -1868,7 +1873,6 @@ impl<'a> TypeCheckingPhase<'a> {
                         // Debug output
                         if let Some(field_name_str) = self.type_checker.symbol_table.get_symbol(*field_symbol)
                             .and_then(|s| self.string_interner.get(s.name)) {
-                            eprintln!("DEBUG: Checking field access '{}' at {:?}", field_name_str, expr.source_location);
                         }
                 
                         // Find the field in the object's type
@@ -1882,7 +1886,6 @@ impl<'a> TypeCheckingPhase<'a> {
                                 if let Some(class_def) = self.find_class_by_symbol(class_symbol_copy) {
                                     if let Some(field) = class_def.fields.iter().find(|f| f.symbol_id == *field_symbol) {
                                         let field_name_str = self.string_interner.get(field.name).unwrap_or("<field>");
-                                        eprintln!("DEBUG: Found field '{}', is_static: {}", field_name_str, field.is_static);
                                 
                                         if field.is_static {
                                             // Accessing static field through instance
@@ -1901,7 +1904,6 @@ impl<'a> TypeCheckingPhase<'a> {
                                             // Don't return early - continue checking other expressions
                                         }
                                     } else {
-                                        eprintln!("DEBUG: Field not found in class definition");
                                     }
                                 }
                             }
@@ -1911,14 +1913,12 @@ impl<'a> TypeCheckingPhase<'a> {
                         // Debug output
                         if let Some(field_name_str) = self.type_checker.symbol_table.get_symbol(*field_symbol)
                             .and_then(|s| self.string_interner.get(s.name)) {
-                            eprintln!("DEBUG: Checking static field access '{}' at {:?}", field_name_str, expr.source_location);
                         }
                 
                         // Find the class definition and check if the field is actually static
                         if let Some(class_def) = self.find_class_by_symbol(*class_symbol) {
                             if let Some(field) = class_def.fields.iter().find(|f| f.symbol_id == *field_symbol) {
                                 let field_name_str = self.string_interner.get(field.name).unwrap_or("<field>");
-                                eprintln!("DEBUG: Found field '{}', is_static: {}", field_name_str, field.is_static);
                         
                                 if !field.is_static {
                                     // Accessing instance field from static context
@@ -1934,7 +1934,6 @@ impl<'a> TypeCheckingPhase<'a> {
                                     // Don't return early - continue checking other expressions
                                 }
                             } else {
-                                eprintln!("DEBUG: Field not found in class definition for static access");
                             }
                         }
                     }
@@ -2027,7 +2026,6 @@ TypedExpressionKind::Await { expression, await_type } => todo!(),
         // Debug switch expressions
         match &expr.kind {
             TypedExpressionKind::Switch { .. } => {
-                eprintln!("DEBUG: Switch expression check returning type: {:?}", result_type);
             }
             _ => {}
         }
@@ -2369,12 +2367,10 @@ TypedExpressionKind::Await { expression, await_type } => todo!(),
         let (field_name, field_visibility, is_static) = if let Some(field_info) = self.find_field_by_symbol(field_symbol) {
             (field_info.name, field_info.visibility, field_info.is_static)
         } else {
-            eprintln!("DEBUG: Field not found in check_field_accessibility");
             return Ok(());
         };
         
         let field_name_str = self.string_interner.get(field_name).unwrap_or("<field>");
-        eprintln!("DEBUG: Found field '{}' in check_field_accessibility, is_static={}", field_name_str, is_static);
         
         // Get class name for error messages
         let class_name = if let Some(class_def) = self.find_class_by_symbol(*class_symbol) {
@@ -2401,7 +2397,6 @@ TypedExpressionKind::Await { expression, await_type } => todo!(),
             // Don't return early - continue checking
         } else if !is_static && is_static_access {
             // Accessing instance member through static context
-            eprintln!("DEBUG: Emitting InstanceAccessFromStatic error for field '{}'", field_name_str);
             self.emit_error(TypeCheckError {
                 kind: TypeErrorKind::InstanceAccessFromStatic {
                     member_name: field_name,
@@ -2693,19 +2688,15 @@ TypedExpressionKind::Await { expression, await_type } => todo!(),
             // Search through all classes
             for class in &typed_file.classes {
                 let class_name_str = self.string_interner.get(class.name).unwrap_or("<class>");
-                eprintln!("DEBUG: Searching in class '{}'", class_name_str);
                 
                 for field in &class.fields {
                     let field_name_str = self.string_interner.get(field.name).unwrap_or("<field>");
-                    eprintln!("DEBUG:   Field '{}' has symbol_id={:?}", field_name_str, field.symbol_id);
                     if field.symbol_id == field_symbol {
-                        eprintln!("DEBUG:   FOUND MATCH!");
                         return Some(field);
                     }
                 }
             }
         }
-        eprintln!("DEBUG: Field not found");
         None
     }
     
@@ -3315,6 +3306,80 @@ TypedExpressionKind::Await { expression, await_type } => todo!(),
                 suggestion: Some("Use an array, string, or iterable class in for-in loops".to_string()),
             });
             Err("Undefined iterable type".to_string())
+        }
+    }
+
+    /// Find a method with matching @:op metadata for the given operator
+    /// Returns (method_symbol, abstract_symbol) if found
+    fn find_operator_method(
+        &self,
+        operand_type: TypeId,
+        operator: &BinaryOperator,
+    ) -> Option<(SymbolId, SymbolId)> {
+        let type_table = self.type_checker.type_table.borrow();
+
+        // Check if this type is an abstract type
+        let type_info = type_table.get(operand_type)?;
+        let abstract_symbol = match &type_info.kind {
+            super::TypeKind::Abstract { symbol_id, .. } => *symbol_id,
+            _ => return None, // Not an abstract type
+        };
+
+        drop(type_table);
+
+        // Get the abstract definition from the current file being checked
+        let typed_file_ptr = self.current_typed_file?;
+        let typed_file = unsafe { &*typed_file_ptr };
+
+        // Search all abstracts for the one matching our symbol
+        for abstract_def in &typed_file.abstracts {
+            if abstract_def.symbol_id != abstract_symbol {
+                continue;
+            }
+
+            // Found the abstract, now search for a method with matching @:op metadata
+            for method in &abstract_def.methods {
+                for (op_str, _params) in &method.metadata.operator_metadata {
+                    if let Some(parsed_op) = Self::parse_operator_from_metadata(op_str) {
+                        if std::mem::discriminant(&parsed_op) == std::mem::discriminant(operator) {
+                            // Found a matching operator method!
+                            return Some((method.symbol_id, abstract_symbol));
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Parse operator metadata string to extract the operator type
+    /// e.g. "A Add B" → Some(BinaryOperator::Add)
+    fn parse_operator_from_metadata(op_str: &str) -> Option<BinaryOperator> {
+        if op_str.contains("Add") {
+            Some(BinaryOperator::Add)
+        } else if op_str.contains("Sub") {
+            Some(BinaryOperator::Sub)
+        } else if op_str.contains("Mul") {
+            Some(BinaryOperator::Mul)
+        } else if op_str.contains("Div") {
+            Some(BinaryOperator::Div)
+        } else if op_str.contains("Mod") {
+            Some(BinaryOperator::Mod)
+        } else if op_str.contains("Eq") && !op_str.contains("Ne") {
+            Some(BinaryOperator::Eq)
+        } else if op_str.contains("Ne") {
+            Some(BinaryOperator::Ne)
+        } else if op_str.contains("Lt") {
+            Some(BinaryOperator::Lt)
+        } else if op_str.contains("Le") {
+            Some(BinaryOperator::Le)
+        } else if op_str.contains("Gt") {
+            Some(BinaryOperator::Gt)
+        } else if op_str.contains("Ge") {
+            Some(BinaryOperator::Ge)
+        } else {
+            None
         }
     }
 }

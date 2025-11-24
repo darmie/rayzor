@@ -3,7 +3,8 @@ members = [
     "parser",
     "compiler",
     "diagnostics",
-    "source_map"
+    "source_map",
+    "runtime"
 ]
 
 [package]
@@ -14,6 +15,7 @@ edition = "2021"
 [dependencies]
 parser = { path = "parser" }
 compiler = { path = "compiler" }
+clap = { version = "4.5", features = ["derive"] }
 
 
 

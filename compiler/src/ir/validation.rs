@@ -436,53 +436,64 @@ fn validate_instruction(ctx: &mut ValidationContext, inst: &IrInstruction) {
             }
         }
         
-        Call { dest, func, args } => {
-            // Validate function operand
-            if let Some(func_ty) = ctx.use_register(*func).cloned() {
-                match &func_ty {
-                    IrType::Function { params, return_type, .. } => {
-                        // Check argument count
-                        if args.len() != params.len() {
-                            ctx.add_error(ValidationErrorKind::InvalidOperand {
-                                instruction: "Call".to_string(),
-                                reason: format!("Expected {} arguments, found {}", params.len(), args.len()),
-                            });
-                        }
-                        
-                        // Check argument types
-                        for (i, (&arg, param_ty)) in args.iter().zip(params.iter()).enumerate() {
-                            if let Some(arg_ty) = ctx.use_register(arg) {
-                                let arg_ty_clone = arg_ty.clone();
-                                ctx.check_type_compat(param_ty, &arg_ty_clone, arg);
-                            }
-                        }
-                        
-                        // Check return type
-                        if let Some(dest_reg) = dest {
-                            ctx.check_type_compat(return_type, return_type, *dest_reg);
-                        }
-                    }
-                    _ => {
-                        ctx.add_error(ValidationErrorKind::InvalidOperand {
-                            instruction: "Call".to_string(),
-                            reason: "Callee is not a function type".to_string(),
-                        });
-                    }
-                }
-            }
-            
-            // Use argument registers
+        CallDirect { dest, func_id, args } => {
+            // For direct calls, we'd need to look up the function signature from the module
+            // For now, just validate that arguments are valid registers
             for &arg in args {
                 ctx.use_register(arg);
             }
-            
+
             if let Some(dest_reg) = dest {
-                // For now, assume the call returns the function's return type
-                // In a real implementation, we'd get this from the function signature
+                // Define destination register with unknown type (would need module context for real type)
                 ctx.define_register(*dest_reg, IrType::Any);
             }
         }
-        
+
+        CallIndirect { dest, func_ptr, args, signature } => {
+            // Validate function pointer
+            ctx.use_register(*func_ptr);
+
+            // Validate arguments
+            for &arg in args {
+                ctx.use_register(arg);
+            }
+
+            if let Some(dest_reg) = dest {
+                // Define destination register with return type from signature
+                match signature {
+                    IrType::Function { return_type, .. } => {
+                        ctx.define_register(*dest_reg, (**return_type).clone());
+                    }
+                    _ => {
+                        ctx.define_register(*dest_reg, IrType::Any);
+                    }
+                }
+            }
+        }
+
+        MakeClosure { dest, func_id: _, captured_values } => {
+            // Validate all captured values are valid registers
+            for &val in captured_values {
+                ctx.use_register(val);
+            }
+            // Closure is represented as a pointer
+            ctx.define_register(*dest, IrType::Ptr(Box::new(IrType::Void)));
+        }
+
+        ClosureFunc { dest, closure } => {
+            // Validate closure is a valid register
+            ctx.use_register(*closure);
+            // Function pointer is a void*
+            ctx.define_register(*dest, IrType::Ptr(Box::new(IrType::Void)));
+        }
+
+        ClosureEnv { dest, closure } => {
+            // Validate closure is a valid register
+            ctx.use_register(*closure);
+            // Environment is a void*
+            ctx.define_register(*dest, IrType::Ptr(Box::new(IrType::Void)));
+        }
+
         // TODO: Validate remaining instruction types
         _ => {}
     }
@@ -526,7 +537,7 @@ fn validate_terminator(ctx: &mut ValidationContext, term: &IrTerminator) {
                 ctx.use_register(*val);
             }
         }
-        
+
         _ => {}
     }
 }
@@ -591,6 +602,8 @@ fn value_type(value: &IrValue) -> IrType {
             }
         }
         IrValue::Struct(_) => IrType::Any, // TODO: Proper struct type
+        IrValue::Function(_) => IrType::Ptr(Box::new(IrType::Void)), // Function pointer as void*
+        IrValue::Closure { .. } => IrType::Ptr(Box::new(IrType::Void)), // Closure as void* (contains func ptr + env)
     }
 }
 

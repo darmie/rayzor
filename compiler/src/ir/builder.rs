@@ -16,13 +16,13 @@ use std::collections::HashMap;
 pub struct IrBuilder {
     /// The module being built
     pub module: IrModule,
-    
+
     /// Current function being built
-    current_function: Option<IrFunctionId>,
-    
+    pub(crate) current_function: Option<IrFunctionId>,
+
     /// Current basic block being built
-    current_block: Option<IrBlockId>,
-    
+    pub(crate) current_block: Option<IrBlockId>,
+
     /// Source location context
     current_source_location: IrSourceLocation,
 }
@@ -132,7 +132,13 @@ impl IrBuilder {
         self.add_instruction(IrInstruction::Const { dest, value })?;
         Some(dest)
     }
-    
+
+    /// Build a function pointer constant
+    pub fn build_function_ptr(&mut self, func_id: IrFunctionId) -> Option<IrId> {
+        let value = IrValue::Function(func_id);
+        self.build_const(value)
+    }
+
     /// Build a copy instruction
     pub fn build_copy(&mut self, src: IrId) -> Option<IrId> {
         let dest = self.alloc_reg()?;
@@ -174,14 +180,33 @@ impl IrBuilder {
     }
     
     /// Build a function call
-    pub fn build_call(
+    /// Build a direct function call (callee known at compile time)
+    pub fn build_call_direct(
         &mut self,
-        func: IrId,
+        func_id: IrFunctionId,
         args: Vec<IrId>,
-        _ty: IrType,
+        ty: IrType,
+    ) -> Option<IrId> {
+        // Only allocate a destination register if the function returns a value
+        let dest = if ty == IrType::Void {
+            None
+        } else {
+            Some(self.alloc_reg()?)
+        };
+
+        self.add_instruction(IrInstruction::CallDirect { dest, func_id, args })?;
+        dest
+    }
+
+    /// Build an indirect function call (callee computed at runtime)
+    pub fn build_call_indirect(
+        &mut self,
+        func_ptr: IrId,
+        args: Vec<IrId>,
+        signature: IrType,
     ) -> Option<IrId> {
         let dest = self.alloc_reg()?;
-        self.add_instruction(IrInstruction::Call { dest: Some(dest), func, args })?;
+        self.add_instruction(IrInstruction::CallIndirect { dest: Some(dest), func_ptr, args, signature })?;
         Some(dest)
     }
     
@@ -247,16 +272,64 @@ impl IrBuilder {
         })?;
         Some(dest)
     }
-    
+
+    /// Build a closure creation instruction
+    pub fn build_make_closure(
+        &mut self,
+        func_id: IrFunctionId,
+        captured_values: Vec<IrId>,
+    ) -> Option<IrId> {
+        let dest = self.alloc_reg()?;
+        self.add_instruction(IrInstruction::MakeClosure {
+            dest,
+            func_id,
+            captured_values,
+        })?;
+        Some(dest)
+    }
+
+    /// Build an instruction to extract the function pointer from a closure
+    pub fn build_closure_func(&mut self, closure: IrId) -> Option<IrId> {
+        let dest = self.alloc_reg()?;
+        self.add_instruction(IrInstruction::ClosureFunc { dest, closure })?;
+        Some(dest)
+    }
+
+    /// Build an instruction to extract the environment from a closure
+    pub fn build_closure_env(&mut self, closure: IrId) -> Option<IrId> {
+        let dest = self.alloc_reg()?;
+        self.add_instruction(IrInstruction::ClosureEnv { dest, closure })?;
+        Some(dest)
+    }
+
+    // === Exception Handling ===
+
+    /// Build a throw instruction
+    pub fn build_throw(&mut self, exception: IrId) -> Option<()> {
+        self.add_instruction(IrInstruction::Throw { exception })?;
+        Some(())
+    }
+
+    /// Build a landing pad instruction for exception handling
+    pub fn build_landing_pad(&mut self, ty: IrType, clauses: Vec<super::LandingPadClause>) -> Option<IrId> {
+        let dest = self.alloc_reg()?;
+        self.add_instruction(IrInstruction::LandingPad { dest, ty, clauses })?;
+        Some(dest)
+    }
+
     // === Terminator Building ===
     
     /// Set the terminator for the current block
     fn set_terminator(&mut self, term: IrTerminator) -> Option<()> {
         let block_id = self.current_block?;
+        eprintln!("DEBUG set_terminator: block={:?}, term={:?}", block_id, term);
         let func = self.current_function_mut()?;
-        
+        eprintln!("DEBUG set_terminator: function={}", func.name);
+
         // First, set the terminator
-        func.cfg.get_block_mut(block_id)?.set_terminator(term.clone());
+        let block = func.cfg.get_block_mut(block_id)?;
+        block.set_terminator(term.clone());
+        eprintln!("DEBUG set_terminator: terminator set on block successfully");
         
         // Then, update predecessor information based on the terminator
         match &term {
@@ -310,7 +383,12 @@ impl IrBuilder {
     
     /// Build a return instruction
     pub fn build_return(&mut self, value: Option<IrId>) -> Option<()> {
-        self.set_terminator(IrTerminator::Return { value })
+        eprintln!("DEBUG IrBuilder::build_return called with value={:?}", value);
+        eprintln!("DEBUG   Current function: {:?}", self.current_function().map(|f| &f.name));
+        eprintln!("DEBUG   Current block: {:?}", self.current_block);
+        let result = self.set_terminator(IrTerminator::Return { value });
+        eprintln!("DEBUG   set_terminator returned: {:?}", result);
+        result
     }
     
     /// Build an unreachable terminator
@@ -470,6 +548,7 @@ impl FunctionSignatureBuilder {
             calling_convention: self.calling_convention,
             can_throw: self.can_throw,
             type_params: Vec::new(),
+            uses_sret: false, // Generic builder - caller can set manually if needed
         }
     }
 }

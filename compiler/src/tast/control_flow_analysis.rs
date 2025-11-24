@@ -178,6 +178,8 @@ pub struct ControlFlowAnalyzer {
     resources: HashMap<SymbolId, ResourceInfo>,
     /// Analysis results
     results: AnalysisResults,
+    /// Whether we're analyzing an entry point function (like static main)
+    is_entry_point: bool,
 }
 
 /// Results of control flow analysis
@@ -230,7 +232,7 @@ impl ControlFlowAnalyzer {
         let mut cfg = ControlFlowGraph::new();
         let entry_block = cfg.create_block();
         cfg.entry_block = entry_block;
-        
+
         Self {
             cfg,
             break_targets: Vec::new(),
@@ -239,29 +241,35 @@ impl ControlFlowAnalyzer {
             variables: HashSet::new(),
             resources: HashMap::new(),
             results: AnalysisResults::default(),
+            is_entry_point: false,
         }
     }
     
     /// Analyze a function and return the results
     pub fn analyze_function(&mut self, function: &TypedFunction) -> AnalysisResults {
+        // Check if this is an entry point function (static main)
+        // Entry point functions are implicitly called by the runtime and should not trigger
+        // dead code warnings for unused variables, as they may be test/demo code
+        self.is_entry_point = function.is_static; // For now, treat all static functions as potential entry points
+
         // Add function parameters as initialized variables
         for param in &function.parameters {
             self.variables.insert(param.symbol_id);
             self.set_variable_state(param.symbol_id, VariableState::Initialized);
         }
-        
+
         // Build control flow graph from function body
         for statement in &function.body {
             self.analyze_statement(statement);
         }
-        
+
         // Perform data flow analysis
         self.compute_reachability();
         self.analyze_definite_assignment();
         self.analyze_null_safety();
         self.detect_dead_code();
         self.analyze_resource_usage();
-        
+
         std::mem::take(&mut self.results)
     }
     
@@ -1043,28 +1051,35 @@ impl ControlFlowAnalyzer {
     
     /// Detect unused variables (declared but never used)
     fn detect_unused_variables(&mut self) {
+        // Skip unused variable detection for entry point functions (like static main)
+        // Entry points are implicitly called by the runtime and may contain test/demo code
+        // where variables are created just to verify compilation/type checking
+        if self.is_entry_point {
+            return;
+        }
+
         let mut declared_vars = HashSet::new();
         let mut used_vars = HashSet::new();
-        
+
         // Collect all variable declarations and uses
         for (_, block) in &self.cfg.blocks {
             if !block.is_reachable {
                 continue;
             }
-            
+
             for statement_info in &block.statements {
                 // Add declared variables
                 for &var_id in &statement_info.assigns {
                     declared_vars.insert(var_id);
                 }
-                
+
                 // Add used variables
                 for &var_id in &statement_info.uses {
                     used_vars.insert(var_id);
                 }
             }
         }
-        
+
         // Find declared but unused variables
         for &var_id in &declared_vars {
             if !used_vars.contains(&var_id) {

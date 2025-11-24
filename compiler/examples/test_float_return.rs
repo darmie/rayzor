@@ -1,0 +1,101 @@
+/// Test: Function returning Float
+///
+/// Tests that we can properly return Float values from functions.
+
+use compiler::compilation::{CompilationUnit, CompilationConfig};
+use compiler::codegen::CraneliftBackend;
+use compiler::ir::hir_to_mir::lower_hir_to_mir;
+use compiler::ir::tast_to_hir::lower_tast_to_hir;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+fn main() -> Result<(), String> {
+    println!("\n=== Testing Float Return ===\n");
+
+    let mut unit = CompilationUnit::new(CompilationConfig::default());
+
+    // Function returns Float, not Int
+    let source = r#"
+        package test;
+
+        class FloatReturnTest {
+            public static function main():Float {
+                var a = 10.0;
+                var b = 2.0;
+                var c = a / b;  // 5.0 (Float)
+                return c;       // Return the Float directly
+            }
+        }
+    "#;
+
+    println!("Test Code:");
+    println!("{}", source);
+    println!("\n--- Compilation ---\n");
+
+    // Compile
+    unit.load_stdlib()?;
+    unit.add_file(source, "FloatReturnTest.hx")?;
+    let typed_files = unit.lower_to_tast()?;
+    println!("✓ TAST generated");
+
+    // Lower to HIR → MIR
+    let string_interner_rc = Rc::new(RefCell::new(std::mem::replace(
+        &mut unit.string_interner,
+        compiler::tast::StringInterner::new(),
+    )));
+
+    let mut mir_modules = Vec::new();
+    for typed_file in &typed_files {
+        let hir = {
+            let mut interner = string_interner_rc.borrow_mut();
+            lower_tast_to_hir(typed_file, &unit.symbol_table, &unit.type_table, &mut *interner, None)
+                .map_err(|e| format!("HIR error: {:?}", e))?
+        };
+
+        let mir = lower_hir_to_mir(&hir, &*string_interner_rc.borrow(), &unit.type_table)
+            .map_err(|e| format!("MIR error: {:?}", e))?;
+        if !mir.functions.is_empty() {
+            mir_modules.push(mir);
+        }
+    }
+    println!("✓ HIR and MIR generated");
+
+    // Find main function
+    let test_module = mir_modules.into_iter()
+        .find(|m| m.functions.iter().any(|(_, f)| f.name.contains("main")))
+        .ok_or("No module with main function found")?;
+
+    let main_func_id = test_module
+        .functions
+        .iter()
+        .find(|(_, f)| f.name.contains("main"))
+        .map(|(id, _)| *id)
+        .ok_or("No main function found")?;
+
+    // Execute with Cranelift
+    println!("--- JIT Compilation ---\n");
+    let mut backend = CraneliftBackend::new()?;
+    backend.compile_module(&test_module)?;
+    println!("✓ Cranelift compilation complete");
+
+    println!("\n--- Execution ---\n");
+    let func_ptr = backend.get_function_ptr(main_func_id)?;
+
+    // Important: Function returns Float (f64), not Int!
+    let main_fn: fn() -> f64 = unsafe { std::mem::transmute(func_ptr) };
+    let result = main_fn();
+
+    println!("\n--- Results ---");
+    println!("✓ Execution successful!");
+    println!("✓ Result: {}", result);
+    println!("\nExpected: 5.0 (Float division result)");
+
+    // Check if result is approximately 5.0 (allow for floating point precision)
+    if (result - 5.0).abs() < 0.0001 {
+        println!("\n✅ TEST PASSED! Float return works correctly!");
+        Ok(())
+    } else {
+        println!("\n❌ TEST FAILED: Expected 5.0, got {}", result);
+        Err(format!("Expected 5.0, got {}", result))
+    }
+}

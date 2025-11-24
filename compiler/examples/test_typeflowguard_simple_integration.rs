@@ -135,7 +135,6 @@ fn test_variable_assignment(flow_guard: &mut TypeFlowGuard, string_interner: &Rc
 
     // Debug: Print errors if any
     if results.errors.len() > 0 {
-        eprintln!("DEBUG: Variable assignment test found {} errors:", results.errors.len());
         for error in &results.errors {
             eprintln!("  {:?}", error);
         }

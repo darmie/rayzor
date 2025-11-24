@@ -34,7 +34,7 @@ use crate::ir::{
 use crate::tast::type_flow_guard::{
     TypeFlowGuard, FlowSafetyError, FlowSafetyResults,
 };
-use crate::error_codes::{error_registry, format_error_code};
+use crate::error_codes::error_registry;
 
 // Use the parser's public interface
 use parser::{
@@ -260,18 +260,60 @@ pub struct CompilationResult {
 pub struct CompilationError {
     /// Error message
     pub message: String,
-    
+
     /// Source location of the error
     pub location: SourceLocation,
-    
+
     /// Error category
     pub category: ErrorCategory,
-    
+
     /// Optional suggestion for fixing the error
     pub suggestion: Option<String>,
-    
+
     /// Related errors (for cascading issues)
     pub related_errors: Vec<String>,
+}
+
+impl CompilationError {
+    /// Convert to a standard Diagnostic for formatted output
+    pub fn to_diagnostic(&self, source_map: &diagnostics::SourceMap) -> diagnostics::Diagnostic {
+        use diagnostics::{Diagnostic, DiagnosticSeverity, Label, SourceSpan, SourcePosition, FileId};
+
+        let file_id = FileId::new(self.location.file_id as usize);
+
+        // Calculate line/column from byte offset using SourceMap
+        let (start_pos, end_pos) = if let Some(pos) = source_map.offset_to_position(file_id, self.location.byte_offset as usize) {
+            let end_pos = source_map.offset_to_position(file_id, (self.location.byte_offset + 1) as usize)
+                .unwrap_or_else(|| SourcePosition::new(pos.line, pos.column + 1, pos.byte_offset + 1));
+            (pos, end_pos)
+        } else {
+            // Fallback if offset calculation fails
+            let start_pos = SourcePosition::new(
+                self.location.line as usize,
+                self.location.column as usize,
+                self.location.byte_offset as usize
+            );
+            let end_pos = SourcePosition::new(
+                self.location.line as usize,
+                (self.location.column + 1) as usize,
+                (self.location.byte_offset + 1) as usize
+            );
+            (start_pos, end_pos)
+        };
+
+        let span = SourceSpan::new(start_pos, end_pos, file_id);
+
+        Diagnostic {
+            severity: DiagnosticSeverity::Error,
+            code: Some(self.category.error_code().to_string()),
+            message: self.message.clone(),
+            span: span.clone(),
+            labels: vec![Label::primary(span, self.message.clone())],
+            suggestions: vec![],
+            notes: self.related_errors.clone(),
+            help: self.suggestion.as_ref().map(|s| vec![s.clone()]).unwrap_or_default(),
+        }
+    }
 }
 
 /// Compilation warning
@@ -279,15 +321,50 @@ pub struct CompilationError {
 pub struct CompilationWarning {
     /// Warning message
     pub message: String,
-    
+
     /// Source location of the warning
     pub location: SourceLocation,
-    
+
     /// Warning category
     pub category: WarningCategory,
-    
+
     /// Whether this warning can be suppressed
     pub suppressible: bool,
+}
+
+impl CompilationWarning {
+    /// Convert to a standard Diagnostic for formatted output
+    pub fn to_diagnostic(&self, _source_map: &diagnostics::SourceMap) -> diagnostics::Diagnostic {
+        use diagnostics::{Diagnostic, DiagnosticSeverity, Label, SourceSpan, SourcePosition, FileId};
+
+        // Create span from source location
+        let start_pos = SourcePosition::new(
+            self.location.line as usize,
+            self.location.column as usize,
+            self.location.byte_offset as usize
+        );
+        let end_pos = SourcePosition::new(
+            self.location.line as usize,
+            (self.location.column + 1) as usize,
+            (self.location.byte_offset + 1) as usize
+        );
+        let span = SourceSpan::new(
+            start_pos,
+            end_pos,
+            FileId::new(self.location.file_id as usize)
+        );
+
+        Diagnostic {
+            severity: DiagnosticSeverity::Warning,
+            code: Some(format!("{:?}", self.category)),
+            message: self.message.clone(),
+            span: span.clone(),
+            labels: vec![Label::primary(span, self.message.clone())],
+            suggestions: vec![],
+            notes: vec![],
+            help: vec![],
+        }
+    }
 }
 
 /// Categories of compilation errors
@@ -295,36 +372,80 @@ pub struct CompilationWarning {
 pub enum ErrorCategory {
     /// Syntax error in source code
     ParseError,
-    
+
     /// Type error (type mismatch, undefined type, etc.)
     TypeError,
-    
+
     /// Symbol resolution error (undefined variable, etc.)
     SymbolError,
-    
+
     /// Ownership/borrowing error
     OwnershipError,
-    
+
     /// Lifetime error
     LifetimeError,
-    
+
     /// Import/module error
     ImportError,
-    
+
     /// HIR lowering error
     HIRLoweringError,
-    
+
     /// HIR optimization error
     HIROptimizationError,
-    
+
     /// HIR validation error
     HIRValidationError,
-    
+
     /// Semantic analysis error
     SemanticAnalysisError,
-    
+
     /// Internal compiler error
     InternalError,
+}
+
+impl ErrorCategory {
+    /// Get the error code for this category
+    ///
+    /// Error code ranges:
+    /// - E0001-E0099: Parser/syntax errors (defined in diagnostics/haxe.rs)
+    /// - E0100-E0199: Type system errors
+    /// - E0200-E0299: Symbol resolution errors
+    /// - E0300-E0399: Ownership/lifetime errors
+    /// - E0400-E0499: Import/module errors
+    /// - E0500-E0599: HIR errors
+    /// - E0600-E0699: Semantic analysis errors
+    /// - E9999: Internal compiler errors
+    pub fn error_code(&self) -> &'static str {
+        match self {
+            // Parser errors use E0001-E0099 range (delegated to parser)
+            ErrorCategory::ParseError => "E0001",
+
+            // Type system errors: E0100-E0199
+            ErrorCategory::TypeError => "E0100",
+
+            // Symbol resolution errors: E0200-E0299
+            ErrorCategory::SymbolError => "E0200",
+
+            // Ownership/lifetime errors: E0300-E0399
+            ErrorCategory::OwnershipError => "E0300",
+            ErrorCategory::LifetimeError => "E0301",
+
+            // Import/module errors: E0400-E0499
+            ErrorCategory::ImportError => "E0400",
+
+            // HIR errors: E0500-E0599
+            ErrorCategory::HIRLoweringError => "E0500",
+            ErrorCategory::HIROptimizationError => "E0501",
+            ErrorCategory::HIRValidationError => "E0502",
+
+            // Semantic analysis errors: E0600-E0699
+            ErrorCategory::SemanticAnalysisError => "E0600",
+
+            // Internal compiler errors
+            ErrorCategory::InternalError => "E9999",
+        }
+    }
 }
 
 /// Categories of compilation warnings
@@ -494,7 +615,7 @@ impl HaxeCompilationPipeline {
                 // Stage 2: Lower AST to TAST
                 let lowering_start = std::time::Instant::now();
                 match self.lower_ast_to_tast(ast_file, file_path.as_ref(), source, source_map) {
-                    Ok((typed_file, lowering_errors, symbol_table, type_table)) => {
+                    Ok((typed_file, lowering_errors, symbol_table, type_table, scope_tree)) => {
                         self.stats.lowering_time_us += lowering_start.elapsed().as_micros() as u64;
                         
                         // Add any type errors from lowering/type checking
@@ -508,7 +629,7 @@ impl HaxeCompilationPipeline {
                         // Stage 4: Generate semantic graphs (if enabled)
                         let semantic_graphs = if self.config.enable_semantic_analysis {
                             let semantic_start = std::time::Instant::now();
-                            match self.build_semantic_graphs(&typed_file, &symbol_table, &type_table) {
+                            match self.build_semantic_graphs(&typed_file, &symbol_table, &type_table, &scope_tree) {
                                 Ok(graphs) => {
                                     self.stats.semantic_analysis_time_us += semantic_start.elapsed().as_micros() as u64;
                                     
@@ -584,7 +705,7 @@ impl HaxeCompilationPipeline {
                                     // Stage 8: Lower HIR to MIR (if enabled)
                                     if self.config.enable_mir_lowering {
                                         let mir_start = std::time::Instant::now();
-                                        match self.lower_hir_to_mir(&final_hir) {
+                                        match self.lower_hir_to_mir(&final_hir, &type_table, &symbol_table) {
                                             Ok(mir_module) => {
                                                 self.stats.mir_lowering_time_us += mir_start.elapsed().as_micros() as u64;
                                                 
@@ -713,7 +834,7 @@ impl HaxeCompilationPipeline {
     }
     
     /// Lower AST to TAST with type checking
-    fn lower_ast_to_tast(&mut self, ast_file: HaxeFile, file_path: &Path, source: &str, source_map: diagnostics::SourceMap) -> Result<(TypedFile, Vec<CompilationError>, SymbolTable, Rc<RefCell<TypeTable>>), Vec<CompilationError>> {
+    fn lower_ast_to_tast(&mut self, ast_file: HaxeFile, file_path: &Path, source: &str, source_map: diagnostics::SourceMap) -> Result<(TypedFile, Vec<CompilationError>, SymbolTable, Rc<RefCell<TypeTable>>, crate::tast::ScopeTree), Vec<CompilationError>> {
         use crate::tast::ast_lowering::AstLowering;
         use crate::tast::{SymbolTable, ScopeTree, TypeTable, ScopeId};
         use crate::tast::type_checking_pipeline::type_check_with_diagnostics;
@@ -756,21 +877,35 @@ impl HaxeCompilationPipeline {
             file_name.to_string()
         );
         
-        // Lower the AST to TAST
-        let mut typed_file = match lowering.lower_file(&ast_file) {
-            Ok(typed_file) => typed_file,
-            Err(lowering_error) => {
-                // Convert lowering error to formatted diagnostic
-                let formatted_error = self.format_lowering_error(&lowering_error, &source_map);
-                let compilation_error = CompilationError {
-                    message: formatted_error,
-                    location: self.extract_location_from_lowering_error(&lowering_error),
-                    category: ErrorCategory::TypeError,
-                    suggestion: None,
-                    related_errors: Vec::new(),
-                };
-                
-                return Err(vec![compilation_error]);
+        // Lower the AST to TAST with error recovery
+        // AstLowering now collects ALL errors within a file and continues processing
+        // This allows us to report multiple errors per file in a single compilation
+        let (mut typed_file, mut type_errors): (TypedFile, Vec<CompilationError>) = match lowering.lower_file(&ast_file) {
+            Ok(typed_file) => (typed_file, Vec::new()),
+            Err(_lowering_error) => {
+                // Extract ALL collected errors from the lowering context
+                let all_lowering_errors = lowering.get_all_errors();
+
+                // Convert all lowering errors to CompilationErrors
+                let compilation_errors: Vec<CompilationError> = all_lowering_errors
+                    .iter()
+                    .map(|err| {
+                        let (message, suggestion) = self.extract_lowering_error_message(err);
+                        CompilationError {
+                            message,
+                            location: self.extract_location_from_lowering_error(err),
+                            category: self.categorize_lowering_error(err),
+                            suggestion,
+                            related_errors: Vec::new(),
+                        }
+                    })
+                    .collect();
+
+                // Create a minimal TAST so we can continue pipeline and find more errors
+                // This allows us to report ALL errors, not just the first one
+                let minimal_tast = TypedFile::new(Rc::new(RefCell::new(StringInterner::new())));
+
+                (minimal_tast, compilation_errors)
             }
         };
         
@@ -784,23 +919,10 @@ impl HaxeCompilationPipeline {
             &source_map,
         ).unwrap_or_else(|_| diagnostics::Diagnostics::new());
         
-        // Store any type errors but continue with typed file generation
-        let mut type_errors = Vec::new();
+        // Add type checking errors to the collection (type_errors already initialized above with lowering errors)
         if !diagnostics.is_empty() {
             // Convert each diagnostic to a CompilationError
             for diagnostic in &diagnostics.diagnostics {
-                // Format this individual diagnostic for the message
-                let formatter = if self.config.enable_colored_errors {
-                    ErrorFormatter::with_colors()
-                } else {
-                    ErrorFormatter::new()
-                };
-                
-                // Create a diagnostics collection with just this one diagnostic
-                let mut single_diagnostic = diagnostics::Diagnostics::new();
-                single_diagnostic.push(diagnostic.clone());
-                let formatted_message = formatter.format_diagnostics(&single_diagnostic, &source_map);
-                
                 // Extract the span location
                 let location = SourceLocation {
                     file_id: diagnostic.span.file_id.as_usize() as u32,
@@ -808,15 +930,17 @@ impl HaxeCompilationPipeline {
                     column: diagnostic.span.start.column as u32,
                     byte_offset: diagnostic.span.start.byte_offset as u32,
                 };
-                
+
+                // Use the raw message from the diagnostic (not formatted)
+                // Formatting will happen later in ErrorFormatter
                 let compilation_error = CompilationError {
-                    message: formatted_message,
+                    message: diagnostic.message.clone(),
                     location,
                     category: ErrorCategory::TypeError,
                     suggestion: if diagnostic.help.is_empty() { None } else { Some(diagnostic.help.join(" ")) },
-                    related_errors: Vec::new(),
+                    related_errors: diagnostic.notes.clone(),
                 };
-                
+
                 type_errors.push(compilation_error);
             }
         }
@@ -829,8 +953,8 @@ impl HaxeCompilationPipeline {
             self.stats.flow_analysis_time_us += flow_start.elapsed().as_micros() as u64;
         }
         
-        // Return the typed file along with any type errors and the symbol/type tables for later stages
-        Ok((typed_file, type_errors, symbol_table, type_table))
+        // Return the typed file along with any type errors and the symbol/type tables/scope tree for later stages
+        Ok((typed_file, type_errors, symbol_table, type_table, scope_tree))
     }
     
     /// Validate the resulting TAST for correctness
@@ -1085,220 +1209,90 @@ impl HaxeCompilationPipeline {
             .unwrap_or_else(|| format!("<invalid:#{}>", interned.as_raw()))
     }
     
-    /// Format lowering errors with consistent diagnostic formatting
-    fn format_lowering_error(&self, error: &crate::tast::ast_lowering::LoweringError, source_map: &diagnostics::SourceMap) -> String {
+    /// Extract raw message and suggestion from lowering error
+    fn extract_lowering_error_message(&self, error: &crate::tast::ast_lowering::LoweringError) -> (String, Option<String>) {
         use crate::tast::ast_lowering::LoweringError;
-        use diagnostics::{Diagnostic, DiagnosticSeverity, SourceSpan, SourcePosition, Label, ErrorFormatter};
-        
-        let formatter = if self.config.enable_colored_errors {
-            ErrorFormatter::with_colors()
-        } else {
-            ErrorFormatter::new()
-        };
-        let mut diagnostics = diagnostics::Diagnostics::new();
-        
-        // Convert LoweringError to Diagnostic with proper formatting
-        let diagnostic = match error {
-            LoweringError::GenericParameterError { message, location } => {
-                let start_pos = SourcePosition::new(location.line as usize, location.column as usize, location.byte_offset as usize);
-                let end_pos = SourcePosition::new(location.line as usize, location.column as usize + 1, location.byte_offset as usize + 1);
-                let span = SourceSpan::new(start_pos, end_pos, diagnostics::FileId::new(location.file_id as usize));
-                
-                Diagnostic {
-                    severity: DiagnosticSeverity::Error,
-                    code: Some(format_error_code(3002)),  // E3002: Invalid generic instantiation
-                    message: message.clone(),
-                    span: span.clone(),
-                    labels: vec![Label::primary(span, "invalid generic instantiation")],
-                    suggestions: vec![],
-                    notes: vec!["Generic types must be instantiated with the correct number of type arguments".to_string()],
-                    help: vec!["Check the type definition to see how many type parameters it expects".to_string()],
-                }
-            }
-            
-            LoweringError::UnresolvedSymbol { name, location } => {
-                let start_pos = SourcePosition::new(location.line as usize, location.column as usize, location.byte_offset as usize);
-                let end_pos = SourcePosition::new(location.line as usize, location.column as usize + name.len(), location.byte_offset as usize + name.len());
-                let span = SourceSpan::new(start_pos, end_pos, diagnostics::FileId::new(location.file_id as usize));
-                
-                Diagnostic {
-                    severity: DiagnosticSeverity::Error,
-                    code: Some(format_error_code(2001)),  // E2001: Undefined symbol
-                    message: format!("Cannot find symbol '{}'", name),
-                    span: span.clone(),
-                    labels: vec![Label::primary(span, "not found in this scope")],
-                    suggestions: vec![],
-                    notes: vec![],
-                    help: vec!["Make sure the symbol is declared and in scope".to_string()],
-                }
-            }
-            
-            LoweringError::UnresolvedType { type_name, location } => {
-                let start_pos = SourcePosition::new(location.line as usize, location.column as usize, location.byte_offset as usize);
-                let end_pos = SourcePosition::new(location.line as usize, location.column as usize + type_name.len(), location.byte_offset as usize + type_name.len());
-                let span = SourceSpan::new(start_pos, end_pos, diagnostics::FileId::new(location.file_id as usize));
-                
-                Diagnostic {
-                    severity: DiagnosticSeverity::Error,
-                    code: Some(format_error_code(1002)),  // E1002: Undefined type
-                    message: format!("Cannot find type '{}'", type_name),
-                    span: span.clone(),
-                    labels: vec![Label::primary(span, "type not found")],
-                    suggestions: vec![],
-                    notes: vec!["Make sure the type is imported or defined".to_string()],
-                    help: vec!["Check for typos in the type name or add the necessary import".to_string()],
-                }
-            }
-            
-            LoweringError::DuplicateSymbol { name, original_location: _, duplicate_location } => {
-                let start_pos = SourcePosition::new(duplicate_location.line as usize, duplicate_location.column as usize, duplicate_location.byte_offset as usize);
-                let end_pos = SourcePosition::new(duplicate_location.line as usize, duplicate_location.column as usize + name.len(), duplicate_location.byte_offset as usize + name.len());
-                let span = SourceSpan::new(start_pos, end_pos, diagnostics::FileId::new(duplicate_location.file_id as usize));
-                
-                Diagnostic {
-                    severity: DiagnosticSeverity::Error,
-                    code: Some(format_error_code(2002)),  // E2002: Symbol already defined
-                    message: format!("Duplicate definition of '{}'", name),
-                    span: span.clone(),
-                    labels: vec![Label::primary(span, "redefined here")],
-                    suggestions: vec![],
-                    notes: vec!["A symbol with this name was already defined in this scope".to_string()],
-                    help: vec!["Rename one of the symbols or remove the duplicate definition".to_string()],
-                }
-            }
-            
-            LoweringError::InvalidModifiers { modifiers, location } => {
-                let start_pos = SourcePosition::new(location.line as usize, location.column as usize, location.byte_offset as usize);
-                let end_pos = SourcePosition::new(location.line as usize, location.column as usize + 10, location.byte_offset as usize + 10);
-                let span = SourceSpan::new(start_pos, end_pos, diagnostics::FileId::new(location.file_id as usize));
-                
-                Diagnostic {
-                    severity: DiagnosticSeverity::Error,
-                    code: Some(format_error_code(104)),   // E0104: Invalid variable declaration
-                    message: format!("Invalid modifier combination: {}", modifiers.join(", ")),
-                    span: span.clone(),
-                    labels: vec![Label::primary(span, "conflicting modifiers")],
-                    suggestions: vec![],
-                    notes: vec!["Some modifiers cannot be used together".to_string()],
-                    help: vec!["Remove the conflicting modifiers".to_string()],
-                }
-            }
-            
-            LoweringError::TypeInferenceError { expression, location } => {
-                let start_pos = SourcePosition::new(location.line as usize, location.column as usize, location.byte_offset as usize);
-                let end_pos = SourcePosition::new(location.line as usize, location.column as usize + expression.len().min(20), location.byte_offset as usize + expression.len().min(20));
-                let span = SourceSpan::new(start_pos, end_pos, diagnostics::FileId::new(location.file_id as usize));
-                
-                Diagnostic {
-                    severity: DiagnosticSeverity::Error,
-                    code: Some(format_error_code(1005)),  // E1005: Type inference failed
-                    message: format!("Cannot infer type for expression '{}'", expression),
-                    span: span.clone(),
-                    labels: vec![Label::primary(span, "type cannot be inferred")],
-                    suggestions: vec![],
-                    notes: vec!["Add an explicit type annotation to help the compiler".to_string()],
-                    help: vec!["Try adding a type annotation like 'var x: Type = ...'".to_string()],
-                }
-            }
-            
-            /* // TODO: Add these error variants when needed
-            LoweringError::ConstraintViolation { type_arg: _, constraint, reason, location } => {
-                let start_pos = SourcePosition::new(location.line as usize, location.column as usize, location.byte_offset as usize);
-                let end_pos = SourcePosition::new(location.line as usize, location.column as usize + 10, location.byte_offset as usize + 10);
-                let span = SourceSpan::new(start_pos, end_pos, diagnostics::FileId::new(location.file_id as usize));
-                
-                Diagnostic {
-                    severity: DiagnosticSeverity::Error,
-                    code: Some(format_error_code(3101)),  // E3101: Constraint violation
-                    message: format!("Type constraint violation: {}", reason),
-                    span: span.clone(),
-                    labels: vec![Label::primary(span, &format!("does not satisfy constraint '{}'", constraint))],
-                    suggestions: vec![],
-                    notes: vec!["The type argument does not satisfy the required constraints".to_string()],
-                    help: vec!["Use a type that implements the required interface or extends the required class".to_string()],
-                }
-            }
-            
-            LoweringError::TypeResolution { message, location } => {
-                let start_pos = SourcePosition::new(location.line as usize, location.column as usize, location.byte_offset as usize);
-                let end_pos = SourcePosition::new(location.line as usize, location.column as usize + 10, location.byte_offset as usize + 10);
-                let span = SourceSpan::new(start_pos, end_pos, diagnostics::FileId::new(location.file_id as usize));
-                
-                Diagnostic {
-                    severity: DiagnosticSeverity::Error,
-                    code: Some(format_error_code(1004)),  // E1004: Circular type dependency
-                    message: format!("Type resolution error: {}", message),
-                    span: span.clone(),
-                    labels: vec![Label::primary(span, "type resolution failed")],
-                    suggestions: vec![],
-                    notes: vec!["The type could not be resolved properly".to_string()],
-                    help: vec!["Check that all required types are defined and accessible".to_string()],
-                }
-            }
-            */
-            
-            LoweringError::IncompleteImplementation { feature, location } => {
-                let start_pos = SourcePosition::new(location.line as usize, location.column as usize, location.byte_offset as usize);
-                let end_pos = SourcePosition::new(location.line as usize, location.column as usize + 10, location.byte_offset as usize + 10);
-                let span = SourceSpan::new(start_pos, end_pos, diagnostics::FileId::new(location.file_id as usize));
-                
-                Diagnostic {
-                    severity: DiagnosticSeverity::Error,
-                    code: Some(format_error_code(9002)),  // E9002: Unexpected compiler state
-                    message: format!("Feature not yet implemented: {}", feature),
-                    span: span.clone(),
-                    labels: vec![Label::primary(span, "not implemented")],
-                    suggestions: vec![],
-                    notes: vec!["This language feature is not yet supported by the compiler".to_string()],
-                    help: vec!["Try using an alternative approach or wait for this feature to be implemented".to_string()],
-                }
-            }
-            
-            LoweringError::InternalError { message, location } => {
-                let start_pos = SourcePosition::new(location.line as usize, location.column as usize, location.byte_offset as usize);
-                let end_pos = SourcePosition::new(location.line as usize, location.column as usize + 10, location.byte_offset as usize + 10);
-                let span = SourceSpan::new(start_pos, end_pos, diagnostics::FileId::new(location.file_id as usize));
-                
-                Diagnostic {
-                    severity: DiagnosticSeverity::Error,
-                    code: Some(format_error_code(9001)),  // E9001: Compiler assertion failed
-                    message: format!("Internal compiler error: {}", message),
-                    span: span.clone(),
-                    labels: vec![Label::primary(span, "internal error")],
-                    suggestions: vec![],
-                    notes: vec!["This is a bug in the compiler".to_string()],
-                    help: vec!["Please report this issue to the compiler developers".to_string()],
-                }
-            }
-            
-            // Fallback for any remaining error types
-            _ => {
-                let location = self.extract_location_from_lowering_error(error);
-                let start_pos = SourcePosition::new(location.line as usize, location.column as usize, location.byte_offset as usize);
-                let end_pos = SourcePosition::new(location.line as usize, location.column as usize + 10, location.byte_offset as usize + 10);
-                let span = SourceSpan::new(start_pos, end_pos, diagnostics::FileId::new(location.file_id as usize));
-                
-                Diagnostic {
-                    severity: DiagnosticSeverity::Error,
-                    code: Some(format_error_code(9999)),  // E9999: Unknown error
-                    message: format!("Compilation error: {}", format!("{:?}", error).replace("LoweringError::", "")),
-                    span: span.clone(),
-                    labels: vec![Label::primary(span, "compilation failed")],
-                    suggestions: vec![],
-                    notes: vec!["An error occurred during compilation".to_string()],
-                    help: vec!["Check the syntax and semantics of your code".to_string()],
-                }
-            }
-        };
-        
-        diagnostics.push(diagnostic);
-        formatter.format_diagnostics(&diagnostics, source_map)
+
+        match error {
+            LoweringError::UnresolvedSymbol { name, .. } => (
+                format!("Cannot find symbol '{}'", name),
+                Some("Make sure the symbol is declared and in scope".to_string())
+            ),
+
+            LoweringError::UnresolvedType { type_name, .. } => (
+                format!("Cannot find type '{}'", type_name),
+                Some("Check that the type is imported or defined".to_string())
+            ),
+
+            LoweringError::DuplicateSymbol { name, .. } => (
+                format!("Duplicate definition of '{}'", name),
+                Some("Rename one of the symbols or remove the duplicate definition".to_string())
+            ),
+
+            LoweringError::GenericParameterError { message, .. } => (
+                message.clone(),
+                Some("Check the type definition to see how many type parameters it expects".to_string())
+            ),
+
+            LoweringError::InvalidModifiers { modifiers, .. } => (
+                format!("Invalid modifier combination: {}", modifiers.join(", ")),
+                Some("Remove the conflicting modifiers".to_string())
+            ),
+
+            LoweringError::TypeInferenceError { expression, .. } => (
+                format!("Cannot infer type for expression '{}'", expression),
+                Some("Try adding a type annotation like 'var x: Type = ...'".to_string())
+            ),
+
+            LoweringError::LifetimeError { message, .. } => (
+                format!("Lifetime error: {}", message),
+                Some("Ensure that references don't outlive their referents".to_string())
+            ),
+
+            LoweringError::OwnershipError { message, .. } => (
+                format!("Ownership error: {}", message),
+                Some("Check ownership constraints and borrowing rules".to_string())
+            ),
+
+            LoweringError::IncompleteImplementation { feature, .. } => (
+                format!("Feature not yet implemented: {}", feature),
+                Some("Try using an alternative approach or wait for this feature to be implemented".to_string())
+            ),
+
+            LoweringError::InternalError { message, .. } => (
+                format!("Internal compiler error: {}", message),
+                Some("Please report this issue to the compiler developers".to_string())
+            ),
+        }
     }
-    
+
+    /// Categorize a lowering error into the correct ErrorCategory
+    fn categorize_lowering_error(&self, error: &crate::tast::ast_lowering::LoweringError) -> ErrorCategory {
+        use crate::tast::ast_lowering::LoweringError;
+
+        match error {
+            LoweringError::UnresolvedSymbol { .. } |
+            LoweringError::DuplicateSymbol { .. } => ErrorCategory::SymbolError,
+
+            LoweringError::UnresolvedType { .. } |
+            LoweringError::GenericParameterError { .. } |
+            LoweringError::TypeInferenceError { .. } => ErrorCategory::TypeError,
+
+            LoweringError::LifetimeError { .. } => ErrorCategory::LifetimeError,
+
+            LoweringError::OwnershipError { .. } => ErrorCategory::OwnershipError,
+
+            LoweringError::InvalidModifiers { .. } => ErrorCategory::TypeError,
+
+            LoweringError::IncompleteImplementation { .. } |
+            LoweringError::InternalError { .. } => ErrorCategory::InternalError,
+        }
+    }
+
     /// Extract source location from lowering error
     fn extract_location_from_lowering_error(&self, error: &crate::tast::ast_lowering::LoweringError) -> crate::tast::SourceLocation {
         use crate::tast::ast_lowering::LoweringError;
-        
+
         match error {
             LoweringError::UnresolvedSymbol { location, .. } => location.clone(),
             LoweringError::UnresolvedType { location, .. } => location.clone(),
@@ -1318,9 +1312,19 @@ impl HaxeCompilationPipeline {
     }
     
     /// Build semantic graphs for advanced analysis
-    fn build_semantic_graphs(&mut self, typed_file: &TypedFile, symbol_table: &SymbolTable, type_table: &Rc<RefCell<TypeTable>>) -> Result<SemanticGraphs, Vec<CompilationError>> {
+    fn build_semantic_graphs(
+        &mut self,
+        typed_file: &TypedFile,
+        symbol_table: &SymbolTable,
+        type_table: &Rc<RefCell<TypeTable>>,
+        scope_tree: &crate::tast::ScopeTree
+    ) -> Result<SemanticGraphs, Vec<CompilationError>> {
         use crate::semantic_graph::GraphConstructionError;
-        
+        use crate::semantic_graph::dfg_builder::DfgBuilder;
+        use crate::tast::type_checker::TypeChecker;
+
+        info!("Building semantic graphs for {} functions", typed_file.functions.len());
+
         let options = GraphConstructionOptions {
             build_call_graph: true,
             build_ownership_graph: self.config.enable_ownership_analysis,
@@ -1329,22 +1333,44 @@ impl HaxeCompilationPipeline {
             max_function_size: if self.config.optimization_level == 0 { 5000 } else { 10000 },
             collect_statistics: self.config.collect_statistics,
         };
-        
-        // Use the symbol and type tables passed from TAST lowering
-        // Note: CfgBuilder doesn't currently use these, but they're available
-        // for future enhancements like improved type-aware CFG construction
-        let _ = (symbol_table, type_table); // Mark as intentionally unused for now
-        
-        // Build semantic graphs using CfgBuilder
-        let mut cfg_builder = CfgBuilder::new(options);
+
+        // Build CFGs using CfgBuilder
+        let mut cfg_builder = CfgBuilder::new(options.clone());
         match cfg_builder.build_file(typed_file) {
             Ok(cfgs) => {
                 // Create SemanticGraphs from the built CFGs
                 let mut graphs = SemanticGraphs::new();
-                graphs.control_flow = cfgs;
-                // Note: Enhanced flow and memory safety analysis are now integrated
-                // into the semantic graph building phase above for proper error collection
-                
+                graphs.control_flow = cfgs.clone();
+
+                // Build DFGs for each function - required for full ownership analysis
+                // Create TypeChecker inside loop to avoid borrow checker issues
+                let mut dfg_builder = DfgBuilder::new(options);
+
+                for function in &typed_file.functions {
+                    if let Some(cfg) = graphs.control_flow.get(&function.symbol_id) {
+                        // Create TypeChecker for this iteration (avoids borrow checker issues)
+                        let string_interner_ref = self.string_interner.borrow();
+                        let mut type_checker = TypeChecker::new(
+                            type_table,
+                            symbol_table,
+                            scope_tree,
+                            &*string_interner_ref
+                        );
+
+                        match dfg_builder.build_dfg(cfg, function, &mut type_checker) {
+                            Ok(dfg) => {
+                                info!("✓ Built DFG for function {:?} with {} nodes", function.symbol_id, dfg.nodes.len());
+                                graphs.data_flow.insert(function.symbol_id, dfg);
+                            }
+                            Err(e) => {
+                                // DFG construction failed - log but continue
+                                warn!("✗ Failed to build DFG for function {:?}: {:?}", function.symbol_id, e);
+                            }
+                        }
+                        // string_interner_ref dropped here, releasing borrow
+                    }
+                }
+
                 Ok(graphs)
             },
             Err(graph_error) => {
@@ -1391,8 +1417,8 @@ impl HaxeCompilationPipeline {
     
     /// Lower TAST to HIR 
     fn lower_tast_to_hir(
-        &mut self, 
-        typed_file: &TypedFile, 
+        &mut self,
+        typed_file: &TypedFile,
         semantic_graphs: Option<&SemanticGraphs>,
         symbol_table: &SymbolTable,
         type_table: &Rc<RefCell<TypeTable>>
@@ -1402,6 +1428,7 @@ impl HaxeCompilationPipeline {
             typed_file,
             symbol_table,
             type_table,
+            &mut *self.string_interner.borrow_mut(),
             semantic_graphs,
         ) {
             Ok(hir_module) => Ok(hir_module),
@@ -1425,8 +1452,10 @@ impl HaxeCompilationPipeline {
     fn lower_hir_to_mir(
         &mut self,
         hir_module: &HirModule,
+        type_table: &Rc<RefCell<TypeTable>>,
+        symbol_table: &SymbolTable,
     ) -> Result<IrModule, Vec<CompilationError>> {
-        match lower_hir_to_mir(hir_module) {
+        match lower_hir_to_mir(hir_module, &*self.string_interner.borrow(), type_table, symbol_table) {
             Ok(mir_module) => Ok(mir_module),
             Err(lowering_errors) => {
                 let compilation_errors = lowering_errors.into_iter().map(|err| {
@@ -1862,17 +1891,45 @@ impl HaxeCompilationPipeline {
                         Ok(lifetime_result) => {
                             // Process any violations found
                             for violation in &lifetime_result.violations {
-                                // Try to get function source location
-                                let location = typed_file.functions.iter()
-                                    .find(|f| f.symbol_id == *function_id)
-                                    .map(|f| f.source_location)
-                                    .unwrap_or_else(|| SourceLocation::new(1, 1, 1, 1));
-                                
+                                use crate::semantic_graph::analysis::lifetime_analyzer::LifetimeViolation;
+
+                                let (message, location, suggestion) = match violation {
+                                    LifetimeViolation::UseAfterFree { variable, use_location, end_of_lifetime, .. } => (
+                                        format!("Use of variable after its lifetime has ended"),
+                                        use_location.clone(),
+                                        Some(format!("Variable lifetime ended at line {}, column {}",
+                                            end_of_lifetime.line, end_of_lifetime.column))
+                                    ),
+                                    LifetimeViolation::DanglingReference { reference, referent, reference_location, referent_end_location } => (
+                                        format!("Reference outlives the data it points to"),
+                                        reference_location.clone(),
+                                        Some(format!("Referenced data lifetime ended at line {}, column {}",
+                                            referent_end_location.line, referent_end_location.column))
+                                    ),
+                                    LifetimeViolation::ReturnLocalReference { local_variable, return_location, .. } => (
+                                        format!("Cannot return reference to local variable"),
+                                        return_location.clone(),
+                                        Some("Local variables are destroyed when function returns".to_string())
+                                    ),
+                                    LifetimeViolation::ConflictingConstraints { conflict_explanation, .. } => {
+                                        // Use default location since constraints don't have specific source locations
+                                        let location = typed_file.functions.iter()
+                                            .find(|f| f.symbol_id == *function_id)
+                                            .map(|f| f.source_location)
+                                            .unwrap_or_else(|| SourceLocation::new(1, 1, 1, 1));
+                                        (
+                                            format!("Conflicting lifetime constraints: {}", conflict_explanation),
+                                            location,
+                                            Some("Check lifetime annotations and variable scopes".to_string())
+                                        )
+                                    },
+                                };
+
                                 errors.push(CompilationError {
-                                    message: format!("Lifetime violation: {:?}", violation),
+                                    message,
                                     location,
                                     category: ErrorCategory::LifetimeError,
-                                    suggestion: Some("Ensure that references don't outlive their referents".to_string()),
+                                    suggestion,
                                     related_errors: Vec::new(),
                                 });
                             }

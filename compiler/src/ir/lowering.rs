@@ -1052,9 +1052,9 @@ impl<'a> LoweringContext<'a> {
         
         // Get the result type
         let ret_type = self.lower_type(result_type);
-        
-        // Build the call instruction
-        self.builder.build_call(func_ptr, arg_regs, ret_type)
+
+        // Build the indirect call instruction (legacy lowering doesn't distinguish direct/indirect)
+        self.builder.build_call_indirect(func_ptr, arg_regs, ret_type)
     }
     
     /// Get field index from a field symbol ID

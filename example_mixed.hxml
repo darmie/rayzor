@@ -1,0 +1,6 @@
+# HXML with traditional target (should be ignored)
+-cp compiler/examples
+-main Test
+--js output.js
+--rayzor-jit
+-v

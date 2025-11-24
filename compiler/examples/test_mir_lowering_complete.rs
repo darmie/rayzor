@@ -261,13 +261,14 @@ fn run_pipeline(source: &str) -> Result<(), String> {
         &tast_module,
         &symbol_table,
         &type_table,
+        &mut string_interner,
         None
     )
     .map_err(|e| format!("HIR lowering error: {:?}", e))?;
 
     // Step 6: Lower HIR to MIR
     let mir_module =
-        lower_hir_to_mir(&hir_module).map_err(|e| format!("MIR lowering errors: {:?}", e))?;
+        lower_hir_to_mir(&hir_module, &string_interner).map_err(|e| format!("MIR lowering errors: {:?}", e))?;
 
     // Step 7: Validate MIR
     validate_module(&mir_module)

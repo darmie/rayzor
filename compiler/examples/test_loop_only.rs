@@ -212,14 +212,12 @@ fn main() {
     
     // Debug: show any errors
     if results.errors.len() > 0 {
-        eprintln!("DEBUG: Loop analysis errors:");
         for error in &results.errors {
             eprintln!("  {:?}", error);
         }
     }
     
     if results.warnings.len() > 0 {
-        eprintln!("DEBUG: Loop analysis warnings:");
         for warning in &results.warnings {
             eprintln!("  {:?}", warning);
         }

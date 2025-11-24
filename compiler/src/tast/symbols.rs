@@ -935,7 +935,7 @@ impl SymbolTable {
 
     pub fn create_enum_in_scope(&mut self, name: InternedString, scope_id: ScopeId) -> SymbolId {
         let symbol_id = SymbolId::from_raw(self.total_symbols as u32);
-        
+
         let symbol = Symbol {
             id: symbol_id,
             name,
@@ -953,11 +953,37 @@ impl SymbolTable {
             package_id: None,
             qualified_name: None,
         };
-        
+
         self.add_symbol(symbol);
         symbol_id
     }
-    
+
+    /// Create an abstract type symbol in a specific scope
+    pub fn create_abstract_in_scope(&mut self, name: InternedString, scope_id: ScopeId) -> SymbolId {
+        let symbol_id = SymbolId::from_raw(self.total_symbols as u32);
+
+        let symbol = Symbol {
+            id: symbol_id,
+            name,
+            kind: SymbolKind::Abstract,
+            type_id: TypeId::invalid(),
+            scope_id: scope_id, // Set to the correct scope
+            lifetime_id: LifetimeId::invalid(),
+            visibility: Visibility::Public,
+            mutability: Mutability::Immutable,
+            definition_location: SourceLocation::unknown(),
+            is_used: false,
+            is_exported: false,
+            documentation: None,
+            flags: SymbolFlags::NONE,
+            package_id: None,
+            qualified_name: None,
+        };
+
+        self.add_symbol(symbol);
+        symbol_id
+    }
+
     /// Create an enum variant symbol linked to its parent enum
     pub fn create_enum_variant_in_scope(&mut self, name: InternedString, scope_id: ScopeId, parent_enum: SymbolId) -> SymbolId {
         let symbol_id = SymbolId::from_raw(self.total_symbols as u32);
@@ -1227,6 +1253,126 @@ impl SymbolTable {
     /// Invalidate cache entries for a specific symbol name
     pub fn invalidate_name_cache(&self, name: InternedString) {
         self.symbol_cache.invalidate_name(name);
+    }
+
+    // === Qualified Name Methods ===
+
+    /// Build a qualified name for a symbol by walking up the scope chain
+    ///
+    /// Returns a fully qualified name like "com.example.MyClass.myMethod"
+    ///
+    /// # Arguments
+    /// * `symbol_id` - The symbol to build a qualified name for
+    /// * `scope_tree` - The scope tree to walk for parent scopes
+    /// * `interner` - String interner for resolving names
+    ///
+    /// # Returns
+    /// The qualified name, or just the symbol name if no path can be built
+    pub fn build_qualified_name(
+        &self,
+        symbol_id: SymbolId,
+        scope_tree: &super::scopes::ScopeTree,
+        interner: &super::StringInterner,
+    ) -> InternedString {
+        let symbol = match self.get_symbol(symbol_id) {
+            Some(s) => s,
+            None => return interner.intern("<unknown>"),
+        };
+
+        let mut path_parts = Vec::new();
+        let mut current_scope_id = symbol.scope_id;
+
+        // Walk up the scope chain collecting names
+        while let Some(scope) = scope_tree.get_scope(current_scope_id) {
+            // Include Package, Class, Interface, Enum, and Abstract scopes in the path
+            match scope.kind {
+                super::scopes::ScopeKind::Package
+                | super::scopes::ScopeKind::Class
+                | super::scopes::ScopeKind::Interface
+                | super::scopes::ScopeKind::Enum
+                | super::scopes::ScopeKind::Abstract => {
+                    if let Some(name) = scope.name {
+                        path_parts.push(name);
+                    }
+                }
+                super::scopes::ScopeKind::Global => break,
+                _ => {} // Skip function, block, loop scopes
+            }
+
+            // Move to parent scope
+            match scope.parent_id {
+                Some(parent_id) => current_scope_id = parent_id,
+                None => break,
+            }
+        }
+
+        // Reverse to get package.class.name order
+        path_parts.reverse();
+
+        // Add the symbol name itself
+        path_parts.push(symbol.name);
+
+        // Join with dots
+        let qualified_name = path_parts
+            .iter()
+            .filter_map(|name| interner.get(*name))
+            .collect::<Vec<_>>()
+            .join(".");
+
+        interner.intern(&qualified_name)
+    }
+
+    /// Update a symbol's qualified name field
+    ///
+    /// This should be called after creating a symbol to populate its qualified_name
+    pub fn update_qualified_name(
+        &mut self,
+        symbol_id: SymbolId,
+        scope_tree: &super::scopes::ScopeTree,
+        interner: &super::StringInterner,
+    ) -> bool {
+        let qualified_name = self.build_qualified_name(symbol_id, scope_tree, interner);
+
+        // Update the symbol's qualified_name field
+        if let Some(&symbol_ref) = self.symbols_by_id.get(&symbol_id) {
+            unsafe {
+                // SAFETY: We're only modifying the qualified_name field which doesn't affect
+                // memory layout or any references. The symbol's identity remains the same.
+                let symbol_ptr = symbol_ref as *const Symbol as *mut Symbol;
+                (*symbol_ptr).qualified_name = Some(qualified_name);
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Lookup a symbol by its qualified name
+    ///
+    /// This performs a linear search, so consider caching if called frequently
+    pub fn resolve_qualified_name(&self, qualified_name: InternedString) -> Option<SymbolId> {
+        self.all_symbols()
+            .find(|symbol| symbol.qualified_name == Some(qualified_name))
+            .map(|symbol| symbol.id)
+    }
+
+    /// Get all symbols in a given package (by package name prefix)
+    pub fn symbols_in_package(&self, package_prefix: InternedString, interner: &super::StringInterner) -> Vec<SymbolId> {
+        let Some(package_str) = interner.get(package_prefix) else {
+            return Vec::new();
+        };
+        let package_prefix_with_dot = format!("{}.", package_str);
+
+        self.all_symbols()
+            .filter(|symbol| {
+                if let Some(qname) = symbol.qualified_name {
+                    if let Some(qname_str) = interner.get(qname) {
+                        return qname_str.starts_with(&package_prefix_with_dot) || qname_str == package_str;
+                    }
+                }
+                false
+            })
+            .map(|symbol| symbol.id)
+            .collect()
     }
 }
 

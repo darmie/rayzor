@@ -106,6 +106,7 @@ class Main {
         &typed_file,
         &symbol_table,
         &type_table,
+        &mut *string_interner_rc.borrow_mut(),
         None,
     ) {
         Ok(hir) => {

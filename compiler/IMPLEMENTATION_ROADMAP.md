@@ -58,16 +58,18 @@
 
 1. **Complete Array Comprehension Desugaring** (2 days)
    ```rust
-   // [for (x in xs) if (cond) expr] → 
+   // [for (x in xs) if (cond) expr] →
    // { let arr = []; for (x in xs) { if (cond) arr.push(expr); } arr }
    ```
-   **Current Status**: Preserving comprehension structure in HIR
-   **Location**: `/compiler/src/ir/tast_to_hir.rs:1114-1121`
-   - [ ] Create temporary array variable with unique name
-   - [ ] Build nested for loops for multiple iterators
-   - [ ] Add condition checks as if statements
-   - [ ] Generate array push calls
-   - [ ] Return final array
+   **Status**: ✅ **MOSTLY COMPLETE**
+   **Location**: `/compiler/src/ir/tast_to_hir.rs:1340-1450`
+   - [x] ~~Create temporary array variable with unique name~~ ✅
+   - [x] ~~Build nested for loops for multiple iterators~~ ✅
+   - [ ] Add condition checks as if statements (BACKLOG: TAST doesn't have filter field)
+   - [x] ~~Generate array push calls~~ ✅
+   - [x] ~~Return final array~~ ✅
+
+   **Note**: Filter support (`if (cond)`) requires TAST changes - TypedComprehensionFor needs condition field
 
 2. **Pattern Matching Desugaring** (3 days)
    ```rust
@@ -84,13 +86,34 @@
 **Priority**: HIGH - Need working MIR for optimization
 
 1. **Complete HIR to MIR Lowering** (3 days)
-   - [ ] Fix all TODO items in hir_to_mir.rs
-   - [ ] Implement closure lowering
+   - [ ] Fix remaining TODO items in hir_to_mir.rs
+   - [x] ~~Implement closure lowering~~ ✅ **COMPLETED 2025-01-13**
+     - Infrastructure complete: MakeClosure, ClosureFunc, ClosureEnv instructions
+     - Lambda function generation working
+     - Cranelift codegen implemented
+     - Test passing: [test_closure_infrastructure.rs](examples/test_closure_infrastructure.rs)
+     - Docs: [CLOSURE_IMPLEMENTATION.md](CLOSURE_IMPLEMENTATION.md)
+   - [x] ~~Complete lambda body lowering~~ ✅ **COMPLETED 2025-01-13**
+     - Lambda bodies now contain actual executable code (not stubs)
+     - Parameters accessible within lambda bodies
+     - Return type correctly extracted from function type signature
+     - Nested function context management working
+     - Tests passing: [test_lambda_execution.rs](examples/test_lambda_execution.rs), [test_simple_indirect_call.rs](examples/test_simple_indirect_call.rs)
+     - Docs: [FUNCTION_POINTERS.md](FUNCTION_POINTERS.md)
+   - [x] ~~Implement closure environment allocation~~ ✅ **COMPLETED 2025-01-13**
+     - Capture analysis implemented: detects free variables in lambda bodies
+     - Environment allocation on stack via Cranelift stack slots
+     - Environment loading in lambda bodies via pointer arithmetic
+     - Closure invocation with automatic environment passing
+     - Full pipeline working: capture → allocate → load → invoke
+     - Test passing: [test_closure_call.rs](examples/test_closure_call.rs)
+     - Result: Closures fully functional! Can create, capture, and call closures correctly
    - [ ] Add exception handling
    - [ ] Complete pattern lowering
    - [ ] Add phi node generation
 
 2. **Add MIR Validation** (2 days)
+   - [x] ~~Validate closure instructions~~ ✅ **COMPLETED 2025-01-13**
    - [ ] Validate SSA form
    - [ ] Check type consistency
    - [ ] Verify control flow

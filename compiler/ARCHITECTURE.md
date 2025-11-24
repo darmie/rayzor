@@ -1074,8 +1074,15 @@ abstract Degrees(Float) {
 
 **Features**:
 - Zero-cost abstractions (compile to underlying type)
-- Operator overloading
+- Operator overloading (✅ binary operators complete, unary/array access in progress)
 - Implicit conversions (from/to rules)
+- Method inlining for zero-cost execution
+
+**Status**: ✅ Binary operator overloading fully implemented
+- All 11 binary operators working (+, -, *, /, %, ==, !=, <, >, <=, >=)
+- Zero-cost inlining verified at runtime
+- Remaining: Unary operators and array access (~5-6 hours)
+- See [OPERATOR_OVERLOADING_STATUS.md](OPERATOR_OVERLOADING_STATUS.md) for details
 
 #### Type Inference
 

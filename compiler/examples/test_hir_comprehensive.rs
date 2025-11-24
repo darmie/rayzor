@@ -308,6 +308,26 @@ class Main {
             println!("   - Interfaces: {}", tast.interfaces.len());
             println!("   - Abstracts: {}", tast.abstracts.len());
 
+            // Debug: Check symbol table for stdlib symbols
+            let total_symbols: usize = symbol_table.all_symbols().count();
+            let array_symbols: Vec<_> = symbol_table.all_symbols()
+                .filter(|s| {
+                    string_interner.get(s.name)
+                        .map(|name| name.contains("Array") || name.contains("push"))
+                        .unwrap_or(false)
+                })
+                .collect();
+            println!("   - Total symbols in table: {}", total_symbols);
+            println!("   - Array/push symbols: {}", array_symbols.len());
+            for sym in array_symbols.iter().take(5) {
+                if let Some(name) = string_interner.get(sym.name) {
+                    let qualified = sym.qualified_name
+                        .and_then(|q| string_interner.get(q))
+                        .unwrap_or("<no qualified name>");
+                    println!("     • Symbol: '{}' qualified: '{}'", name, qualified);
+                }
+            }
+
             for class in &tast.classes {
                 let class_name = string_interner.get(class.name).unwrap_or("?");
                 println!(
@@ -338,39 +358,51 @@ class Main {
 
     // Step 5: Lower TAST to HIR
     println!("\n5. Lowering TAST to HIR...");
-    let string_interner_rc = Rc::new(RefCell::new(string_interner));
-    let mut typed_file = typed_file;
-    typed_file.string_interner = Rc::clone(&string_interner_rc);
+    // Use the string_interner from typed_file to avoid borrow conflicts
+    let string_interner_rc = typed_file.string_interner.clone();
 
-    let hir_module = match lower_tast_to_hir(
-        &typed_file,
-        &symbol_table,
-        &type_table,
-        None, // No semantic graphs for now
-    ) {
-        Ok(hir) => {
-            println!("   ✓ Successfully lowered to HIR");
-            println!("   - Module: {}", hir.name);
-            println!("   - Functions: {}", hir.functions.len());
-            println!("   - Types: {}", hir.types.len());
+    let hir_module = {
+        // Scope the mutable borrow so it's dropped before validation
+        let mut interner_guard = string_interner_rc.borrow_mut();
+        match lower_tast_to_hir(
+            &typed_file,
+            &symbol_table,
+            &type_table,
+            &mut *interner_guard,
+            None, // No semantic graphs for now
+        ) {
+            Ok(hir) => {
+                println!("   ✓ Successfully lowered to HIR");
+                println!("   - Module: {}", hir.name);
+                println!("   - Functions: {}", hir.functions.len());
+                println!("   - Types: {}", hir.types.len());
+                Some(hir)
+            }
+            Err(errors) => {
+                eprintln!("   ✗ HIR lowering errors:");
+                for error in errors {
+                    eprintln!("     - {}", error.message);
+                }
+                None
+            }
+        }
+    }; // Mutable borrow dropped here
 
-            // Validate HIR features
+    let hir_module = match hir_module {
+        Some(hir) => {
+            // Now validate after the borrow is dropped
             validate_hir_features(&hir, &string_interner_rc);
 
             hir
         }
-        Err(errors) => {
-            eprintln!("   ✗ HIR lowering errors:");
-            for error in errors {
-                eprintln!("     - {}", error.message);
-            }
+        None => {
             return;
         }
     };
 
     // Step 6: Lower HIR to MIR
     println!("\n6. Lowering HIR to MIR...");
-    match lower_hir_to_mir(&hir_module) {
+    match lower_hir_to_mir(&hir_module, &*string_interner_rc.borrow()) {
         Ok(mir) => {
             println!("   ✓ Successfully lowered to MIR");
             println!("   - Module: {}", mir.name);
@@ -467,13 +499,14 @@ fn validate_hir_features(hir: &HirModule, interner: &Rc<RefCell<StringInterner>>
     }
     
     // Check methods in classes
+    let interner_ref = interner.borrow();
     for type_decl in hir.types.values() {
         if let HirTypeDecl::Class(class) = type_decl {
-            let class_name = interner.borrow().get(class.name).unwrap_or("?").to_string();
+            let class_name = interner_ref.get(class.name).unwrap_or("?").to_string();
             println!("     • Class '{}' with {} methods", class_name, class.methods.len());
-            
+
             for method in &class.methods {
-                let method_name = interner.borrow().get(method.function.name).unwrap_or("?").to_string();
+                let method_name = interner_ref.get(method.function.name).unwrap_or("?").to_string();
                 
                 if let Some(body) = &method.function.body {
                     println!("       - Method '{}' has {} statements", method_name, body.statements.len());

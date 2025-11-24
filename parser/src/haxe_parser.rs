@@ -207,16 +207,16 @@ fn convert_incremental_to_haxe_file(
 pub fn parse_haxe_file_with_enhanced_errors(input: &str, file_name:&str, is_import_file: bool) -> Result<HaxeFile, (diagnostics::Diagnostics, diagnostics::SourceMap)> {
     // Use enhanced incremental parser for better error recovery with diagnostics
     let incremental_result = crate::incremental_parser_enhanced::parse_incrementally_enhanced(file_name, input);
-    
+
     // Extract the diagnostics and source map from the result
     let diagnostics = incremental_result.diagnostics.clone();
     let source_map = incremental_result.source_map.clone();
-    
-    // If parsing succeeded, return the file
-    if let Ok(file) = convert_enhanced_incremental_to_haxe_file(incremental_result, file_name, input, is_import_file, false) {
+
+    // If parsing succeeded, return the file (preserve source with debug=true)
+    if let Ok(file) = convert_enhanced_incremental_to_haxe_file(incremental_result, file_name, input, is_import_file, true) {
         return Ok(file);
     }
-    
+
     // Otherwise, return the diagnostics and source map
     Err((diagnostics, source_map))
 }

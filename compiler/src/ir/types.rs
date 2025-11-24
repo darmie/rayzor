@@ -5,9 +5,10 @@
 
 use super::IrId;
 use std::fmt;
+use serde::{Serialize, Deserialize};
 
 /// IR type representation
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum IrType {
     /// Void type (no value)
     Void,
@@ -80,7 +81,7 @@ pub enum IrType {
 }
 
 /// Structure field
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct StructField {
     pub name: String,
     pub ty: IrType,
@@ -88,7 +89,7 @@ pub struct StructField {
 }
 
 /// Union variant
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UnionVariant {
     pub name: String,
     pub tag: u32,
@@ -204,7 +205,7 @@ impl IrType {
 }
 
 /// IR constant value
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum IrValue {
     /// No value
     Void,
@@ -232,6 +233,13 @@ pub enum IrValue {
     Array(Vec<IrValue>),
     /// Struct value
     Struct(Vec<IrValue>),
+    /// Function pointer (reference to a function by ID)
+    Function(super::IrFunctionId),
+    /// Closure value (function pointer + environment)
+    Closure {
+        function: super::IrFunctionId,
+        environment: Box<IrValue>, // Struct containing captured variables
+    },
 }
 
 impl fmt::Display for IrType {

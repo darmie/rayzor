@@ -9,9 +9,10 @@ use super::{
 };
 use crate::tast::{SymbolId, TypeId};
 use std::collections::HashMap;
+use serde::{Serialize, Deserialize};
 
 /// HIR module - represents a compilation unit
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrModule {
     /// Module name
     pub name: String,
@@ -36,15 +37,15 @@ pub struct IrModule {
     
     /// Module metadata
     pub metadata: ModuleMetadata,
-    
-    /// Next available IDs
-    next_function_id: u32,
-    next_global_id: u32,
-    next_typedef_id: u32,
+
+    /// Next available IDs (pub for MIR builder)
+    pub next_function_id: u32,
+    pub next_global_id: u32,
+    pub next_typedef_id: u32,
 }
 
 /// Global variable identifier
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct IrGlobalId(pub u32);
 
 impl std::fmt::Display for IrGlobalId {
@@ -54,7 +55,7 @@ impl std::fmt::Display for IrGlobalId {
 }
 
 /// Type definition identifier
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct IrTypeDefId(pub u32);
 
 impl std::fmt::Display for IrTypeDefId {
@@ -64,7 +65,7 @@ impl std::fmt::Display for IrTypeDefId {
 }
 
 /// Global variable definition
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrGlobal {
     /// Global identifier
     pub id: IrGlobalId,
@@ -95,7 +96,7 @@ pub struct IrGlobal {
 }
 
 /// Type definition (for structs, enums, etc.)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrTypeDef {
     /// Type identifier
     pub id: IrTypeDefId,
@@ -114,7 +115,7 @@ pub struct IrTypeDef {
 }
 
 /// Type definition variants
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum IrTypeDefinition {
     /// Struct type
     Struct {
@@ -138,7 +139,7 @@ pub enum IrTypeDefinition {
 }
 
 /// Struct field
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrField {
     /// Field name
     pub name: String,
@@ -151,7 +152,7 @@ pub struct IrField {
 }
 
 /// Enum variant
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrEnumVariant {
     /// Variant name
     pub name: String,
@@ -164,7 +165,7 @@ pub struct IrEnumVariant {
 }
 
 /// External function declaration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrExternFunction {
     /// Function ID
     pub id: IrFunctionId,
@@ -183,7 +184,7 @@ pub struct IrExternFunction {
 }
 
 /// String constant pool for efficient string storage
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StringPool {
     /// String constants indexed by ID
     strings: HashMap<u32, String>,
@@ -224,7 +225,7 @@ impl StringPool {
 }
 
 /// Module metadata
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleMetadata {
     /// Target triple (e.g., "x86_64-unknown-linux-gnu")
     pub target_triple: Option<String>,
@@ -243,7 +244,7 @@ pub struct ModuleMetadata {
 }
 
 /// Optimization level
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OptimizationLevel {
     /// No optimization
     None,
@@ -258,7 +259,7 @@ pub enum OptimizationLevel {
 }
 
 /// Debug info level
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DebugInfoLevel {
     /// No debug info
     None,

@@ -566,8 +566,11 @@ impl InstructionExt for IrInstruction {
             IrInstruction::BinOp { left, right, .. } => vec![*left, *right],
             IrInstruction::UnOp { operand, .. } => vec![*operand],
             IrInstruction::Cmp { left, right, .. } => vec![*left, *right],
-            IrInstruction::Call { func, args, .. } => {
-                let mut uses = vec![*func];
+            IrInstruction::CallDirect { args, .. } => {
+                args.iter().copied().collect()
+            }
+            IrInstruction::CallIndirect { func_ptr, args, .. } => {
+                let mut uses = vec![*func_ptr];
                 uses.extend(args.iter().copied());
                 uses
             }
@@ -587,7 +590,8 @@ impl InstructionExt for IrInstruction {
             IrInstruction::BinOp { dest, .. } |
             IrInstruction::UnOp { dest, .. } |
             IrInstruction::Cmp { dest, .. } |
-            IrInstruction::Call { dest: Some(dest), .. } |
+            IrInstruction::CallDirect { dest: Some(dest), .. } |
+            IrInstruction::CallIndirect { dest: Some(dest), .. } |
             IrInstruction::Cast { dest, .. } |
             IrInstruction::Select { dest, .. } => Some(*dest),
             _ => None,
@@ -597,7 +601,8 @@ impl InstructionExt for IrInstruction {
     fn has_side_effects(&self) -> bool {
         match self {
             IrInstruction::Store { .. } |
-            IrInstruction::Call { .. } |
+            IrInstruction::CallDirect { .. } |
+            IrInstruction::CallIndirect { .. } |
             IrInstruction::Throw { .. } => true,
             _ => false,
         }

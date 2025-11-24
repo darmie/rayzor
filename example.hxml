@@ -1,0 +1,7 @@
+# Rayzor HXML example
+-cp compiler/examples
+-main Test
+-lib hxmath
+-D analyzer-optimize
+--rayzor-jit
+-v

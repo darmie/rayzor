@@ -6,6 +6,7 @@
 
 use std::fmt;
 use std::num::NonZeroU32;
+use serde::{Serialize, Deserialize};
 
 /// Trait for ID types that can be created and validated
 pub trait IdType: Copy + Clone + PartialEq + Eq + std::hash::Hash + fmt::Debug {
@@ -39,7 +40,7 @@ macro_rules! define_id_type {
         $name:ident
     ) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
         pub struct $name(pub (crate) u32);
 
         impl $name {

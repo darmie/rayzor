@@ -3,10 +3,11 @@
 //! Defines the instruction set for the intermediate representation.
 //! Instructions are low-level operations that map directly to machine operations.
 
-use super::{IrId, IrType, IrValue, IrSourceLocation};
+use super::{IrId, IrType, IrValue, IrSourceLocation, IrFunctionId};
+use serde::{Serialize, Deserialize};
 
 /// IR instruction
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum IrInstruction {
     // === Value Operations ===
     
@@ -81,14 +82,14 @@ pub enum IrInstruction {
         cases: Vec<(IrValue, IrId)>,
     },
     
-    /// Function call
-    Call {
+    /// Direct function call (callee known at compile time)
+    CallDirect {
         dest: Option<IrId>,
-        func: IrId,
+        func_id: IrFunctionId,
         args: Vec<IrId>,
     },
-    
-    /// Indirect function call
+
+    /// Indirect function call (callee computed at runtime)
     CallIndirect {
         dest: Option<IrId>,
         func_ptr: IrId,
@@ -203,12 +204,93 @@ pub enum IrInstruction {
         value: IrId,
         indices: Vec<u32>,
     },
-    
+
+    /// Create a closure (allocates environment, captures variables)
+    MakeClosure {
+        dest: IrId,
+        func_id: IrFunctionId,
+        captured_values: Vec<IrId>, // Values to capture in environment
+    },
+
+    /// Extract the function pointer from a closure
+    ClosureFunc {
+        dest: IrId,
+        closure: IrId,
+    },
+
+    /// Extract the environment pointer from a closure
+    ClosureEnv {
+        dest: IrId,
+        closure: IrId,
+    },
+
+    // === Union/Sum Type Operations ===
+
+    /// Create a union value with discriminant
+    CreateUnion {
+        dest: IrId,
+        discriminant: u32,
+        value: IrId,
+        ty: IrType,
+    },
+
+    /// Extract discriminant from union
+    ExtractDiscriminant {
+        dest: IrId,
+        union_val: IrId,
+    },
+
+    /// Extract value from union variant
+    ExtractUnionValue {
+        dest: IrId,
+        union_val: IrId,
+        discriminant: u32,
+        value_ty: IrType,
+    },
+
+    // === Struct Operations ===
+
+    /// Create struct from field values
+    CreateStruct {
+        dest: IrId,
+        ty: IrType,
+        fields: Vec<IrId>,
+    },
+
+    // === Pointer Operations ===
+
+    /// Pointer arithmetic: ptr + offset
+    PtrAdd {
+        dest: IrId,
+        ptr: IrId,
+        offset: IrId,
+        ty: IrType,
+    },
+
+    // === Special Values ===
+
+    /// Undefined value (uninitialized)
+    Undef {
+        dest: IrId,
+        ty: IrType,
+    },
+
+    /// Function reference (for function pointers)
+    FunctionRef {
+        dest: IrId,
+        func_id: IrFunctionId,
+    },
+
+    /// Panic/abort execution
+    Panic {
+        message: Option<String>,
+    },
+
     /// Debug location marker
     DebugLoc {
         location: IrSourceLocation,
     },
-    
+
     /// Inline assembly
     InlineAsm {
         dest: Option<IrId>,
@@ -220,7 +302,7 @@ pub enum IrInstruction {
 }
 
 /// Binary operations
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BinaryOp {
     // Arithmetic
     Add,
@@ -245,7 +327,7 @@ pub enum BinaryOp {
 }
 
 /// Unary operations
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnaryOp {
     // Arithmetic
     Neg,
@@ -258,7 +340,7 @@ pub enum UnaryOp {
 }
 
 /// Comparison operations
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompareOp {
     // Integer comparisons
     Eq,
@@ -288,7 +370,7 @@ pub enum CompareOp {
 }
 
 /// Landing pad clause for exception handling
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LandingPadClause {
     /// Catch specific exception type
     Catch(IrType),
@@ -314,9 +396,16 @@ impl IrInstruction {
             IrInstruction::Phi { dest, .. } |
             IrInstruction::Select { dest, .. } |
             IrInstruction::ExtractValue { dest, .. } |
-            IrInstruction::InsertValue { dest, .. } => Some(*dest),
+            IrInstruction::InsertValue { dest, .. } |
+            IrInstruction::CreateUnion { dest, .. } |
+            IrInstruction::ExtractDiscriminant { dest, .. } |
+            IrInstruction::ExtractUnionValue { dest, .. } |
+            IrInstruction::CreateStruct { dest, .. } |
+            IrInstruction::PtrAdd { dest, .. } |
+            IrInstruction::Undef { dest, .. } |
+            IrInstruction::FunctionRef { dest, .. } => Some(*dest),
             
-            IrInstruction::Call { dest, .. } |
+            IrInstruction::CallDirect { dest, .. } |
             IrInstruction::CallIndirect { dest, .. } |
             IrInstruction::InlineAsm { dest, .. } => *dest,
             
@@ -335,10 +424,9 @@ impl IrInstruction {
             IrInstruction::Cmp { left, right, .. } => vec![*left, *right],
             IrInstruction::Branch { condition, .. } => vec![*condition],
             IrInstruction::Switch { value, .. } => vec![*value],
-            IrInstruction::Call { func, args, .. } => {
-                let mut uses = vec![*func];
-                uses.extend(args);
-                uses
+            IrInstruction::CallDirect { args, .. } => {
+                // CallDirect uses function ID (not a register), so only args are register uses
+                args.clone()
             }
             IrInstruction::CallIndirect { func_ptr, args, .. } => {
                 let mut uses = vec![*func_ptr];
@@ -394,7 +482,7 @@ impl IrInstruction {
     pub fn has_side_effects(&self) -> bool {
         matches!(self,
             IrInstruction::Store { .. } |
-            IrInstruction::Call { .. } |
+            IrInstruction::CallDirect { .. } |
             IrInstruction::CallIndirect { .. } |
             IrInstruction::Free { .. } |
             IrInstruction::MemCopy { .. } |

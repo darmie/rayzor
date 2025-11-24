@@ -280,9 +280,16 @@ pub struct FunctionMetadata {
     
     /// Whether function is marked with override modifier
     pub is_override: bool,
-    
+
     /// Method overload signatures from @:overload metadata
     pub overload_signatures: Vec<MethodOverload>,
+
+    /// Operator metadata from @:op(A + B), etc.
+    /// Stored as (operator_string, params) e.g. ("A + B", [])
+    pub operator_metadata: Vec<(String, Vec<String>)>,
+
+    /// Whether this function is marked with @:arrayAccess
+    pub is_array_access: bool,
 }
 
 /// Generic type parameter with variance support

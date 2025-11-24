@@ -6,9 +6,10 @@
 
 use super::{IrId, IrInstruction, IrSourceLocation};
 use std::collections::HashMap;
+use serde::{Serialize, Deserialize};
 
 /// A basic block in the HIR
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrBasicBlock {
     /// Unique identifier for this block
     pub id: IrBlockId,
@@ -36,20 +37,24 @@ pub struct IrBasicBlock {
 }
 
 /// Unique identifier for basic blocks
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct IrBlockId(pub u32);
 
 impl IrBlockId {
     pub fn new(id: u32) -> Self {
         Self(id)
     }
-    
+
     pub fn entry() -> Self {
         Self(0)
     }
-    
+
     pub fn is_entry(&self) -> bool {
         self.0 == 0
+    }
+
+    pub fn as_u32(&self) -> u32 {
+        self.0
     }
 }
 
@@ -60,7 +65,7 @@ impl std::fmt::Display for IrBlockId {
 }
 
 /// Phi node for merging values from different control flow paths
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrPhiNode {
     /// Destination register for the phi result
     pub dest: IrId,
@@ -73,7 +78,7 @@ pub struct IrPhiNode {
 }
 
 /// Terminator instructions that end a basic block
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum IrTerminator {
     /// Unconditional branch to another block
     Branch {
@@ -109,7 +114,7 @@ pub enum IrTerminator {
 }
 
 /// Metadata for optimization and analysis
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BlockMetadata {
     /// Execution frequency hint (0-100, higher = hotter)
     pub frequency_hint: Option<u8>,
@@ -125,7 +130,7 @@ pub struct BlockMetadata {
 }
 
 /// Optimization hints from semantic analysis
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum OptimizationHint {
     /// This block is likely to be taken
     LikelyPath,
@@ -198,16 +203,16 @@ impl IrBasicBlock {
 }
 
 /// Control flow graph at the HIR level
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrControlFlowGraph {
     /// All basic blocks in the function
     pub blocks: HashMap<IrBlockId, IrBasicBlock>,
     
     /// Entry block ID
     pub entry_block: IrBlockId,
-    
-    /// Next available block ID
-    next_block_id: u32,
+
+    /// Next available block ID (pub for MIR builder)
+    pub next_block_id: u32,
 }
 
 impl IrControlFlowGraph {

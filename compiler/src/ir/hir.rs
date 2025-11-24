@@ -14,14 +14,15 @@ use crate::tast::{
     LifetimeId, ScopeId,
 };
 use std::collections::HashMap;
+use indexmap::IndexMap;
 
 /// HIR Module - top-level container
 #[derive(Debug, Clone)]
 pub struct HirModule {
     pub name: String,
     pub imports: Vec<HirImport>,
-    pub types: HashMap<TypeId, HirTypeDecl>,
-    pub functions: HashMap<SymbolId, HirFunction>,
+    pub types: IndexMap<TypeId, HirTypeDecl>,  // IndexMap for deterministic ordering
+    pub functions: IndexMap<SymbolId, HirFunction>,  // IndexMap for deterministic ordering
     pub globals: HashMap<SymbolId, HirGlobal>,
     pub metadata: HirMetadata,
 }
@@ -136,6 +137,8 @@ pub struct HirTypeAlias {
 pub struct HirFunction {
     pub symbol_id: SymbolId,
     pub name: InternedString,
+    /// Fully qualified name (e.g., "com.example.MyClass.myMethod")
+    pub qualified_name: Option<InternedString>,
     pub type_params: Vec<HirTypeParam>,
     pub params: Vec<HirParam>,
     pub return_type: TypeId,
@@ -572,6 +575,7 @@ pub struct HirTypeParam {
 
 #[derive(Debug, Clone)]
 pub struct HirParam {
+    pub symbol_id: SymbolId, // Symbol ID from TAST (needed for variable lookup in MIR)
     pub name: InternedString,
     pub ty: TypeId,
     pub default: Option<HirExpr>,
@@ -581,6 +585,7 @@ pub struct HirParam {
 
 #[derive(Debug, Clone)]
 pub struct HirClassField {
+    pub symbol_id: SymbolId,  // Symbol ID from TAST (needed for field access lowering)
     pub name: InternedString,
     pub ty: TypeId,
     pub init: Option<HirExpr>,

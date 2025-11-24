@@ -23,6 +23,8 @@ pub mod lowering;  // Legacy TAST to MIR (being phased out)
 pub mod optimization;
 pub mod validation;
 pub mod optimizable;  // Generic optimization trait for different IR levels
+pub mod blade;  // BLADE format - Blazing Language Artifact Deployment Environment (.blade files)
+pub mod mir_builder;  // Programmatic MIR construction API
 
 pub use types::*;
 pub use instructions::*;
@@ -32,25 +34,30 @@ pub use modules::*;
 pub use builder::*;
 
 use std::fmt;
+use serde::{Serialize, Deserialize};
 
 /// IR version for compatibility checking
 pub const IR_VERSION: u32 = 1;
 
 /// Unique identifier for IR entities
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct IrId(u32);
 
 impl IrId {
     pub fn new(id: u32) -> Self {
         Self(id)
     }
-    
+
     pub fn invalid() -> Self {
         Self(u32::MAX)
     }
-    
+
     pub fn is_valid(&self) -> bool {
         self.0 != u32::MAX
+    }
+
+    pub fn as_u32(&self) -> u32 {
+        self.0
     }
 }
 
@@ -61,7 +68,7 @@ impl fmt::Display for IrId {
 }
 
 /// Source location information for debugging
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IrSourceLocation {
     pub file_id: u32,
     pub line: u32,
@@ -79,7 +86,7 @@ impl IrSourceLocation {
 }
 
 /// Linkage type for symbols
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Linkage {
     /// Private to the module
     Private,
@@ -92,7 +99,7 @@ pub enum Linkage {
 }
 
 /// Calling convention for functions
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CallingConvention {
     /// Standard Haxe calling convention
     Haxe,

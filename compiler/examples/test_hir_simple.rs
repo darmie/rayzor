@@ -97,50 +97,64 @@ class Simple {
     
     // Step 3: Lower TAST to HIR
     println!("\n3. Lowering TAST to HIR...");
-    let hir_module = match lower_tast_to_hir(
-        &typed_file,
-        &symbol_table,
-        &type_table,
-        None,
-    ) {
-        Ok(hir) => {
-            println!("   ✓ Successfully lowered to HIR");
-            println!("   - Module: {}", hir.name);
-            println!("   - Functions: {}", hir.functions.len());
-            println!("   - Types: {}", hir.types.len());
-            
-            // Print HIR types
+    let hir_module = {
+        // Scope the mutable borrow
+        let mut interner_guard = string_interner.borrow_mut();
+        match lower_tast_to_hir(
+            &typed_file,
+            &symbol_table,
+            &type_table,
+            &mut *interner_guard,
+            None,
+        ) {
+            Ok(hir) => {
+                println!("   ✓ Successfully lowered to HIR");
+                println!("   - Module: {}", hir.name);
+                println!("   - Functions: {}", hir.functions.len());
+                println!("   - Types: {}", hir.types.len());
+                Some(hir)
+            }
+            Err(errors) => {
+                eprintln!("   ✗ HIR lowering errors:");
+                for error in errors {
+                    eprintln!("     - {}", error.message);
+                }
+                None
+            }
+        }
+    }; // Mutable borrow dropped here
+
+    let hir_module = match hir_module {
+        Some(hir) => {
+            // Print HIR types after the borrow is dropped
+            let interner_ref = string_interner.borrow();
             for (type_id, type_decl) in &hir.types {
                 use compiler::ir::hir::HirTypeDecl;
                 let type_name = match type_decl {
-                    HirTypeDecl::Class(c) => format!("Class({})", 
-                        string_interner.borrow().get(c.name).unwrap_or("?")),
+                    HirTypeDecl::Class(c) => format!("Class({})",
+                        interner_ref.get(c.name).unwrap_or("?")),
                     HirTypeDecl::Interface(i) => format!("Interface({})",
-                        string_interner.borrow().get(i.name).unwrap_or("?")),
+                        interner_ref.get(i.name).unwrap_or("?")),
                     HirTypeDecl::Enum(e) => format!("Enum({})",
-                        string_interner.borrow().get(e.name).unwrap_or("?")),
+                        interner_ref.get(e.name).unwrap_or("?")),
                     HirTypeDecl::Abstract(a) => format!("Abstract({})",
-                        string_interner.borrow().get(a.name).unwrap_or("?")),
+                        interner_ref.get(a.name).unwrap_or("?")),
                     HirTypeDecl::TypeAlias(t) => format!("TypeAlias({})",
-                        string_interner.borrow().get(t.name).unwrap_or("?")),
+                        interner_ref.get(t.name).unwrap_or("?")),
                 };
                 println!("     • Type {:?}: {}", type_id, type_name);
             }
-            
+            drop(interner_ref);
             hir
         }
-        Err(errors) => {
-            eprintln!("   ✗ HIR lowering errors:");
-            for error in errors {
-                eprintln!("     - {}", error.message);
-            }
+        None => {
             return;
         }
     };
     
     // Step 4: Lower HIR to MIR
     println!("\n4. Lowering HIR to MIR...");
-    match lower_hir_to_mir(&hir_module) {
+    match lower_hir_to_mir(&hir_module, &*string_interner.borrow()) {
         Ok(mir) => {
             println!("   ✓ Successfully lowered to MIR");
             println!("   - Module: {}", mir.name);

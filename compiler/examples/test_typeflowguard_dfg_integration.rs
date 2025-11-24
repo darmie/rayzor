@@ -654,7 +654,6 @@ fn test_loop_phi_analysis(flow_guard: &mut TypeFlowGuard, string_interner: &Rc<R
     
     // Debug: show any errors
     if results.errors.len() > 0 {
-        eprintln!("DEBUG: Loop analysis errors:");
         for error in &results.errors {
             eprintln!("  {:?}", error);
         }

@@ -18,17 +18,27 @@ use crate::ir::{
     FunctionSignatureBuilder, CallingConvention,
     IrGlobal, IrGlobalId, Linkage,
     IrTypeDef, IrTypeDefId, IrTypeDefinition, IrField, IrEnumVariant,
+    IrFunctionId, IrFunctionSignature, IrParameter, IrLocal,
 };
-use crate::tast::{SymbolId, TypeId, SourceLocation, InternedString};
+use crate::tast::{
+    SymbolId, TypeId, SourceLocation, InternedString, StringInterner,
+    TypeTable, TypeKind, SymbolTable,
+};
+use crate::stdlib::{StdlibMapping, MethodSignature};
 use std::collections::HashMap;
+use std::rc::Rc;
+use std::cell::RefCell;
 
 /// Context for lowering HIR to MIR
-pub struct HirToMirContext {
+pub struct HirToMirContext<'a> {
     /// MIR builder
     builder: IrBuilder,
 
-    /// Mapping from HIR symbols to MIR registers
+    /// Mapping from HIR symbols to MIR registers (for variables/parameters)
     symbol_map: HashMap<SymbolId, IrId>,
+
+    /// Mapping from HIR function symbols to MIR function IDs
+    function_map: HashMap<SymbolId, crate::ir::IrFunctionId>,
 
     /// Mapping from HIR blocks to MIR blocks
     block_map: HashMap<usize, IrBlockId>,
@@ -51,6 +61,34 @@ pub struct HirToMirContext {
 
     /// Dynamic global initializers (globals needing runtime initialization)
     dynamic_globals: Vec<(SymbolId, HirExpr)>,
+
+    /// String interner for resolving InternedString to actual strings
+    string_interner: &'a StringInterner,
+
+    /// Type table for proper type conversion
+    type_table: &'a Rc<RefCell<TypeTable>>,
+
+    /// Track closure registers and their environment pointers
+    /// Maps: closure_function_pointer_register -> environment_pointer_register
+    closure_environments: HashMap<IrId, IrId>,
+
+    /// Mapping from field SymbolId to (class_type_id, field_index)
+    /// This allows us to find the index of a field within its class
+    field_index_map: HashMap<SymbolId, (TypeId, u32)>,
+
+    /// Mapping from class TypeId to constructor IrFunctionId
+    /// This allows new expressions to find the constructor by class type
+    constructor_map: HashMap<TypeId, IrFunctionId>,
+
+    /// Reference to HIR type declarations for inheritance lookup
+    /// Needed to access parent class fields during field inheritance
+    current_hir_types: &'a indexmap::IndexMap<TypeId, HirTypeDecl>,
+
+    /// Standard library runtime function mapping
+    stdlib_mapping: StdlibMapping,
+
+    /// Symbol table for resolving symbols
+    symbol_table: &'a SymbolTable,
 }
 
 /// SSA-derived optimization hints from DFG analysis
@@ -83,12 +121,20 @@ pub struct LoweringError {
     pub location: SourceLocation,
 }
 
-impl HirToMirContext {
+impl<'a> HirToMirContext<'a> {
     /// Create a new lowering context
-    pub fn new(module_name: String, source_file: String) -> Self {
+    pub fn new(
+        module_name: String,
+        source_file: String,
+        string_interner: &'a StringInterner,
+        type_table: &'a Rc<RefCell<TypeTable>>,
+        hir_types: &'a indexmap::IndexMap<TypeId, HirTypeDecl>,
+        symbol_table: &'a SymbolTable,
+    ) -> Self {
         Self {
             builder: IrBuilder::new(module_name.clone(), source_file),
             symbol_map: HashMap::new(),
+            function_map: HashMap::new(),
             block_map: HashMap::new(),
             loop_stack: Vec::new(),
             current_module: Some(module_name),
@@ -96,6 +142,14 @@ impl HirToMirContext {
             ssa_hints: SsaOptimizationHints::default(),
             lambda_counter: 0,
             dynamic_globals: Vec::new(),
+            string_interner,
+            type_table,
+            closure_environments: HashMap::new(),
+            field_index_map: HashMap::new(),
+            constructor_map: HashMap::new(),
+            current_hir_types: hir_types,
+            stdlib_mapping: StdlibMapping::new(),
+            symbol_table,
         }
     }
 
@@ -143,15 +197,98 @@ impl HirToMirContext {
         self.builder.module.metadata.language_version =
             hir_module.metadata.language_version.clone();
 
-        // Lower all functions
-        for (symbol_id, hir_func) in &hir_module.functions {
-            self.lower_function(*symbol_id, hir_func);
-        }
-
-        // Lower all type declarations to module metadata
-        // MIR doesn't need full type declarations, just metadata for codegen
+        // IMPORTANT: Register type metadata FIRST before lowering any functions
+        // This populates field_index_map which is needed for field access
         for (type_id, type_decl) in &hir_module.types {
             self.register_type_metadata(*type_id, type_decl);
+        }
+
+        // CRITICAL: Two-pass lowering to avoid non-deterministic function ordering issues
+        // HashMap iteration over hir_module.types is random, so class methods might be
+        // lowered after module functions that call them, causing "function not found" errors.
+        //
+        // Pass 1: Register ALL function signatures WITHOUT lowering bodies
+        // This ensures function_map is fully populated before any calls are made
+
+        // Pass 1a: Register class method signatures
+        for (type_id, type_decl) in &hir_module.types {
+            match type_decl {
+                HirTypeDecl::Class(class) => {
+                    eprintln!("DEBUG Pass1a: Registering methods for class {:?}",
+                             self.string_interner.get(class.name).unwrap_or("<unknown>"));
+                    for method in &class.methods {
+                        eprintln!("DEBUG Pass1a:   - method {:?} (symbol={:?})",
+                                 self.string_interner.get(method.function.name).unwrap_or("<unknown>"),
+                                 method.function.symbol_id);
+                        let this_type = if !method.is_static {
+                            Some(*type_id)
+                        } else {
+                            None
+                        };
+                        self.register_function_signature(
+                            method.function.symbol_id,
+                            &method.function,
+                            this_type
+                        );
+                    }
+
+                    // Register constructor signature
+                    if let Some(constructor) = &class.constructor {
+                        self.register_constructor_signature(class.symbol_id, constructor, *type_id);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Pass 1b: Register module function signatures
+        for (symbol_id, hir_func) in &hir_module.functions {
+            self.register_function_signature(*symbol_id, hir_func, None);
+        }
+
+        // Pass 2: Now lower all function bodies (both class methods and module functions)
+        // At this point, function_map is fully populated
+
+        // Pass 2a: Lower class methods and constructors
+        for (type_id, type_decl) in &hir_module.types {
+            let name_str = if let HirTypeDecl::Class(c) = type_decl {
+                self.string_interner.get(c.name).unwrap_or("<unknown>")
+            } else {
+                "<not-a-class>"
+            };
+            // eprintln!("DEBUG: Processing type - TypeId={:?}, name={:?}", type_id, name_str);
+            match type_decl {
+                HirTypeDecl::Class(class) => {
+                    // Lower each method body
+                    for method in &class.methods {
+                        if method.is_static {
+                            self.lower_function_body(
+                                method.function.symbol_id,
+                                &method.function,
+                                None
+                            );
+                        } else {
+                            self.lower_function_body(
+                                method.function.symbol_id,
+                                &method.function,
+                                Some(*type_id)
+                            );
+                        }
+                    }
+
+                    // Lower constructor body
+                    if let Some(constructor) = &class.constructor {
+                        // eprintln!("DEBUG: Lowering constructor for class {:?}", class.name);
+                        self.lower_constructor_body(class.symbol_id, constructor, *type_id, class.extends);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Pass 2b: Lower module function bodies
+        for (symbol_id, hir_func) in &hir_module.functions {
+            self.lower_function_body(*symbol_id, hir_func, None);
         }
 
         // Lower globals
@@ -173,18 +310,214 @@ impl HirToMirContext {
             Err(std::mem::take(&mut self.errors))
         }
     }
-    
-    /// Lower a HIR function to MIR
+
+    /// Register a function signature without lowering the body (Pass 1)
+    /// This creates the function stub and adds it to function_map
+    fn register_function_signature(&mut self, symbol_id: SymbolId, hir_func: &HirFunction, this_type: Option<TypeId>) {
+        let mut signature = self.build_function_signature(hir_func);
+
+        // For instance methods, add implicit 'this' parameter
+        if let Some(type_id) = this_type {
+            let this_type = self.convert_type(type_id);
+            signature.parameters.insert(0, IrParameter {
+                name: "this".to_string(),
+                ty: this_type,
+                reg: IrId::new(0),  // Will be properly assigned when body is lowered
+                by_ref: false,
+            });
+        }
+
+        let func_name = self.string_interner.get(hir_func.name)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("func_{}", symbol_id.as_raw()));
+
+        let func_id = self.builder.start_function(symbol_id, func_name, signature);
+        self.function_map.insert(symbol_id, func_id);
+        self.builder.finish_function();  // Close to allow next function to start
+    }
+
+    /// Register constructor signature (Pass 1)
+    fn register_constructor_signature(&mut self, class_symbol: SymbolId, constructor: &HirConstructor, type_id: TypeId) {
+        // Constructor signature: takes implicit 'this' parameter, returns void
+        let this_type = self.convert_type(type_id);
+        let mut signature = FunctionSignatureBuilder::new()
+            .param("this".to_string(), this_type)
+            .returns(IrType::Void)
+            .build();
+
+        // Assign register IDs to parameters
+        for (i, param) in signature.parameters.iter_mut().enumerate() {
+            param.reg = IrId::new(i as u32);
+        }
+
+        let func_id = self.builder.start_function(class_symbol, "new".to_string(), signature);
+        self.function_map.insert(class_symbol, func_id);
+        self.constructor_map.insert(type_id, func_id);
+        self.builder.finish_function();  // Close the stub
+    }
+
+    /// Lower a function body after signature is registered (Pass 2)
+    /// Reuses the existing function created in Pass 1
+    fn lower_function_body(&mut self, symbol_id: SymbolId, hir_func: &HirFunction, this_type: Option<TypeId>) {
+        // The function already exists from Pass 1, we just need to fill in the body
+        let func_id = self.function_map.get(&symbol_id).copied()
+            .expect("Function should have been registered in Pass 1");
+
+        // Re-open the function for body lowering
+        let func = self.builder.module.functions.get(&func_id)
+            .expect("Function should exist").clone();
+
+        self.builder.current_function = Some(func_id);
+        self.builder.current_block = Some(func.entry_block());
+
+        // Map 'this' parameter for instance methods
+        if this_type.is_some() {
+            // 'this' is parameter 0
+            if let Some(this_param) = func.signature.parameters.get(0) {
+                // Map 'this' to a special symbol ID (SymbolId(0))
+                // This is what HirExprKind::This looks up
+                self.symbol_map.insert(SymbolId::from_raw(0), this_param.reg);
+            }
+        }
+
+        // Map parameters from the function signature (which already has register IDs assigned)
+        let param_offset = if this_type.is_some() { 1 } else { 0 };
+        for (i, param) in hir_func.params.iter().enumerate() {
+            if let Some(sig_param) = func.signature.parameters.get(i + param_offset) {
+                self.symbol_map.insert(param.symbol_id, sig_param.reg);
+            }
+        }
+
+        // Lower body
+        if let Some(body) = &hir_func.body {
+            self.lower_block(body);
+            self.ensure_terminator();
+        }
+
+        // Finish
+        eprintln!("DEBUG ===== FINISHING FUNCTION =====");
+        if let Some(func) = self.builder.current_function() {
+            eprintln!("DEBUG   Function '{}' entry block terminator: {:?}",
+                     func.name,
+                     func.cfg.get_block(func.entry_block()).map(|b| &b.terminator));
+        }
+        self.builder.finish_function();
+        eprintln!("DEBUG   Function finished, context cleared");
+
+        self.symbol_map.clear();
+        self.block_map.clear();
+    }
+
+    /// Lower constructor body (Pass 2)
+    fn lower_constructor_body(&mut self, class_symbol: SymbolId, constructor: &HirConstructor, type_id: TypeId, parent_type: Option<TypeId>) {
+        let func_id = self.constructor_map.get(&type_id).copied()
+            .expect("Constructor should have been registered in Pass 1");
+
+        let func = self.builder.module.functions.get(&func_id)
+            .expect("Constructor function should exist").clone();
+
+        self.builder.current_function = Some(func_id);
+        self.builder.current_block = Some(func.entry_block());
+
+        // 'this' is parameter 0
+        let this_reg = IrId::new(0);
+
+        // Map 'this' to symbol map for field access
+        self.symbol_map.insert(SymbolId::from_raw(0), this_reg);
+
+        // Map constructor parameters to registers
+        for (i, param) in constructor.params.iter().enumerate() {
+            let reg = IrId::new((i + 1) as u32);  // +1 because 'this' is parameter 0
+            self.symbol_map.insert(param.symbol_id, reg);
+        }
+
+        // Handle super() call if present
+        if let Some(super_call) = &constructor.super_call {
+            // eprintln!("DEBUG: Processing super() call with {} args", super_call.args.len());
+
+            if let Some(parent_type_id) = parent_type {
+                // eprintln!("DEBUG: Parent class TypeId={:?}", parent_type_id);
+
+                // Look up parent constructor
+                if let Some(&parent_ctor_id) = self.constructor_map.get(&parent_type_id) {
+                    // eprintln!("DEBUG: Found parent constructor IrFunctionId={:?}", parent_ctor_id);
+
+                    // Lower super call arguments
+                    let mut arg_regs = vec![this_reg];  // 'this' is first argument
+                    for arg in &super_call.args {
+                        if let Some(arg_reg) = self.lower_expression(arg) {
+                            arg_regs.push(arg_reg);
+                        }
+                    }
+
+                    // eprintln!("DEBUG: Calling parent constructor with {} args", arg_regs.len());
+                    // Call parent constructor (returns void)
+                    self.builder.build_call_direct(parent_ctor_id, arg_regs, crate::ir::IrType::Void);
+                } else {
+                    self.add_error(
+                        &format!("Parent constructor not found for TypeId {:?}", parent_type_id),
+                        crate::tast::SourceLocation::unknown()
+                    );
+                }
+            } else {
+                eprintln!("DEBUG: super() call but no parent class - this is an error in HIR");
+            }
+        }
+
+        // Lower constructor body statements
+        for stmt in &constructor.body.statements {
+            self.lower_statement(stmt);
+        }
+
+        // Constructor implicitly returns void
+        self.builder.build_return(None);
+
+        eprintln!("DEBUG ===== FINISHING FUNCTION =====");
+        if let Some(func) = self.builder.current_function() {
+            eprintln!("DEBUG   Function '{}' entry block terminator: {:?}",
+                     func.name,
+                     func.cfg.get_block(func.entry_block()).map(|b| &b.terminator));
+        }
+        self.builder.finish_function();
+        eprintln!("DEBUG   Function finished, context cleared");
+
+        self.symbol_map.clear();
+        self.block_map.clear();
+    }
+
+    /// Lower a HIR function to MIR (Legacy - combines Pass 1 and Pass 2)
     fn lower_function(&mut self, symbol_id: SymbolId, hir_func: &HirFunction) {
+        let body_stmt_count = hir_func.body.as_ref().map(|b| b.statements.len()).unwrap_or(0);
+        // eprintln!("DEBUG: lower_function - name={:?}, symbol={:?}, has_body={}, stmt_count={}",
+        //           self.string_interner.get(hir_func.name),
+        //           symbol_id,
+        //           hir_func.body.is_some(),
+        //           body_stmt_count);
+
+        // Debug: Print each statement kind
+        // if let Some(body) = &hir_func.body {
+        //     for (i, stmt) in body.statements.iter().enumerate() {
+        //         eprintln!("DEBUG: Statement {}: {:?}", i, std::mem::discriminant(stmt));
+        //     }
+        // }
+
         // Build MIR function signature
         let signature = self.build_function_signature(hir_func);
 
         // Start building the function
+        let func_name = self.string_interner.get(hir_func.name)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("func_{}", symbol_id.as_raw()));
+        // eprintln!("DEBUG ===== STARTING FUNCTION: {} (symbol {:?}) =====", func_name, symbol_id);
         let func_id = self.builder.start_function(
             symbol_id,
-            hir_func.name.to_string(),
+            func_name,
             signature,
         );
+        // eprintln!("DEBUG   Function ID: {:?}, Entry block created", func_id);
+
+        // Store function mapping for call resolution
+        self.function_map.insert(symbol_id, func_id);
 
         // Apply SSA-derived optimization hints to function attributes
         // These hints come from DFG/SSA analysis and guide MIR optimization
@@ -214,17 +547,123 @@ impl HirToMirContext {
         // Note: CSE opportunities don't have a direct attribute mapping yet
         // They will be used by the optimization pass manager
 
+        // Set qualified name for debugging and profiling
+        if let Some(qualified_name) = hir_func.qualified_name {
+            if let Some(func) = self.builder.module.functions.get_mut(&func_id) {
+                func.qualified_name = self.string_interner.get(qualified_name).map(|s| s.to_string());
+            }
+        }
+
         // Map parameters to MIR registers
+        // Parameters now have symbol IDs (preserved from TAST)!
+        /// eprintln!("DEBUG: Mapping {} parameters", hir_func.params.len());
         for (i, param) in hir_func.params.iter().enumerate() {
-            if let Some(reg) = self.builder.current_function()
-                .and_then(|f| f.get_param_reg(i)) {
-                // Create symbol mapping for parameter
-                // Note: This assumes parameters have been registered in symbol table
-                // In practice, we'd need to get the symbol ID from the parameter
+            if let Some(func) = self.builder.current_function() {
+                if let Some(sig_param) = func.signature.parameters.get(i) {
+                    let param_reg = sig_param.reg;
+                    /// eprintln!("DEBUG: Parameter {} symbol {:?} '{}' -> register {:?}", i, param.symbol_id, param.name, param_reg);
+                    // Map parameter symbol to its register
+                    self.symbol_map.insert(param.symbol_id, param_reg);
+
+                    // Also register parameter as a local so Cranelift can find its type
+                    let param_type = self.convert_type(param.ty);
+                    let src_loc = IrSourceLocation::unknown();
+                    if let Some(func_mut) = self.builder.current_function_mut() {
+                        func_mut.locals.insert(param_reg, super::IrLocal {
+                            name: param.name.to_string(),
+                            ty: param_type,
+                            mutable: false, // Parameters are immutable by default
+                            source_location: src_loc,
+                            allocation: super::AllocationHint::Register,
+                        });
+                    }
+                }
             }
         }
 
         // Lower function body if present
+        if let Some(body) = &hir_func.body {
+            // eprintln!("DEBUG: Lowering function body for {} (symbol {:?})", hir_func.name, symbol_id);
+            let stmt_count = body.statements.len();
+            let has_expr = body.expr.is_some();
+            // eprintln!("  Body has {} statements, trailing expr: {}", stmt_count, has_expr);
+
+            self.lower_block(body);
+            // eprintln!("  After lower_block");
+
+            // Add implicit return if needed
+            self.ensure_terminator();
+            // eprintln!("  After ensure_terminator");
+        } else {
+            // eprintln!("DEBUG: Function {} has no body", hir_func.name);
+        }
+
+        eprintln!("DEBUG ===== FINISHING FUNCTION =====");
+        // Before finishing, dump the terminator for this function
+        if let Some(func) = self.builder.current_function() {
+            eprintln!("DEBUG   Function '{}' entry block terminator: {:?}",
+                     func.name,
+                     func.cfg.get_block(func.entry_block()).map(|b| &b.terminator));
+        }
+        self.builder.finish_function();
+        eprintln!("DEBUG   Function finished, context cleared");
+
+        // Clear per-function state
+        self.symbol_map.clear();
+        self.block_map.clear();
+    }
+
+    /// Lower an instance method (non-static class method) to MIR
+    /// Instance methods receive an implicit 'this' parameter as their first argument
+    fn lower_instance_method(&mut self, symbol_id: SymbolId, hir_func: &HirFunction, class_type_id: TypeId) {
+        // Build MIR function signature with implicit 'this' parameter
+        let signature = self.build_instance_method_signature(hir_func, class_type_id);
+
+        // Start building the function
+        let func_name = self.string_interner.get(hir_func.name)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("func_{}", symbol_id.as_raw()));
+        eprintln!("DEBUG ===== STARTING FUNCTION: {} (symbol {:?}) =====", func_name, symbol_id);
+        let func_id = self.builder.start_function(
+            symbol_id,
+            func_name,
+            signature,
+        );
+        eprintln!("DEBUG   Function ID: {:?}, Entry block created", func_id);
+
+        // Store function mapping for call resolution
+        self.function_map.insert(symbol_id, func_id);
+
+        // Set qualified name for debugging and profiling
+        if let Some(qualified_name) = hir_func.qualified_name {
+            if let Some(func) = self.builder.module.functions.get_mut(&func_id) {
+                func.qualified_name = self.string_interner.get(qualified_name).map(|s| s.to_string());
+            }
+        }
+
+        // Map parameters to MIR registers
+        // The first parameter (index 0) is the implicit 'this'
+        // User-defined parameters start at index 1
+        if let Some(func) = self.builder.current_function() {
+            // Map 'this' parameter - we need a special symbol for it
+            // For now, we'll create a synthetic symbol ID for 'this'
+            // TODO: This should ideally come from TAST/HIR where 'this' is properly resolved
+            if let Some(this_param) = func.signature.parameters.get(0) {
+                let this_symbol = SymbolId::from_raw(0); // Synthetic 'this' symbol
+                self.symbol_map.insert(this_symbol, this_param.reg);
+            }
+
+            // Map regular parameters (offset by 1 due to 'this')
+            for (i, param) in hir_func.params.iter().enumerate() {
+                if let Some(sig_param) = func.signature.parameters.get(i + 1) {
+                    let param_reg = sig_param.reg;
+                    // Map parameter symbol to its register
+                    self.symbol_map.insert(param.symbol_id, param_reg);
+                }
+            }
+        }
+
+        // Lower the function body
         if let Some(body) = &hir_func.body {
             self.lower_block(body);
 
@@ -232,13 +671,120 @@ impl HirToMirContext {
             self.ensure_terminator();
         }
 
+        eprintln!("DEBUG ===== FINISHING FUNCTION =====");
+        // Before finishing, dump the terminator for this function
+        if let Some(func) = self.builder.current_function() {
+            eprintln!("DEBUG   Function '{}' entry block terminator: {:?}",
+                     func.name,
+                     func.cfg.get_block(func.entry_block()).map(|b| &b.terminator));
+        }
         self.builder.finish_function();
+        eprintln!("DEBUG   Function finished, context cleared");
 
         // Clear per-function state
         self.symbol_map.clear();
         self.block_map.clear();
     }
-    
+
+    /// Lower a constructor to MIR
+    /// Constructors are similar to instance methods but handle field initialization
+    fn lower_constructor(&mut self, class_symbol: SymbolId, constructor: &HirConstructor, class_type_id: TypeId) {
+        // eprintln!("DEBUG: lower_constructor - class_symbol={:?}", class_symbol);
+
+        // Build signature using the builder
+        let mut sig_builder = FunctionSignatureBuilder::new()
+            .param("this".to_string(), self.convert_type(class_type_id));
+
+        // Add constructor parameters
+        for param in &constructor.params {
+            let param_name = self.string_interner.get(param.name)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("param_{}", param.symbol_id.as_raw()));
+            sig_builder = sig_builder.param(param_name, self.convert_type(param.ty));
+        }
+
+        // Constructor returns void
+        let signature = sig_builder.returns(IrType::Void).build();
+
+        // Start building the constructor function
+        let func_name = "new".to_string();
+        let func_id = self.builder.start_function(
+            class_symbol,
+            func_name,
+            signature,
+        );
+
+        // Register this function in the function map
+        self.function_map.insert(class_symbol, func_id);
+
+        // Register in constructor_map by TypeId for new expressions
+        self.constructor_map.insert(class_type_id, func_id);
+        // eprintln!("DEBUG: Registered constructor - TypeId={:?}, FuncId={:?}", class_type_id, func_id);
+
+        // Also register with TypeId derived from class SymbolId as a fallback
+        // This handles cases where expression TypeIds differ from types map TypeIds
+        let fallback_type_id = TypeId::from_raw(class_symbol.as_raw());
+        if fallback_type_id != class_type_id {
+            self.constructor_map.insert(fallback_type_id, func_id);
+            // eprintln!("DEBUG: Also registered constructor - fallback TypeId={:?}, FuncId={:?}",
+            //           fallback_type_id, func_id);
+        }
+
+        // Note: start_function already creates the entry block and switches to it
+        // No need to create another block here - just use the current block
+
+        // Map 'this' parameter (IrId(0) is the first parameter)
+        // We'll use a temporary symbol ID for 'this'
+        let this_reg = IrId::new(0);
+
+        // Map constructor parameters
+        for (i, param) in constructor.params.iter().enumerate() {
+            let param_reg = IrId::new((i + 1) as u32); // Parameters start after 'this'
+            self.symbol_map.insert(param.symbol_id, param_reg);
+        }
+
+        // Lower field initializations
+        for field_init in &constructor.field_inits {
+            if let Some(value_reg) = self.lower_expression(&field_init.value) {
+                // Store to field using field_index_map
+                if let Some(&(_class_type, field_index)) = self.field_index_map.get(&field_init.field) {
+                    if let Some(index_const) = self.builder.build_const(IrValue::I32(field_index as i32)) {
+                        // Use I32 as default field type (TODO: get actual type)
+                        if let Some(field_ptr) = self.builder.build_gep(this_reg, vec![index_const], IrType::I32) {
+                            self.builder.build_store(field_ptr, value_reg);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Lower constructor body
+        // eprintln!("DEBUG: Constructor body has {} statements", constructor.body.statements.len());
+        for (i, stmt) in constructor.body.statements.iter().enumerate() {
+            // eprintln!("DEBUG: Constructor stmt {}: {:?}", i, std::mem::discriminant(stmt));
+        }
+        self.lower_block(&constructor.body);
+
+        // Ensure void return
+        if !self.is_terminated() {
+            self.builder.build_return(None);
+        }
+
+        eprintln!("DEBUG ===== FINISHING FUNCTION =====");
+        // Before finishing, dump the terminator for this function
+        if let Some(func) = self.builder.current_function() {
+            eprintln!("DEBUG   Function '{}' entry block terminator: {:?}",
+                     func.name,
+                     func.cfg.get_block(func.entry_block()).map(|b| &b.terminator));
+        }
+        self.builder.finish_function();
+        eprintln!("DEBUG   Function finished, context cleared");
+
+        // Clear per-function state
+        self.symbol_map.clear();
+        self.block_map.clear();
+    }
+
     /// Lower a HIR block to MIR
     fn lower_block(&mut self, block: &HirBlock) {
         // Process all statements
@@ -255,15 +801,23 @@ impl HirToMirContext {
     
     /// Lower a HIR statement to MIR instructions
     fn lower_statement(&mut self, stmt: &HirStatement) {
+        // eprintln!("DEBUG: lower_statement - {:?}", std::mem::discriminant(stmt));
         match stmt {
-            HirStatement::Let { pattern, init, .. } => {
+            HirStatement::Let { pattern, type_hint, init, is_mutable } => {
                 // Lower initialization expression if present
                 if let Some(init_expr) = init {
+                    // eprintln!("DEBUG: Let statement - lowering init expression");
                     let value = self.lower_expression(init_expr);
-                    
-                    // Bind to pattern
+                    // eprintln!("DEBUG: Let statement - init lowered to: {:?}", value);
+
+                    // Bind to pattern and register as local
                     if let Some(value_reg) = value {
-                        self.bind_pattern(pattern, value_reg);
+                        // eprintln!("DEBUG: Let statement - binding pattern with value_reg: {:?}", value_reg);
+                        // Determine the type for the binding
+                        let var_type = type_hint.or(Some(init_expr.ty));
+                        self.bind_pattern_with_type(pattern, value_reg, var_type, *is_mutable);
+                    } else {
+                        // eprintln!("DEBUG: Let statement - NO VALUE from init expression!");
                     }
                 }
             }
@@ -298,9 +852,21 @@ impl HirToMirContext {
             }
             
             HirStatement::Return(value) => {
+                // eprintln!("DEBUG: Return statement, has_value: {}", value.is_some());
                 let ret_value = value.as_ref()
-                    .and_then(|e| self.lower_expression(e));
+                    .and_then(|e| {
+                        // eprintln!("DEBUG: Lowering return expression: {:?}", e);
+                        let result = self.lower_expression(e);
+                        // eprintln!("DEBUG: Return expression lowered to: {:?}", result);
+                        // if result.is_none() {
+                        //     eprintln!("ERROR: Failed to lower return expression!");
+                        //     eprintln!("ERROR: Expression was: {:#?}", e);
+                        // }
+                        result
+                    });
+                // eprintln!("DEBUG: Building return instruction with value: {:?}", ret_value);
                 self.builder.build_return(ret_value);
+                // eprintln!("DEBUG: Return instruction built");
             }
             
             HirStatement::Break(label) => {
@@ -320,15 +886,18 @@ impl HirToMirContext {
             }
             
             HirStatement::Throw(expr) => {
-                if let Some(_exception_reg) = self.lower_expression(expr) {
-                    // In MIR, throw becomes unreachable for now
-                    // TODO: Implement proper exception handling
+                if let Some(exception_reg) = self.lower_expression(expr) {
+                    // Emit throw instruction
+                    self.builder.build_throw(exception_reg);
+                    // After throw, code is unreachable
                     self.builder.build_unreachable();
                 }
             }
             
             HirStatement::If { condition, then_branch, else_branch } => {
+                // eprintln!("DEBUG: About to call lower_if_statement, has_else={}", else_branch.is_some());
                 self.lower_if_statement(condition, then_branch, else_branch.as_ref());
+                // eprintln!("DEBUG: Returned from lower_if_statement");
             }
             
             HirStatement::Switch { scrutinee, cases } => {
@@ -362,17 +931,149 @@ impl HirToMirContext {
             }
         }
     }
-    
+
+    /// Check if a method symbol corresponds to a stdlib method with runtime mapping
+    ///
+    /// Returns (class_name, method_name, runtime_function_name) if this is a stdlib method
+    fn get_stdlib_runtime_info(
+        &self,
+        method_symbol: SymbolId,
+        receiver_type: TypeId,
+    ) -> Option<(&'static str, &'static str, &'static str)> {
+        // Get the method name from the symbol table
+        let method_name = if let Some(symbol) = self.symbol_table.get_symbol(method_symbol) {
+            self.string_interner.get(symbol.name)?
+        } else {
+            return None;
+        };
+
+        // Get the type name from the receiver type
+        let type_table = self.type_table.borrow();
+        let type_info = type_table.get(receiver_type)?;
+
+        let class_name = match &type_info.kind {
+            TypeKind::String => "String",
+            TypeKind::Array { .. } => "Array",
+            TypeKind::Class { symbol_id, .. } => {
+                // Get class name from symbol
+                if let Some(class_info) = self.symbol_table.get_symbol(*symbol_id) {
+                    let name = self.string_interner.get(class_info.name)?;
+                    match name {
+                        "Math" => "Math",
+                        "Sys" => "Sys",
+                        _ => return None, // Not a stdlib class
+                    }
+                } else {
+                    return None;
+                }
+            }
+            _ => return None, // Not a stdlib type
+        };
+
+        drop(type_table);
+
+        // Check if we have a mapping for this method
+        let is_static = matches!(class_name, "Math" | "Sys");
+
+        // Convert to static strings for the signature
+        let class_static: &'static str = match class_name {
+            "String" => "String",
+            "Array" => "Array",
+            "Math" => "Math",
+            "Sys" => "Sys",
+            _ => return None,
+        };
+
+        let method_static: &'static str = Box::leak(method_name.to_string().into_boxed_str());
+
+        let sig = MethodSignature {
+            class: class_static,
+            method: method_static,
+            is_static,
+        };
+
+        if let Some(mapping) = self.stdlib_mapping.get(&sig) {
+            println!("DEBUG: Found stdlib runtime mapping {} .{} -> {}", class_static, method_static, mapping.runtime_name);
+            Some((class_static, method_static, mapping.runtime_name))
+        } else {
+            None
+        }
+    }
+
+    /// Get or register an external runtime function, returning its ID
+    ///
+    /// This allows calling external runtime functions (like haxe_math_abs) from MIR
+    fn get_or_register_extern_function(
+        &mut self,
+        name: &str,
+        param_types: Vec<IrType>,
+        return_type: IrType,
+    ) -> IrFunctionId {
+        // Check if we already registered this extern function
+        for (func_id, extern_func) in &self.builder.module.extern_functions {
+            if extern_func.name == name {
+                return *func_id;
+            }
+        }
+
+        // Create new extern function entry
+        let func_id = IrFunctionId(self.builder.module.next_function_id);
+        self.builder.module.next_function_id += 1;
+
+        let params = param_types.into_iter().enumerate().map(|(i, ty)| {
+            IrParameter {
+                name: format!("arg{}", i),
+                ty,
+                reg: IrId::new(i as u32),
+                by_ref: false,
+            }
+        }).collect();
+
+        let signature = IrFunctionSignature {
+            parameters: params,
+            return_type,
+            calling_convention: CallingConvention::C, // External functions use C calling convention
+            can_throw: false,
+            type_params: vec![],
+            uses_sret: false, // No struct return for C functions
+        };
+
+        let extern_func = crate::ir::modules::IrExternFunction {
+            id: func_id,
+            name: name.to_string(),
+            symbol_id: SymbolId::from_raw(0), // Placeholder
+            signature,
+            source: "rayzor_runtime".to_string(),
+        };
+
+        self.builder.module.extern_functions.insert(func_id, extern_func);
+        func_id
+    }
+
     /// Lower a HIR expression to MIR value
     fn lower_expression(&mut self, expr: &HirExpr) -> Option<IrId> {
+       // eprintln!("DEBUG: lower_expression - {:?}", std::mem::discriminant(&expr.kind));
+
         // Set source location for debugging
         self.builder.set_source_location(self.convert_source_location(&expr.source_location));
-        
-        match &expr.kind {
-            HirExprKind::Literal(lit) => self.lower_literal(lit),
+
+        let result = match &expr.kind {
+            HirExprKind::Literal(lit) => self.lower_literal(lit, expr.ty),
             
             HirExprKind::Variable { symbol, .. } => {
-                self.symbol_map.get(symbol).copied()
+                // Check if this symbol is a function reference
+                if let Some(&func_id) = self.function_map.get(symbol) {
+                    // Create a function pointer constant for static methods
+                    return self.builder.build_function_ptr(func_id);
+                }
+
+                // Otherwise, it's a regular variable
+                let reg = self.symbol_map.get(symbol).copied();
+                if reg.is_none() {
+                    eprintln!("WARNING: Variable {:?} not found in symbol_map! Available symbols: {:?}",
+                             symbol, self.symbol_map.keys().collect::<Vec<_>>());
+                }
+                reg
             }
             
             HirExprKind::Field { object, field } => {
@@ -386,35 +1087,293 @@ impl HirToMirContext {
                 self.lower_index_access(obj_reg, idx_reg, expr.ty)
             }
             
-            HirExprKind::Call { callee, args, .. } => {
-                let func_reg = self.lower_expression(callee)?;
+            HirExprKind::Call { callee, args, is_method, .. } => {
+                let result_type = self.convert_type(expr.ty);
+
+                // Check if this is a method call (callee is a field access)
+                if let HirExprKind::Field { object, field } = &callee.kind {
+                    // eprintln!("DEBUG: Method call detected - field={:?}", field);
+                    // eprintln!("DEBUG: function_map keys: {:?}", self.function_map.keys().collect::<Vec<_>>());
+
+                    // This is a method call: object.method(args)
+                    // The method symbol should be in our function_map
+                    if let Some(&func_id) = self.function_map.get(field) {
+                        // eprintln!("DEBUG: Found method in function_map - func_id={:?}", func_id);
+
+                        // Lower the object (this will be the first parameter)
+                        let obj_reg = self.lower_expression(object)?;
+
+                        // Lower the arguments
+                        let arg_regs: Vec<_> = std::iter::once(obj_reg)  // Add 'this' as first arg
+                            .chain(args.iter().filter_map(|a| self.lower_expression(a)))
+                            .collect();
+
+                        // eprintln!("DEBUG: Calling method with {} args (including this)", arg_regs.len());
+                        return self.builder.build_call_direct(func_id, arg_regs, result_type);
+                    } else {
+                        eprintln!("WARNING: Method {:?} not found in function_map", field);
+                    }
+                }
+
+                // Check if callee is a direct function reference
+                if let HirExprKind::Variable { symbol, .. } = &callee.kind {
+                    // For instance method calls, check if this is a stdlib method
+                    if *is_method && !args.is_empty() {
+                        // The first arg is the receiver for instance method calls
+                        let receiver_type = args[0].ty;
+
+                        if let Some((_class, _method, runtime_func)) =
+                            self.get_stdlib_runtime_info(*symbol, receiver_type)
+                        {
+                            println!("DEBUG: Generating runtime call to {}", runtime_func);
+                            eprintln!("INFO: Stdlib method call detected: {} (runtime: {})", _method, runtime_func);
+                            eprintln!("INFO: This will be properly handled once we register extern runtime functions");
+                        }
+                    }
+                    // For static methods, check the symbol name to detect Math/Sys methods
+                    else if !is_method {
+                        if let Some(sym_info) = self.symbol_table.get_symbol(*symbol) {
+                            if let Some(method_name) = self.string_interner.get(sym_info.name) {
+                                // Check if this is a Math or Sys static method
+                                // For static methods, we need to check the parent class
+                                // For now, just log that we detected a potential static method
+                                if method_name.starts_with("sin") || method_name.starts_with("cos") ||
+                                   method_name.starts_with("sqrt") || method_name.starts_with("random") {
+                                    eprintln!("DEBUG: Potential Math static method: {}", method_name);
+                                }
+                            }
+                        }
+                    }
+
+                    // Check if this symbol is a function
+                    if let Some(&func_id) = self.function_map.get(symbol) {
+                        // Handle method calls where the object is passed as first argument
+                        if *is_method {
+                            // eprintln!("DEBUG: Method call (is_method=true) - symbol={:?}, args.len()={}", symbol, args.len());
+                            // For method calls, args already includes the object as first arg
+                            let arg_regs: Vec<_> = args.iter()
+                                .filter_map(|a| self.lower_expression(a))
+                                .collect();
+
+                            // eprintln!("DEBUG: Method call lowered {} args", arg_regs.len());
+                            return self.builder.build_call_direct(func_id, arg_regs, result_type);
+                        } else {
+                            // Direct function call
+                            let arg_regs: Vec<_> = args.iter()
+                                .filter_map(|a| self.lower_expression(a))
+                                .collect();
+
+                            return self.builder.build_call_direct(func_id, arg_regs, result_type);
+                        }
+                    } else {
+                        // Function not in function_map - might be an extern/stdlib function
+                        // Check if it's a stdlib static method (like Math.sin, Sys.println)
+                        if let Some(sym_info) = self.symbol_table.get_symbol(*symbol) {
+                            if let Some(method_name) = self.string_interner.get(sym_info.name) {
+                                // Check if method name matches known Math/Sys methods
+                                let is_math_method = matches!(method_name,
+                                    "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "atan2" |
+                                    "sqrt" | "abs" | "min" | "max" | "floor" | "ceil" | "round" |
+                                    "exp" | "log" | "pow" | "random" | "isNaN" | "isFinite"
+                                );
+
+                                let is_sys_method = matches!(method_name,
+                                    "print" | "println" | "exit" | "time"
+                                );
+
+                                if is_math_method || is_sys_method {
+                                    let class_name = if is_math_method { "Math" } else { "Sys" };
+
+                                    // Look up the runtime function name from stdlib mapping
+                                    let method_static: &'static str = Box::leak(method_name.to_string().into_boxed_str());
+                                    let sig = crate::stdlib::MethodSignature {
+                                        class: class_name,
+                                        method: method_static,
+                                        is_static: true,
+                                    };
+
+                                    if let Some(mapping) = self.stdlib_mapping.get(&sig) {
+                                        let runtime_name = mapping.runtime_name;
+                                        eprintln!("INFO: {} static method detected: {} (runtime: {})",
+                                            class_name, method_name, runtime_name);
+
+                                        // Lower arguments and get their types
+                                        let mut arg_regs = Vec::new();
+                                        let mut arg_types = Vec::new();
+                                        for arg in args {
+                                            if let Some(reg) = self.lower_expression(arg) {
+                                                arg_regs.push(reg);
+                                                arg_types.push(self.convert_type(arg.ty));
+                                            }
+                                        }
+
+                                        // Register the external runtime function
+                                        let extern_func_id = self.get_or_register_extern_function(
+                                            runtime_name,
+                                            arg_types,
+                                            result_type.clone(),
+                                        );
+
+                                        // Generate call to external function
+                                        return self.builder.build_call_direct(extern_func_id, arg_regs, result_type);
+                                    } else {
+                                        eprintln!("WARNING: {}.{} not found in stdlib mapping", class_name, method_name);
+                                    }
+                                } else {
+                                    eprintln!("WARNING: Function/method {:?} not found in function_map (is_method={})", symbol, is_method);
+                                    eprintln!("WARNING: Available symbols: {:?}", self.function_map.keys().collect::<Vec<_>>());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Indirect function call (function pointer)
+                // TODO: Get the full function signature from the callee's type
+                // For now, we'll infer it from the arguments and return type
+                // This is a temporary workaround until we pass type_table to HIR→MIR
+
+                let func_ptr = self.lower_expression(callee)?;
                 let arg_regs: Vec<_> = args.iter()
                     .filter_map(|a| self.lower_expression(a))
                     .collect();
-                
-                let result_type = self.convert_type(expr.ty);
-                self.builder.build_call(func_reg, arg_regs, result_type)
+
+                // Build function signature from arguments and return type
+                // TODO: This should come from the type table lookup of callee.ty
+                // For now, we infer parameter types as I32 and get return type from expr.ty
+                let param_types = vec![IrType::I32; arg_regs.len()];
+                let return_type = Box::new(self.convert_type(expr.ty));
+
+                let func_signature = IrType::Function {
+                    params: param_types,
+                    return_type,
+                    varargs: false,
+                };
+
+                self.builder.build_call_indirect(func_ptr, arg_regs, func_signature)
             }
             
             HirExprKind::New { class_type, args, .. } => {
+                // eprintln!("DEBUG: New expression - class_type={:?}, expr.ty={:?}", class_type, expr.ty);
+
+                // Check if this is an abstract type
+                let type_table = self.type_table.borrow();
+                let is_abstract = if let Some(type_ref) = type_table.get(*class_type) {
+                    // eprintln!("DEBUG: Found type in table: kind={:?}", std::mem::discriminant(&type_ref.kind));
+                    let is_abs = matches!(type_ref.kind, crate::tast::TypeKind::Abstract { .. });
+                    // eprintln!("DEBUG: Is abstract? {}", is_abs);
+                    is_abs
+                } else {
+                    // eprintln!("DEBUG: Type {:?} NOT found in type table", class_type);
+                    false
+                };
+                drop(type_table);
+
+                // SPECIAL CASE: Abstract type constructors
+                // If this is an abstract type, OR if there's no constructor and we have exactly one argument,
+                // treat this as a simple value wrap (no allocation).
+                if is_abstract {
+                    // eprintln!("DEBUG: Abstract type constructor detected - returning wrapped value");
+                    if args.len() == 1 {
+                        return self.lower_expression(&args[0]);
+                    } else if args.is_empty() {
+                        eprintln!("WARNING: Abstract constructor with no arguments, returning 0");
+                        return self.builder.build_const(IrValue::I32(0));
+                    } else {
+                        eprintln!("WARNING: Abstract constructor with {} arguments, using first", args.len());
+                        return self.lower_expression(&args[0]);
+                    }
+                }
+
+                // Check if constructor exists
+                let has_constructor = self.constructor_map.contains_key(class_type);
+
+                // If no constructor exists and we have exactly one argument, treat as value wrap
+                // This handles abstract types that weren't properly detected above
+                if !has_constructor && args.len() == 1 {
+                    // eprintln!("DEBUG: No constructor found, single argument - treating as value wrap");
+                    // eprintln!("DEBUG: Argument expression: {:#?}", &args[0]);
+                    let result = self.lower_expression(&args[0]);
+                    // eprintln!("DEBUG: Value wrap result: {:?}", result);
+                    return result;
+                }
+
+                // CLASS TYPE CONSTRUCTOR:
                 // Allocate object
                 let class_mir_type = self.convert_type(*class_type);
                 let obj_ptr = self.builder.build_alloc(class_mir_type.clone(), None)?;
-                
-                // Call constructor
-                let arg_regs: Vec<_> = std::iter::once(obj_ptr)
-                    .chain(args.iter().filter_map(|a| self.lower_expression(a)))
-                    .collect();
-                
-                // Constructor call (simplified - needs proper constructor lookup)
-                // self.builder.build_call(constructor_func, arg_regs, class_mir_type);
-                
+
+                // TEMPORARY WORKAROUND: Zero-initialize all fields
+                // TODO: Remove this once constructor field initialization is fixed
+                // The issue is that assignments in constructor bodies are lowered as
+                // Expression statements instead of Assignment statements, so fields
+                // don't get initialized properly. For now, just zero the memory.
+                if let Some(zero) = self.builder.build_const(IrValue::I32(0)) {
+                    if let Some(index_const) = self.builder.build_const(IrValue::I32(0)) {
+                        if let Some(field_ptr) = self.builder.build_gep(obj_ptr, vec![index_const], IrType::I32) {
+                            self.builder.build_store(field_ptr, zero);
+                        }
+                    }
+                }
+
+                // eprintln!("DEBUG: Class type constructor - allocated object");
+                // eprintln!("DEBUG: Available constructors: {:?}", self.constructor_map.keys().collect::<Vec<_>>());
+
+                // Look up constructor by TypeId
+                // First try direct lookup
+                let constructor_func_id = self.constructor_map.get(class_type).copied()
+                    .or_else(|| {
+                        // If not found, try to resolve through type table
+                        // The TypeId in the expression might differ from the one in the types map
+                        // Look up the class name and find the matching constructor
+                        let type_table = self.type_table.borrow();
+                        if let Some(type_ref) = type_table.get(*class_type) {
+                            if let crate::tast::TypeKind::Class { symbol_id, .. } = &type_ref.kind {
+                                // Try looking up by the class symbol converted to TypeId
+                                let class_type_id = TypeId::from_raw(symbol_id.as_raw());
+                                // eprintln!("DEBUG: Trying fallback lookup - symbol_id={:?}, derived TypeId={:?}",
+                                //           symbol_id, class_type_id);
+                                return self.constructor_map.get(&class_type_id).copied();
+                            }
+                        }
+                        None
+                    });
+
+                if let Some(constructor_func_id) = constructor_func_id {
+                    // eprintln!("DEBUG: Found constructor for TypeId {:?}", class_type);
+
+                    // Call constructor with object as first argument
+                    let arg_regs: Vec<_> = std::iter::once(obj_ptr)
+                        .chain(args.iter().filter_map(|a| self.lower_expression(a)))
+                        .collect();
+
+                    // Constructor returns void, so we ignore the result
+                    self.builder.build_call_direct(constructor_func_id, arg_regs, IrType::Void);
+                } else {
+                    eprintln!("WARNING: Constructor not found for TypeId {:?}", class_type);
+                }
+
                 Some(obj_ptr)
             }
             
             HirExprKind::Unary { op, operand } => {
                 let operand_reg = self.lower_expression(operand)?;
-                self.builder.build_unop(self.convert_unary_op(*op), operand_reg)
+                let result_reg = self.builder.build_unop(self.convert_unary_op(*op), operand_reg)?;
+
+                // Register the result with its type so Cranelift can find it
+                let result_type = self.convert_type(expr.ty);
+                let src_loc = self.convert_source_location(&expr.source_location);
+                if let Some(func) = self.builder.current_function_mut() {
+                    func.locals.insert(result_reg, super::IrLocal {
+                        name: format!("_temp{}", result_reg.0),
+                        ty: result_type,
+                        mutable: false,
+                        source_location: src_loc,
+                        allocation: super::AllocationHint::Stack,
+                    });
+                }
+
+                Some(result_reg)
             }
             
             HirExprKind::Binary { op, lhs, rhs } => {
@@ -424,18 +1383,50 @@ impl HirToMirContext {
                     HirBinaryOp::Or => return self.lower_logical_or(lhs, rhs),
                     _ => {}
                 }
-                
-                let lhs_reg = self.lower_expression(lhs)?;
-                let rhs_reg = self.lower_expression(rhs)?;
-                
-                match self.convert_binary_op_to_mir(*op) {
-                    MirBinaryOp::Binary(bin_op) => {
-                        self.builder.build_binop(bin_op, lhs_reg, rhs_reg)
+
+                let mut lhs_reg = self.lower_expression(lhs)?;
+                let mut rhs_reg = self.lower_expression(rhs)?;
+
+                // Special handling for division: Haxe always returns Float from division
+                // If operands are integers, convert them to float first
+                if matches!(op, HirBinaryOp::Div) {
+                    let lhs_type = self.convert_type(lhs.ty);
+                    let rhs_type = self.convert_type(rhs.ty);
+
+                    // Convert integer operands to float
+                    if matches!(lhs_type, IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 |
+                                         IrType::U8 | IrType::U16 | IrType::U32 | IrType::U64) {
+                        lhs_reg = self.builder.build_cast(lhs_reg, lhs_type, IrType::F64)?;
                     }
-                    MirBinaryOp::Compare(cmp_op) => {
-                        self.builder.build_cmp(cmp_op, lhs_reg, rhs_reg)
+                    if matches!(rhs_type, IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 |
+                                         IrType::U8 | IrType::U16 | IrType::U32 | IrType::U64) {
+                        rhs_reg = self.builder.build_cast(rhs_reg, rhs_type, IrType::F64)?;
                     }
                 }
+
+                let result_reg = match self.convert_binary_op_to_mir(*op) {
+                    MirBinaryOp::Binary(bin_op) => {
+                        self.builder.build_binop(bin_op, lhs_reg, rhs_reg)?
+                    }
+                    MirBinaryOp::Compare(cmp_op) => {
+                        self.builder.build_cmp(cmp_op, lhs_reg, rhs_reg)?
+                    }
+                };
+
+                // Register the result with its type so Cranelift can find it
+                let result_type = self.convert_type(expr.ty);
+                let src_loc = self.convert_source_location(&expr.source_location);
+                if let Some(func) = self.builder.current_function_mut() {
+                    func.locals.insert(result_reg, super::IrLocal {
+                        name: format!("_temp{}", result_reg.0),
+                        ty: result_type,
+                        mutable: false,
+                        source_location: src_loc,
+                        allocation: super::AllocationHint::Stack,
+                    });
+                }
+
+                Some(result_reg)
             }
             
             HirExprKind::Cast { expr, target, .. } => {
@@ -456,7 +1447,7 @@ impl HirToMirContext {
             }
             
             HirExprKind::Lambda { params, body, captures } => {
-                self.lower_lambda(params, body, captures)
+                self.lower_lambda(params, body, captures, expr.ty)
             }
             
             HirExprKind::Array { elements } => {
@@ -487,9 +1478,13 @@ impl HirToMirContext {
             }
             
             HirExprKind::Super => {
-                // 'super' requires special handling
-                self.add_error("Super not yet implemented in MIR", expr.source_location);
-                None
+                // 'super' should only appear in constructor super calls, which are handled
+                // specially in lower_constructor_body. If we reach here, it's likely being
+                // used incorrectly (e.g., super.method() which isn't supported yet)
+                // eprintln!("WARNING: HirExprKind::Super encountered in expression lowering");
+                // eprintln!("  This might be super.field or super.method() which isn't implemented yet");
+                // For now, treat it like 'this' (same object, but calling parent methods)
+                self.symbol_map.get(&SymbolId::from_raw(0)).copied()
             }
             
             HirExprKind::Null => {
@@ -507,10 +1502,14 @@ impl HirToMirContext {
             }
             
             _ => {
+               // eprintln!("DEBUG: Unsupported expression type in MIR");
                 self.add_error("Unsupported expression type in MIR", expr.source_location);
                 None
             }
-        }
+        };
+
+       // eprintln!("DEBUG: lower_expression result: {:?}", result);
+        result
     }
     
     /// Lower if statement/expression
@@ -520,37 +1519,157 @@ impl HirToMirContext {
         then_branch: &HirBlock,
         else_branch: Option<&HirBlock>,
     ) {
+        // eprintln!("DEBUG HIR→MIR: lower_if_statement called, has_else={}", else_branch.is_some());
         let Some(then_block) = self.builder.create_block() else { return; };
         let Some(merge_block) = self.builder.create_block() else { return; };
-        
+
         let else_block = if else_branch.is_some() {
             self.builder.create_block().unwrap_or(merge_block)
         } else {
             merge_block
         };
-        
+
+        // eprintln!("DEBUG IF: then_block={:?}, merge_block={:?}, else_block={:?}, has_else={}",
+        //           then_block, merge_block, else_block, else_branch.is_some());
+
+        // Get the current block before branching
+        let entry_block = if let Some(block_id) = self.builder.current_block() {
+            // eprintln!("DEBUG IF: Entry block is {:?}", block_id);
+            block_id
+        } else {
+            return;
+        };
+
+        // Find all variables that are modified in either branch
+        let mut modified_vars = std::collections::HashSet::new();
+        for stmt in &then_branch.statements {
+            self.find_modified_variables_in_statement(stmt, &mut modified_vars);
+        }
+        if let Some(else_br) = else_branch {
+            for stmt in &else_br.statements {
+                self.find_modified_variables_in_statement(stmt, &mut modified_vars);
+            }
+        }
+
+        // Save initial values of variables that will be modified
+        let mut var_initial_values: HashMap<SymbolId, (IrId, IrType)> = HashMap::new();
+        for symbol_id in &modified_vars {
+            if let Some(&reg) = self.symbol_map.get(symbol_id) {
+                // Get the type from the locals table
+                if let Some(func) = self.builder.current_function() {
+                    if let Some(local) = func.locals.get(&reg) {
+                        var_initial_values.insert(*symbol_id, (reg, local.ty.clone()));
+                    }
+                }
+            }
+        }
+
         // Evaluate condition
         if let Some(cond_reg) = self.lower_expression(condition) {
             self.builder.build_cond_branch(cond_reg, then_block, else_block);
-            
+
             // Lower then branch
             self.builder.switch_to_block(then_block);
             self.lower_block(then_branch);
-            if !self.is_terminated() {
+            let then_end_block = if !self.is_terminated() {
+                let current = self.builder.current_block();
                 self.builder.build_branch(merge_block);
+                current
+            } else {
+                None
+            };
+
+            // Save values after then branch
+            let mut then_values: HashMap<SymbolId, IrId> = HashMap::new();
+            if then_end_block.is_some() {
+                for symbol_id in &modified_vars {
+                    if let Some(&reg) = self.symbol_map.get(symbol_id) {
+                        then_values.insert(*symbol_id, reg);
+                    }
+                }
             }
-            
+
             // Lower else branch if present
-            if let Some(else_branch) = else_branch {
+            let mut else_values: HashMap<SymbolId, IrId> = HashMap::new();
+            let else_end_block = if let Some(else_branch) = else_branch {
                 self.builder.switch_to_block(else_block);
                 self.lower_block(else_branch);
                 if !self.is_terminated() {
+                    let current = self.builder.current_block();
                     self.builder.build_branch(merge_block);
+
+                    // Save values after else branch
+                    for symbol_id in &modified_vars {
+                        if let Some(&reg) = self.symbol_map.get(symbol_id) {
+                            else_values.insert(*symbol_id, reg);
+                        }
+                    }
+                    current
+                } else {
+                    None
+                }
+            } else {
+                // If no else branch, the else path just falls through to merge
+                // with the original values
+                for (symbol_id, (initial_reg, _)) in &var_initial_values {
+                    else_values.insert(*symbol_id, *initial_reg);
+                }
+                Some(entry_block)
+            };
+
+            // Continue in merge block and create phi nodes
+            self.builder.switch_to_block(merge_block);
+
+            // Create phi nodes for modified variables
+            for (symbol_id, (initial_reg, var_type)) in &var_initial_values {
+                // Only create phi if at least one branch modified the variable
+                let then_val = then_values.get(symbol_id).copied().unwrap_or(*initial_reg);
+                let else_val = else_values.get(symbol_id).copied().unwrap_or(*initial_reg);
+
+                // If both branches lead to the same value, no phi needed
+                if then_val == else_val {
+                    continue;
+                }
+
+                // Only create phi if we have valid incoming blocks
+                if then_end_block.is_none() && else_end_block.is_none() {
+                    continue;
+                }
+
+                // eprintln!("DEBUG: Creating phi for symbol {:?}, then_val {:?}, else_val {:?}", symbol_id, then_val, else_val);
+                // eprintln!("DEBUG:   then_end_block {:?}, else_end_block {:?}", then_end_block, else_end_block);
+
+                // Create phi node
+                if let Some(phi_reg) = self.builder.build_phi(merge_block, var_type.clone()) {
+                    // eprintln!("DEBUG:   Created phi node {:?} in merge block {:?}", phi_reg, merge_block);
+
+                    // Add incoming values from both branches
+                    if let Some(then_blk) = then_end_block {
+                        // eprintln!("DEBUG:   Adding phi incoming from then block {:?}, value {:?}", then_blk, then_val);
+                        self.builder.add_phi_incoming(merge_block, phi_reg, then_blk, then_val);
+                    }
+                    if let Some(else_blk) = else_end_block {
+                        // eprintln!("DEBUG:   Adding phi incoming from else block {:?}, value {:?}", else_blk, else_val);
+                        self.builder.add_phi_incoming(merge_block, phi_reg, else_blk, else_val);
+                    }
+
+                    // Register the phi node as a local
+                    if let Some(func) = self.builder.current_function_mut() {
+                        if let Some(local) = func.locals.get(initial_reg).cloned() {
+                            func.locals.insert(phi_reg, super::IrLocal {
+                                name: format!("{}_phi", local.name),
+                                ty: var_type.clone(),
+                                mutable: true,
+                                source_location: local.source_location,
+                                allocation: super::AllocationHint::Register,
+                            });
+                        }
+                    }
+
+                    // Update symbol map to use phi node
+                    self.symbol_map.insert(*symbol_id, phi_reg);
                 }
             }
-            
-            // Continue in merge block
-            self.builder.switch_to_block(merge_block);
         }
     }
     
@@ -564,39 +1683,394 @@ impl HirToMirContext {
         let Some(cond_block) = self.builder.create_block() else { return; };
         let Some(body_block) = self.builder.create_block() else { return; };
         let Some(exit_block) = self.builder.create_block() else { return; };
-        
+
+        // Save the entry block (current block before loop)
+        let entry_block = if let Some(block_id) = self.builder.current_block() {
+            block_id
+        } else {
+            return;
+        };
+
+        // Find all variables that are referenced in the loop
+        // For now, use a simple heuristic: any variable in the symbol_map
+        // that is referenced in the condition or body is a potential loop variable
+    //    // eprintln!("DEBUG: Loop body has {} statements", body.statements.len());
+    //     for (i, stmt) in body.statements.iter().enumerate() {
+    //        // eprintln!("DEBUG: Statement {}: {:?}", i, std::mem::discriminant(stmt));
+    //     }
+
+        // Collect all variables referenced in condition
+        let mut referenced_vars = std::collections::HashSet::new();
+        self.collect_referenced_variables_in_expr(condition, &mut referenced_vars);
+       // eprintln!("DEBUG: Variables in condition: {:?}", referenced_vars);
+
+        // Collect all variables referenced in body
+        self.collect_referenced_variables_in_block(body, &mut referenced_vars);
+       // eprintln!("DEBUG: Variables in condition + body: {:?}", referenced_vars);
+
+        // Only include variables that were declared before the loop
+        // (i.e., they're already in the symbol_map)
+        // Exclude function parameters since they're immutable
+        let modified_vars: std::collections::HashSet<SymbolId> = referenced_vars.into_iter()
+            .filter(|sym| {
+                let in_map = self.symbol_map.contains_key(sym);
+                // Check if this is a function parameter by seeing if it's in the current function's parameters
+                let is_param = if let Some(func) = self.builder.current_function() {
+                    func.signature.parameters.iter().any(|p| {
+                        // Check if the symbol maps to this parameter's register
+                        self.symbol_map.get(sym) == Some(&p.reg)
+                    })
+                } else {
+                    false
+                };
+               // eprintln!("DEBUG: Symbol {:?} in map: {}, is_param: {}", sym, in_map, is_param);
+                in_map && !is_param
+            })
+            .collect();
+
+       // eprintln!("DEBUG: Found {} loop variables: {:?}", modified_vars.len(), modified_vars);
+
+        // Save initial values of loop variables before jumping to condition
+        let mut loop_var_initial_values: HashMap<SymbolId, (IrId, IrType)> = HashMap::new();
+        for symbol_id in &modified_vars {
+            if let Some(&reg) = self.symbol_map.get(symbol_id) {
+                // Get the type from the locals table
+                if let Some(func) = self.builder.current_function() {
+                    if let Some(local) = func.locals.get(&reg) {
+                        loop_var_initial_values.insert(*symbol_id, (reg, local.ty.clone()));
+                    }
+                }
+            }
+        }
+
         // Jump to condition block
         self.builder.build_branch(cond_block);
-        
+
+        // Condition block - create phi nodes for loop variables
+        self.builder.switch_to_block(cond_block);
+
+        // Create phi nodes for all loop variables
+        let mut phi_nodes: HashMap<SymbolId, IrId> = HashMap::new();
+       // eprintln!("DEBUG: Creating phi nodes for {} variables", loop_var_initial_values.len());
+        for (symbol_id, (initial_reg, var_type)) in &loop_var_initial_values {
+           // eprintln!("DEBUG: Creating phi for symbol {:?}, initial reg {:?}", symbol_id, initial_reg);
+            if let Some(phi_reg) = self.builder.build_phi(cond_block, var_type.clone()) {
+               // eprintln!("DEBUG: Created phi node with dest {:?}", phi_reg);
+                // Add incoming value from entry block
+                self.builder.add_phi_incoming(cond_block, phi_reg, entry_block, *initial_reg);
+               // eprintln!("DEBUG: Added incoming edge from entry block {:?}", entry_block);
+
+                // Register the phi node as a local so Cranelift can find its type
+                if let Some(func) = self.builder.current_function_mut() {
+                    if let Some(local) = func.locals.get(initial_reg).cloned() {
+                        func.locals.insert(phi_reg, super::IrLocal {
+                            name: format!("{}_phi", local.name),
+                            ty: var_type.clone(),
+                            mutable: true,
+                            source_location: local.source_location,
+                            allocation: super::AllocationHint::Register,
+                        });
+                    }
+                }
+
+                // Update symbol map to use phi node
+                phi_nodes.insert(*symbol_id, phi_reg);
+                self.symbol_map.insert(*symbol_id, phi_reg);
+            }
+        }
+       // eprintln!("DEBUG: Created {} phi nodes", phi_nodes.len());
+
         // Push loop context
         self.loop_stack.push(LoopContext {
             continue_block: cond_block,
             break_block: exit_block,
             label: label.cloned(),
         });
-        
-        // Condition block
-        self.builder.switch_to_block(cond_block);
+
+        // Evaluate condition
         if let Some(cond_reg) = self.lower_expression(condition) {
             self.builder.build_cond_branch(cond_reg, body_block, exit_block);
         }
-        
+
         // Body block
         self.builder.switch_to_block(body_block);
         self.lower_block(body);
+
+        // Get the end block of the loop body (might be different if there are nested blocks)
+        let body_end_block = if let Some(block_id) = self.builder.current_block() {
+            block_id
+        } else {
+            return;
+        };
+
+        // Add phi incoming edges for updated values from loop body
+        for (symbol_id, phi_reg) in &phi_nodes {
+            if let Some(&updated_reg) = self.symbol_map.get(symbol_id) {
+                // Only add incoming if it's different from the phi node itself
+                // (the symbol map now points to the updated value)
+                if updated_reg != *phi_reg {
+                    self.builder.add_phi_incoming(cond_block, *phi_reg, body_end_block, updated_reg);
+                }
+            }
+        }
+
+        // Branch back to condition if body didn't terminate
         if !self.is_terminated() {
             self.builder.build_branch(cond_block);
         }
-        
+
         // Pop loop context
         self.loop_stack.pop();
-        
+
         // Continue in exit block
+        // The exit block will receive loop-carried values as block parameters when
+        // the conditional branch from the loop header takes the false path
         self.builder.switch_to_block(exit_block);
+
+        // Create block parameters in the exit block to receive final loop values
+        // This is the Cranelift way: block parameters represent phi nodes
+       // eprintln!("DEBUG: Creating exit block parameters for loop variables:");
+
+        // We need to maintain the same order as the phi nodes for consistency
+        let phi_nodes_ordered: Vec<_> = phi_nodes.iter().collect();
+
+        for (symbol_id, loop_phi_reg) in &phi_nodes_ordered {
+            if let Some((_, var_type)) = loop_var_initial_values.get(symbol_id) {
+                // Allocate a new register for the exit block parameter (do this first to avoid double borrow)
+                let exit_param_reg = self.builder.alloc_reg().unwrap();
+
+               // eprintln!("DEBUG:   Created exit param {:?} for {:?} (from loop phi {:?})", exit_param_reg, symbol_id, loop_phi_reg);
+
+                // Now create the phi node and register it
+                if let Some(func) = self.builder.current_function_mut() {
+                    if let Some(exit_block_data) = func.cfg.get_block_mut(exit_block) {
+                        // Create a phi node in the exit block that receives the value from cond_block
+                        let exit_phi = super::IrPhiNode {
+                            dest: exit_param_reg,
+                            incoming: vec![(cond_block, **loop_phi_reg)],
+                            ty: var_type.clone(),
+                        };
+                        exit_block_data.add_phi(exit_phi);
+
+                        // Register as a local
+                        func.locals.insert(exit_param_reg, super::IrLocal {
+                            name: format!("loop_exit_{}", (*symbol_id).as_raw()),
+                            ty: var_type.clone(),
+                            mutable: false,
+                            source_location: super::IrSourceLocation::unknown(),
+                            allocation: super::AllocationHint::Register,
+                        });
+                    }
+                }
+
+                // Update symbol map to use the exit parameter
+                self.symbol_map.insert(**symbol_id, exit_param_reg);
+            }
+        }
     }
     
     // Helper methods...
-    
+
+    /// Collect all variables referenced in a block
+    fn collect_referenced_variables_in_block(&self, block: &HirBlock, vars: &mut std::collections::HashSet<SymbolId>) {
+        for stmt in &block.statements {
+            self.collect_referenced_variables_in_stmt(stmt, vars);
+        }
+    }
+
+    /// Collect all variables referenced in a statement
+    fn collect_referenced_variables_in_stmt(&self, stmt: &HirStatement, vars: &mut std::collections::HashSet<SymbolId>) {
+        match stmt {
+            HirStatement::Let { init, .. } => {
+                if let Some(expr) = init {
+                    self.collect_referenced_variables_in_expr(expr, vars);
+                }
+            }
+            HirStatement::Expr(expr) => {
+                self.collect_referenced_variables_in_expr(expr, vars);
+            }
+            HirStatement::Assign { lhs, rhs, .. } => {
+                if let HirLValue::Variable(sym) = lhs {
+                    vars.insert(*sym);
+                }
+                self.collect_referenced_variables_in_expr(rhs, vars);
+            }
+            HirStatement::Return(Some(expr)) => {
+                self.collect_referenced_variables_in_expr(expr, vars);
+            }
+            HirStatement::If { condition, then_branch, else_branch, .. } => {
+                self.collect_referenced_variables_in_expr(condition, vars);
+                self.collect_referenced_variables_in_block(then_branch, vars);
+                if let Some(else_blk) = else_branch {
+                    self.collect_referenced_variables_in_block(else_blk, vars);
+                }
+            }
+            HirStatement::While { condition, body, .. } | HirStatement::DoWhile { condition, body, .. } => {
+                self.collect_referenced_variables_in_expr(condition, vars);
+                self.collect_referenced_variables_in_block(body, vars);
+            }
+            _ => {}
+        }
+    }
+
+    /// Collect all variables referenced in an expression
+    fn collect_referenced_variables_in_expr(&self, expr: &HirExpr, vars: &mut std::collections::HashSet<SymbolId>) {
+        match &expr.kind {
+            HirExprKind::Variable { symbol, .. } => {
+                vars.insert(*symbol);
+            }
+            HirExprKind::Binary { lhs, rhs, .. } => {
+                self.collect_referenced_variables_in_expr(lhs, vars);
+                self.collect_referenced_variables_in_expr(rhs, vars);
+            }
+            HirExprKind::Unary { operand, .. } => {
+                self.collect_referenced_variables_in_expr(operand, vars);
+            }
+            HirExprKind::If { condition, then_expr, else_expr, .. } => {
+                self.collect_referenced_variables_in_expr(condition, vars);
+                self.collect_referenced_variables_in_expr(then_expr, vars);
+                self.collect_referenced_variables_in_expr(else_expr, vars);
+            }
+            HirExprKind::Call { callee, args, .. } => {
+                self.collect_referenced_variables_in_expr(callee, vars);
+                for arg in args {
+                    self.collect_referenced_variables_in_expr(arg, vars);
+                }
+            }
+            HirExprKind::Block(block) => {
+                // Recursively collect variables from block expressions
+                self.collect_referenced_variables_in_block(block, vars);
+            }
+            _ => {}
+        }
+    }
+
+    /// Find all variables that are modified (assigned) in a block
+    /// This is used for SSA phi node insertion in loops
+    fn find_modified_variables_in_block(&self, block: &HirBlock) -> std::collections::HashSet<SymbolId> {
+        let mut modified = std::collections::HashSet::new();
+
+        for stmt in &block.statements {
+            self.find_modified_variables_in_statement(stmt, &mut modified);
+        }
+
+        modified
+    }
+
+    /// Recursively find modified variables in a statement
+    fn find_modified_variables_in_statement(
+        &self,
+        stmt: &HirStatement,
+        modified: &mut std::collections::HashSet<SymbolId>,
+    ) {
+        match stmt {
+            HirStatement::Let { pattern, .. } => {
+                // Variable declarations are modifications
+               // eprintln!("DEBUG: Found Let statement");
+                self.collect_pattern_variables(pattern, modified);
+            }
+            HirStatement::Expr(expr) => {
+               // eprintln!("DEBUG: Found Expr statement with kind: {:?}", std::mem::discriminant(&expr.kind));
+                self.find_modified_variables_in_expression(expr, modified);
+            }
+            HirStatement::Assign { lhs, rhs, .. } => {
+                // Assignments modify the left-hand side
+                match lhs {
+                    HirLValue::Variable(symbol) => {
+                        modified.insert(*symbol);
+                    }
+                    _ => {}
+                }
+                self.find_modified_variables_in_expression(rhs, modified);
+            }
+            HirStatement::If { then_branch, else_branch, .. } => {
+                for stmt in &then_branch.statements {
+                    self.find_modified_variables_in_statement(stmt, modified);
+                }
+                if let Some(else_blk) = else_branch {
+                    for stmt in &else_blk.statements {
+                        self.find_modified_variables_in_statement(stmt, modified);
+                    }
+                }
+            }
+            HirStatement::While { body, .. } | HirStatement::DoWhile { body, .. } => {
+                for stmt in &body.statements {
+                    self.find_modified_variables_in_statement(stmt, modified);
+                }
+            }
+            HirStatement::ForIn { body, .. } => {
+                for stmt in &body.statements {
+                    self.find_modified_variables_in_statement(stmt, modified);
+                }
+            }
+            HirStatement::Label { block, .. } => {
+                for stmt in &block.statements {
+                    self.find_modified_variables_in_statement(stmt, modified);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Find modified variables in an expression (assignments)
+    fn find_modified_variables_in_expression(
+        &self,
+        expr: &HirExpr,
+        modified: &mut std::collections::HashSet<SymbolId>,
+    ) {
+        match &expr.kind {
+            HirExprKind::Binary { lhs, rhs, .. } => {
+                self.find_modified_variables_in_expression(lhs, modified);
+                self.find_modified_variables_in_expression(rhs, modified);
+            }
+            HirExprKind::Unary { operand, .. } => {
+                self.find_modified_variables_in_expression(operand, modified);
+            }
+            HirExprKind::If { then_expr, else_expr, .. } => {
+                self.find_modified_variables_in_expression(then_expr, modified);
+                self.find_modified_variables_in_expression(else_expr, modified);
+            }
+            HirExprKind::Call { args, .. } => {
+                for arg in args {
+                    self.find_modified_variables_in_expression(arg, modified);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Collect all variable symbols from a pattern
+    fn collect_pattern_variables(
+        &self,
+        pattern: &HirPattern,
+        variables: &mut std::collections::HashSet<SymbolId>,
+    ) {
+        match pattern {
+            HirPattern::Variable { symbol, .. } => {
+                variables.insert(*symbol);
+            }
+            HirPattern::Tuple(patterns) => {
+                for p in patterns {
+                    self.collect_pattern_variables(p, variables);
+                }
+            }
+            HirPattern::Constructor { fields, .. } => {
+                for p in fields {
+                    self.collect_pattern_variables(p, variables);
+                }
+            }
+            HirPattern::Array { elements, rest } => {
+                for p in elements {
+                    self.collect_pattern_variables(p, variables);
+                }
+                if let Some(rest_pat) = rest {
+                    self.collect_pattern_variables(rest_pat, variables);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn convert_binary_op(&self, op: HirBinaryOp) -> BinaryOp {
         match op {
             HirBinaryOp::Add => BinaryOp::Add,
@@ -644,10 +2118,92 @@ impl HirToMirContext {
         }
     }
     
-    fn convert_type(&self, _type_id: TypeId) -> IrType {
-        // Simplified type conversion
-        // In practice, this would look up the type in the type table
-        IrType::I32
+    fn convert_type(&self, type_id: TypeId) -> IrType {
+        use crate::tast::TypeKind;
+
+        // Look up the type in the type table
+        let type_table = self.type_table.borrow();
+        let type_ref = type_table.get(type_id);
+
+        match type_ref.as_ref().map(|t| &t.kind) {
+            // Primitive types
+            Some(TypeKind::Int) => IrType::I32,
+            Some(TypeKind::Float) => IrType::F64,
+            Some(TypeKind::Bool) => IrType::Bool,
+            Some(TypeKind::Void) => IrType::Void,
+            Some(TypeKind::String) => IrType::String,
+
+            // Function types - represented as function pointers (i64)
+            Some(TypeKind::Function { params, return_type, .. }) => {
+                // Convert parameter types
+                let param_types: Vec<IrType> = params.iter()
+                    .map(|p| self.convert_type(*p))
+                    .collect();
+
+                // Convert return type
+                let ret_type = Box::new(self.convert_type(*return_type));
+
+                IrType::Function {
+                    params: param_types,
+                    return_type: ret_type,
+                    varargs: false,
+                }
+            }
+
+            // Complex types - represented as pointers (i64)
+            Some(TypeKind::Class { .. }) => IrType::Ptr(Box::new(IrType::Void)),
+            Some(TypeKind::Interface { .. }) => IrType::Ptr(Box::new(IrType::Void)),
+            Some(TypeKind::Enum { .. }) => IrType::I32, // Enums as tagged unions
+            Some(TypeKind::Array { element_type, .. }) => {
+                let elem_ty = self.convert_type(*element_type);
+                IrType::Ptr(Box::new(elem_ty))  // Arrays as pointers
+            }
+            Some(TypeKind::Optional { inner_type }) => {
+                // Optional types (T?) as nullable pointers
+                let inner = self.convert_type(*inner_type);
+                IrType::Ptr(Box::new(inner))
+            }
+
+            // Abstract types - use their underlying type
+            Some(TypeKind::Abstract { underlying, .. }) => {
+                if let Some(underlying_type) = underlying {
+                    // If underlying type is specified, use it
+                    self.convert_type(*underlying_type)
+                } else {
+                    // No underlying type specified, this is likely Int or similar
+                    // Check the abstract definition for hints, for now default to I32
+                    // TODO: Look up abstract definition to get actual underlying type
+                    IrType::I32
+                }
+            }
+
+            // Type parameters and dynamic types
+            Some(TypeKind::TypeParameter { .. }) => IrType::Any,
+            Some(TypeKind::Dynamic) => IrType::Any,  // Dynamic type as Any
+
+            // Unknown or error types
+            Some(TypeKind::Unknown) | Some(TypeKind::Error) => {
+                // Unknown or error types - default to I32 for safety
+                eprintln!("Warning: Unknown type {:?}, defaulting to I32", type_id);
+                IrType::I32
+            }
+
+            None => {
+                // Type not found in type table
+                // This might be a class type that wasn't registered in the type table
+                // but exists in the HIR module. Default to pointer for unknown types
+                // since they're likely to be objects/classes
+                eprintln!("Warning: Type {:?} not found in type table, defaulting to Ptr(Void)", type_id);
+                eprintln!("  This may indicate a lambda or class type that wasn't properly registered");
+                IrType::Ptr(Box::new(IrType::Void))  // Unknown types as pointers (safer than I32)
+            }
+
+            // Catch-all for other types
+            Some(other) => {
+                eprintln!("Warning: Unhandled type kind for {:?}: {:?}, defaulting to I32", type_id, other);
+                IrType::I32
+            }
+        }
     }
     
     fn convert_source_location(&self, loc: &SourceLocation) -> IrSourceLocation {
@@ -658,10 +2214,21 @@ impl HirToMirContext {
         }
     }
     
-    fn lower_literal(&mut self, lit: &HirLiteral) -> Option<IrId> {
+    fn lower_literal(&mut self, lit: &HirLiteral, type_id: TypeId) -> Option<IrId> {
         match lit {
-            HirLiteral::Int(i) => self.builder.build_int(*i, IrType::I64),
-            HirLiteral::Float(f) => self.builder.build_const(IrValue::F64(*f)),
+            HirLiteral::Int(i) => {
+                // Use the actual type from type checking instead of always using I64
+                let ir_type = self.convert_type(type_id);
+                self.builder.build_int(*i, ir_type)
+            }
+            HirLiteral::Float(f) => {
+                let ir_type = self.convert_type(type_id);
+                match ir_type {
+                    IrType::F32 => self.builder.build_const(IrValue::F32(*f as f32)),
+                    IrType::F64 => self.builder.build_const(IrValue::F64(*f)),
+                    _ => self.builder.build_const(IrValue::F64(*f)), // Default to F64
+                }
+            }
             HirLiteral::String(s) => self.builder.build_string(s.to_string()),
             HirLiteral::Bool(b) => self.builder.build_bool(*b),
             HirLiteral::Regex { .. } => {
@@ -688,7 +2255,35 @@ impl HirToMirContext {
         
         builder.build()
     }
-    
+
+    /// Build function signature for an instance method with implicit 'this' parameter
+    fn build_instance_method_signature(&self, func: &HirFunction, class_type_id: TypeId) -> super::IrFunctionSignature {
+        let mut builder = FunctionSignatureBuilder::new();
+
+        // Add implicit 'this' parameter as first parameter
+        // The type is a pointer/reference to the class instance
+        let this_type = self.convert_type(class_type_id);
+        builder = builder.param("this".to_string(), this_type);
+
+        // Add regular parameters
+        for param in &func.params {
+            let param_name = self.string_interner.get(param.name)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("param_{}", param.symbol_id.as_raw()));
+            let param_type = self.convert_type(param.ty);
+            builder = builder.param(param_name, param_type);
+        }
+
+        let return_type = self.convert_type(func.return_type);
+        builder = builder.returns(return_type);
+
+        if func.is_extern {
+            builder = builder.calling_convention(CallingConvention::C);
+        }
+
+        builder.build()
+    }
+
     fn is_terminated(&self) -> bool {
         let block_id = match self.builder.current_block() {
             Some(id) => id,
@@ -702,7 +2297,12 @@ impl HirToMirContext {
     }
     
     fn ensure_terminator(&mut self) {
-        if !self.is_terminated() {
+        let is_term = self.is_terminated();
+        eprintln!("DEBUG ensure_terminator: is_terminated={}, current_func={:?}",
+                  is_term,
+                  self.builder.current_function().map(|f| &f.name));
+        if !is_term {
+            eprintln!("DEBUG ensure_terminator: Adding implicit return(None)");
             self.builder.build_return(None);
         }
     }
@@ -715,6 +2315,35 @@ impl HirToMirContext {
         }
     }
     
+    /// Bind a pattern with type information (registers locals for Cranelift)
+    fn bind_pattern_with_type(&mut self, pattern: &HirPattern, value: IrId, ty: Option<TypeId>, is_mutable: bool) {
+        match pattern {
+            HirPattern::Variable { name, symbol } => {
+                eprintln!("DEBUG: Binding symbol {:?} to value {:?}", symbol, value);
+                // Bind the value to the symbol
+                self.symbol_map.insert(*symbol, value);
+
+                // Register as local so Cranelift can find the type
+                if let Some(type_id) = ty {
+                    let var_type = self.convert_type(type_id);
+                    if let Some(func) = self.builder.current_function_mut() {
+                        func.locals.insert(value, super::IrLocal {
+                            name: name.to_string(),
+                            ty: var_type,
+                            mutable: is_mutable,
+                            source_location: IrSourceLocation::unknown(),
+                            allocation: super::AllocationHint::Stack,
+                        });
+                    }
+                }
+            }
+            _ => {
+                // For other patterns, fall back to old behavior
+                self.bind_pattern(pattern, value);
+            }
+        }
+    }
+
     fn bind_pattern(&mut self, pattern: &HirPattern, value: IrId) {
         match pattern {
             HirPattern::Variable { symbol, .. } => {
@@ -816,13 +2445,34 @@ impl HirToMirContext {
             HirLValue::Field { object, field } => {
                 // Write object.field = value
                 if let Some(obj_reg) = self.lower_expression(object) {
-                    // For now, use GEP to get field pointer
-                    // Field index would need to be determined from type information
-                    // BACKLOG: Need proper field index mapping from SymbolId
-                    self.add_error(
-                        "Field write not yet fully implemented - needs field index mapping",
-                        SourceLocation::unknown()
-                    );
+                    // Look up the field index
+                    if let Some(&(_class_type_id, field_index)) = self.field_index_map.get(field) {
+                        eprintln!("DEBUG: Field write - field={:?}, index={}", field, field_index);
+
+                        // Create constant for field index
+                        if let Some(index_const) = self.builder.build_const(IrValue::I32(field_index as i32)) {
+                            // Get the type of the field from the value being assigned
+                            let field_ty = if let Some(func) = self.builder.current_function() {
+                                func.locals.get(&value)
+                                    .map(|local| local.ty.clone())
+                                    .unwrap_or(IrType::I32)
+                            } else {
+                                IrType::I32
+                            };
+
+                            // Use GEP to get field pointer, then store
+                            if let Some(field_ptr) = self.builder.build_gep(obj_reg, vec![index_const], field_ty) {
+                                self.builder.build_store(field_ptr, value);
+                                eprintln!("DEBUG: Field write successful");
+                            }
+                        }
+                    } else {
+                        eprintln!("WARNING: Field {:?} not found in field_index_map for write", field);
+                        self.add_error(
+                            &format!("Field {:?} index not found for write - class may not be registered", field),
+                            SourceLocation::unknown()
+                        );
+                    }
                 }
             }
             HirLValue::Index { object, index } => {
@@ -841,17 +2491,36 @@ impl HirToMirContext {
     }
     
     fn lower_field_access(&mut self, obj: IrId, field: SymbolId, ty: TypeId) -> Option<IrId> {
-        // Field access requires:
-        // 1. Mapping SymbolId to field index
-        // 2. Using GEP or ExtractValue based on whether obj is pointer or value
-        
-        // BACKLOG: Need proper field index mapping from symbol table
-        // For now, return error
-        self.add_error(
-            "Field access not yet fully implemented - needs field index mapping",
-            SourceLocation::unknown()
-        );
-        None
+        // Look up the field index from our field_index_map
+        let (class_type_id, field_index) = match self.field_index_map.get(&field) {
+            Some(&mapping) => mapping,
+            None => {
+                eprintln!("WARNING: Field {:?} not found in field_index_map", field);
+                self.add_error(
+                    &format!("Field {:?} index not found - class may not be registered", field),
+                    SourceLocation::unknown()
+                );
+                return None;
+            }
+        };
+
+        eprintln!("DEBUG: Field access - field={:?}, class_type={:?}, index={}", field, class_type_id, field_index);
+
+        // Create constant for field index
+        let index_const = self.builder.build_const(IrValue::I32(field_index as i32))?;
+
+        // Get the type of the field
+        let field_ty = self.convert_type(ty);
+
+        // Use GetElementPtr to get pointer to the field
+        // obj is a pointer to the struct, indices are [field_index]
+        let field_ptr = self.builder.build_gep(obj, vec![index_const], field_ty.clone())?;
+
+        // Load the value from the field pointer
+        let field_value = self.builder.build_load(field_ptr, field_ty)?;
+
+        eprintln!("DEBUG: Field access successful - value={:?}", field_value);
+        Some(field_value)
     }
     
     fn lower_index_access(&mut self, obj: IrId, idx: IrId, ty: TypeId) -> Option<IrId> {
@@ -938,41 +2607,199 @@ impl HirToMirContext {
         //   br merge_block
         // merge_block:
         //   %result = phi [%then_val, then_block], [%else_val, else_block]
+        //   (plus phi nodes for any variables modified in branches)
 
         let then_block = self.builder.create_block()?;
         let else_block = self.builder.create_block()?;
         let merge_block = self.builder.create_block()?;
 
+        // Snapshot symbol_map before branches
+        let symbol_map_before = self.symbol_map.clone();
+        eprintln!("DEBUG lower_conditional: symbol_map has {} entries before condition", symbol_map_before.len());
+
         // Evaluate condition
         let cond_val = self.lower_expression(cond)?;
+        eprintln!("DEBUG lower_conditional: After evaluating condition, in block {:?}", self.builder.current_block());
 
         // Branch based on condition
         self.builder.build_cond_branch(cond_val, then_block, else_block)?;
 
         // Then block
         self.builder.switch_to_block(then_block);
-        let then_val = self.lower_expression(then_expr)?;
-        self.builder.build_branch(merge_block)?;
+        let then_val = self.lower_expression(then_expr);
+        let then_terminated = self.is_terminated();
+        eprintln!("DEBUG lower_conditional: then_terminated = {}", then_terminated);
+        if !then_terminated {
+            self.builder.build_branch(merge_block)?;
+        }
         let then_end_block = self.builder.current_block()?;
+        let symbol_map_after_then = self.symbol_map.clone();
+        eprintln!("DEBUG lower_conditional: then_end_block = {:?}, symbol_map has {} entries", then_end_block, symbol_map_after_then.len());
 
         // Else block
+        self.symbol_map = symbol_map_before.clone();  // Reset to before-branch state
         self.builder.switch_to_block(else_block);
-        let else_val = self.lower_expression(else_expr)?;
-        self.builder.build_branch(merge_block)?;
+        let else_val = self.lower_expression(else_expr);
+        let else_terminated = self.is_terminated();
+        eprintln!("DEBUG lower_conditional: else_terminated = {}", else_terminated);
+        if !else_terminated {
+            self.builder.build_branch(merge_block)?;
+        }
         let else_end_block = self.builder.current_block()?;
+        let symbol_map_after_else = self.symbol_map.clone();
+        eprintln!("DEBUG lower_conditional: else_end_block = {:?}, symbol_map has {} entries", else_end_block, symbol_map_after_else.len());
 
-        // Merge block with phi node
+        // If both branches terminated, no merge block needed
+        if then_terminated && else_terminated {
+            // Both branches returned/broke/continued
+            // No value to return, and we shouldn't create unreachable merge block
+            return None;
+        }
+
+        // Merge block with phi nodes
         self.builder.switch_to_block(merge_block);
 
-        // Determine result type from then expression
-        // TODO: Get actual type from HIR expression
-        let result_type = IrType::I32; // Placeholder
-        let result = self.builder.build_phi(merge_block, result_type)?;
+        // Find variables that were modified in either branch
+        let mut modified_symbols = std::collections::HashSet::new();
+        eprintln!("DEBUG: Checking for modified symbols");
+        eprintln!("  symbol_map_before: {} entries", symbol_map_before.len());
+        eprintln!("  symbol_map_after_then: {} entries", symbol_map_after_then.len());
+        eprintln!("  symbol_map_after_else: {} entries", symbol_map_after_else.len());
 
-        self.builder.add_phi_incoming(merge_block, result, then_end_block, then_val)?;
-        self.builder.add_phi_incoming(merge_block, result, else_end_block, else_val)?;
+        for (sym, reg_after_then) in &symbol_map_after_then {
+            if symbol_map_before.get(sym) != Some(reg_after_then) {
+                eprintln!("  Modified in then branch: {:?} (before: {:?}, after: {:?})",
+                         sym, symbol_map_before.get(sym), reg_after_then);
+                modified_symbols.insert(*sym);
+            }
+        }
+        for (sym, reg_after_else) in &symbol_map_after_else {
+            if symbol_map_before.get(sym) != Some(reg_after_else) {
+                eprintln!("  Modified in else branch: {:?} (before: {:?}, after: {:?})",
+                         sym, symbol_map_before.get(sym), reg_after_else);
+                modified_symbols.insert(*sym);
+            }
+        }
+        eprintln!("DEBUG: Found {} modified symbols", modified_symbols.len());
 
-        Some(result)
+        // Create phi nodes for modified variables
+        eprintln!("DEBUG: Creating phi nodes for {} symbols", modified_symbols.len());
+        for symbol_id in &modified_symbols {
+            eprintln!("  Processing symbol {:?}", symbol_id);
+            let before_reg = symbol_map_before.get(symbol_id).copied();
+            let then_reg = symbol_map_after_then.get(symbol_id).copied();
+            let else_reg = symbol_map_after_else.get(symbol_id).copied();
+
+            // Get type from locals table using the "before" register (from variable declaration)
+            // because new registers from assignments don't have local entries
+            let type_lookup_reg = before_reg.or(then_reg).or(else_reg);
+            let var_type = match type_lookup_reg
+                .and_then(|r| self.builder.current_function()
+                    .and_then(|f| f.locals.get(&r))
+                    .map(|local| local.ty.clone())) {
+                Some(t) => {
+                    eprintln!("  Found type {:?} for symbol {:?}", t, symbol_id);
+                    t
+                }
+                None => {
+                    eprintln!("  No type found for symbol {:?} (tried {:?}), skipping", symbol_id, type_lookup_reg);
+                    continue;
+                }
+            };
+
+            let sample_reg = then_reg.or(else_reg).or(before_reg).unwrap();
+
+            // Create phi node
+            eprintln!("  Creating phi for {:?} with type {:?}", symbol_id, var_type);
+            let phi_reg = match self.builder.build_phi(merge_block, var_type.clone()) {
+                Some(r) => r,
+                None => {
+                    eprintln!("  Failed to create phi node");
+                    continue;
+                }
+            };
+            eprintln!("  Created phi node {:?}", phi_reg);
+
+            // Add incoming edges for non-terminated branches
+            eprintln!("  Adding phi incoming: then_terminated={}, else_terminated={}", then_terminated, else_terminated);
+            if !then_terminated {
+                let val = then_reg.unwrap_or(before_reg.unwrap_or(sample_reg));
+                eprintln!("  Calling add_phi_incoming(merge={:?}, phi={:?}, from={:?}, val={:?})",
+                         merge_block, phi_reg, then_end_block, val);
+                match self.builder.add_phi_incoming(merge_block, phi_reg, then_end_block, val) {
+                    Some(()) => eprintln!("  Successfully added phi incoming from then"),
+                    None => eprintln!("  WARNING: Failed to add phi incoming from then block {:?}", then_end_block),
+                }
+            }
+            if !else_terminated {
+                let val = else_reg.unwrap_or(before_reg.unwrap_or(sample_reg));
+                eprintln!("  Calling add_phi_incoming(merge={:?}, phi={:?}, from={:?}, val={:?})",
+                         merge_block, phi_reg, else_end_block, val);
+                match self.builder.add_phi_incoming(merge_block, phi_reg, else_end_block, val) {
+                    Some(()) => eprintln!("  Successfully added phi incoming from else"),
+                    None => eprintln!("  WARNING: Failed to add phi incoming from else block {:?}", else_end_block),
+                }
+            }
+
+            // Register phi as local
+            if let Some(func) = self.builder.current_function_mut() {
+                if let Some(local) = func.locals.get(&sample_reg).cloned() {
+                    func.locals.insert(phi_reg, super::IrLocal {
+                        name: format!("{}_phi", local.name),
+                        ty: var_type.clone(),
+                        mutable: true,
+                        source_location: local.source_location,
+                        allocation: super::AllocationHint::Register,
+                    });
+                }
+            }
+
+            // Update symbol map to use phi
+            self.symbol_map.insert(*symbol_id, phi_reg);
+        }
+
+        // Create phi for expression result if both branches returned values
+        let mut result_phi = None;
+        eprintln!("DEBUG: Checking if need result phi: then_val={:?}, else_val={:?}", then_val.is_some(), else_val.is_some());
+        // Only create result phi if BOTH branches return values (for expression-style ifs)
+        // If only one returns a value, that's a type error - skip result phi
+        if then_val.is_some() && else_val.is_some() {
+            // Determine result type from then expression
+            // TODO: Get actual type from HIR expression
+            let result_type = IrType::I32; // Placeholder
+            let result = match self.builder.build_phi(merge_block, result_type.clone()) {
+                Some(r) => {
+                    eprintln!("DEBUG: Created result phi {:?}", r);
+                    r
+                }
+                None => {
+                    eprintln!("DEBUG: Failed to create result phi");
+                    return None;
+                }
+            };
+
+            eprintln!("DEBUG: Adding result phi incoming: then_term={}, else_term={}", then_terminated, else_terminated);
+            // Both branches returned values, so add phi incoming from both
+            if !then_terminated {
+                let val = then_val.unwrap(); // Safe because we checked is_some() above
+                eprintln!("DEBUG:   Adding from then: block={:?}, val={:?}", then_end_block, val);
+                match self.builder.add_phi_incoming(merge_block, result, then_end_block, val) {
+                    Some(()) => eprintln!("DEBUG:   Success"),
+                    None => eprintln!("DEBUG:   FAILED!"),
+                }
+            }
+            if !else_terminated {
+                let val = else_val.unwrap(); // Safe because we checked is_some() above
+                eprintln!("DEBUG:   Adding from else: block={:?}, val={:?}", else_end_block, val);
+                match self.builder.add_phi_incoming(merge_block, result, else_end_block, val) {
+                    Some(()) => eprintln!("DEBUG:   Success"),
+                    None => eprintln!("DEBUG:   FAILED!"),
+                }
+            }
+            result_phi = Some(result);
+        }
+
+        result_phi
     }
     
     fn lower_do_while_loop(&mut self, body: &HirBlock, condition: &HirExpr, label: Option<&SymbolId>) {
@@ -1263,7 +3090,16 @@ impl HirToMirContext {
 
             HirPattern::Literal(lit) => {
                 // Literal pattern: compare scrutinee with literal value
-                let lit_val = self.lower_literal(lit)?;
+                // TODO: Get proper type from pattern context
+                // For now, use a default type based on the literal kind
+                let default_type = match lit {
+                    HirLiteral::Int(_) => TypeId::from_raw(1), // Assume Int type (ID 1)
+                    HirLiteral::Float(_) => TypeId::from_raw(2), // Assume Float type
+                    HirLiteral::Bool(_) => TypeId::from_raw(3), // Assume Bool type
+                    HirLiteral::String(_) => TypeId::from_raw(4), // Assume String type
+                    _ => TypeId::from_raw(1), // Default to Int
+                };
+                let lit_val = self.lower_literal(lit, default_type)?;
                 // TODO: Use proper comparison based on type
                 self.builder.build_cmp(CompareOp::Eq, scrutinee, lit_val)
             }
@@ -1699,103 +3535,295 @@ impl HirToMirContext {
         self.builder.switch_to_block(continuation_block);
     }
     
-    fn lower_lambda(&mut self, params: &[HirParam], body: &HirExpr, captures: &[HirCapture]) -> Option<IrId> {
-        // Closure/Lambda lowering:
-        //
-        // A closure is represented as a pair: (function_pointer, environment)
+    fn lower_lambda(&mut self, params: &[HirParam], body: &HirExpr, captures: &[HirCapture], lambda_type: TypeId) -> Option<IrId> {
+        // Closure/Lambda lowering using MakeClosure instruction:
         //
         // For: |x, y| { x + y + captured_z }
         //
-        // We generate:
-        // 1. Environment struct containing captured variables:
-        //    struct Env { captured_z: Type }
+        // Strategy:
+        // 1. Generate a lambda function that takes (env*, params...) where
+        //    env* is a struct containing all captured variables
+        // 2. Collect the values to be captured (from current scope)
+        // 3. Use MakeClosure instruction to create closure at runtime
         //
-        // 2. Anonymous function taking (env*, params...):
-        //    fn lambda_N(env: *Env, x: T1, y: T2) -> T3 {
-        //      let captured_z = env->captured_z
-        //      return x + y + captured_z
-        //    }
-        //
-        // 3. Closure value: { fn_ptr: lambda_N, env_ptr: allocated_env }
+        // The MakeClosure instruction will:
+        // - Allocate an environment struct
+        // - Copy captured values into it
+        // - Create a closure struct { func_ptr, env_ptr }
+        // - Return the closure
 
-        // For now, we'll implement a simplified version:
-        // - Allocate environment struct with captured values
-        // - Create closure struct with function pointer + environment
-        // - Return closure struct pointer
+        // Step 1: Generate the lambda function
+        let lambda_func_id = self.generate_lambda_function(params, body, captures, lambda_type)?;
 
-        let has_captures = !captures.is_empty();
-
-        // Allocate environment struct for captures
-        let env_ptr = if has_captures {
-            // Environment layout: [capture0, capture1, ...]
-            let env_size = captures.len();
-            let size_val = self.builder.build_int(env_size as i64, IrType::I64)?;
-            let env = self.builder.build_alloc(IrType::Ptr(Box::new(IrType::Any)), Some(size_val))?;
-
-            // Store each captured value in environment
-            for (i, capture) in captures.iter().enumerate() {
-                // Look up the captured variable's current value
-                if let Some(&captured_val) = self.symbol_map.get(&capture.symbol) {
-                    // For ByValue, copy the value into environment
-                    // For ByRef/ByMutableRef, store a reference
-                    let value_to_store = match capture.mode {
-                        HirCaptureMode::ByValue => captured_val,
-                        HirCaptureMode::ByRef | HirCaptureMode::ByMutableRef => {
-                            // Store reference to the variable
-                            // In a real implementation, this would need address-of operation
-                            captured_val
-                        }
-                    };
-
-                    let index = self.builder.build_int(i as i64, IrType::I64)?;
-                    let field_ptr = self.builder.build_gep(env, vec![index], IrType::Ptr(Box::new(IrType::Any)))?;
-                    self.builder.build_store(field_ptr, value_to_store)?;
-                }
+        // Step 2: Collect captured values from current scope
+        let mut captured_values = Vec::new();
+        for capture in captures {
+            if let Some(&captured_val) = self.symbol_map.get(&capture.symbol) {
+                captured_values.push(captured_val);
+            } else {
+                // Captured variable not found in current scope
+                self.errors.push(LoweringError {
+                    message: format!("Captured variable {:?} not found in scope", capture.symbol),
+                    location: body.source_location.clone(),
+                });
+                return None;
             }
-
-            Some(env)
-        } else {
-            None
-        };
-
-        // TODO: Generate the actual lambda function
-        //
-        // LIMITATION: Current IrBuilder API doesn't support nested function generation
-        // (can't save/restore function context as fields are private).
-        //
-        // Proper implementation requires one of:
-        // 1. Two-pass lowering: collect lambdas in first pass, generate in second pass
-        // 2. IrBuilder API extension to support nested function generation
-        // 3. Manual IrFunction construction without using IrBuilder
-        //
-        // For now, we create a placeholder closure structure that will need to be
-        // completed in a future phase when the IrBuilder API is extended.
-        //
-        // The closure generation infrastructure is in place (environment capture,
-        // parameter handling, etc.) and just needs the actual function body lowering.
-
-        // Generate unique lambda ID for future reference
-        let lambda_id = self.lambda_counter;
-        self.lambda_counter += 1;
-
-        // Closure struct layout: [function_id, env_ptr]
-        let closure_size = if has_captures { 2 } else { 1 };
-        let size_val = self.builder.build_int(closure_size as i64, IrType::I64)?;
-        let closure_ptr = self.builder.build_alloc(IrType::Ptr(Box::new(IrType::Any)), Some(size_val))?;
-
-        // Store placeholder function ID at index 0
-        // In a full implementation, this would be a real function pointer
-        let fn_id_val = self.builder.build_int(lambda_id as i64, IrType::I64)?;
-        self.builder.build_store(closure_ptr, fn_id_val)?;
-
-        // Store environment pointer at index 1 (if captures exist)
-        if let Some(env) = env_ptr {
-            let env_idx = self.builder.build_int(1, IrType::I64)?;
-            let env_field_ptr = self.builder.build_gep(closure_ptr, vec![env_idx], IrType::Ptr(Box::new(IrType::Any)))?;
-            self.builder.build_store(env_field_ptr, env)?;
         }
 
-        Some(closure_ptr)
+        // Step 3: Use MakeClosure instruction to create closure
+        self.builder.build_make_closure(lambda_func_id, captured_values)
+    }
+
+    /// Generate a lambda function
+    ///
+    /// Creates a new function that takes (env*, params...) as arguments,
+    /// where env* is a pointer to a struct containing captured variables.
+    fn generate_lambda_function(
+        &mut self,
+        params: &[HirParam],
+        body: &HirExpr,
+        captures: &[HirCapture],
+        lambda_type: TypeId,
+    ) -> Option<IrFunctionId> {
+        // Generate unique lambda name
+        let lambda_id = self.lambda_counter;
+        self.lambda_counter += 1;
+        let lambda_name = format!("<lambda_{}>", lambda_id);
+
+        // Save current builder state (we'll need to restore it after generating the lambda)
+        // PROBLEM: IrBuilder fields are private, so we can't directly save/restore state
+        //
+        // WORKAROUND: Generate lambda function by manually constructing IrFunction
+        // without using IrBuilder, then adding it to the module
+
+        // Build function signature
+        // First parameter is environment pointer (if there are captures)
+        let mut func_params = Vec::new();
+        let mut next_reg_id = 0u32;
+
+        if !captures.is_empty() {
+            func_params.push(IrParameter {
+                name: "env".to_string(),
+                ty: IrType::Ptr(Box::new(IrType::Void)), // void* for environment
+                reg: IrId::new(next_reg_id),
+                by_ref: false,
+            });
+            next_reg_id += 1;
+        }
+
+        // Add lambda parameters
+        for param in params {
+            let param_type = self.convert_type(param.ty);
+            let param_name = self.string_interner.get(param.name)
+                .unwrap_or("<unknown>")
+                .to_string();
+            func_params.push(IrParameter {
+                name: param_name,
+                ty: param_type,
+                reg: IrId::new(next_reg_id),
+                by_ref: false,
+            });
+            next_reg_id += 1;
+        }
+
+        // Return type - extract from the lambda expression's function type
+        // The lambda expression's ty field contains the FUNCTION type (e.g., Int -> Int)
+        // We need to extract the return type from it for correct MIR lowering
+        let return_type = {
+            let type_table = self.type_table.borrow();
+            let func_type_ref = type_table.get(lambda_type);
+
+            let return_ty_id = if let Some(ty) = func_type_ref.as_ref() {
+                // Extract return type from function type
+                if let TypeKind::Function { return_type, .. } = &ty.kind {
+                    *return_type
+                } else {
+                    // Fallback to body type if not a function
+                    body.ty
+                }
+            } else {
+                // Type not found, use body type as fallback
+                body.ty
+            };
+
+            drop(type_table); // Release borrow before calling convert_type
+            self.convert_type(return_ty_id)
+        };
+
+        // Create function signature
+        let signature = IrFunctionSignature {
+            parameters: func_params,
+            return_type,
+            calling_convention: CallingConvention::Haxe,
+            can_throw: false,
+            type_params: vec![],
+            uses_sret: false, // Lambda functions don't use sret
+        };
+
+        // Allocate function ID from module
+        let func_id = self.builder.module.alloc_function_id();
+        let symbol_id = SymbolId::from_raw(1000000 + lambda_id);
+
+        // Save current builder state (we need to restore it after generating the lambda)
+        let saved_function = self.builder.current_function;
+        let saved_block = self.builder.current_block;
+
+        // Create the lambda function
+        let mut lambda_function = IrFunction::new(
+            func_id,
+            symbol_id,
+            lambda_name.clone(),
+            signature.clone(),
+        );
+
+        // Get entry block
+        let entry_block = lambda_function.entry_block();
+
+        // Lower lambda body by temporarily switching builder context
+        // We need to:
+        // 1. Add lambda function to module temporarily (so builder can work with it)
+        // 2. Switch builder to the lambda function context
+        // 3. Set up parameter mappings
+        // 4. Lower the body expression
+        // 5. Create return instruction
+        // 6. Retrieve modified function from module
+
+        // Add the lambda function to module (builder needs it there to work with it)
+        self.builder.module.add_function(lambda_function);
+
+        // Switch builder context to the lambda function
+        self.builder.current_function = Some(func_id);
+        self.builder.current_block = Some(entry_block);
+
+        // Save current symbol map (we'll need to restore it)
+        let saved_symbol_map = self.symbol_map.clone();
+
+        // Set up parameter mappings
+        // Parameter 0 is environment pointer (if captures exist)
+        let param_offset = if !captures.is_empty() { 1 } else { 0 };
+
+        for (i, param) in params.iter().enumerate() {
+            // Get the register ID for this parameter (assigned when we created IrParameter)
+            let param_reg = IrId::new((param_offset + i) as u32);
+            self.symbol_map.insert(param.symbol_id, param_reg);
+        }
+
+        // Set up captured variable access from environment
+        // If we have captures, the first parameter (register 0) is the environment pointer
+        if !captures.is_empty() {
+            let env_ptr_reg = IrId::new(0); // First parameter is env pointer
+
+            // For each captured variable, load it from the environment struct
+            // Environment layout: struct { captured_0, captured_1, ... }
+            for (field_index, capture) in captures.iter().enumerate() {
+                // Calculate field offset (for simplicity, assume each field is 8 bytes)
+                // This matches the layout created by MakeClosure instruction
+                let field_offset = (field_index * 8) as i64;
+
+                // Create offset constant
+                let offset_reg = self.builder.build_int(field_offset, IrType::I64)?;
+
+                // Calculate field pointer: env_ptr + offset
+                let field_ptr_reg = self.builder.build_binop(BinaryOp::Add, env_ptr_reg, offset_reg)?;
+
+                // Load value from the field pointer
+                // For now, assume all captured values are I32 (we'll improve this later)
+                let captured_value_reg = self.builder.build_load(field_ptr_reg, IrType::I32)?;
+
+                // Add ALL registers to the lambda function's locals for type tracking
+                // This is needed for Cranelift lowering to know register types
+                if let Some(lambda_func) = self.builder.module.functions.get_mut(&func_id) {
+                    lambda_func.locals.insert(offset_reg, IrLocal {
+                        name: format!("offset_{}", field_index),
+                        ty: IrType::I64,
+                        mutable: false,
+                        source_location: IrSourceLocation::unknown(),
+                        allocation: crate::ir::AllocationHint::Register,
+                    });
+                    lambda_func.locals.insert(field_ptr_reg, IrLocal {
+                        name: format!("field_ptr_{}", field_index),
+                        ty: IrType::I64, // Pointer type
+                        mutable: false,
+                        source_location: IrSourceLocation::unknown(),
+                        allocation: crate::ir::AllocationHint::Register,
+                    });
+                    lambda_func.locals.insert(captured_value_reg, IrLocal {
+                        name: format!("captured_{}", field_index),
+                        ty: IrType::I32, // Match the load type
+                        mutable: false,
+                        source_location: IrSourceLocation::unknown(),
+                        allocation: crate::ir::AllocationHint::Register,
+                    });
+                }
+
+                // Map the captured symbol to its loaded register
+                self.symbol_map.insert(capture.symbol, captured_value_reg);
+            }
+        }
+
+        // Lower the lambda body expression
+        let body_result = self.lower_expression(body);
+
+        // Get the lambda function back from module (it was modified by builder)
+        let lambda_function = self.builder.module.functions.get_mut(&func_id)
+            .expect("Lambda function should exist in module");
+
+        // Check if the block already has a terminator (e.g., from a return statement in body)
+        let has_terminator = {
+            let entry_block_ref = lambda_function.cfg.get_block_mut(entry_block).unwrap();
+            !matches!(entry_block_ref.terminator, IrTerminator::Unreachable)
+        };
+
+        if !has_terminator {
+            // No terminator yet - add an implicit return
+            let terminator = if signature.return_type == IrType::Void {
+                IrTerminator::Return { value: None }
+            } else if let Some(result_reg) = body_result {
+                // Body produced a value - return it
+                // Note: Type conversion happens during MIR lowering, we return the register as-is
+                IrTerminator::Return { value: Some(result_reg) }
+            } else {
+                // Body didn't return a value but function expects one
+                // This can happen for blocks that don't have a trailing expression
+                eprintln!("Warning: Lambda body returned no value but function expects {:?}", signature.return_type);
+                // Create a default zero value of the appropriate type
+                // Pre-allocate the register and create the const value
+                let default_reg = lambda_function.alloc_reg();
+                let default_value = match &signature.return_type {
+                    IrType::I32 => IrValue::I32(0),
+                    IrType::I64 => IrValue::I64(0),
+                    IrType::F32 => IrValue::F32(0.0),
+                    IrType::F64 => IrValue::F64(0.0),
+                    IrType::Bool => IrValue::Bool(false),
+                    IrType::Any => IrValue::I64(0),
+                    _ => IrValue::I32(0),
+                };
+                // Now get the block and add the instruction
+                let entry_block_mut = lambda_function.cfg.get_block_mut(entry_block).unwrap();
+                entry_block_mut.add_instruction(IrInstruction::Const {
+                    dest: default_reg,
+                    value: default_value,
+                });
+                IrTerminator::Return { value: Some(default_reg) }
+            };
+
+            // Set the terminator
+            let entry_block_mut = lambda_function.cfg.get_block_mut(entry_block).unwrap();
+            entry_block_mut.set_terminator(terminator);
+        }
+
+        // Restore symbol map
+        self.symbol_map = saved_symbol_map;
+
+        // Restore builder state to outer function context
+        self.builder.current_function = saved_function;
+        self.builder.current_block = saved_block;
+
+        eprintln!("Info: Generated lambda function stub '{}'", lambda_name);
+        eprintln!("  Signature: ({} params) -> {:?}", signature.parameters.len(), signature.return_type);
+        eprintln!("  Captures: {} variables", captures.len());
+
+        Some(func_id)
     }
     
     fn lower_array_literal(&mut self, elements: &[HirExpr]) -> Option<IrId> {
@@ -2106,17 +4134,109 @@ impl HirToMirContext {
         self.builder.module.add_type(typedef);
     }
 
+    /// Recursively collect fields from parent classes
+    fn collect_inherited_fields(
+        &mut self,
+        parent_type: Option<TypeId>,
+        child_type: TypeId,
+        fields: &mut Vec<IrField>,
+        field_index: &mut u32,
+    ) {
+        if let Some(parent_type_id) = parent_type {
+            eprintln!("DEBUG: Looking for parent TypeId={:?} in current_hir_types", parent_type_id);
+
+            // Try direct lookup first
+            if let Some(HirTypeDecl::Class(parent_class)) = self.current_hir_types.get(&parent_type_id) {
+                eprintln!("DEBUG: Found parent class directly: {:?}", parent_class.name);
+                self.add_parent_fields(parent_class, child_type, fields, field_index);
+            } else {
+                // TypeId mismatch - the extends field might use instance type while
+                // hir_module.types uses declaration type. Search by matching class type.
+                eprintln!("DEBUG: Parent not found directly, searching all types...");
+
+                // Get the type definition to find the class symbol
+                if let Some(parent_type_def) = self.type_table.borrow().get(parent_type_id) {
+                    if let crate::tast::TypeKind::Class { symbol_id: parent_symbol, .. } = &parent_type_def.kind {
+                        eprintln!("DEBUG: Parent class symbol: {:?}", parent_symbol);
+
+                        // Find the HIR class by symbol_id
+                        for (decl_type_id, type_decl) in self.current_hir_types.iter() {
+                            if let HirTypeDecl::Class(class) = type_decl {
+                                if class.symbol_id == *parent_symbol {
+                                    eprintln!("DEBUG: Found parent class by symbol: {:?} (TypeId={:?})", class.name, decl_type_id);
+                                    self.add_parent_fields(class, child_type, fields, field_index);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                eprintln!("WARNING: Could not find parent class for TypeId={:?}", parent_type_id);
+            }
+        }
+    }
+
+    /// Add parent class fields to the field list
+    fn add_parent_fields(
+        &mut self,
+        parent_class: &HirClass,
+        child_type: TypeId,
+        fields: &mut Vec<IrField>,
+        field_index: &mut u32,
+    ) {
+        eprintln!("DEBUG: add_parent_fields for parent {:?}, child TypeId={:?}", parent_class.name, child_type);
+        eprintln!("DEBUG: Parent has {} fields", parent_class.fields.len());
+
+        // First, recursively collect grandparent fields
+        self.collect_inherited_fields(parent_class.extends, child_type, fields, field_index);
+
+        // Then add parent's own fields
+        for parent_field in &parent_class.fields {
+            eprintln!("DEBUG: Adding parent field {:?} (SymbolId={:?}) at index {}",
+                     parent_field.name, parent_field.symbol_id, *field_index);
+            // Map parent field symbol to child class's type with the correct index
+            self.field_index_map.insert(parent_field.symbol_id, (child_type, *field_index));
+
+            fields.push(IrField {
+                name: parent_field.name.to_string(),
+                ty: self.convert_type(parent_field.ty),
+                offset: None,
+            });
+
+            *field_index += 1;
+        }
+    }
+
     fn register_class_metadata(&mut self, type_id: TypeId, class: &HirClass) {
         // Register class as struct type
         let typedef_id = self.builder.module.alloc_typedef_id();
 
-        let fields: Vec<IrField> = class.fields.iter().map(|field| {
-            IrField {
+        let mut fields = Vec::new();
+        let mut field_index = 0u32;
+
+        // Collect all inherited fields from parent classes (recursively)
+        eprintln!("DEBUG: register_class_metadata for {:?} (TypeId={:?}), extends={:?}",
+                 class.name, type_id, class.extends);
+        self.collect_inherited_fields(class.extends, type_id, &mut fields, &mut field_index);
+
+        // Then add this class's own fields
+        eprintln!("DEBUG: Adding {} own fields for class {:?} starting at index {}",
+                 class.fields.len(), class.name, field_index);
+        for field in &class.fields {
+            eprintln!("DEBUG: Adding own field {:?} (SymbolId={:?}) at index {}",
+                     field.name, field.symbol_id, field_index);
+            // Store field index mapping for field access lowering
+            self.field_index_map.insert(field.symbol_id, (type_id, field_index));
+
+            fields.push(IrField {
                 name: field.name.to_string(),
-                ty: IrType::Any, // TODO: Convert TypeId to IrType
+                ty: self.convert_type(field.ty),
                 offset: None,
-            }
-        }).collect();
+            });
+
+            field_index += 1;
+        }
 
         let typedef = IrTypeDef {
             id: typedef_id,
@@ -2130,6 +4250,21 @@ impl HirToMirContext {
         };
 
         self.builder.module.add_type(typedef);
+
+        // IMPORTANT: Pre-register constructor mapping so that 'new' expressions
+        // in function bodies can find the constructor before it's actually lowered.
+        // The constructor will be lowered later in the second pass.
+        // We use a placeholder IrFunctionId that will be updated when the actual
+        // constructor is lowered.
+        //
+        // NOTE: We can't lower the constructor here because we're still in the
+        // metadata registration phase and function lowering requires a different
+        // builder state. So we just reserve the mapping.
+        //
+        // Actually, we can't pre-register with a placeholder because we don't have
+        // a function ID yet. The real fix is to ensure constructors are lowered
+        // before module-level functions. But for now, we'll keep the current
+        // approach and ensure the ordering is correct at the module level.
     }
 
     fn register_interface_metadata(&mut self, type_id: TypeId, interface: &HirInterface) {
@@ -2261,11 +4396,18 @@ enum MirBinaryOp {
 /// Public API for HIR to MIR lowering
 pub fn lower_hir_to_mir(
     hir_module: &HirModule,
+    string_interner: &StringInterner,
+    type_table: &Rc<RefCell<TypeTable>>,
+    symbol_table: &SymbolTable,
 ) -> Result<IrModule, Vec<LoweringError>> {
     let mut context = HirToMirContext::new(
         hir_module.name.clone(),
         hir_module.metadata.source_file.clone(),
+        string_interner,
+        type_table,
+        &hir_module.types,
+        symbol_table,
     );
-    
+
     context.lower_module(hir_module)
 }
