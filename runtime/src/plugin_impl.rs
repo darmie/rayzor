@@ -178,6 +178,9 @@ register_symbol!("rayzor_thread_is_finished", crate::concurrency::rayzor_thread_
 register_symbol!("rayzor_thread_yield_now", crate::concurrency::rayzor_thread_yield_now);
 register_symbol!("rayzor_thread_sleep", crate::concurrency::rayzor_thread_sleep);
 register_symbol!("rayzor_thread_current_id", crate::concurrency::rayzor_thread_current_id);
+// Thread tracking for JIT safety
+register_symbol!("rayzor_wait_all_threads", crate::concurrency::rayzor_wait_all_threads);
+register_symbol!("rayzor_active_thread_count", crate::concurrency::rayzor_active_thread_count);
 
 // Arc functions
 register_symbol!("rayzor_arc_init", crate::concurrency::rayzor_arc_init);

@@ -2941,19 +2941,16 @@ impl<'a> AstLowering<'a> {
 
         // Process body
         let body = if let Some(body_expr) = &func.body {
-            eprintln!("DEBUG [lower_function_from_field]: {} has body expression", func.name);
             // Check if the body is a block expression with multiple statements
             // If so, extract the statements instead of wrapping the whole block
             let typed_expr = self.lower_expression(body_expr)?;
             match typed_expr.kind {
                 TypedExpressionKind::Block { statements, .. } => {
                     // Extract statements from the block
-                    eprintln!("DEBUG [lower_function_from_field]: {} body is block with {} statements", func.name, statements.len());
                     statements
                 }
                 _ => {
                     // Single expression, wrap it as a statement
-                    eprintln!("DEBUG [lower_function_from_field]: {} body is single expression", func.name);
                     vec![TypedStatement::Expression {
                         expression: typed_expr,
                         source_location: self.context.span_to_location(&body_expr.span),
@@ -2961,7 +2958,6 @@ impl<'a> AstLowering<'a> {
                 }
             }
         } else {
-            eprintln!("DEBUG [lower_function_from_field]: {} has NO body (func.body is None)", func.name);
             Vec::new()
         };
 

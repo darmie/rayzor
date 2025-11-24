@@ -1,5 +1,0 @@
-# Rayzor HXML example - compile mode
--cp compiler/examples
--main Test
---rayzor-compile output.bin
--D analyzer-optimize

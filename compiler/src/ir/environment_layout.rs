@@ -43,11 +43,38 @@ impl EnvironmentLayout {
             let final_ty = type_converter(capture.ty);
             let storage_ty = IrType::I64;  // Always store as I64 (pointer-sized)
 
+            eprintln!("DEBUG EnvironmentLayout: Capture {} (sym {:?}) - final_ty={:?}",
+                     index, capture.symbol, final_ty);
+
             // Determine if cast is needed
-            let needs_cast = match final_ty {
+            // IMPORTANT: Only cast for scalar integer types (I8, I16, I32).
+            // Pointer types (Ptr, Ref, Struct, etc.) should NEVER be cast from I64
+            // to a smaller type, as this would truncate the pointer value!
+            let needs_cast = match &final_ty {
+                IrType::I8 => true,    // I64 → I8 cast needed
+                IrType::I16 => true,   // I64 → I16 cast needed
                 IrType::I32 => true,   // I64 → I32 cast needed
-                IrType::I64 => false,  // Already I64
-                _ => false,            // Other types stored as-is
+                IrType::U8 => true,    // I64 → U8 cast needed
+                IrType::U16 => true,   // I64 → U16 cast needed
+                IrType::U32 => true,   // I64 → U32 cast needed
+                IrType::I64 | IrType::U64 => false,  // Already 64-bit
+                // CRITICAL: Pointer and reference types are stored as I64 but
+                // should NOT be cast down - they must remain as the full 64-bit value
+                IrType::Ptr(_) => false,
+                IrType::Ref(_) => false,
+                IrType::Struct { .. } => false,
+                IrType::Function { .. } => false,
+                IrType::String => false,
+                IrType::Array(..) => false,
+                IrType::Slice(_) => false,
+                IrType::Any => false,
+                IrType::Opaque { .. } => false,
+                IrType::TypeVar(_) => false,
+                // Bool and floating point
+                IrType::Bool => true,  // I64 → I8 for bool
+                IrType::F32 | IrType::F64 => false,  // Float handled differently
+                IrType::Void => false,
+                IrType::Union { .. } => false,
             };
 
             fields.push(EnvironmentField {
@@ -94,9 +121,17 @@ impl EnvironmentLayout {
 
         // Load the value (always as I64 from storage)
         let loaded = builder.build_load(field_ptr, field.storage_ty.clone())?;
-        // Register the loaded value's type
-        eprintln!("DEBUG: EnvironmentLayout registering loaded {:?} with type {:?}", loaded, field.storage_ty);
-        builder.register_local(loaded, field.storage_ty.clone())?;
+        // Register the loaded value's type - CRITICAL: For pointer types, register with
+        // the SEMANTIC type (field.ty = Ptr), not storage type (I64). This ensures that
+        // downstream type checks recognize this as a pointer and don't truncate it.
+        let register_ty = if matches!(field.ty, IrType::Ptr(_) | IrType::Ref(_) | IrType::String | IrType::Any) {
+            eprintln!("DEBUG: EnvironmentLayout registering loaded {:?} as pointer type {:?} (storage was {:?})", loaded, field.ty, field.storage_ty);
+            field.ty.clone()
+        } else {
+            eprintln!("DEBUG: EnvironmentLayout registering loaded {:?} with storage type {:?}", loaded, field.storage_ty);
+            field.storage_ty.clone()
+        };
+        builder.register_local(loaded, register_ty)?;
         eprintln!("DEBUG: EnvironmentLayout successfully registered loaded {:?}", loaded);
 
         // Cast if needed

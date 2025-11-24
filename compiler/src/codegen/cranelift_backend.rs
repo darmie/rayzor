@@ -9,9 +9,8 @@
 /// Performance targets:
 /// - Compilation: 50-200ms per function
 /// - Runtime: 15-25x interpreter speed
-
 use cranelift::prelude::*;
-use cranelift_codegen::ir::{ArgumentPurpose, Function};
+use cranelift_codegen::ir::{ArgumentPurpose, BlockArg, Function};
 use cranelift_codegen::settings;
 use cranelift_frontend::Variable;
 use cranelift_jit::{JITBuilder, JITModule};
@@ -58,6 +57,10 @@ pub struct CraneliftBackend {
     /// We track by FuncId (not name) because different modules can have functions with the
     /// same MIR name (e.g., 'new') but different Cranelift symbols (e.g., m1_func_0 vs m3_func_0)
     defined_functions: HashSet<FuncId>,
+
+    /// The environment parameter for the current function being compiled
+    /// This is used by ClosureEnv to access the environment
+    current_env_param: Option<Value>,
 }
 
 impl CraneliftBackend {
@@ -82,7 +85,10 @@ impl CraneliftBackend {
     }
 
     /// Internal: Create backend with symbols and optimization level
-    fn with_symbols_and_opt(opt_level: &str, symbols: &[(&str, *const u8)]) -> Result<Self, String> {
+    fn with_symbols_and_opt(
+        opt_level: &str,
+        symbols: &[(&str, *const u8)],
+    ) -> Result<Self, String> {
         // Configure Cranelift for the current platform
         let mut flag_builder = settings::builder();
 
@@ -139,6 +145,7 @@ impl CraneliftBackend {
             pointer_type,
             module_counter: 0,
             defined_functions: HashSet::new(),
+            current_env_param: None,
         })
     }
 
@@ -159,7 +166,9 @@ impl CraneliftBackend {
             IrType::I16 | IrType::U16 => 2,
             IrType::I32 | IrType::U32 | IrType::F32 => 4,
             IrType::I64 | IrType::U64 | IrType::F64 => 8,
-            IrType::Ptr(_) | IrType::Ref(_) | IrType::Function { .. } => self.get_pointer_size() as u64,
+            IrType::Ptr(_) | IrType::Ref(_) | IrType::Function { .. } => {
+                self.get_pointer_size() as u64
+            }
             IrType::Array(elem_ty, count) => self.get_type_size(elem_ty) * (*count as u64),
             IrType::Slice(_) | IrType::String => {
                 // Slice is {ptr, len} = pointer + i64
@@ -171,7 +180,8 @@ impl CraneliftBackend {
             }
             IrType::Union { variants, .. } => {
                 // Tag (i32) + max variant size
-                let max_variant_size = variants.iter()
+                let max_variant_size = variants
+                    .iter()
                     .map(|v| v.fields.iter().map(|f| f.size()).sum::<usize>())
                     .max()
                     .unwrap_or(0);
@@ -199,14 +209,16 @@ impl CraneliftBackend {
             IrType::Slice(_) | IrType::String => self.get_pointer_size(), // Aligned to pointer
             IrType::Struct { fields, .. } => {
                 // Max alignment of fields
-                fields.iter()
+                fields
+                    .iter()
                     .map(|f| self.get_type_alignment(&f.ty))
                     .max()
                     .unwrap_or(1)
             }
             IrType::Union { variants, .. } => {
                 // Max alignment of variant fields
-                let max_align = variants.iter()
+                let max_align = variants
+                    .iter()
                     .flat_map(|v| v.fields.iter())
                     .map(|f| self.get_type_alignment(f))
                     .max()
@@ -248,20 +260,29 @@ impl CraneliftBackend {
                         for (_, inner_block) in &function.cfg.blocks {
                             for inner_inst in &inner_block.instructions {
                                 match inner_inst {
-                                    IrInstruction::MakeClosure { dest: closure_dest, func_id, .. }
-                                        if closure_dest == ptr =>
-                                    {
+                                    IrInstruction::MakeClosure {
+                                        dest: closure_dest,
+                                        func_id,
+                                        ..
+                                    } if closure_dest == ptr => {
                                         eprintln!("DEBUG: Traced func_ptr through Load from MakeClosure to lambda {:?}", func_id);
                                         return Some(*func_id);
                                     }
                                     // Also check PtrAdd (for field access at offset)
-                                    IrInstruction::PtrAdd { dest: ptr_add_dest, ptr: base_ptr, .. }
-                                        if ptr_add_dest == ptr =>
-                                    {
+                                    IrInstruction::PtrAdd {
+                                        dest: ptr_add_dest,
+                                        ptr: base_ptr,
+                                        ..
+                                    } if ptr_add_dest == ptr => {
                                         // Check if base_ptr is from MakeClosure
                                         for (_, deepest_block) in &function.cfg.blocks {
                                             for deepest_inst in &deepest_block.instructions {
-                                                if let IrInstruction::MakeClosure { dest: closure_dest, func_id, .. } = deepest_inst {
+                                                if let IrInstruction::MakeClosure {
+                                                    dest: closure_dest,
+                                                    func_id,
+                                                    ..
+                                                } = deepest_inst
+                                                {
                                                     if closure_dest == base_ptr {
                                                         eprintln!("DEBUG: Traced func_ptr through Load->PtrAdd->MakeClosure to lambda {:?}", func_id);
                                                         return Some(*func_id);
@@ -288,12 +309,17 @@ impl CraneliftBackend {
         // These are typically stdlib Haxe wrapper files (Thread.hx, Channel.hx, etc.)
         // that only declare externs. The actual implementations come from build_stdlib()
         // which gets merged into the user module.
-        let has_implementations = mir_module.functions.values()
+        let has_implementations = mir_module
+            .functions
+            .values()
             .any(|f| !f.cfg.blocks.is_empty());
 
         if !has_implementations {
-            eprintln!("DEBUG: Skipping module '{}' - no implementations (only {} extern declarations)",
-                      mir_module.name, mir_module.functions.len());
+            eprintln!(
+                "DEBUG: Skipping module '{}' - no implementations (only {} extern declarations)",
+                mir_module.name,
+                mir_module.functions.len()
+            );
             return Ok(());
         }
 
@@ -315,8 +341,12 @@ impl CraneliftBackend {
         // - Without persistent mappings, Module 1's code can't call externs after Module 2 clears the map
         //
         // Previously we cleared function_map, which broke cross-module extern function references.
-        eprintln!("DEBUG: Compiling module '{}' #{} (function_map has {} entries)",
-                  mir_module.name, current_module, self.function_map.len());
+        eprintln!(
+            "DEBUG: Compiling module '{}' #{} (function_map has {} entries)",
+            mir_module.name,
+            current_module,
+            self.function_map.len()
+        );
 
         // First pass: declare all functions (except malloc/realloc/free which we handle separately)
         for (func_id, function) in &mir_module.functions {
@@ -332,15 +362,15 @@ impl CraneliftBackend {
         // Declare them unconditionally if not already declared
         if !self.runtime_functions.contains_key("malloc") {
             eprintln!("DEBUG: Declaring libc function: malloc");
-            self.declare_libc_function("malloc", 1, true)?;  // 1 param (size), has return value (ptr)
+            self.declare_libc_function("malloc", 1, true)?; // 1 param (size), has return value (ptr)
         }
         if !self.runtime_functions.contains_key("realloc") {
             eprintln!("DEBUG: Declaring libc function: realloc");
-            self.declare_libc_function("realloc", 2, true)?;  // 2 params (ptr, size), has return value (new ptr)
+            self.declare_libc_function("realloc", 2, true)?; // 2 params (ptr, size), has return value (new ptr)
         }
         if !self.runtime_functions.contains_key("free") {
             eprintln!("DEBUG: Declaring libc function: free");
-            self.declare_libc_function("free", 1, false)?;  // 1 param (ptr), no return value
+            self.declare_libc_function("free", 1, false)?; // 1 param (ptr), no return value
         }
 
         // Map MIR function IDs for malloc/realloc/free to their libc Cranelift IDs
@@ -348,15 +378,24 @@ impl CraneliftBackend {
         for (func_id, function) in &mir_module.functions {
             if function.name == "malloc" {
                 let libc_id = *self.runtime_functions.get("malloc").unwrap();
-                eprintln!("DEBUG: Mapping MIR malloc {:?} -> Cranelift {:?}", func_id, libc_id);
+                eprintln!(
+                    "DEBUG: Mapping MIR malloc {:?} -> Cranelift {:?}",
+                    func_id, libc_id
+                );
                 self.function_map.insert(*func_id, libc_id);
             } else if function.name == "realloc" {
                 let libc_id = *self.runtime_functions.get("realloc").unwrap();
-                eprintln!("DEBUG: Mapping MIR realloc {:?} -> Cranelift {:?}", func_id, libc_id);
+                eprintln!(
+                    "DEBUG: Mapping MIR realloc {:?} -> Cranelift {:?}",
+                    func_id, libc_id
+                );
                 self.function_map.insert(*func_id, libc_id);
             } else if function.name == "free" {
                 let libc_id = *self.runtime_functions.get("free").unwrap();
-                eprintln!("DEBUG: Mapping MIR free {:?} -> Cranelift {:?}", func_id, libc_id);
+                eprintln!(
+                    "DEBUG: Mapping MIR free {:?} -> Cranelift {:?}",
+                    func_id, libc_id
+                );
                 self.function_map.insert(*func_id, libc_id);
             }
         }
@@ -419,8 +458,10 @@ impl CraneliftBackend {
         // so we must not declare them twice!
         // We use runtime_functions to track all such functions (not just libc ones)
         if let Some(&existing_func_id) = self.runtime_functions.get(&function.name) {
-            eprintln!("DEBUG: Reusing existing function '{}' - MIR {:?} -> Cranelift {:?}",
-                      function.name, mir_func_id, existing_func_id);
+            eprintln!(
+                "DEBUG: Reusing existing function '{}' - MIR {:?} -> Cranelift {:?}",
+                function.name, mir_func_id, existing_func_id
+            );
             self.function_map.insert(mir_func_id, existing_func_id);
             return Ok(());
         }
@@ -436,9 +477,21 @@ impl CraneliftBackend {
         if use_sret_in_signature {
             // Add sret parameter as first parameter
             sig.params.push(AbiParam::special(
-                types::I64,  // pointer type
+                types::I64, // pointer type
                 ArgumentPurpose::StructReturn,
             ));
+        }
+
+        // Add environment parameter (hidden first/second parameter) for non-extern functions
+        // All non-extern functions now accept an environment pointer (null for static functions)
+        // Extern functions do NOT get this parameter since they're C ABI
+        // IMPORTANT: Lambda functions already have an 'env' parameter added during HIR/MIR lowering,
+        // so we must NOT add another environment parameter or we'll have a double-env-param bug
+        let already_has_env_param = !function.signature.parameters.is_empty()
+            && function.signature.parameters[0].name == "env";
+
+        if !is_extern && !already_has_env_param {
+            sig.params.push(AbiParam::new(types::I64));
         }
 
         // Add parameters
@@ -466,16 +519,28 @@ impl CraneliftBackend {
         }
 
         // Debug: log Thread_spawn and Thread_join and channel extern signatures
-        if function.name == "Thread_spawn" || function.name == "Thread_join" || function.name.starts_with("<lambda_") ||
-           function.name.starts_with("rayzor_channel") || function.name == "Channel_init" {
-            eprintln!("DEBUG: Declaring '{}' (MIR {:?}) with {} params, is_extern={}, calling_conv={:?}",
-                      function.name, mir_func_id, function.signature.parameters.len(), is_extern,
-                      function.signature.calling_convention);
+        if function.name == "Thread_spawn"
+            || function.name == "Thread_join"
+            || function.name.starts_with("<lambda_")
+            || function.name.starts_with("rayzor_channel")
+            || function.name == "Channel_init"
+        {
+            eprintln!(
+                "DEBUG: Declaring '{}' (MIR {:?}) with {} params, is_extern={}, calling_conv={:?}",
+                function.name,
+                mir_func_id,
+                function.signature.parameters.len(),
+                is_extern,
+                function.signature.calling_convention
+            );
             for (i, param) in function.signature.parameters.iter().enumerate() {
-                let cranelift_ty = self.mir_type_to_cranelift(&param.ty).unwrap_or(types::INVALID);
+                let cranelift_ty = self
+                    .mir_type_to_cranelift(&param.ty)
+                    .unwrap_or(types::INVALID);
                 let actual_ty = if is_extern
                     && function.signature.calling_convention == crate::ir::CallingConvention::C
-                    && !cfg!(target_os = "windows") {
+                    && !cfg!(target_os = "windows")
+                {
                     match &param.ty {
                         crate::ir::IrType::I32 | crate::ir::IrType::U32 => types::I64,
                         _ => cranelift_ty,
@@ -483,14 +548,24 @@ impl CraneliftBackend {
                 } else {
                     cranelift_ty
                 };
-                eprintln!("  param[{}]: {} (MIR {:?} -> Cranelift {:?} -> actual {:?})", i, param.name, param.ty, cranelift_ty, actual_ty);
+                eprintln!(
+                    "  param[{}]: {} (MIR {:?} -> Cranelift {:?} -> actual {:?})",
+                    i, param.name, param.ty, cranelift_ty, actual_ty
+                );
             }
-            eprintln!("  return_type: {:?}, uses_sret: {}", function.signature.return_type, use_sret_in_signature);
+            eprintln!(
+                "  return_type: {:?}, uses_sret: {}",
+                function.signature.return_type, use_sret_in_signature
+            );
         }
 
         // Debug: log lambda function signatures
         if function.name.starts_with("<lambda_") {
-            eprintln!("DEBUG Lambda signature for {}: {} params", function.name, function.signature.parameters.len());
+            eprintln!(
+                "DEBUG Lambda signature for {}: {} params",
+                function.name,
+                function.signature.parameters.len()
+            );
             for (i, param) in function.signature.parameters.iter().enumerate() {
                 eprintln!("  param{}: {} ({:?})", i, param.name, param.ty);
             }
@@ -513,7 +588,9 @@ impl CraneliftBackend {
             // Check if this is a stdlib MIR wrapper function by looking it up in the runtime mapping
             // Stdlib wrappers are functions registered in the runtime mapping system
             let stdlib_mapping = crate::stdlib::runtime_mapping::StdlibMapping::new();
-            let is_stdlib_mir_wrapper = stdlib_mapping.find_by_runtime_name(&function.name).is_some();
+            let is_stdlib_mir_wrapper = stdlib_mapping
+                .find_by_runtime_name(&function.name)
+                .is_some();
 
             if is_stdlib_mir_wrapper {
                 // Stdlib MIR wrappers use their actual names with Export linkage
@@ -524,9 +601,20 @@ impl CraneliftBackend {
                 // Include module_counter to avoid collisions when compiling multiple MIR modules
                 if let Some(ref qualified_name) = function.qualified_name {
                     // Use qualified name for better debugging/profiling
-                    (format!("m{}__{}__func_{}", self.module_counter, qualified_name.replace(".", "_"), mir_func_id.0), Linkage::Export)
+                    (
+                        format!(
+                            "m{}__{}__func_{}",
+                            self.module_counter,
+                            qualified_name.replace(".", "_"),
+                            mir_func_id.0
+                        ),
+                        Linkage::Export,
+                    )
                 } else {
-                    (format!("m{}_func_{}", self.module_counter, mir_func_id.0), Linkage::Export)
+                    (
+                        format!("m{}_func_{}", self.module_counter, mir_func_id.0),
+                        Linkage::Export,
+                    )
                 }
             }
         };
@@ -536,22 +624,33 @@ impl CraneliftBackend {
             .declare_function(&func_name, linkage, &sig)
             .map_err(|e| format!("Failed to declare function: {}", e))?;
 
-        eprintln!("DEBUG Cranelift: Declared '{}' - MIR={:?} -> Cranelift={:?}, {} params",
-                  func_name, mir_func_id, func_id, function.signature.parameters.len());
+        eprintln!(
+            "DEBUG Cranelift: Declared '{}' - MIR={:?} -> Cranelift={:?}, {} params",
+            func_name,
+            mir_func_id,
+            func_id,
+            function.signature.parameters.len()
+        );
         self.function_map.insert(mir_func_id, func_id);
 
         // Track extern functions and stdlib wrapper functions in runtime_functions so we don't declare them twice
         if is_extern {
-            eprintln!("DEBUG: Declared new extern '{}' - MIR {:?} -> Cranelift {:?}",
-                      func_name, mir_func_id, func_id);
+            eprintln!(
+                "DEBUG: Declared new extern '{}' - MIR {:?} -> Cranelift {:?}",
+                func_name, mir_func_id, func_id
+            );
             self.runtime_functions.insert(func_name, func_id);
         } else {
             // Check if this is a stdlib wrapper function - track it to prevent duplicates
             let stdlib_mapping = crate::stdlib::runtime_mapping::StdlibMapping::new();
-            let is_stdlib_mir_wrapper = stdlib_mapping.find_by_runtime_name(&function.name).is_some();
+            let is_stdlib_mir_wrapper = stdlib_mapping
+                .find_by_runtime_name(&function.name)
+                .is_some();
             if is_stdlib_mir_wrapper {
-                eprintln!("DEBUG: Declared new stdlib wrapper '{}' - MIR {:?} -> Cranelift {:?}",
-                          func_name, mir_func_id, func_id);
+                eprintln!(
+                    "DEBUG: Declared new stdlib wrapper '{}' - MIR {:?} -> Cranelift {:?}",
+                    func_name, mir_func_id, func_id
+                );
                 self.runtime_functions.insert(func_name, func_id);
             }
         }
@@ -561,7 +660,12 @@ impl CraneliftBackend {
 
     /// Declare a libc function (malloc, realloc, free)
     /// These are provided by the system C library
-    fn declare_libc_function(&mut self, name: &str, param_count: usize, has_return: bool) -> Result<FuncId, String> {
+    fn declare_libc_function(
+        &mut self,
+        name: &str,
+        param_count: usize,
+        has_return: bool,
+    ) -> Result<FuncId, String> {
         // Check if already declared
         if let Some(&func_id) = self.runtime_functions.get(name) {
             return Ok(func_id);
@@ -586,7 +690,7 @@ impl CraneliftBackend {
             "free" => {
                 // fn free(ptr: *void)
                 sig.params.push(AbiParam::new(self.pointer_type)); // ptr
-                // no return value
+                                                                   // no return value
             }
             _ => return Err(format!("Unknown libc function: {}", name)),
         }
@@ -597,7 +701,10 @@ impl CraneliftBackend {
             .declare_function(name, Linkage::Import, &sig)
             .map_err(|e| format!("Failed to declare libc function {}: {}", name, e))?;
 
-        eprintln!("DEBUG: Declared libc {} as Cranelift func_id: {:?}", name, func_id);
+        eprintln!(
+            "DEBUG: Declared libc {} as Cranelift func_id: {:?}",
+            name, func_id
+        );
         self.runtime_functions.insert(name.to_string(), func_id);
         Ok(func_id)
     }
@@ -621,8 +728,10 @@ impl CraneliftBackend {
         // We track by Cranelift FuncId (not MIR name) because different modules can have
         // functions with the same MIR name (e.g., 'new') but different Cranelift symbols
         if self.defined_functions.contains(&func_id) {
-            eprintln!("DEBUG: Skipping already-defined function '{}' (MIR {:?}, Cranelift {:?})",
-                      function.name, mir_func_id, func_id);
+            eprintln!(
+                "DEBUG: Skipping already-defined function '{}' (MIR {:?}, Cranelift {:?})",
+                function.name, mir_func_id, func_id
+            );
             return Ok(());
         }
 
@@ -641,12 +750,36 @@ impl CraneliftBackend {
             ));
         }
 
+        // Add environment parameter (but not for lambdas that already have one)
+        // Lambda functions already have an explicit 'env' parameter in their MIR signature
+        let already_has_env_param = !function.signature.parameters.is_empty()
+            && function.signature.parameters[0].name == "env";
+
+        if !already_has_env_param {
+            self.ctx
+                .func
+                .signature
+                .params
+                .push(AbiParam::new(types::I64));
+        }
+
         // Add parameters to signature
-        eprintln!("DEBUG Cranelift: Function '{}' has {} parameters", function.name, function.signature.parameters.len());
+        eprintln!(
+            "DEBUG Cranelift: Function '{}' has {} parameters",
+            function.name,
+            function.signature.parameters.len()
+        );
         for (i, param) in function.signature.parameters.iter().enumerate() {
-            eprintln!("DEBUG Cranelift:   param[{}]: {} ({})", i, param.name, param.ty);
+            eprintln!(
+                "DEBUG Cranelift:   param[{}]: {} ({})",
+                i, param.name, param.ty
+            );
             let cranelift_type = self.mir_type_to_cranelift(&param.ty)?;
-            self.ctx.func.signature.params.push(AbiParam::new(cranelift_type));
+            self.ctx
+                .func
+                .signature
+                .params
+                .push(AbiParam::new(cranelift_type));
         }
 
         // Add return type to signature (void for sret functions)
@@ -655,7 +788,11 @@ impl CraneliftBackend {
         } else {
             let return_type = self.mir_type_to_cranelift(&function.signature.return_type)?;
             if return_type != types::INVALID {
-                self.ctx.func.signature.returns.push(AbiParam::new(return_type));
+                self.ctx
+                    .func
+                    .signature
+                    .returns
+                    .push(AbiParam::new(return_type));
             }
         }
 
@@ -674,11 +811,37 @@ impl CraneliftBackend {
         // Map function parameters to their Cranelift values
         let param_values = builder.block_params(entry_block).to_vec();
 
-        // If using sret, first parameter is the return pointer
-        let param_offset = if uses_sret { 1 } else { 0 };
+        // Determine if this function already has an explicit 'env' parameter (e.g., lambdas)
+        let already_has_env_param = !function.signature.parameters.is_empty()
+            && function.signature.parameters[0].name == "env";
 
-        for (i, param) in function.signature.parameters.iter().enumerate() {
-            self.value_map.insert(param.reg, param_values[i + param_offset]);
+        // If using sret, first parameter is the return pointer
+        // Environment parameter is next (if added implicitly, not for lambdas with explicit env)
+        let sret_offset = if uses_sret { 1 } else { 0 };
+
+        if already_has_env_param {
+            // Lambda with explicit env parameter: parameters map directly
+            // No hidden environment parameter was added in declare_function
+            // param_values[sret_offset] is the first user parameter (which is 'env')
+            for (i, param) in function.signature.parameters.iter().enumerate() {
+                self.value_map
+                    .insert(param.reg, param_values[i + sret_offset]);
+            }
+            // For lambdas, the env parameter is the first user parameter
+            // current_env_param should point to it
+            self.current_env_param = Some(param_values[sret_offset]);
+        } else {
+            // Regular function with implicit hidden environment parameter
+            let env_offset = sret_offset; // env param is at this index
+            let param_offset = env_offset + 1; // user params start after env
+
+            // Store environment parameter for ClosureEnv
+            self.current_env_param = Some(param_values[env_offset]);
+
+            for (i, param) in function.signature.parameters.iter().enumerate() {
+                self.value_map
+                    .insert(param.reg, param_values[i + param_offset]);
+            }
         }
 
         // Store sret pointer for use in Return terminator
@@ -695,7 +858,7 @@ impl CraneliftBackend {
         // eprintln!("DEBUG Cranelift: Function {} has {} blocks in CFG", function.name, function.cfg.blocks.len());
         for (mir_block_id, mir_block) in &function.cfg.blocks {
             // eprintln!("DEBUG Cranelift:   Block {:?} has {} phi nodes, {} instructions",
-                    //  mir_block_id, mir_block.phi_nodes.len(), mir_block.instructions.len());
+            //  mir_block_id, mir_block.phi_nodes.len(), mir_block.instructions.len());
             // Skip entry block as we already created it
             if mir_block_id.is_entry() {
                 block_map.insert(*mir_block_id, entry_block);
@@ -714,7 +877,8 @@ impl CraneliftBackend {
         let mut translated_blocks = std::collections::HashSet::new();
 
         for (mir_block_id, mir_block) in blocks_to_process {
-            let cl_block = *block_map.get(mir_block_id)
+            let cl_block = *block_map
+                .get(mir_block_id)
                 .ok_or_else(|| format!("Block {:?} not found in block_map", mir_block_id))?;
 
             // Switch to this block (entry block is already active, but switch anyway for clarity)
@@ -728,19 +892,46 @@ impl CraneliftBackend {
                 // for (from_block, value_id) in &phi_node.incoming {
                 //     eprintln!("    from block {:?}: value {:?}", from_block, value_id);
                 // }
-                Self::translate_phi_node_static(&mut self.value_map, &mut builder, phi_node, &block_map, &function.cfg)?;
+                Self::translate_phi_node_static(
+                    &mut self.value_map,
+                    &mut builder,
+                    phi_node,
+                    &block_map,
+                    &function.cfg,
+                )?;
                 // eprintln!("    After translation, value_map has {:?}", self.value_map.keys().collect::<Vec<_>>());
             }
 
             // Translate instructions
             for instruction in &mir_block.instructions {
-                Self::translate_instruction(&mut self.value_map, &mut builder, instruction, function, &self.function_map, &mut self.runtime_functions, mir_module, &mut self.module, &mut self.closure_environments)?;
+                Self::translate_instruction(
+                    &mut self.value_map,
+                    &mut builder,
+                    instruction,
+                    function,
+                    &self.function_map,
+                    &mut self.runtime_functions,
+                    mir_module,
+                    &mut self.module,
+                    &mut self.closure_environments,
+                    self.current_env_param,
+                )?;
             }
 
             // Translate terminator
             // eprintln!("DEBUG Cranelift: MIR terminator for block {:?}: {:?}", mir_block_id, mir_block.terminator);
-            if let Err(e) = Self::translate_terminator_static(&mut self.value_map, &mut builder, &mir_block.terminator, &block_map, function, sret_ptr) {
-                eprintln!("\n!!! Error translating terminator in block {:?}: {}", mir_block_id, e);
+            if let Err(e) = Self::translate_terminator_static(
+                &mut self.value_map,
+                &mut builder,
+                &mir_block.terminator,
+                &block_map,
+                function,
+                sret_ptr,
+            ) {
+                eprintln!(
+                    "\n!!! Error translating terminator in block {:?}: {}",
+                    mir_block_id, e
+                );
                 eprintln!("=== Cranelift IR so far ===");
                 eprintln!("{}", self.ctx.func.display());
                 eprintln!("=== End IR ===\n");
@@ -782,7 +973,10 @@ impl CraneliftBackend {
 
         // Track that this function has been defined to prevent duplicate definitions
         self.defined_functions.insert(func_id);
-        eprintln!("DEBUG: Successfully defined function '{}' (MIR {:?}, Cranelift {:?})", function.name, mir_func_id, func_id);
+        eprintln!(
+            "DEBUG: Successfully defined function '{}' (MIR {:?}, Cranelift {:?})",
+            function.name, mir_func_id, func_id
+        );
 
         // Clear the context for next function
         self.module.clear_context(&mut self.ctx);
@@ -798,8 +992,11 @@ impl CraneliftBackend {
         target_block: IrBlockId,
         from_block: IrBlockId,
         builder: &mut FunctionBuilder,
-    ) -> Result<Vec<Value>, String> {
-        let target = function.cfg.blocks.get(&target_block)
+    ) -> Result<Vec<BlockArg>, String> {
+        let target = function
+            .cfg
+            .blocks
+            .get(&target_block)
             .ok_or_else(|| format!("Target block {:?} not found", target_block))?;
 
         let mut phi_args = Vec::new();
@@ -807,20 +1004,25 @@ impl CraneliftBackend {
         // For each phi node in the target block, find the incoming value from our block
         for phi_node in &target.phi_nodes {
             // Find the incoming value for this phi from our current block
-            let incoming_value = phi_node.incoming.iter()
+            let incoming_value = phi_node
+                .incoming
+                .iter()
                 .find(|(block_id, _)| *block_id == from_block)
                 .map(|(_, value_id)| value_id)
-                .ok_or_else(|| format!(
-                    "No incoming value for phi node {:?} from block {:?}",
-                    phi_node.dest, from_block
-                ))?;
+                .ok_or_else(|| {
+                    format!(
+                        "No incoming value for phi node {:?} from block {:?}",
+                        phi_node.dest, from_block
+                    )
+                })?;
 
             // Look up the Cranelift value for this MIR value
-            let cl_value = *value_map.get(incoming_value)
-                .ok_or_else(|| format!(
+            let cl_value = *value_map.get(incoming_value).ok_or_else(|| {
+                format!(
                     "Value {:?} not found in value_map for phi incoming",
                     incoming_value
-                ))?;
+                )
+            })?;
 
             // Get the expected Cranelift type from the phi node's MIR type
             let expected_cl_type = match &phi_node.ty {
@@ -839,8 +1041,10 @@ impl CraneliftBackend {
             // Check if the actual value type matches expected; coerce if not
             let actual_type = builder.func.dfg.value_type(cl_value);
             let final_value = if actual_type != expected_cl_type {
-                eprintln!("DEBUG: Phi arg type mismatch for {:?}: actual {:?}, expected {:?}, coercing",
-                          phi_node.dest, actual_type, expected_cl_type);
+                eprintln!(
+                    "DEBUG: Phi arg type mismatch for {:?}: actual {:?}, expected {:?}, coercing",
+                    phi_node.dest, actual_type, expected_cl_type
+                );
                 // Coerce the value
                 match (actual_type, expected_cl_type) {
                     // i64 -> i32 truncation
@@ -854,7 +1058,10 @@ impl CraneliftBackend {
                     (from, to) if from == to => cl_value,
                     // Fallback: log warning and use as-is (may cause verifier error)
                     _ => {
-                        eprintln!("WARNING: Cannot coerce phi arg from {:?} to {:?}", actual_type, expected_cl_type);
+                        eprintln!(
+                            "WARNING: Cannot coerce phi arg from {:?} to {:?}",
+                            actual_type, expected_cl_type
+                        );
                         cl_value
                     }
                 }
@@ -862,7 +1069,8 @@ impl CraneliftBackend {
                 cl_value
             };
 
-            phi_args.push(final_value);
+            // Wrap in BlockArg for the fork's phi node API
+            phi_args.push(BlockArg::Value(final_value));
         }
 
         Ok(phi_args)
@@ -891,11 +1099,12 @@ impl CraneliftBackend {
             crate::ir::IrType::Bool => cranelift_codegen::ir::types::I8,
             crate::ir::IrType::Ptr(_) => cranelift_codegen::ir::types::I64, // Assume 64-bit pointers
             crate::ir::IrType::Ref(_) => cranelift_codegen::ir::types::I64, // Assume 64-bit refs
-            _ => cranelift_codegen::ir::types::I64, // Default
+            _ => cranelift_codegen::ir::types::I64,                         // Default
         };
 
         // Get the current block
-        let current_block = builder.current_block()
+        let current_block = builder
+            .current_block()
             .ok_or_else(|| "No current block for phi node".to_string())?;
 
         // Append a block parameter
@@ -918,6 +1127,7 @@ impl CraneliftBackend {
         mir_module: &IrModule,
         module: &mut JITModule,
         closure_environments: &mut HashMap<IrId, Value>,
+        current_env_param: Option<Value>,
     ) -> Result<(), String> {
         use crate::ir::IrInstruction;
 
@@ -929,7 +1139,8 @@ impl CraneliftBackend {
 
             IrInstruction::Copy { dest, src } => {
                 // Copy: For Copy types (Int, Bool, etc.) - just copy the value
-                let src_value = *value_map.get(src)
+                let src_value = *value_map
+                    .get(src)
                     .ok_or_else(|| format!("Source value {:?} not found", src))?;
                 value_map.insert(*dest, src_value);
                 // Note: src remains valid after copy
@@ -937,7 +1148,8 @@ impl CraneliftBackend {
 
             IrInstruction::Move { dest, src } => {
                 // Move: Transfer ownership - move the value and invalidate source
-                let src_value = *value_map.get(src)
+                let src_value = *value_map
+                    .get(src)
                     .ok_or_else(|| format!("Source value {:?} not found for move", src))?;
                 value_map.insert(*dest, src_value);
                 // Invalidate source - any future use is a compile error (caught by MIR validation)
@@ -945,10 +1157,15 @@ impl CraneliftBackend {
                 // The MIR validator ensures src isn't used after the move
             }
 
-            IrInstruction::BorrowImmutable { dest, src, lifetime: _ } => {
+            IrInstruction::BorrowImmutable {
+                dest,
+                src,
+                lifetime: _,
+            } => {
                 // Borrow immutable: Create a pointer to the value
                 // In Cranelift, this is just the address of the value
-                let src_value = *value_map.get(src)
+                let src_value = *value_map
+                    .get(src)
                     .ok_or_else(|| format!("Source value {:?} not found for borrow", src))?;
 
                 // For heap-allocated objects, the value is already a pointer - just use it
@@ -960,9 +1177,14 @@ impl CraneliftBackend {
                 // Multiple immutable borrows allowed (enforced by MIR validation)
             }
 
-            IrInstruction::BorrowMutable { dest, src, lifetime: _ } => {
+            IrInstruction::BorrowMutable {
+                dest,
+                src,
+                lifetime: _,
+            } => {
                 // Borrow mutable: Create an exclusive pointer to the value
-                let src_value = *value_map.get(src)
+                let src_value = *value_map
+                    .get(src)
                     .ok_or_else(|| format!("Source value {:?} not found for mut borrow", src))?;
 
                 // Like immutable borrow, but exclusive
@@ -976,7 +1198,8 @@ impl CraneliftBackend {
 
             IrInstruction::Clone { dest, src } => {
                 // Clone: Call the clone function for this type
-                let src_value = *value_map.get(src)
+                let src_value = *value_map
+                    .get(src)
                     .ok_or_else(|| format!("Source value {:?} not found for clone", src))?;
 
                 // Look up the clone function for this type
@@ -992,9 +1215,13 @@ impl CraneliftBackend {
                 let size_val = builder.ins().iconst(ptr_type, 64); // Placeholder size
 
                 // Call rayzor_malloc - need to convert FuncId to FuncRef
-                let malloc_func_id = *runtime_functions.get("rayzor_malloc")
-                    .ok_or_else(|| "rayzor_malloc not found".to_string())?;
+                let malloc_func_id = *runtime_functions
+                    .get("malloc") // Use libc malloc directly
+                    .ok_or_else(|| "malloc not found".to_string())?;
                 let malloc_func_ref = module.declare_func_in_func(malloc_func_id, builder.func);
+
+                // Malloc is a libc function, it does NOT take an environment parameter.
+                // The CallDirect logic below handles this distinction.
                 let inst = builder.ins().call(malloc_func_ref, &[size_val]);
                 let new_ptr = builder.inst_results(inst)[0];
 
@@ -1031,20 +1258,30 @@ impl CraneliftBackend {
                 // For now, it's just a marker for the validator
             }
 
-            IrInstruction::BinOp { dest, op, left, right } => {
+            IrInstruction::BinOp {
+                dest,
+                op,
+                left,
+                right,
+            } => {
                 // Get type from register_types map first, then fall back to locals
-                let ty = function.register_types.get(dest)
+                let ty = function
+                    .register_types
+                    .get(dest)
                     .or_else(|| function.register_types.get(left))
                     .or_else(|| function.locals.get(dest).map(|local| &local.ty))
                     .ok_or_else(|| format!("Type not found for BinOp dest {:?}", dest))?;
 
-                let value = Self::lower_binary_op_static(value_map, builder, op, ty, *left, *right)?;
+                let value =
+                    Self::lower_binary_op_static(value_map, builder, op, ty, *left, *right)?;
                 value_map.insert(*dest, value);
             }
 
             IrInstruction::UnOp { dest, op, operand } => {
                 // Get type from register_types map first, then fall back to locals
-                let ty = function.register_types.get(dest)
+                let ty = function
+                    .register_types
+                    .get(dest)
                     .or_else(|| function.register_types.get(operand))
                     .or_else(|| function.locals.get(dest).map(|local| &local.ty))
                     .ok_or_else(|| format!("Type not found for UnOp dest {:?}", dest))?;
@@ -1053,13 +1290,21 @@ impl CraneliftBackend {
                 value_map.insert(*dest, value);
             }
 
-            IrInstruction::Cmp { dest, op, left, right } => {
+            IrInstruction::Cmp {
+                dest,
+                op,
+                left,
+                right,
+            } => {
                 // Get type from register_types map
-                let ty = function.register_types.get(left)
+                let ty = function
+                    .register_types
+                    .get(left)
                     .or_else(|| function.locals.get(left).map(|local| &local.ty))
                     .ok_or_else(|| format!("Type not found for Cmp operand {:?}", left))?;
 
-                let value = Self::lower_compare_op_static(value_map, builder, op, ty, *left, *right)?;
+                let value =
+                    Self::lower_compare_op_static(value_map, builder, op, ty, *left, *right)?;
                 value_map.insert(*dest, value);
             }
 
@@ -1085,7 +1330,12 @@ impl CraneliftBackend {
                 value_map.insert(*dest, value);
             }
 
-            IrInstruction::CallDirect { dest, func_id, args, arg_ownership: _, } => {
+            IrInstruction::CallDirect {
+                dest,
+                func_id,
+                args,
+                arg_ownership: _,
+            } => {
                 // TODO: Use arg_ownership to generate proper move/borrow/clone code
                 // Check if this is an extern function call
                 if let Some(extern_func) = mir_module.extern_functions.get(func_id) {
@@ -1106,12 +1356,14 @@ impl CraneliftBackend {
 
                             // For C calling convention externs on non-Windows platforms, extend i32/u32 to i64
                             if !cfg!(target_os = "windows")
-                                && extern_func.signature.calling_convention == crate::ir::CallingConvention::C {
+                                && extern_func.signature.calling_convention
+                                    == crate::ir::CallingConvention::C
+                            {
                                 match param.ty {
                                     crate::ir::IrType::I32 | crate::ir::IrType::U32 => {
                                         eprintln!("!!! [DYNAMIC DECL] Extending {} param '{}' from {:?} to i64", extern_func.name, param.name, param.ty);
                                         cranelift_type = types::I64;
-                                    },
+                                    }
                                     _ => {}
                                 }
                             }
@@ -1121,7 +1373,9 @@ impl CraneliftBackend {
 
                         // Add return type using actual type from the extern function signature
                         if extern_func.signature.return_type != crate::ir::IrType::Void {
-                            let return_type = Self::mir_type_to_cranelift_static(&extern_func.signature.return_type)?;
+                            let return_type = Self::mir_type_to_cranelift_static(
+                                &extern_func.signature.return_type,
+                            )?;
                             if return_type != types::INVALID {
                                 sig.returns.push(AbiParam::new(return_type));
                             }
@@ -1129,9 +1383,17 @@ impl CraneliftBackend {
 
                         let id = module
                             .declare_function(&extern_func.name, Linkage::Import, &sig)
-                            .map_err(|e| format!("Failed to declare runtime function {}: {}", extern_func.name, e))?;
+                            .map_err(|e| {
+                                format!(
+                                    "Failed to declare runtime function {}: {}",
+                                    extern_func.name, e
+                                )
+                            })?;
 
-                        eprintln!("INFO: Declared external runtime function {} as func_id: {:?}", extern_func.name, id);
+                        eprintln!(
+                            "INFO: Declared external runtime function {} as func_id: {:?}",
+                            extern_func.name, id
+                        );
                         runtime_functions.insert(extern_func.name.clone(), id);
                         id
                     };
@@ -1142,24 +1404,27 @@ impl CraneliftBackend {
                     // For C extern functions on non-Windows platforms, extend i32/u32 to i64
                     let mut arg_values = Vec::new();
                     for (i, &arg_reg) in args.iter().enumerate() {
-                        let mut cl_value = *value_map.get(&arg_reg)
-                            .ok_or_else(|| format!("Argument register {:?} not found in value_map", arg_reg))?;
+                        let mut cl_value = *value_map.get(&arg_reg).ok_or_else(|| {
+                            format!("Argument register {:?} not found in value_map", arg_reg)
+                        })?;
 
                         // Check if this C extern function parameter needs extension
                         if !cfg!(target_os = "windows")
-                            && extern_func.signature.calling_convention == crate::ir::CallingConvention::C {
+                            && extern_func.signature.calling_convention
+                                == crate::ir::CallingConvention::C
+                        {
                             if let Some(param) = extern_func.signature.parameters.get(i) {
                                 match param.ty {
                                     crate::ir::IrType::I32 => {
                                         eprintln!("!!! [EXTERN BRANCH] Extending arg {} for {} from i32 to i64", i, extern_func.name);
                                         // Sign-extend i32 to i64
                                         cl_value = builder.ins().sextend(types::I64, cl_value);
-                                    },
+                                    }
                                     crate::ir::IrType::U32 => {
                                         eprintln!("!!! [EXTERN BRANCH] Extending arg {} for {} from u32 to i64", i, extern_func.name);
                                         // Zero-extend u32 to i64
                                         cl_value = builder.ins().uextend(types::I64, cl_value);
-                                    },
+                                    }
                                     _ => {}
                                 }
                             }
@@ -1179,254 +1444,359 @@ impl CraneliftBackend {
                     }
                 } else {
                     // Check if this is a call to malloc/realloc/free
-                    let called_func = mir_module.functions.get(func_id)
-                        .ok_or_else(|| format!("Called function {:?} not found in module", func_id))?;
+                    let called_func = mir_module.functions.get(func_id).ok_or_else(|| {
+                        format!("Called function {:?} not found in module", func_id)
+                    })?;
 
-                let (cl_func_id, func_ref) = if called_func.name == "malloc" ||
-                                                called_func.name == "realloc" ||
-                                                called_func.name == "free" {
-                    // This is a memory management function - call the libc version
-                    let libc_id = *runtime_functions.get(&called_func.name)
-                        .ok_or_else(|| format!("libc function {} not declared", called_func.name))?;
-                    eprintln!("DEBUG: [In {}] Redirecting {} call (MIR func_id={:?}) to libc func_id: {:?}", function.name, called_func.name, func_id, libc_id);
-                    let func_ref = module.declare_func_in_func(libc_id, builder.func);
-                    eprintln!("DEBUG: [In {}] Got func_ref for {} (libc_id={:?}): {:?}", function.name, called_func.name, libc_id, func_ref);
-                    (libc_id, func_ref)
-                } else {
-                    // Normal MIR function call
-                    let cl_func_id = *function_map.get(func_id)
-                        .ok_or_else(|| format!("Function {:?} not found in function_map", func_id))?;
-                    eprintln!("DEBUG: [In {}] Regular function call to {:?} (MIR {:?} -> Cranelift {:?})", function.name, called_func.name, func_id, cl_func_id);
-                    let func_ref = module.declare_func_in_func(cl_func_id, builder.func);
-                    (cl_func_id, func_ref)
-                };
-
-                // Check if function uses sret (and is not extern)
-                let is_extern_func = called_func.cfg.blocks.is_empty();
-                let uses_sret = called_func.signature.uses_sret && !is_extern_func;
-
-                // Allocate stack space for sret if needed
-                let sret_slot = if uses_sret {
-                    let ret_ty = &called_func.signature.return_type;
-                    Some(Self::lower_alloca_static(builder, ret_ty, None)?)
-                } else {
-                    None
-                };
-
-                // Translate arguments (prepend sret pointer if needed)
-                let mut call_args = Vec::new();
-                if let Some(sret_ptr) = sret_slot {
-                    call_args.push(sret_ptr);
-                }
-
-                // For C extern functions on non-Windows platforms, extend i32/u32 arguments to i64
-                // A function is C extern if:
-                // 1. It has C calling convention AND
-                // 2. Either (a) it has no blocks (true extern) OR (b) it has External linkage (wrapper around extern)
-                let is_c_extern = called_func.signature.calling_convention == crate::ir::CallingConvention::C
-                    && (is_extern_func || called_func.attributes.linkage == crate::ir::Linkage::External)
-                    && !cfg!(target_os = "windows");
-
-                if called_func.name.starts_with("rayzor_channel") || called_func.name == "Channel_init" {
-                    eprintln!("DEBUG: [In {}] Calling {} - is_c_extern={}, calling_conv={:?}, is_extern={}, linkage={:?}",
-                             function.name, called_func.name, is_c_extern, called_func.signature.calling_convention,
-                             is_extern_func, called_func.attributes.linkage);
-                }
-
-                for (i, arg_id) in args.iter().enumerate() {
-                    let mut arg_val = *value_map.get(arg_id)
-                        .ok_or_else(|| format!("Argument {:?} not found in value_map", arg_id))?;
-
-                    // Check if this C extern function parameter needs extension
-                    if is_c_extern {
-                        if let Some(param) = called_func.signature.parameters.get(i) {
-                            eprintln!("DEBUG: [Extension check] {} param {} type = {:?}", called_func.name, i, param.ty);
-                            match &param.ty {
-                                crate::ir::IrType::I32 => {
-                                    eprintln!("!!! [REGULAR BRANCH] Extending arg {} for {} from i32 to i64", i, called_func.name);
-                                    // Sign-extend i32 to i64
-                                    arg_val = builder.ins().sextend(types::I64, arg_val);
-                                },
-                                crate::ir::IrType::U32 => {
-                                    eprintln!("!!! [REGULAR BRANCH] Extending arg {} for {} from u32 to i64", i, called_func.name);
-                                    // Zero-extend u32 to i64
-                                    arg_val = builder.ins().uextend(types::I64, arg_val);
-                                },
-                                _ => {
-                                    eprintln!("DEBUG: [Extension check] {} param {} type {:?} does NOT match I32 or U32", called_func.name, i, param.ty);
-                                }
-                            }
-                        }
-                    }
-                    call_args.push(arg_val);
-                }
-
-                // Emit the call instruction
-                let call_inst = builder.ins().call(func_ref, &call_args);
-
-                // Handle return value
-                // Special case: If the function returns Void but MIR has a dest register,
-                // just ignore the dest. This can happen with lambdas where the MIR was
-                // generated before the function signature was fully resolved.
-                if called_func.signature.return_type == crate::ir::IrType::Void {
-                    // Void function - ignore dest register if present
-                    // (MIR may have allocated one before signature was known)
-                } else if let Some(dest_reg) = dest {
-                    if uses_sret {
-                        // For sret, the "return value" is the pointer to the sret slot
-                        value_map.insert(*dest_reg, sret_slot.unwrap());
+                    let (cl_func_id, func_ref) = if called_func.name == "malloc"
+                        || called_func.name == "realloc"
+                        || called_func.name == "free"
+                    {
+                        // This is a memory management function - call the libc version
+                        let libc_id =
+                            *runtime_functions.get(&called_func.name).ok_or_else(|| {
+                                format!("libc function {} not declared", called_func.name)
+                            })?;
+                        eprintln!("DEBUG: [In {}] Redirecting {} call (MIR func_id={:?}) to libc func_id: {:?}", function.name, called_func.name, func_id, libc_id);
+                        let func_ref = module.declare_func_in_func(libc_id, builder.func);
+                        eprintln!(
+                            "DEBUG: [In {}] Got func_ref for {} (libc_id={:?}): {:?}",
+                            function.name, called_func.name, libc_id, func_ref
+                        );
+                        (libc_id, func_ref)
                     } else {
-                        // Normal return value
-                        let results = builder.inst_results(call_inst);
-                        if !results.is_empty() {
-                            value_map.insert(*dest_reg, results[0]);
-                        } else {
-                            return Err(format!("Function call expected to return value but got none (func_id={:?}, dest={:?})", func_id, dest_reg));
-                        }
-                    }
-                }
-                }
-            }
+                        // Normal MIR function call
+                        let cl_func_id = *function_map.get(func_id).ok_or_else(|| {
+                            format!("Function {:?} not found in function_map", func_id)
+                        })?;
+                        eprintln!("DEBUG: [In {}] Regular function call to {:?} (MIR {:?} -> Cranelift {:?})", function.name, called_func.name, func_id, cl_func_id);
+                        let func_ref = module.declare_func_in_func(cl_func_id, builder.func);
+                        (cl_func_id, func_ref)
+                    };
 
-            IrInstruction::CallIndirect { dest, func_ptr, args, signature, arg_ownership: _, } => {
-                // TODO: Use arg_ownership to generate proper move/borrow/clone code
+                    // Check if function uses sret (and is not extern)
+                    let is_extern_func = called_func.cfg.blocks.is_empty();
+                    let uses_sret = called_func.signature.uses_sret && !is_extern_func;
 
-                // Get the value for func_ptr register - this could be either:
-                // 1. A direct function pointer (from FunctionRef)
-                // 2. A pointer to a closure object (from MakeClosure)
-                let func_ptr_val = *value_map.get(func_ptr)
-                    .ok_or_else(|| format!("Function pointer {:?} not found in value_map", func_ptr))?;
-
-                // Check if this is a closure (has environment)
-                let is_closure = closure_environments.contains_key(func_ptr);
-
-                // For heap-allocated closures, func_ptr_val points to closure object struct {fn_ptr, env_ptr}
-                // We need to extract the actual function pointer from offset 0
-                let (func_val, env_ptr_opt) = if is_closure {
-                    // Load function pointer from closure object (offset 0)
-                    let actual_func_ptr = builder.ins().load(
-                        types::I64,
-                        MemFlags::trusted(),
-                        func_ptr_val,
-                        0
-                    );
-
-                    // Load environment pointer from closure object (offset 8)
-                    let env_ptr = builder.ins().load(
-                        types::I64,
-                        MemFlags::trusted(),
-                        func_ptr_val,
-                        8
-                    );
-
-                    (actual_func_ptr, Some(env_ptr))
-                } else {
-                    // Not a closure - func_ptr_val IS the function pointer
-                    (func_ptr_val, None)
-                };
-
-                // IMPORTANT: For closures, we need to use the actual function signature
-                // from the MIR function, not the IrType::Function type, because the
-                // IrType::Function doesn't include the environment parameter.
-
-                // Check if func_ptr comes from a FunctionRef instruction
-                // If so, we can look up the actual function signature
-                let sig = if let Some(func_id) = Self::find_function_ref_source(*func_ptr, function) {
-                    // Found the source function ID - use its actual signature
-                    let target_func = mir_module.functions.get(&func_id)
-                        .ok_or_else(|| format!("Function {:?} not found in MIR module", func_id))?;
-
-                    let mut cl_sig = module.make_signature();
-
-                    // Add parameters from actual function signature (includes env if present)
-                    for param in &target_func.signature.parameters {
-                        let cl_param_ty = Self::mir_type_to_cranelift_static(&param.ty)?;
-                        cl_sig.params.push(AbiParam::new(cl_param_ty));
-                    }
-
-                    // Add return type
-                    let cl_ret_ty = Self::mir_type_to_cranelift_static(&target_func.signature.return_type)?;
-                    if cl_ret_ty != types::INVALID {
-                        cl_sig.returns.push(AbiParam::new(cl_ret_ty));
-                    }
-
-                    eprintln!("DEBUG: Using actual function signature with {} params", target_func.signature.parameters.len());
-                    cl_sig
-                } else {
-                    // Fallback: build signature from IrType::Function
-                    // Check if this is a closure call (has an environment)
-                    let is_closure = closure_environments.contains_key(func_ptr);
-                    eprintln!("DEBUG: Fallback signature - is_closure={}, func_ptr={:?}, closure_envs contains {} entries",
-                             is_closure, func_ptr, closure_environments.len());
-                    let env_ptr_opt = if is_closure {
-                        closure_environments.get(func_ptr).copied()
+                    // Allocate stack space for sret if needed
+                    let sret_slot = if uses_sret {
+                        let ret_ty = &called_func.signature.return_type;
+                        Some(Self::lower_alloca_static(builder, ret_ty, None)?)
                     } else {
                         None
                     };
 
-                    match signature {
-                        IrType::Function { params, return_type, .. } => {
-                            let mut cl_sig = module.make_signature();
-
-                            // If this is a closure, add environment pointer as first parameter
-                            if is_closure {
-                                cl_sig.params.push(AbiParam::new(types::I64)); // env pointer
-                                eprintln!("Info: Adding environment parameter to closure call signature");
-                            }
-
-                            // Add parameter types
-                            for param_ty in params {
-                                let cl_param_ty = CraneliftBackend::mir_type_to_cranelift_static(param_ty)?;
-                                cl_sig.params.push(AbiParam::new(cl_param_ty));
-                            }
-
-                            // Add return type
-                            let cl_ret_ty = CraneliftBackend::mir_type_to_cranelift_static(return_type)?;
-                            if cl_ret_ty != types::INVALID {
-                                cl_sig.returns.push(AbiParam::new(cl_ret_ty));
-                            }
-
-                            cl_sig
-                        }
-                        _ => {
-                            return Err(format!("CallIndirect signature must be Function type, got {:?}", signature));
-                        }
+                    // Translate arguments (prepend sret pointer if needed)
+                    let mut call_args = Vec::new();
+                    if let Some(sret_ptr) = sret_slot {
+                        call_args.push(sret_ptr);
                     }
-                };
 
-                // Import the signature into the module
-                let sig_ref = builder.import_signature(sig);
+                    // Add environment argument (null for direct calls to non-extern functions)
+                    // Extern functions (including libc functions) do NOT take an environment parameter.
+                    // Lambdas already have an explicit 'env' parameter in their signature, so we shouldn't add a null one.
+                    let is_lambda = called_func.name.starts_with("<lambda");
+                    if !is_extern_func
+                        && !is_lambda
+                        && !(called_func.name == "malloc"
+                            || called_func.name == "realloc"
+                            || called_func.name == "free")
+                    {
+                        // For direct calls to regular functions, we pass a null environment pointer
+                        call_args.push(builder.ins().iconst(types::I64, 0));
+                    }
 
-                // Translate arguments
-                let mut call_args = Vec::new();
+                    // For C extern functions on non-Windows platforms, extend i32/u32 arguments to i64
+                    // A function is C extern if:
+                    // 1. It has C calling convention AND
+                    // 2. Either (a) it has no blocks (true extern) OR (b) it has External linkage (wrapper around extern)
+                    let is_c_extern = called_func.signature.calling_convention
+                        == crate::ir::CallingConvention::C
+                        && (is_extern_func
+                            || called_func.attributes.linkage == crate::ir::Linkage::External)
+                        && !cfg!(target_os = "windows");
 
-                // If this is a closure, prepend environment pointer as first argument
-                if let Some(env) = env_ptr_opt {
-                    call_args.push(env);
-                    eprintln!("Info: Passing environment pointer to closure call");
-                }
+                    if called_func.name.starts_with("rayzor_channel")
+                        || called_func.name == "Channel_init"
+                    {
+                        eprintln!("DEBUG: [In {}] Calling {} - is_c_extern={}, calling_conv={:?}, is_extern={}, linkage={:?}",
+                             function.name, called_func.name, is_c_extern, called_func.signature.calling_convention,
+                             is_extern_func, called_func.attributes.linkage);
+                    }
 
-                for arg_id in args {
-                    let arg_val = *value_map.get(arg_id)
-                        .ok_or_else(|| format!("Argument {:?} not found in value_map", arg_id))?;
-                    call_args.push(arg_val);
-                }
+                    for (i, arg_id) in args.iter().enumerate() {
+                        let mut arg_val = *value_map.get(arg_id).ok_or_else(|| {
+                            format!("Argument {:?} not found in value_map", arg_id)
+                        })?;
 
-                // Emit the indirect call instruction
-                let call_inst = builder.ins().call_indirect(sig_ref, func_val, &call_args);
+                        // Get the expected Cranelift type for this parameter
+                        let expected_cl_ty =
+                            if let Some(param) = called_func.signature.parameters.get(i) {
+                                Self::mir_type_to_cranelift_static(&param.ty)?
+                            } else {
+                                types::I64 // Default fallback
+                            };
 
-                // Get return value if the function returns something
-                if let Some(dest_reg) = dest {
-                    let results = builder.inst_results(call_inst);
-                    if !results.is_empty() {
-                        value_map.insert(*dest_reg, results[0]);
-                    } else {
-                        return Err(format!("Indirect call expected to return value but got none"));
+                        // Get the actual Cranelift type of the argument
+                        let actual_cl_ty = builder.func.dfg.value_type(arg_val);
+
+                        // Insert type conversion if needed (i32 -> i64 or i64 -> i32)
+                        if actual_cl_ty != expected_cl_ty {
+                            if actual_cl_ty == types::I32 && expected_cl_ty == types::I64 {
+                                // Sign-extend i32 to i64
+                                eprintln!("DEBUG: [CallDirect arg extension] {} param {} extending i32 to i64", called_func.name, i);
+                                arg_val = builder.ins().sextend(types::I64, arg_val);
+                            } else if actual_cl_ty == types::I64 && expected_cl_ty == types::I32 {
+                                // Reduce i64 to i32
+                                eprintln!("DEBUG: [CallDirect arg reduction] {} param {} reducing i64 to i32", called_func.name, i);
+                                arg_val = builder.ins().ireduce(types::I32, arg_val);
+                            }
+                            // Other type mismatches are not handled here
+                        }
+
+                        // For C extern functions, also apply integer promotion rules
+                        if is_c_extern {
+                            if let Some(param) = called_func.signature.parameters.get(i) {
+                                match &param.ty {
+                                    crate::ir::IrType::I32 => {
+                                        // C ABI: promote i32 to i64 on non-Windows
+                                        if builder.func.dfg.value_type(arg_val) == types::I32 {
+                                            eprintln!("!!! [C ABI] Extending arg {} for {} from i32 to i64", i, called_func.name);
+                                            arg_val = builder.ins().sextend(types::I64, arg_val);
+                                        }
+                                    }
+                                    crate::ir::IrType::U32 => {
+                                        // C ABI: promote u32 to i64 on non-Windows
+                                        if builder.func.dfg.value_type(arg_val) == types::I32 {
+                                            eprintln!("!!! [C ABI] Extending arg {} for {} from u32 to i64", i, called_func.name);
+                                            arg_val = builder.ins().uextend(types::I64, arg_val);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        call_args.push(arg_val);
+                    }
+
+                    // Emit the call instruction
+                    let call_inst = builder.ins().call(func_ref, &call_args);
+
+                    // Handle return value
+                    // Special case: If the function returns Void but MIR has a dest register,
+                    // just ignore the dest. This can happen with lambdas where the MIR was
+                    // generated before the function signature was fully resolved.
+                    if called_func.signature.return_type == crate::ir::IrType::Void {
+                        // Void function - ignore dest register if present
+                        // (MIR may have allocated one before signature was known)
+                    } else if let Some(dest_reg) = dest {
+                        if uses_sret {
+                            // For sret, the "return value" is the pointer to the sret slot
+                            value_map.insert(*dest_reg, sret_slot.unwrap());
+                        } else {
+                            // Normal return value
+                            let results = builder.inst_results(call_inst);
+                            if !results.is_empty() {
+                                let result_val = results[0];
+
+                                // Coerce return value to match expected MIR type
+                                // IMPORTANT: Only coerce if both the function signature return type AND
+                                // the MIR dest register type are primitive integers (not pointers/refs).
+                                // Truncating pointer values would cause runtime crashes.
+                                let actual_ret_ty = builder.func.dfg.value_type(result_val);
+
+                                // Check if the function signature says this is a primitive integer return
+                                let sig_return_is_primitive_int = matches!(
+                                    &called_func.signature.return_type,
+                                    crate::ir::IrType::I8
+                                        | crate::ir::IrType::I16
+                                        | crate::ir::IrType::I32
+                                        | crate::ir::IrType::I64
+                                        | crate::ir::IrType::U8
+                                        | crate::ir::IrType::U16
+                                        | crate::ir::IrType::U32
+                                        | crate::ir::IrType::U64
+                                        | crate::ir::IrType::Bool
+                                );
+
+                                // Check if MIR dest register type is also a primitive integer
+                                let mir_dest_is_primitive_int = function
+                                    .register_types
+                                    .get(dest_reg)
+                                    .map(|ty| {
+                                        matches!(
+                                            ty,
+                                            crate::ir::IrType::I8
+                                                | crate::ir::IrType::I16
+                                                | crate::ir::IrType::I32
+                                                | crate::ir::IrType::I64
+                                                | crate::ir::IrType::U8
+                                                | crate::ir::IrType::U16
+                                                | crate::ir::IrType::U32
+                                                | crate::ir::IrType::U64
+                                                | crate::ir::IrType::Bool
+                                        )
+                                    })
+                                    .unwrap_or(false);
+
+                                let mir_expected_ty = function
+                                    .register_types
+                                    .get(dest_reg)
+                                    .map(|ty| match ty {
+                                        crate::ir::IrType::I8 => types::I8,
+                                        crate::ir::IrType::I16 => types::I16,
+                                        crate::ir::IrType::I32 => types::I32,
+                                        crate::ir::IrType::I64 => types::I64,
+                                        crate::ir::IrType::U8 => types::I8,
+                                        crate::ir::IrType::U16 => types::I16,
+                                        crate::ir::IrType::U32 => types::I32,
+                                        crate::ir::IrType::U64 => types::I64,
+                                        crate::ir::IrType::Bool => types::I8,
+                                        _ => types::I64,
+                                    })
+                                    .unwrap_or(types::I64);
+
+                                // Only coerce if BOTH signature and MIR say it's a primitive int
+                                let final_val = if sig_return_is_primitive_int
+                                    && mir_dest_is_primitive_int
+                                    && actual_ret_ty != mir_expected_ty
+                                    && actual_ret_ty.is_int()
+                                    && mir_expected_ty.is_int()
+                                {
+                                    eprintln!("DEBUG Call return type coercion: actual={:?}, mir_expected={:?}, func={}",
+                                    actual_ret_ty, mir_expected_ty, called_func.name);
+                                    if actual_ret_ty.bits() > mir_expected_ty.bits() {
+                                        // Truncate i64 -> i32
+                                        builder.ins().ireduce(mir_expected_ty, result_val)
+                                    } else {
+                                        // Extend i32 -> i64
+                                        builder.ins().sextend(mir_expected_ty, result_val)
+                                    }
+                                } else {
+                                    result_val
+                                };
+
+                                value_map.insert(*dest_reg, final_val);
+                            } else {
+                                return Err(format!("Function call expected to return value but got none (func_id={:?}, dest={:?})", func_id, dest_reg));
+                            }
+                        }
                     }
                 }
             }
 
-            IrInstruction::MakeClosure { dest, func_id, captured_values } => {
+            IrInstruction::CallIndirect {
+                dest,
+                func_ptr,
+                args,
+                signature,
+                arg_ownership: _,
+            } => {
+                // Indirect function call (virtual call or closure call)
+                // In our unified representation, func_ptr is ALWAYS a pointer to a Closure struct
+                // { fn_ptr: i64, env_ptr: i64 }
+
+                // Prepare arguments
+                let mut call_args = Vec::new();
+                for arg in args {
+                    let arg_val = *value_map
+                        .get(arg)
+                        .ok_or_else(|| format!("Argument {:?} not found in value_map", arg))?;
+                    call_args.push(arg_val);
+                }
+
+                // Get the closure object pointer
+                let closure_ptr = *value_map.get(func_ptr).ok_or_else(|| {
+                    format!("Function pointer {:?} not found in value_map", func_ptr)
+                })?;
+
+                // Load function pointer from offset 0
+                let func_code_ptr = builder
+                    .ins()
+                    .load(types::I64, MemFlags::new(), closure_ptr, 0);
+
+                // Load environment pointer from offset 8
+                let env_ptr = builder
+                    .ins()
+                    .load(types::I64, MemFlags::new(), closure_ptr, 8);
+
+                // Add environment pointer as first argument
+                call_args.insert(0, env_ptr);
+
+                // Determine function signature
+                // We need to add the environment parameter to the signature
+                let mut sig = module.make_signature();
+
+                // Helper to add params to signature
+                let add_params_to_sig = |sig: &mut Signature,
+                                         param_types: &[IrType],
+                                         ret_type: &IrType|
+                 -> Result<(), String> {
+                    // Check return type size to determine sret
+                    let uses_sret = matches!(ret_type, IrType::Struct { .. });
+
+                    if uses_sret {
+                        sig.params
+                            .push(AbiParam::special(types::I64, ArgumentPurpose::StructReturn));
+                    }
+
+                    // Add environment parameter
+                    sig.params.push(AbiParam::new(types::I64));
+
+                    // Add user parameters
+                    for param_ty in param_types {
+                        let cl_ty = Self::mir_type_to_cranelift_static(param_ty)?;
+                        sig.params.push(AbiParam::new(cl_ty));
+                    }
+                    Ok(())
+                };
+
+                match signature {
+                    IrType::Function {
+                        params,
+                        return_type,
+                        varargs: _,
+                    } => {
+                        add_params_to_sig(&mut sig, params, return_type)?;
+
+                        // Add return type
+                        let cl_ret_ty = Self::mir_type_to_cranelift_static(return_type)?;
+                        if cl_ret_ty != types::INVALID {
+                            // Check for sret
+                            if !matches!(return_type.as_ref(), IrType::Struct { .. }) {
+                                sig.returns.push(AbiParam::new(cl_ret_ty));
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(format!(
+                            "Invalid signature type for CallIndirect: {:?}",
+                            signature
+                        ))
+                    }
+                }
+
+                let sig_ref = builder.import_signature(sig);
+
+                // Emit the indirect call instruction
+                let call_inst = builder
+                    .ins()
+                    .call_indirect(sig_ref, func_code_ptr, &call_args);
+                let results = builder.inst_results(call_inst);
+
+                // Map return value
+                if let Some(dest_id) = dest {
+                    if !results.is_empty() {
+                        value_map.insert(*dest_id, results[0]);
+                    }
+                }
+            }
+
+            IrInstruction::MakeClosure {
+                dest,
+                func_id,
+                captured_values,
+            } => {
                 // Create a closure object as a struct { fn_ptr: *u8, env_ptr: *u8 }
                 //
                 // Strategy:
@@ -1436,8 +1806,9 @@ impl CraneliftBackend {
                 // 4. Return pointer to closure object
 
                 // Get the Cranelift FuncId for the lambda
-                let cl_func_id = function_map.get(func_id)
-                    .ok_or_else(|| format!("Lambda function {:?} not found in function_map", func_id))?;
+                let cl_func_id = function_map.get(func_id).ok_or_else(|| {
+                    format!("Lambda function {:?} not found in function_map", func_id)
+                })?;
 
                 // Import function and get its address
                 let func_ref = module.declare_func_in_func(*cl_func_id, builder.func);
@@ -1451,7 +1822,8 @@ impl CraneliftBackend {
                     // Heap-allocate environment using malloc
                     // This is necessary because the closure may outlive the current stack frame
                     // (e.g., when passed to Thread.spawn())
-                    let malloc_func_id = *runtime_functions.get("malloc")
+                    let malloc_func_id = *runtime_functions
+                        .get("malloc")
                         .ok_or_else(|| "malloc not found in runtime_functions".to_string())?;
                     let malloc_func_ref = module.declare_func_in_func(malloc_func_id, builder.func);
 
@@ -1461,8 +1833,9 @@ impl CraneliftBackend {
 
                     // Store each captured value into the environment
                     for (i, captured_id) in captured_values.iter().enumerate() {
-                        let captured_val = *value_map.get(captured_id)
-                            .ok_or_else(|| format!("Captured value {:?} not found in value_map", captured_id))?;
+                        let captured_val = *value_map.get(captured_id).ok_or_else(|| {
+                            format!("Captured value {:?} not found in value_map", captured_id)
+                        })?;
 
                         // Calculate offset for this field (i * 8 bytes)
                         let offset = (i * 8) as i32;
@@ -1490,10 +1863,15 @@ impl CraneliftBackend {
                         };
 
                         // Store the i64 value at env_ptr + offset
-                        builder.ins().store(MemFlags::new(), value_to_store, env_addr, offset);
+                        builder
+                            .ins()
+                            .store(MemFlags::new(), value_to_store, env_addr, offset);
                     }
 
-                    eprintln!("Info: Allocated environment for {} captured variables", captured_values.len());
+                    eprintln!(
+                        "Info: Allocated environment for {} captured variables",
+                        captured_values.len()
+                    );
                     env_addr
                 } else {
                     // No captures - null environment pointer
@@ -1502,7 +1880,8 @@ impl CraneliftBackend {
 
                 // Heap-allocate closure object struct: { fn_ptr: i64, env_ptr: i64 }
                 // This is necessary because closures may outlive the current stack frame
-                let malloc_func_id = *runtime_functions.get("malloc")
+                let malloc_func_id = *runtime_functions
+                    .get("malloc")
                     .ok_or_else(|| "malloc not found in runtime_functions".to_string())?;
                 let malloc_func_ref = module.declare_func_in_func(malloc_func_id, builder.func);
 
@@ -1511,10 +1890,14 @@ impl CraneliftBackend {
                 let closure_obj_ptr = builder.inst_results(inst)[0];
 
                 // Store function pointer at offset 0
-                builder.ins().store(MemFlags::new(), func_addr, closure_obj_ptr, 0);
+                builder
+                    .ins()
+                    .store(MemFlags::new(), func_addr, closure_obj_ptr, 0);
 
                 // Store environment pointer at offset 8
-                builder.ins().store(MemFlags::new(), env_ptr, closure_obj_ptr, 8);
+                builder
+                    .ins()
+                    .store(MemFlags::new(), env_ptr, closure_obj_ptr, 8);
 
                 // Track the environment pointer for ClosureEnv instruction
                 closure_environments.insert(*dest, env_ptr);
@@ -1526,27 +1909,37 @@ impl CraneliftBackend {
             IrInstruction::ClosureFunc { dest, closure } => {
                 // Extract function pointer from closure
                 // For now, closure is just the function pointer
-                let closure_val = *value_map.get(closure)
+                let closure_val = *value_map
+                    .get(closure)
                     .ok_or_else(|| format!("Closure {:?} not found in value_map", closure))?;
                 value_map.insert(*dest, closure_val);
             }
 
-            IrInstruction::ClosureEnv { dest, closure } => {
-                // Extract environment pointer from closure
-                // The environment was stored during MakeClosure
-                if let Some(&env_ptr) = closure_environments.get(closure) {
-                    // Closure has an environment, return it
-                    value_map.insert(*dest, env_ptr);
+            IrInstruction::ClosureEnv { dest, closure: _ } => {
+                // Extract environment pointer from the CURRENT function's environment parameter
+                // The 'closure' argument to this instruction is usually the closure object itself,
+                // but in our unified model, the environment is passed as a hidden parameter.
+                // The MIR might still pass the closure object, but we just need the env param.
+
+                if let Some(env_val) = current_env_param {
+                    value_map.insert(*dest, env_val);
                 } else {
-                    // No environment for this closure (no captures), return null
+                    // Should not happen if we set up current_env_param correctly
+                    // But for safety, return null
                     let null_ptr = builder.ins().iconst(types::I64, 0);
                     value_map.insert(*dest, null_ptr);
                 }
             }
 
-            IrInstruction::Cast { dest, src, from_ty, to_ty } => {
+            IrInstruction::Cast {
+                dest,
+                src,
+                from_ty,
+                to_ty,
+            } => {
                 // Type casting (e.g., int to float, float to int)
-                let src_val = *value_map.get(src)
+                let src_val = *value_map
+                    .get(src)
                     .ok_or_else(|| format!("Cast source {:?} not found in value_map", src))?;
 
                 let from_cl_ty = Self::mir_type_to_cranelift_static(from_ty)?;
@@ -1576,29 +1969,44 @@ impl CraneliftBackend {
                     // Same type - just copy
                     (from, to) if from == to => src_val,
 
-                    _ => return Err(format!("Unsupported cast from {:?} to {:?}", from_ty, to_ty)),
+                    _ => {
+                        return Err(format!(
+                            "Unsupported cast from {:?} to {:?}",
+                            from_ty, to_ty
+                        ))
+                    }
                 };
 
                 value_map.insert(*dest, result);
             }
 
-            IrInstruction::GetElementPtr { dest, ptr, indices, ty } => {
+            IrInstruction::GetElementPtr {
+                dest,
+                ptr,
+                indices,
+                ty,
+            } => {
                 // Get Element Pointer - compute address of field within struct
                 // This is similar to LLVM's GEP instruction
 
                 // eprintln!("DEBUG Cranelift: GetElementPtr - ptr={:?}, indices={:?}, ty={:?}", ptr, indices, ty);
 
-                let ptr_val = *value_map.get(ptr)
+                let ptr_val = *value_map
+                    .get(ptr)
                     .ok_or_else(|| format!("GEP ptr {:?} not found in value_map", ptr))?;
 
                 // For now, we assume a single index (field index in struct)
                 // More complex GEP operations (nested structs, arrays) need additional work
                 if indices.len() != 1 {
-                    return Err(format!("GEP with {} indices not yet supported (only single index supported)", indices.len()));
+                    return Err(format!(
+                        "GEP with {} indices not yet supported (only single index supported)",
+                        indices.len()
+                    ));
                 }
 
                 let index_id = indices[0];
-                let index_val = *value_map.get(&index_id)
+                let index_val = *value_map
+                    .get(&index_id)
                     .ok_or_else(|| format!("GEP index {:?} not found in value_map", index_id))?;
 
                 // Get the size of the element type
@@ -1626,22 +2034,33 @@ impl CraneliftBackend {
                 value_map.insert(*dest, result_ptr);
             }
 
-            IrInstruction::ExtractValue { dest, aggregate, indices } => {
+            IrInstruction::ExtractValue {
+                dest,
+                aggregate,
+                indices,
+            } => {
                 // For struct field extraction, we need to calculate the offset and load
                 // Get the aggregate value (should be a pointer to struct on stack)
-                let aggregate_val = *value_map.get(aggregate)
+                let aggregate_val = *value_map
+                    .get(aggregate)
                     .ok_or_else(|| format!("Aggregate value {:?} not found", aggregate))?;
 
                 // For now, handle simple single-index case (most common for structs)
                 if indices.len() != 1 {
-                    return Err(format!("ExtractValue with multiple indices not yet supported: {:?}", indices));
+                    return Err(format!(
+                        "ExtractValue with multiple indices not yet supported: {:?}",
+                        indices
+                    ));
                 }
 
                 let field_index = indices[0] as usize;
 
                 // Get the struct type from the aggregate - check both parameters and locals
                 // If not found, try to find the Load instruction that produced this value
-                let aggregate_ty = function.signature.parameters.iter()
+                let aggregate_ty = function
+                    .signature
+                    .parameters
+                    .iter()
                     .find(|p| p.reg == *aggregate)
                     .map(|p| &p.ty)
                     .or_else(|| function.locals.get(aggregate).map(|local| &local.ty))
@@ -1664,12 +2083,16 @@ impl CraneliftBackend {
                 let (field_offset, field_ty) = match aggregate_ty {
                     IrType::Struct { fields, .. } => {
                         if field_index >= fields.len() {
-                            return Err(format!("Field index {} out of bounds for struct with {} fields",
-                                field_index, fields.len()));
+                            return Err(format!(
+                                "Field index {} out of bounds for struct with {} fields",
+                                field_index,
+                                fields.len()
+                            ));
                         }
 
                         // Calculate offset: sum of sizes of all previous fields
-                        let offset: usize = fields.iter()
+                        let offset: usize = fields
+                            .iter()
                             .take(field_index)
                             .map(|f| CraneliftBackend::type_size(&f.ty))
                             .sum();
@@ -1678,7 +2101,10 @@ impl CraneliftBackend {
                         (offset, &field.ty)
                     }
                     _ => {
-                        return Err(format!("ExtractValue on non-struct type: {:?}", aggregate_ty));
+                        return Err(format!(
+                            "ExtractValue on non-struct type: {:?}",
+                            aggregate_ty
+                        ));
                     }
                 };
 
@@ -1688,23 +2114,52 @@ impl CraneliftBackend {
 
                 // Load the field value
                 let field_cl_ty = CraneliftBackend::mir_type_to_cranelift_static(field_ty)?;
-                let field_value = builder.ins().load(field_cl_ty, MemFlags::new(), field_ptr, 0);
+                let field_value = builder
+                    .ins()
+                    .load(field_cl_ty, MemFlags::new(), field_ptr, 0);
 
                 value_map.insert(*dest, field_value);
             }
 
             IrInstruction::FunctionRef { dest, func_id } => {
                 // Get function reference as a pointer
-                let cl_func_id = *function_map.get(func_id)
+                let cl_func_id = *function_map
+                    .get(func_id)
                     .ok_or_else(|| format!("Function {:?} not found in function_map", func_id))?;
 
                 // Import the function reference into the current function
                 let func_ref = module.declare_func_in_func(cl_func_id, builder.func);
 
                 // Convert function reference to an address (i64 pointer)
-                let func_ptr = builder.ins().func_addr(types::I64, func_ref);
+                let func_code_ptr = builder.ins().func_addr(types::I64, func_ref);
 
-                value_map.insert(*dest, func_ptr);
+                // Create a Closure object { fn_ptr, env_ptr }
+                // Even for static functions, we represent them as closures with null environment
+                // This unifies the representation for CallIndirect
+
+                // Allocate closure object (16 bytes)
+                // We use malloc for consistency, though we could potentially optimize this
+                let malloc_func_id = *runtime_functions
+                    .get("malloc")
+                    .ok_or_else(|| "malloc not found in runtime_functions".to_string())?;
+                let malloc_func_ref = module.declare_func_in_func(malloc_func_id, builder.func);
+
+                let closure_size = builder.ins().iconst(types::I64, 16); // 2 pointers
+                let inst = builder.ins().call(malloc_func_ref, &[closure_size]);
+                let closure_obj_ptr = builder.inst_results(inst)[0];
+
+                // Store function pointer at offset 0
+                builder
+                    .ins()
+                    .store(MemFlags::new(), func_code_ptr, closure_obj_ptr, 0);
+
+                // Store null environment at offset 8
+                let null_ptr = builder.ins().iconst(types::I64, 0);
+                builder
+                    .ins()
+                    .store(MemFlags::new(), null_ptr, closure_obj_ptr, 8);
+
+                value_map.insert(*dest, closure_obj_ptr);
             }
 
             IrInstruction::Undef { dest, ty } => {
@@ -1733,9 +2188,12 @@ impl CraneliftBackend {
             IrInstruction::CreateStruct { dest, ty, fields } => {
                 // Allocate stack space for the struct
                 let struct_size = match ty {
-                    IrType::Struct { fields: field_tys, .. } => {
-                        field_tys.iter().map(|f| CraneliftBackend::type_size(&f.ty)).sum::<usize>()
-                    }
+                    IrType::Struct {
+                        fields: field_tys, ..
+                    } => field_tys
+                        .iter()
+                        .map(|f| CraneliftBackend::type_size(&f.ty))
+                        .sum::<usize>(),
                     _ => return Err(format!("CreateStruct with non-struct type: {:?}", ty)),
                 };
 
@@ -1749,13 +2207,19 @@ impl CraneliftBackend {
                 let slot_addr = builder.ins().stack_addr(types::I64, struct_slot, 0);
 
                 // Store each field at its offset
-                if let IrType::Struct { fields: field_tys, .. } = ty {
+                if let IrType::Struct {
+                    fields: field_tys, ..
+                } = ty
+                {
                     let mut offset = 0;
                     for (i, field_val_id) in fields.iter().enumerate() {
-                        let field_val = *value_map.get(field_val_id)
+                        let field_val = *value_map
+                            .get(field_val_id)
                             .ok_or_else(|| format!("Struct field {:?} not found", field_val_id))?;
 
-                        builder.ins().store(MemFlags::new(), field_val, slot_addr, offset as i32);
+                        builder
+                            .ins()
+                            .store(MemFlags::new(), field_val, slot_addr, offset as i32);
 
                         // Move offset forward by field size
                         offset += CraneliftBackend::type_size(&field_tys[i].ty);
@@ -1766,7 +2230,12 @@ impl CraneliftBackend {
                 value_map.insert(*dest, slot_addr);
             }
 
-            IrInstruction::CreateUnion { dest, discriminant, value, ty: _ } => {
+            IrInstruction::CreateUnion {
+                dest,
+                discriminant,
+                value,
+                ty: _,
+            } => {
                 // For now, represent union as a struct { tag: i32, value_ptr: i64 }
                 // This is a simplified representation - proper implementation would use
                 // tagged union with max variant size
@@ -1775,7 +2244,8 @@ impl CraneliftBackend {
                 let tag_val = builder.ins().iconst(types::I32, *discriminant as i64);
 
                 // Get the value (for now, just use the value as-is or convert to pointer)
-                let value_val = *value_map.get(value)
+                let value_val = *value_map
+                    .get(value)
                     .ok_or_else(|| format!("Union value {:?} not found", value))?;
 
                 // For simplicity, store tag and value separately in a struct-like layout
@@ -1793,20 +2263,29 @@ impl CraneliftBackend {
 
                 // Store value at offset 8 (after padding)
                 let value_offset = 8i32;
-                builder.ins().store(MemFlags::new(), value_val, slot_addr, value_offset);
+                builder
+                    .ins()
+                    .store(MemFlags::new(), value_val, slot_addr, value_offset);
 
                 // Return the stack address as the union value
                 value_map.insert(*dest, slot_addr);
             }
 
-            IrInstruction::PtrAdd { dest, ptr, offset, ty } => {
+            IrInstruction::PtrAdd {
+                dest,
+                ptr,
+                offset,
+                ty,
+            } => {
                 // Pointer arithmetic: ptr + offset
                 // Get pointer value
-                let ptr_val = *value_map.get(ptr)
+                let ptr_val = *value_map
+                    .get(ptr)
                     .ok_or_else(|| format!("PtrAdd ptr {:?} not found", ptr))?;
 
                 // Get offset value
-                let offset_val = *value_map.get(offset)
+                let offset_val = *value_map
+                    .get(offset)
                     .ok_or_else(|| format!("PtrAdd offset {:?} not found", offset))?;
 
                 // Get the size of the pointee type
@@ -1854,18 +2333,24 @@ impl CraneliftBackend {
                 // If using sret, write the return value through the pointer and return void
                 if let Some(sret) = sret_ptr {
                     if let Some(val_id) = value {
-                        let val = *value_map.get(val_id)
+                        let val = *value_map
+                            .get(val_id)
                             .ok_or_else(|| format!("Return value {:?} not found", val_id))?;
 
                         // Get the struct type to determine size
-                        let struct_ty = function.register_types.get(val_id)
+                        let struct_ty = function
+                            .register_types
+                            .get(val_id)
                             .or_else(|| function.locals.get(val_id).map(|l| &l.ty))
-                            .ok_or_else(|| format!("Cannot find type for return value {:?}", val_id))?;
+                            .ok_or_else(|| {
+                                format!("Cannot find type for return value {:?}", val_id)
+                            })?;
 
                         let struct_size = match struct_ty {
-                            IrType::Struct { fields, .. } => {
-                                fields.iter().map(|f| CraneliftBackend::type_size(&f.ty)).sum::<usize>()
-                            }
+                            IrType::Struct { fields, .. } => fields
+                                .iter()
+                                .map(|f| CraneliftBackend::type_size(&f.ty))
+                                .sum::<usize>(),
                             _ => return Err(format!("sret with non-struct type: {:?}", struct_ty)),
                         };
 
@@ -1874,11 +2359,22 @@ impl CraneliftBackend {
                         if let IrType::Struct { fields, .. } = struct_ty {
                             let mut offset = 0;
                             for field in fields {
-                                let field_ty = CraneliftBackend::mir_type_to_cranelift_static(&field.ty)?;
+                                let field_ty =
+                                    CraneliftBackend::mir_type_to_cranelift_static(&field.ty)?;
                                 // Load from source struct
-                                let field_val = builder.ins().load(field_ty, MemFlags::new(), val, offset as i32);
+                                let field_val = builder.ins().load(
+                                    field_ty,
+                                    MemFlags::new(),
+                                    val,
+                                    offset as i32,
+                                );
                                 // Store to sret destination
-                                builder.ins().store(MemFlags::new(), field_val, sret, offset as i32);
+                                builder.ins().store(
+                                    MemFlags::new(),
+                                    field_val,
+                                    sret,
+                                    offset as i32,
+                                );
                                 // Move offset forward
                                 offset += CraneliftBackend::type_size(&field.ty);
                             }
@@ -1890,12 +2386,14 @@ impl CraneliftBackend {
                     // Normal return path
                     if let Some(val_id) = value {
                         // eprintln!("DEBUG Cranelift: Looking up return value {:?} in value_map", val_id);
-                        let val = *value_map.get(val_id)
-                            .ok_or_else(|| {
-                                eprintln!("ERROR: Return value {:?} NOT FOUND in value_map!", val_id);
-                                eprintln!("ERROR: Available values: {:?}", value_map.keys().collect::<Vec<_>>());
-                                format!("Return value {:?} not found", val_id)
-                            })?;
+                        let val = *value_map.get(val_id).ok_or_else(|| {
+                            eprintln!("ERROR: Return value {:?} NOT FOUND in value_map!", val_id);
+                            eprintln!(
+                                "ERROR: Available values: {:?}",
+                                value_map.keys().collect::<Vec<_>>()
+                            );
+                            format!("Return value {:?} not found", val_id)
+                        })?;
                         // eprintln!("DEBUG Cranelift: Found value, emitting return instruction");
                         builder.ins().return_(&[val]);
                     } else {
@@ -1906,45 +2404,86 @@ impl CraneliftBackend {
             }
 
             IrTerminator::Branch { target } => {
-                let cl_block = *block_map.get(target)
+                let cl_block = *block_map
+                    .get(target)
                     .ok_or_else(|| format!("Branch target {:?} not found", target))?;
 
                 // Get current block to find phi node arguments
-                let current_block_id = function.cfg.blocks.iter()
+                let current_block_id = function
+                    .cfg
+                    .blocks
+                    .iter()
                     .find(|(_, block)| std::ptr::eq(&block.terminator, terminator))
                     .map(|(id, _)| *id)
                     .ok_or_else(|| "Cannot find current block".to_string())?;
 
                 // Collect phi node arguments for the target block (with type coercion if needed)
-                let phi_args = Self::collect_phi_args_with_coercion(value_map, function, *target, current_block_id, builder)?;
+                let phi_args = Self::collect_phi_args_with_coercion(
+                    value_map,
+                    function,
+                    *target,
+                    current_block_id,
+                    builder,
+                )?;
 
                 builder.ins().jump(cl_block, &phi_args);
             }
 
-            IrTerminator::CondBranch { condition, true_target, false_target } => {
-                let cond_val = *value_map.get(condition)
+            IrTerminator::CondBranch {
+                condition,
+                true_target,
+                false_target,
+            } => {
+                let cond_val = *value_map
+                    .get(condition)
                     .ok_or_else(|| format!("Condition value {:?} not found", condition))?;
 
-                let true_block = *block_map.get(true_target)
+                let true_block = *block_map
+                    .get(true_target)
                     .ok_or_else(|| format!("True target {:?} not found", true_target))?;
-                let false_block = *block_map.get(false_target)
+                let false_block = *block_map
+                    .get(false_target)
                     .ok_or_else(|| format!("False target {:?} not found", false_target))?;
 
                 // Get current block to find phi node arguments
-                let current_block_id = function.cfg.blocks.iter()
+                let current_block_id = function
+                    .cfg
+                    .blocks
+                    .iter()
                     .find(|(_, block)| std::ptr::eq(&block.terminator, terminator))
                     .map(|(id, _)| *id)
                     .ok_or_else(|| "Cannot find current block".to_string())?;
 
                 // Collect phi node arguments for both targets (with type coercion if needed)
-                let true_phi_args = Self::collect_phi_args_with_coercion(value_map, function, *true_target, current_block_id, builder)?;
-                let false_phi_args = Self::collect_phi_args_with_coercion(value_map, function, *false_target, current_block_id, builder)?;
+                let true_phi_args = Self::collect_phi_args_with_coercion(
+                    value_map,
+                    function,
+                    *true_target,
+                    current_block_id,
+                    builder,
+                )?;
+                let false_phi_args = Self::collect_phi_args_with_coercion(
+                    value_map,
+                    function,
+                    *false_target,
+                    current_block_id,
+                    builder,
+                )?;
 
-                builder.ins().brif(cond_val, true_block, &true_phi_args, false_block, &false_phi_args);
+                builder.ins().brif(
+                    cond_val,
+                    true_block,
+                    &true_phi_args,
+                    false_block,
+                    &false_phi_args,
+                );
             }
 
             IrTerminator::Unreachable => {
-                builder.ins().trap(cranelift_codegen::ir::TrapCode::UnreachableCodeReached);
+                // Use a user trap code for unreachable (100 = unreachable)
+                builder
+                    .ins()
+                    .trap(cranelift_codegen::ir::TrapCode::unwrap_user(100));
             }
 
             // TODO: Implement Switch and NoReturn
@@ -1989,8 +2528,9 @@ impl CraneliftBackend {
             }
             IrValue::Function(mir_func_id) => {
                 // Get the Cranelift FuncId for this MIR function
-                let cl_func_id = *function_map.get(mir_func_id)
-                    .ok_or_else(|| format!("Function {:?} not found in function_map", mir_func_id))?;
+                let cl_func_id = *function_map.get(mir_func_id).ok_or_else(|| {
+                    format!("Function {:?} not found in function_map", mir_func_id)
+                })?;
 
                 // Import the function reference into the current function
                 let func_ref = module.declare_func_in_func(cl_func_id, builder.func);
@@ -2052,25 +2592,35 @@ impl CraneliftBackend {
     }
 
     /// Call the main function (assuming it's void main() -> void)
+    ///
+    /// This function also waits for all spawned threads to complete before returning,
+    /// ensuring that JIT code memory remains valid while threads are executing.
     pub fn call_main(&mut self, module: &crate::ir::IrModule) -> Result<(), String> {
         // Find the main function in the MIR module
         // Try various naming conventions: main, Main_main, Main.main, etc.
-        let main_func = module.functions.values()
+        let main_func = module
+            .functions
+            .values()
             .find(|f| {
-                f.name == "main" ||
-                f.name == "Main_main" ||
-                f.name == "Main.main" ||
-                f.name.ends_with("_main") ||
-                f.name.ends_with(".main")
+                f.name == "main"
+                    || f.name == "Main_main"
+                    || f.name == "Main.main"
+                    || f.name.ends_with("_main")
+                    || f.name.ends_with(".main")
             })
             .ok_or_else(|| {
                 // List available functions for debugging
-                let func_names: Vec<_> = module.functions.values()
+                let func_names: Vec<_> = module
+                    .functions
+                    .values()
                     .filter(|f| !f.cfg.blocks.is_empty()) // Skip externs
                     .map(|f| &f.name)
                     .take(10)
                     .collect();
-                format!("No main function found in module. Available functions (first 10): {:?}", func_names)
+                format!(
+                    "No main function found in module. Available functions (first 10): {:?}",
+                    func_names
+                )
             })?;
 
         // Get the function pointer
@@ -2084,6 +2634,12 @@ impl CraneliftBackend {
             let main_fn: extern "C" fn() = std::mem::transmute(func_ptr);
             main_fn();
         }
+
+        // CRITICAL: Wait for all spawned threads to complete before returning
+        // This prevents use-after-free when threads are still executing JIT code
+        // and the JIT module is dropped
+        eprintln!("  🔄 Waiting for spawned threads to complete...");
+        rayzor_runtime::concurrency::rayzor_wait_all_threads();
 
         println!("  ✅ Execution completed successfully!");
 
@@ -2109,7 +2665,7 @@ impl CraneliftBackend {
             IrType::Ptr(_) | IrType::Ref(_) => 8, // Assume 64-bit pointers
             IrType::Void => 0,
             IrType::Any => 8, // Boxed value pointer
-            _ => 8, // Default to pointer size
+            _ => 8,           // Default to pointer size
         }
     }
 }

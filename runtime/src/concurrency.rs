@@ -9,20 +9,202 @@
 //! - Arc: Wraps std::sync::Arc for atomic reference counting
 //! - Mutex: Wraps std::sync::Mutex for mutual exclusion
 //! - Channel: Wraps std::sync::mpsc for message passing
+//!
+//! # Thread Safety with JIT Code
+//!
+//! The runtime tracks all spawned threads globally to ensure that threads
+//! executing JIT-compiled code don't outlive the JIT module. Call
+//! `rayzor_wait_all_threads()` before dropping the JIT module.
 
+use std::collections::HashMap;
+use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use std::ptr;
+
+// Native pthread support for Apple Silicon
+#[cfg(target_os = "macos")]
+use libc::{pthread_create, pthread_join, pthread_t};
+
+// ============================================================================
+// Memory Safety Infrastructure
+// ============================================================================
+
+/// Magic numbers for validating handle types
+const MAGIC_THREAD: u64 = 0xDEADBEEF_00000001;
+const MAGIC_ARC: u64 = 0xDEADBEEF_00000002;
+const MAGIC_MUTEX: u64 = 0xDEADBEEF_00000003;
+const MAGIC_MUTEX_GUARD: u64 = 0xDEADBEEF_00000004;
+
+/// Panic guard that ensures cleanup runs even on panic
+struct PanicGuard<F: FnOnce()> {
+    cleanup: Option<F>,
+}
+
+impl<F: FnOnce()> PanicGuard<F> {
+    fn new(cleanup: F) -> Self {
+        Self {
+            cleanup: Some(cleanup),
+        }
+    }
+
+    fn disarm(mut self) {
+        self.cleanup = None;
+    }
+}
+
+impl<F: FnOnce()> Drop for PanicGuard<F> {
+    fn drop(&mut self) {
+        if let Some(cleanup) = self.cleanup.take() {
+            cleanup();
+        }
+    }
+}
+
+// ============================================================================
+// Global Thread Tracking
+// ============================================================================
+
+/// Global counter for thread IDs
+static THREAD_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Global count of active threads (spawned but not yet joined)
+static ACTIVE_THREAD_COUNT: AtomicU64 = AtomicU64::new(0);
+
+lazy_static::lazy_static! {
+    /// Global registry of all active thread handles
+    /// Maps thread ID -> JoinHandle wrapped in an Option (taken when joined)
+    static ref THREAD_REGISTRY: Mutex<HashMap<u64, Option<JoinHandle<i32>>>> =
+        Mutex::new(HashMap::new());
+}
+
+/// Wait for all spawned threads to complete
+/// This should be called before dropping the JIT module to prevent use-after-free
+#[no_mangle]
+pub extern "C" fn rayzor_wait_all_threads() {
+    eprintln!("[DEBUG rayzor_wait_all_threads] Waiting for all threads to complete...");
+
+    // Keep looping until all threads are done
+    loop {
+        let count = ACTIVE_THREAD_COUNT.load(Ordering::SeqCst);
+        if count == 0 {
+            eprintln!("[DEBUG rayzor_wait_all_threads] All threads completed");
+            break;
+        }
+        eprintln!(
+            "[DEBUG rayzor_wait_all_threads] {} threads still active, waiting...",
+            count
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Get the current count of active threads
+#[no_mangle]
+pub extern "C" fn rayzor_active_thread_count() -> u64 {
+    ACTIVE_THREAD_COUNT.load(Ordering::SeqCst)
+}
 
 // ============================================================================
 // Thread Implementation
 // ============================================================================
 
-/// Opaque thread handle
+/// Opaque thread handle with memory safety validation
 /// Wraps JoinHandle<i32> to support returning results
 struct ThreadHandle {
+    /// Magic number for validation
+    magic: u64,
+    /// Generation counter to detect stale handles
+    generation: u64,
+    /// The actual thread handle (None if already joined)
     handle: Option<JoinHandle<i32>>,
+    /// Unique ID for tracking
+    thread_id: u64,
+    /// Flag to detect double-join attempts
+    joined: bool,
+}
+
+impl ThreadHandle {
+    /// Validate that this is a legitimate ThreadHandle
+    fn validate(&self) -> Result<(), &'static str> {
+        if self.magic != MAGIC_THREAD {
+            return Err("Invalid thread handle: magic number mismatch");
+        }
+        if self.joined {
+            return Err("Thread handle already joined");
+        }
+        Ok(())
+    }
+}
+
+/// Context passed to pthread thread function
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct PthreadContext {
+    closure: *const u8,
+    env: *const u8,
+    result: i32,
+}
+
+/// pthread thread entry point
+#[cfg(target_os = "macos")]
+extern "C" fn pthread_entry(arg: *mut libc::c_void) -> *mut libc::c_void {
+    unsafe {
+        let ctx = &mut *(arg as *mut PthreadContext);
+
+        // Cast closure to function pointer
+        type ClosureFn = extern "C" fn(*const u8) -> i32;
+        let func: ClosureFn = std::mem::transmute(ctx.closure);
+
+        // Call the JIT'd function
+        ctx.result = func(ctx.env);
+
+        // Return the result
+        ctx.result as usize as *mut libc::c_void
+    }
+}
+
+/// Native pthread handle - stores only the pthread_t
+/// The context is owned by the pthread entry function
+#[cfg(target_os = "macos")]
+struct NativePthreadHandle {
+    thread: pthread_t,
+    ctx_ptr: *mut PthreadContext, // Raw pointer, not owned - thread owns it
+}
+
+/// ARM64-specific memory barriers and JIT write protection for JIT code execution
+///
+/// On macOS ARM64 with MAP_JIT memory:
+/// - pthread_jit_write_protect_np(0): Write mode (can write, cannot execute)
+/// - pthread_jit_write_protect_np(1): Execute mode (can execute, cannot write)
+///
+/// DSB SY: Data Synchronization Barrier - ensures all memory accesses complete
+/// ISB SY: Instruction Synchronization Barrier - flushes the instruction pipeline
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[inline(always)]
+fn arm64_jit_barrier() {
+    unsafe {
+        // Switch to execute mode - required for spawned threads to execute JIT code
+        // Newly spawned threads start in write mode by default, so we must switch
+        unsafe extern "C" {
+            fn pthread_jit_write_protect_np(enabled: libc::c_int);
+        }
+        pthread_jit_write_protect_np(1);
+
+        // DSB SY: Wait for all memory operations to complete
+        // This ensures the JIT code is fully written to memory
+        std::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        // ISB SY: Flush the instruction pipeline
+        // This ensures we fetch fresh instructions from memory
+        std::arch::asm!("isb sy", options(nostack, preserves_flags));
+    }
+}
+
+#[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
+#[inline(always)]
+fn arm64_jit_barrier() {
+    // No-op on other architectures
 }
 
 /// Spawn a new thread with a closure
@@ -35,47 +217,34 @@ pub unsafe extern "C" fn rayzor_thread_spawn(
     closure: *const u8,
     closure_env: *const u8,
 ) -> *mut u8 {
-    // Validate pointers (basic sanity check)
+    // Simple null check
     if closure.is_null() {
         return ptr::null_mut();
     }
 
-    // The closure is a function pointer that takes the environment and returns an i32
-    // Signature: extern "C" fn(*const u8) -> i32
-    type ClosureFn = unsafe extern "C" fn(*const u8) -> i32;
-
-    // Transmute the closure pointer to the function type
-    let func: ClosureFn = std::mem::transmute(closure);
-
-    // Convert the environment pointer to usize for Send
-    // Note: This is safe because the environment is heap-allocated by MakeClosure
-    // and ownership is transferred to the thread
+    // Convert pointers to usize for Send
     let env_addr = closure_env as usize;
+    let func_addr = closure as usize;
 
-    // Spawn thread and call the closure with its environment
+    // Increment active thread count BEFORE spawning
+    ACTIVE_THREAD_COUNT.fetch_add(1, Ordering::SeqCst);
+
+    // Execute barrier on main thread before spawning to ensure JIT code is visible
+    arm64_jit_barrier();
+
+    // Spawn thread
     let handle = thread::spawn(move || {
-        // SAFETY: We're converting back from usize to the pointer
-        // The closure owns the environment, so this is safe
-        unsafe {
-            let env_ptr = env_addr as *const u8;
+        // Execute barrier before calling JIT code
+        arm64_jit_barrier();
 
-            // Call the function - catch panics for better debugging
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                func(env_ptr)
-            }));
-
-            match result {
-                Ok(val) => val,
-                Err(_) => 0, // Return 0 on panic
-            }
-        }
+        type ClosureFn = extern "C" fn(*const u8) -> i32;
+        let env_ptr = env_addr as *const u8;
+        let func: ClosureFn = unsafe { std::mem::transmute(func_addr) };
+        func(env_ptr)
     });
 
-    let thread_handle = Box::new(ThreadHandle {
-        handle: Some(handle),
-    });
-
-    Box::into_raw(thread_handle) as *mut u8
+    // Return simple handle
+    Box::into_raw(Box::new(handle)) as *mut u8
 }
 
 /// Join a thread and wait for it to complete
@@ -90,30 +259,23 @@ pub unsafe extern "C" fn rayzor_thread_join(handle: *mut u8) -> *mut u8 {
         return ptr::null_mut();
     }
 
-    let mut thread_handle = Box::from_raw(handle as *mut ThreadHandle);
-
-    if let Some(join_handle) = thread_handle.handle.take() {
-        match join_handle.join() {
-            Ok(result) => {
-                // Cast i32 result to pointer (this is how Haxe Int is passed back)
-                result as usize as *mut u8
-            }
-            Err(_) => ptr::null_mut(),
-        }
-    } else {
-        ptr::null_mut()
-    }
+    // Simple implementation using std::thread
+    let boxed_handle: Box<JoinHandle<i32>> = Box::from_raw(handle as *mut JoinHandle<i32>);
+    let result = boxed_handle.join().unwrap_or(-1);
+    ACTIVE_THREAD_COUNT.fetch_sub(1, Ordering::SeqCst);
+    result as usize as *mut u8
 }
 
 /// Check if a thread has finished executing
 #[no_mangle]
-pub unsafe extern "C" fn rayzor_thread_is_finished(handle: *const u8) -> bool {
-    if handle.is_null() {
+pub unsafe extern "C" fn rayzor_thread_is_finished(_handle: *const u8) -> bool {
+    // Note: pthread doesn't have a simple is_finished check
+    // This is a best-effort implementation
+    if _handle.is_null() {
         return true;
     }
-
-    let thread_handle = &*(handle as *const ThreadHandle);
-    thread_handle.handle.is_none() || thread_handle.handle.as_ref().unwrap().is_finished()
+    // Return false to indicate we don't know - caller should join to be sure
+    false
 }
 
 /// Yield execution to other threads
@@ -136,7 +298,9 @@ pub extern "C" fn rayzor_thread_current_id() -> u64 {
     // Convert ThreadId to u64 (simplified - uses debug format hash)
     let id = thread::current().id();
     // Use a simple hash of the debug representation
-    format!("{:?}", id).bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64))
+    format!("{:?}", id)
+        .bytes()
+        .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64))
 }
 
 // ============================================================================
@@ -167,21 +331,31 @@ pub unsafe extern "C" fn rayzor_arc_init(value: *mut u8) -> *mut u8 {
 /// - arc must be a valid Arc pointer from rayzor_arc_init or rayzor_arc_clone
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_arc_clone(arc: *const u8) -> *mut u8 {
+    eprintln!("[DEBUG rayzor_arc_clone] Called with arc={:?}", arc);
+
     if arc.is_null() {
+        eprintln!("[SAFETY ERROR] rayzor_arc_clone: NULL arc pointer");
         return ptr::null_mut();
     }
 
     // Reconstruct Arc from raw pointer (without decrementing count)
     let arc_ref = Arc::from_raw(arc as *const *mut u8);
+    eprintln!(
+        "[DEBUG rayzor_arc_clone] Arc reconstructed, strong_count={}",
+        Arc::strong_count(&arc_ref)
+    );
 
     // Clone it (increments ref count)
     let cloned = Arc::clone(&arc_ref);
+    let cloned_ptr = Arc::into_raw(cloned) as *mut u8;
+    eprintln!("[DEBUG rayzor_arc_clone] Cloned to {:?}", cloned_ptr);
 
     // Forget the original to avoid decrementing ref count
+    // Note: forget cannot panic, so no guard needed
     std::mem::forget(arc_ref);
 
     // Return new Arc as raw pointer
-    Arc::into_raw(cloned) as *mut u8
+    cloned_ptr
 }
 
 /// Get the inner value pointer from an Arc
@@ -191,20 +365,27 @@ pub unsafe extern "C" fn rayzor_arc_clone(arc: *const u8) -> *mut u8 {
 /// - returned pointer is valid as long as Arc exists
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_arc_get(arc: *const u8) -> *const u8 {
+    eprintln!("[DEBUG rayzor_arc_get] Called with arc={:?}", arc);
+
     if arc.is_null() {
+        eprintln!("[SAFETY ERROR] rayzor_arc_get: NULL arc pointer");
         return ptr::null();
     }
 
     // Reconstruct Arc temporarily
-    // Arc<*mut u8> stores a pointer to the inner value
     let arc_ref = Arc::from_raw(arc as *const *mut u8);
+    eprintln!(
+        "[DEBUG rayzor_arc_get] Arc reconstructed, strong_count={}",
+        Arc::strong_count(&arc_ref)
+    );
 
-    // Single dereference to get the inner *mut u8 value (the channel/mutex/etc pointer)
+    // Get the inner value
     let value_ptr = *arc_ref as *const u8;
 
     // Forget to avoid decrementing ref count
     std::mem::forget(arc_ref);
 
+    eprintln!("[DEBUG rayzor_arc_get] Returning {:?}", value_ptr);
     value_ptr
 }
 
@@ -268,9 +449,10 @@ struct MutexHandle {
     mutex: Mutex<*mut u8>,
 }
 
-/// Mutex guard handle
-struct MutexGuard {
-    _marker: std::marker::PhantomData<()>,
+/// Mutex guard handle wrapping std::sync::MutexGuard
+/// We use 'static lifetime here because the MutexHandle is leaked/long-lived
+struct MutexGuardHandle {
+    guard: std::sync::MutexGuard<'static, *mut u8>,
 }
 
 /// Initialize a new Mutex with a value
@@ -298,11 +480,13 @@ pub unsafe extern "C" fn rayzor_mutex_lock(mutex: *mut u8) -> *mut u8 {
 
     // Lock the mutex (blocks until acquired)
     match mutex_handle.mutex.lock() {
-        Ok(_guard) => {
-            // For simplicity, we return the mutex pointer itself as the guard
-            // In a real implementation, we'd need to properly handle the guard
-            // For now, this is a simplified version
-            mutex
+        Ok(guard) => {
+            // Extend lifetime to 'static since MutexHandle is effectively static (leaked)
+            let guard: std::sync::MutexGuard<'static, *mut u8> = std::mem::transmute(guard);
+
+            let guard_handle = Box::new(MutexGuardHandle { guard });
+
+            Box::into_raw(guard_handle) as *mut u8
         }
         Err(_) => ptr::null_mut(),
     }
@@ -318,7 +502,14 @@ pub unsafe extern "C" fn rayzor_mutex_try_lock(mutex: *mut u8) -> *mut u8 {
     let mutex_handle = &*(mutex as *const MutexHandle);
 
     match mutex_handle.mutex.try_lock() {
-        Ok(_guard) => mutex,
+        Ok(guard) => {
+            // Extend lifetime to 'static
+            let guard: std::sync::MutexGuard<'static, *mut u8> = std::mem::transmute(guard);
+
+            let guard_handle = Box::new(MutexGuardHandle { guard });
+
+            Box::into_raw(guard_handle) as *mut u8
+        }
         Err(_) => ptr::null_mut(),
     }
 }
@@ -341,27 +532,17 @@ pub unsafe extern "C" fn rayzor_mutex_guard_get(guard: *mut u8) -> *mut u8 {
         return ptr::null_mut();
     }
 
-    // In our simplified implementation, guard is the mutex pointer
-    let mutex_handle = &*(guard as *const MutexHandle);
-
-    // This is unsafe - we're accessing without holding the lock properly
-    // In a real implementation, we'd store the guard separately
-    match mutex_handle.mutex.try_lock() {
-        Ok(guard) => {
-            let value = *guard;
-            drop(guard);
-            value
-        }
-        Err(_) => ptr::null_mut(),
-    }
+    let guard_handle = &*(guard as *const MutexGuardHandle);
+    *guard_handle.guard
 }
 
 /// Unlock a mutex guard
 #[no_mangle]
-pub unsafe extern "C" fn rayzor_mutex_unlock(_guard: *mut u8) {
-    // In our simplified implementation, the guard unlocks automatically
-    // when the MutexGuard is dropped (which happens when lock() returns)
-    // This is a placeholder for the real implementation
+pub unsafe extern "C" fn rayzor_mutex_unlock(guard: *mut u8) {
+    if !guard.is_null() {
+        // Reconstruct Box and drop it, which drops the MutexGuard and releases the lock
+        let _ = Box::from_raw(guard as *mut MutexGuardHandle);
+    }
 }
 
 // ============================================================================
@@ -375,7 +556,7 @@ use std::sync::Condvar;
 /// Channel state for multi-producer multi-consumer
 struct ChannelState {
     buffer: VecDeque<*mut u8>,
-    capacity: usize,  // 0 = unbounded
+    capacity: usize, // 0 = unbounded
     closed: bool,
 }
 
@@ -406,12 +587,20 @@ pub unsafe extern "C" fn rayzor_channel_init(capacity: i32) -> *mut u8 {
 /// Send a value through a channel (blocking)
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_channel_send(channel: *mut u8, value: *mut u8) {
+    eprintln!(
+        "[DEBUG rayzor_channel_send] Called with channel={:?}, value={:?}",
+        channel, value
+    );
+
     if channel.is_null() {
+        eprintln!("[DEBUG rayzor_channel_send] channel is null, returning");
         return;
     }
 
     let channel_handle = &*(channel as *const ChannelHandle);
+    eprintln!("[DEBUG rayzor_channel_send] Got channel_handle, locking...");
     let mut state = channel_handle.state.lock().unwrap();
+    eprintln!("[DEBUG rayzor_channel_send] Lock acquired");
 
     // For bounded channels, wait while full
     while state.capacity > 0 && state.buffer.len() >= state.capacity && !state.closed {
@@ -576,6 +765,25 @@ pub unsafe extern "C" fn rayzor_channel_is_full(channel: *const u8) -> bool {
     let channel_handle = &*(channel as *const ChannelHandle);
     let state = channel_handle.state.lock().unwrap();
     state.capacity > 0 && state.buffer.len() >= state.capacity
+}
+
+// ============================================================================
+// JIT Lifecycle Management
+// ============================================================================
+
+/// Clean up JIT-related global state
+///
+/// This should be called after rayzor_wait_all_threads() and before the next
+/// JIT compilation to reset thread tracking state.
+#[no_mangle]
+pub extern "C" fn rayzor_jit_cleanup() {
+    // Reset thread tracking
+    ACTIVE_THREAD_COUNT.store(0, Ordering::SeqCst);
+
+    // Clear thread registry
+    if let Ok(mut registry) = THREAD_REGISTRY.lock() {
+        registry.clear();
+    }
 }
 
 #[cfg(test)]

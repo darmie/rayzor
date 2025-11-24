@@ -9,6 +9,13 @@ crate-type = ["cdylib", "rlib", "staticlib"]
 [dependencies]
 inventory = "0.3"
 rayzor-plugin = { path = "../plugin" }
+lazy_static = "1.4"
+libc = "0.2"
+
+[features]
+default = []
+runtime-safety-checks = []
+panic-on-safety-violation = []
 
 [profile.release]
 opt-level = 3

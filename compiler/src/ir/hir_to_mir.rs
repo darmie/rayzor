@@ -2013,6 +2013,8 @@ impl<'a> HirToMirContext<'a> {
 
                             // Apply pointer conversion for parameters that need it (metadata-driven)
                             // The RuntimeFunctionCall metadata specifies which params need conversion via bitmask
+                            // This means the runtime function expects a POINTER TO the value, not the value directly.
+                            // This is required for functions like haxe_array_push which copy data from the pointer.
                             let mut final_arg_regs = arg_regs.clone();
                             if ptr_conversion_mask != 0 {
                                 for i in 0..arg_regs.len() {
@@ -2021,15 +2023,14 @@ impl<'a> HirToMirContext<'a> {
                                         let arg_reg = arg_regs[i];
                                         let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I32);
 
-                                        // Only convert if it's not already a pointer
-                                        if !matches!(arg_type, IrType::Ptr(_)) {
-                                            // Allocate stack space for the value
-                                            if let Some(stack_slot) = self.builder.build_alloc(arg_type.clone(), None) {
-                                                // Store the value into the stack slot
-                                                self.builder.build_store(stack_slot, arg_reg);
-                                                // Use the pointer for the call
-                                                final_arg_regs[i] = stack_slot;
-                                            }
+                                        // Always allocate stack space and pass a pointer to the value.
+                                        // This is needed even for pointer values - if we're storing a pointer
+                                        // to an array, we need to pass a pointer TO the pointer value.
+                                        if let Some(stack_slot) = self.builder.build_alloc(arg_type.clone(), None) {
+                                            // Store the value into the stack slot
+                                            self.builder.build_store(stack_slot, arg_reg);
+                                            // Use the pointer for the call
+                                            final_arg_regs[i] = stack_slot;
                                         }
                                     }
                                 }
@@ -2118,6 +2119,7 @@ impl<'a> HirToMirContext<'a> {
 
                                         // Apply pointer conversion for parameters that need it (metadata-driven)
                                         // Look up the RuntimeFunctionCall metadata by runtime function name
+                                        // This means the runtime function expects a POINTER TO the value, not the value directly.
                                         let mut final_arg_regs = arg_regs.clone();
                                         if let Some(runtime_call_metadata) = self.stdlib_mapping.find_by_runtime_name(&runtime_func) {
                                             let ptr_conversion_mask = runtime_call_metadata.params_need_ptr_conversion;
@@ -2128,15 +2130,14 @@ impl<'a> HirToMirContext<'a> {
                                                         let arg_reg = arg_regs[i];
                                                         let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I32);
 
-                                                        // Only convert if it's not already a pointer
-                                                        if !matches!(arg_type, IrType::Ptr(_)) {
-                                                            // Allocate stack space for the value
-                                                            if let Some(stack_slot) = self.builder.build_alloc(arg_type.clone(), None) {
-                                                                // Store the value into the stack slot
-                                                                self.builder.build_store(stack_slot, arg_reg);
-                                                                // Use the pointer for the call
-                                                                final_arg_regs[i] = stack_slot;
-                                                            }
+                                                        // Always allocate stack space and pass a pointer to the value.
+                                                        // This is needed even for pointer values - if we're storing a pointer
+                                                        // to an array, we need to pass a pointer TO the pointer value.
+                                                        if let Some(stack_slot) = self.builder.build_alloc(arg_type.clone(), None) {
+                                                            // Store the value into the stack slot
+                                                            self.builder.build_store(stack_slot, arg_reg);
+                                                            // Use the pointer for the call
+                                                            final_arg_regs[i] = stack_slot;
                                                         }
                                                     }
                                                 }
@@ -2250,6 +2251,7 @@ impl<'a> HirToMirContext<'a> {
 
                                         // Apply pointer conversion for parameters that need it (metadata-driven)
                                         // Look up the RuntimeFunctionCall metadata by runtime function name
+                                        // This means the runtime function expects a POINTER TO the value, not the value directly.
                                         let mut final_arg_regs = arg_regs.clone();
                                         if let Some(runtime_call_metadata) = self.stdlib_mapping.find_by_runtime_name(&runtime_func) {
                                             let ptr_conversion_mask = runtime_call_metadata.params_need_ptr_conversion;
@@ -2260,15 +2262,14 @@ impl<'a> HirToMirContext<'a> {
                                                         let arg_reg = arg_regs[i];
                                                         let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I32);
 
-                                                        // Only convert if it's not already a pointer
-                                                        if !matches!(arg_type, IrType::Ptr(_)) {
-                                                            // Allocate stack space for the value
-                                                            if let Some(stack_slot) = self.builder.build_alloc(arg_type.clone(), None) {
-                                                                // Store the value into the stack slot
-                                                                self.builder.build_store(stack_slot, arg_reg);
-                                                                // Use the pointer for the call
-                                                                final_arg_regs[i] = stack_slot;
-                                                            }
+                                                        // Always allocate stack space and pass a pointer to the value.
+                                                        // This is needed even for pointer values - if we're storing a pointer
+                                                        // to an array, we need to pass a pointer TO the pointer value.
+                                                        if let Some(stack_slot) = self.builder.build_alloc(arg_type.clone(), None) {
+                                                            // Store the value into the stack slot
+                                                            self.builder.build_store(stack_slot, arg_reg);
+                                                            // Use the pointer for the call
+                                                            final_arg_regs[i] = stack_slot;
                                                         }
                                                     }
                                                 }
@@ -2352,6 +2353,7 @@ impl<'a> HirToMirContext<'a> {
 
                                         // Apply pointer conversion for parameters that need it (metadata-driven)
                                         // Look up the RuntimeFunctionCall metadata by runtime function name
+                                        // This means the runtime function expects a POINTER TO the value, not the value directly.
                                         let mut final_arg_regs = arg_regs.clone();
                                         if let Some(runtime_call_metadata) = self.stdlib_mapping.find_by_runtime_name(&runtime_func) {
                                             let ptr_conversion_mask = runtime_call_metadata.params_need_ptr_conversion;
@@ -2362,15 +2364,14 @@ impl<'a> HirToMirContext<'a> {
                                                         let arg_reg = arg_regs[i];
                                                         let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I32);
 
-                                                        // Only convert if it's not already a pointer
-                                                        if !matches!(arg_type, IrType::Ptr(_)) {
-                                                            // Allocate stack space for the value
-                                                            if let Some(stack_slot) = self.builder.build_alloc(arg_type.clone(), None) {
-                                                                // Store the value into the stack slot
-                                                                self.builder.build_store(stack_slot, arg_reg);
-                                                                // Use the pointer for the call
-                                                                final_arg_regs[i] = stack_slot;
-                                                            }
+                                                        // Always allocate stack space and pass a pointer to the value.
+                                                        // This is needed even for pointer values - if we're storing a pointer
+                                                        // to an array, we need to pass a pointer TO the pointer value.
+                                                        if let Some(stack_slot) = self.builder.build_alloc(arg_type.clone(), None) {
+                                                            // Store the value into the stack slot
+                                                            self.builder.build_store(stack_slot, arg_reg);
+                                                            // Use the pointer for the call
+                                                            final_arg_regs[i] = stack_slot;
                                                         }
                                                     }
                                                 }
@@ -3917,27 +3918,27 @@ impl<'a> HirToMirContext<'a> {
             // Type parameters and dynamic types
             Some(TypeKind::TypeParameter { symbol_id, .. }) => {
                 // Type parameters like T, U, etc. that haven't been resolved
-                // IMPORTANT: This should NOT be hit for variables typed as Thread<Int> etc.
-                // If we see this for a variable that should be a class instance, it means
-                // the type resolution is returning the wrong type.
-                // For actual type parameters (like T in a generic method body), default to I32
-                // as a pragmatic workaround.
-                eprintln!("Warning: Unresolved TypeParameter (symbol_id={:?}, type_id={:?}), defaulting to I32", symbol_id, type_id);
-                IrType::I32
+                // IMPORTANT: Generic type parameters are often used for class instances like
+                // Arc<T>, Channel<T>, Thread<T>, etc. When captured in closures, they represent
+                // heap-allocated objects and should be treated as pointers.
+                // Using I32 here causes pointer truncation bugs on 64-bit systems!
+                eprintln!("Warning: Unresolved TypeParameter (symbol_id={:?}, type_id={:?}), defaulting to Ptr(Void)", symbol_id, type_id);
+                IrType::Ptr(Box::new(IrType::Void))
             },
             Some(TypeKind::Dynamic) => {
                 // Dynamic type is used as a placeholder for unresolved generic type parameters
                 // in stdlib (e.g., ArrayIterator<T>.next() where T is unresolved).
-                // Default to I32 for compatibility with integer operations and function signatures.
-                // This is a pragmatic workaround until proper generic type resolution is implemented.
-                IrType::I32
+                // Since dynamic values can be any type including objects/pointers, we treat
+                // them as pointer-sized values to avoid truncation bugs.
+                IrType::Ptr(Box::new(IrType::Void))
             }
 
             // Unknown or error types
             Some(TypeKind::Unknown) | Some(TypeKind::Error) => {
-                // Unknown or error types - default to I32 for safety
-                eprintln!("Warning: Unknown type {:?}, defaulting to I32", type_id);
-                IrType::I32
+                // Unknown or error types - treat as pointer-sized values to avoid truncation.
+                // These may be unresolved generic class instances that need full 64-bit values.
+                eprintln!("Warning: Unknown/Error type {:?}, defaulting to Ptr(Void)", type_id);
+                IrType::Ptr(Box::new(IrType::Void))
             }
 
             // Generic instance types (ArrayIterator<T>, Map<K,V>, etc.) - pointer to instantiated class
@@ -3970,19 +3971,19 @@ impl<'a> HirToMirContext<'a> {
                 // Type not found in type table
                 // This often happens for generic type parameters that weren't resolved,
                 // like T in ArrayIterator<T>.next() returning array[current++].
-                // Default to I32 to maintain consistency with TypeKind::Dynamic handling.
-                // This ensures the returned value type matches the function signature type.
+                // Use Ptr(Void) to avoid truncation when these are actually pointers/objects.
                 // TODO: Properly resolve generic type parameters from instantiation context.
-                IrType::I32
+                eprintln!("Warning: Type {:?} not found in type table, defaulting to Ptr(Void)", type_id);
+                IrType::Ptr(Box::new(IrType::Void))
             }
 
             // Catch-all for other types
             Some(other) => {
                 eprintln!(
-                    "Warning: Unhandled type kind for {:?}: {:?}, defaulting to I32",
+                    "Warning: Unhandled type kind for {:?}: {:?}, defaulting to Ptr(Void)",
                     type_id, other
                 );
-                IrType::I32
+                IrType::Ptr(Box::new(IrType::Void))
             }
         }
     }

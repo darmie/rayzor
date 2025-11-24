@@ -24,6 +24,52 @@ impl CraneliftBackend {
         let lhs = *self.value_map.get(&left).ok_or("Left operand not found")?;
         let rhs = *self.value_map.get(&right).ok_or("Right operand not found")?;
 
+        // Check if operands have matching types and cast if needed
+        // Same logic as lower_binary_op_static to handle i32/i64 type mismatches
+        let lhs_ty = builder.func.dfg.value_type(lhs);
+        let rhs_ty = builder.func.dfg.value_type(rhs);
+
+        // Convert the MIR type to Cranelift type to get the expected operation type
+        let expected_ty = match ty {
+            IrType::I32 => types::I32,
+            IrType::I64 => types::I64,
+            IrType::U32 => types::I32,
+            IrType::U64 => types::I64,
+            IrType::F32 => types::F32,
+            IrType::F64 => types::F64,
+            IrType::Bool => types::I32,
+            _ => types::I64, // Default to I64 for other types
+        };
+
+        // Coerce both operands to a common type - always use the larger of the two
+        // to avoid truncating pointers (i64 values from generic functions)
+        let operation_ty = if lhs_ty.bits() >= rhs_ty.bits() { lhs_ty } else { rhs_ty };
+        let operation_ty = if operation_ty.bits() > expected_ty.bits() {
+            operation_ty
+        } else {
+            expected_ty
+        };
+
+        let lhs = if lhs_ty != operation_ty && lhs_ty.is_int() && operation_ty.is_int() {
+            if ty.is_signed() {
+                builder.ins().sextend(operation_ty, lhs)
+            } else {
+                builder.ins().uextend(operation_ty, lhs)
+            }
+        } else {
+            lhs
+        };
+
+        let rhs = if rhs_ty != operation_ty && rhs_ty.is_int() && operation_ty.is_int() {
+            if ty.is_signed() {
+                builder.ins().sextend(operation_ty, rhs)
+            } else {
+                builder.ins().uextend(operation_ty, rhs)
+            }
+        } else {
+            rhs
+        };
+
         let value = match op {
             BinaryOp::Add => builder.ins().iadd(lhs, rhs),
             BinaryOp::Sub => builder.ins().isub(lhs, rhs),
@@ -222,35 +268,75 @@ impl CraneliftBackend {
         let rhs = *value_map.get(&right).ok_or_else(|| format!("Right operand {:?} not found in value_map", right))?;
 
         // Check if operands have matching types and cast if needed
+        // IMPORTANT: Coerce operands to match the expected operation type (ty),
+        // not just each other. This is critical for closure environments where
+        // captured variables are stored as i64 but operations may expect i32.
         let lhs_ty = builder.func.dfg.value_type(lhs);
         let rhs_ty = builder.func.dfg.value_type(rhs);
-        let (lhs, rhs) = if lhs_ty != rhs_ty {
-            let lhs_bits = lhs_ty.bits();
-            let rhs_bits = rhs_ty.bits();
 
-            // Cast the smaller type to the larger type
-            if lhs_bits < rhs_bits {
-                // Extend lhs to match rhs
-                let extended_lhs = if ty.is_signed() {
-                    builder.ins().sextend(rhs_ty, lhs)
-                } else {
-                    builder.ins().uextend(rhs_ty, lhs)
-                };
-                (extended_lhs, rhs)
-            } else if rhs_bits < lhs_bits {
-                // Extend rhs to match lhs
-                let extended_rhs = if ty.is_signed() {
-                    builder.ins().sextend(lhs_ty, rhs)
-                } else {
-                    builder.ins().uextend(lhs_ty, rhs)
-                };
-                (lhs, extended_rhs)
+        // Convert the MIR type to Cranelift type to get the expected operation type
+        let expected_ty = match ty {
+            IrType::I32 => types::I32,
+            IrType::I64 => types::I64,
+            IrType::U32 => types::I32,
+            IrType::U64 => types::I64,
+            IrType::F32 => types::F32,
+            IrType::F64 => types::F64,
+            IrType::Bool => types::I32,
+            _ => types::I64, // Default to I64 for other types
+        };
+
+        // Coerce both operands to a common type for the operation.
+        // IMPORTANT: We NEVER truncate from I64 to I32 because the I64 value might be
+        // a pointer loaded from a closure environment. Instead, we always extend to
+        // the larger type (I64) and perform the operation at that width.
+        //
+        // The basic strategy is:
+        // - If both operands are integers, use the larger of the two operand types
+        // - If operands differ, extend the smaller one to match the larger
+        // - Never reduce I64 to I32 (would corrupt pointers)
+        // - CRITICAL: When expected_ty is float but operands are integers, use integer coercion
+        //   (this happens with generic types that resolve to different types)
+
+        // Determine operation type based on actual operand types
+        // When both operands are integers but expected is not, use the larger integer type
+        let both_operands_are_int = lhs_ty.is_int() && rhs_ty.is_int();
+        let larger_operand_ty = if lhs_ty.bits() >= rhs_ty.bits() { lhs_ty } else { rhs_ty };
+
+        let operation_ty = if both_operands_are_int && !expected_ty.is_int() {
+            // Expected type is not an integer but operands are - use the larger operand type
+            // This happens with unresolved generics that become Ptr(Void) -> I64
+            larger_operand_ty
+        } else if larger_operand_ty.is_int() && expected_ty.is_int() && larger_operand_ty.bits() > expected_ty.bits() {
+            // Operand type is larger than expected - use larger to prevent truncation
+            larger_operand_ty
+        } else if expected_ty.is_int() {
+            expected_ty
+        } else {
+            // For non-integer operations (float), use expected type
+            expected_ty
+        };
+
+        let lhs = if lhs_ty != operation_ty && lhs_ty.is_int() && operation_ty.is_int() {
+            // Always extend, never reduce
+            if ty.is_signed() {
+                builder.ins().sextend(operation_ty, lhs)
             } else {
-                // Same bit width but different types (e.g., i64 vs u64) - no conversion needed for operations
-                (lhs, rhs)
+                builder.ins().uextend(operation_ty, lhs)
             }
         } else {
-            (lhs, rhs)
+            lhs
+        };
+
+        let rhs = if rhs_ty != operation_ty && rhs_ty.is_int() && operation_ty.is_int() {
+            // Always extend, never reduce
+            if ty.is_signed() {
+                builder.ins().sextend(operation_ty, rhs)
+            } else {
+                builder.ins().uextend(operation_ty, rhs)
+            }
+        } else {
+            rhs
         };
 
         let value = match op {
@@ -258,10 +344,6 @@ impl CraneliftBackend {
             BinaryOp::Sub => builder.ins().isub(lhs, rhs),
             BinaryOp::Mul => builder.ins().imul(lhs, rhs),
             BinaryOp::Div => {
-                // Debug: Print type information
-                eprintln!("DEBUG Division: op={:?}, ty={:?}, is_float={}, is_signed={}",
-                    op, ty, ty.is_float(), ty.is_signed());
-
                 if ty.is_float() {
                     builder.ins().fdiv(lhs, rhs)
                 } else if ty.is_signed() {

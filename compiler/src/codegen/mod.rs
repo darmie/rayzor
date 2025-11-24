@@ -12,6 +12,10 @@ pub mod tiered_backend;
 pub mod llvm_jit_backend;
 mod instruction_lowering;
 
+// Apple Silicon-specific JIT memory management
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub mod apple_jit_memory;
+
 pub use cranelift_backend::CraneliftBackend;
 pub use profiling::{HotnessLevel, ProfileConfig, ProfileData, ProfileStatistics};
 pub use tiered_backend::{OptimizationTier, TieredBackend, TieredConfig, TieredStatistics};

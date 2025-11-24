@@ -24,22 +24,35 @@ pub mod vec;
 // Note: old string.rs removed due to ABI issues with struct returns
 
 // Export Haxe core type runtime modules
-pub mod vec_plugin;      // Pointer-based Vec API
-pub mod haxe_string;     // Comprehensive String API
-pub mod haxe_array;      // Dynamic Array API
-pub mod haxe_math;       // Math functions
-pub mod haxe_sys;        // System/IO functions
-pub mod concurrency;     // Concurrency primitives (Thread, Arc, Mutex, Channel)
+pub mod concurrency; // Concurrency primitives (Thread, Arc, Mutex, Channel)
+pub mod haxe_array; // Dynamic Array API
+pub mod haxe_math; // Math functions
+pub mod haxe_string; // Comprehensive String API
+pub mod haxe_sys; // System/IO functions
+pub mod safety;
+pub mod vec_plugin; // Pointer-based Vec API // Safety validation and error reporting
 
-pub mod plugin_impl;     // Plugin registration
+pub mod plugin_impl; // Plugin registration
 
 // Re-export main types
-pub use vec::HaxeVec;
-pub use haxe_string::HaxeString;
 pub use haxe_array::HaxeArray;
+pub use haxe_string::HaxeString;
+pub use vec::HaxeVec;
 
 // Re-export plugin
 pub use plugin_impl::get_plugin;
+
+// Feature flags for safety levels
+#[cfg(feature = "runtime-safety-checks")]
+pub const SAFETY_CHECKS_ENABLED: bool = true;
+#[cfg(not(feature = "runtime-safety-checks"))]
+pub const SAFETY_CHECKS_ENABLED: bool = false;
+
+// Debug mode always has checks
+#[cfg(debug_assertions)]
+pub const DEBUG_MODE: bool = true;
+#[cfg(not(debug_assertions))]
+pub const DEBUG_MODE: bool = false;
 
 /// Allocate memory on the heap
 ///
