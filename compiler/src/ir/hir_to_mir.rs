@@ -1072,9 +1072,19 @@ impl<'a> HirToMirContext<'a> {
                     // Bind to pattern and register as local
                     if let Some(value_reg) = value {
                         eprintln!("DEBUG: Let statement - binding pattern {:?} with value_reg: {:?}", pattern, value_reg);
+
                         // Determine the type for the binding
                         let var_type = type_hint.or(Some(init_expr.ty));
-                        self.bind_pattern_with_type(pattern, value_reg, var_type, *is_mutable);
+
+                        // Auto-box if assigning concrete value to Dynamic variable
+                        let final_value = if let Some(target_ty) = var_type {
+                            self.maybe_box_value(value_reg, init_expr.ty, target_ty)
+                                .unwrap_or(value_reg)
+                        } else {
+                            value_reg
+                        };
+
+                        self.bind_pattern_with_type(pattern, final_value, var_type, *is_mutable);
                         eprintln!("DEBUG: Let statement - AFTER bind, symbol_map now has {} entries", self.symbol_map.len());
                     } else {
                         eprintln!("DEBUG: Let statement - NO VALUE from init expression!");
@@ -4250,6 +4260,57 @@ impl<'a> HirToMirContext<'a> {
         } else {
             self.loop_stack.last()
         }
+    }
+
+
+    /// Insert automatic boxing if needed when assigning to Dynamic
+    /// Returns the (potentially boxed) value and whether boxing was applied
+    fn maybe_box_value(&mut self, value: IrId, value_ty: TypeId, target_ty: TypeId) -> Option<IrId> {
+        use crate::tast::TypeKind;
+
+        // Check if target is Dynamic and value is concrete
+        // Clone TypeKind to avoid borrow checker issues
+        let (target_is_dynamic, value_kind_cloned) = {
+            let type_table = self.type_table.borrow();
+            let target_is_dyn = matches!(type_table.get(target_ty).map(|t| &t.kind), Some(TypeKind::Dynamic));
+            let value_kind = type_table.get(value_ty).map(|t| t.kind.clone());
+            (target_is_dyn, value_kind)
+        };
+
+        let value_is_dynamic = matches!(&value_kind_cloned, Some(TypeKind::Dynamic));
+        let needs_boxing = target_is_dynamic && !value_is_dynamic;
+
+        if !needs_boxing {
+            return Some(value);
+        }
+
+        // Determine which boxing function to call based on value type
+        let box_func = match &value_kind_cloned {
+            Some(TypeKind::Int) => "box_int",
+            Some(TypeKind::Float) => "box_float",
+            Some(TypeKind::Bool) => "box_bool",
+            // TODO: box_string, box_null
+            _ => {
+                eprintln!("DEBUG: [BOXING] Unsupported type for boxing: {:?}", value_kind_cloned);
+                return Some(value); // Skip boxing for unsupported types
+            }
+        };
+
+        eprintln!("DEBUG: [BOXING] Auto-boxing {:?} to Dynamic using {}", value_kind_cloned, box_func);
+
+        // Get the value's MIR type
+        let value_mir_type = self.builder.get_register_type(value)
+            .unwrap_or_else(|| self.convert_type(value_ty));
+
+        // Call the boxing function
+        let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
+        let box_func_id = self.get_or_register_extern_function(
+            box_func,
+            vec![value_mir_type],
+            ptr_u8,
+        );
+
+        self.builder.build_call_direct(box_func_id, vec![value], IrType::Ptr(Box::new(IrType::U8)))
     }
 
     /// Bind a pattern with type information (registers locals for Cranelift)
