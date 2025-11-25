@@ -1307,6 +1307,40 @@ E2E test infrastructure now supports all levels:
 
 ---
 
+## Known Issues
+
+### Deref Coercion for Wrapper Types
+**Status:** Not Implemented
+**Affected Types:** Arc<T>, MutexGuard<T>, and similar wrapper types
+
+Wrapper types like `Arc<T>` and `MutexGuard<T>` were designed to transparently forward method/field access to their inner type (similar to Rust's `Deref` trait). Currently, users must explicitly call `.get()` to access the inner value.
+
+**Workaround:** Use explicit `.get()` calls:
+```haxe
+var arc = Arc.init(42);
+var value = arc.get();  // Must explicitly call .get()
+// Instead of: var value = arc;  // Would implicitly deref
+```
+
+**Future Implementation:**
+- Detect method/field access on wrapper types
+- Automatically insert `.get()` calls during MIR lowering
+- Handle nested wrappers (e.g., `Arc<Mutex<T>>`)
+
+### String Concatenation with Trace
+**Status:** Crashes at runtime
+**Issue:** Using string concatenation inside trace causes misaligned pointer dereference
+
+```haxe
+// This crashes:
+trace("Length: " + v.length());
+
+// Workaround - trace values directly:
+trace(v.length());  // Works fine
+```
+
+---
+
 ## Technical Debt
 
 - [ ] Remove DEBUG log statements cleanly (without breaking code)

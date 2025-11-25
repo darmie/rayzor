@@ -704,7 +704,7 @@ class Main {
         var shared_clone = shared.clone();
 
         var handle = Thread.spawn(() -> {
-            return shared_clone.value;
+            return shared_clone.get().value;
         });
 
         var result = handle.join();
