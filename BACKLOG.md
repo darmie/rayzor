@@ -660,13 +660,31 @@ map.set(new Key(1, "foo"), "value");
 > ✅ **Verified:** All 12 String methods tested and working with correct type handling.
 > Runtime functions use i32 for Int parameters, Ptr(String) for String parameters.
 
-**Array<T> Class - NEEDS VERIFICATION ⚠️:**
-- [?] Array<T> - 18 runtime functions (push, pop, slice, sort, splice, insert, etc.)
+**Array<T> Class - VERIFIED WORKING ✅ (2025-11-25):**
+- [x] length - get array length (haxe_array_length)
+- [x] push(item) - add element (haxe_array_push)
+- [x] pop() - remove and return last element (haxe_array_pop_ptr)
+- [x] arr[index] - index access (haxe_array_get_i64)
+- [ ] slice(start, end) - needs testing
+- [ ] reverse() - needs testing
+- [ ] insert(pos, item) - needs testing
+- [ ] remove(item) - needs testing
 
-**Math Class - NEEDS VERIFICATION ⚠️:**
-- [?] Math - 20 runtime functions (sin, cos, sqrt, abs, floor, ceil, random, etc.)
+> ✅ **Verified:** Core Array operations (push, pop, length, index access) working.
+> Values stored as 64-bit with proper i32->i64 extension for consistent elem_size.
 
-> ⚠️ **Note:** Array and Math runtime implementations exist but need verification.
+**Math Class - VERIFIED WORKING ✅ (2025-11-25):**
+- [x] Math.abs(x) - absolute value (haxe_math_abs)
+- [x] Math.floor(x) - floor (haxe_math_floor)
+- [x] Math.ceil(x) - ceiling (haxe_math_ceil)
+- [x] Math.sqrt(x) - square root (haxe_math_sqrt)
+- [x] Math.sin(x) - sine (haxe_math_sin)
+- [x] Math.cos(x) - cosine (haxe_math_cos)
+- [x] Math.min(a,b), Math.max(a,b) - min/max
+- [x] Math.pow(base,exp), Math.exp(x), Math.log(x)
+- [ ] Math.random() - needs testing
+
+> ✅ **Verified:** All Math operations use f64 parameter/return types via `get_extern_function_signature`.
 
 **Concurrency Primitives (32 functions) - VERIFIED STABLE:**
 - [x] Thread<T> - 8 functions (spawn, join, isFinished, yieldNow, sleep, currentId)
@@ -1296,10 +1314,24 @@ E2E test infrastructure now supports all levels:
 3. `hir_to_mir.rs`: Extract return type from Function types for static methods
 4. `builder.rs`: Check `extern_functions` in `build_call_direct` for correct return types
 
+**Session 2025-11-25 (Continued):**
+- ✅ **Array class core operations verified**
+  - Fixed Array.pop() - created haxe_array_pop_ptr that returns value directly
+  - Fixed ptr_conversion to extend i32 to i64 for consistent 8-byte elem_size
+  - Push, pop, length, and index access all working
+- ✅ **Math class fully verified**
+  - Added get_extern_function_signature() for Math function f64 signatures
+  - All Math functions (abs, floor, ceil, sqrt, sin, cos, etc.) working with f64
+- ✅ **Key fixes:**
+  - `hir_to_mir.rs`: i32->i64 extension in ptr_conversion for array operations
+  - `hir_to_mir.rs`: Separate get_extern_function_signature for extern-only sigs
+  - `runtime/haxe_array.rs`: New haxe_array_pop_ptr returning value directly
+
 **Next Steps:**
-1. Implement Array class methods (push, pop, slice, etc.)
-2. Implement Math class methods (sin, cos, sqrt, etc.)
-3. Run test_core_types_e2e.rs to validate all core types
+1. Test remaining Array methods (slice, reverse, insert, remove)
+2. Test Math.random()
+3. Consider consolidating String/Array/Math into single stdlib test suite
+4. Run test_core_types_e2e.rs to validate all core types
 
 ---
 

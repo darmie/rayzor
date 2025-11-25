@@ -199,12 +199,22 @@ pub extern "C" fn haxe_array_push(arr: *mut HaxeArray, data: *const u8) {
 
         // Add element
         let elem_ptr = arr_ref.ptr.add(arr_ref.len * arr_ref.elem_size);
+
+        // Debug: show what we're copying
+        if arr_ref.elem_size == 8 {
+            let val = *(data as *const i64);
+            eprintln!("[DEBUG haxe_array_push] Copying 8-byte value: {} (0x{:x})", val, val);
+        } else if arr_ref.elem_size == 4 {
+            let val = *(data as *const i32);
+            eprintln!("[DEBUG haxe_array_push] Copying 4-byte value: {}", val);
+        }
+
         ptr::copy_nonoverlapping(data, elem_ptr, arr_ref.elem_size);
         arr_ref.len += 1;
     }
 }
 
-/// Pop element from array
+/// Pop element from array (original version with out param)
 #[no_mangle]
 pub extern "C" fn haxe_array_pop(arr: *mut HaxeArray, out: *mut u8) -> bool {
     if arr.is_null() {
@@ -225,6 +235,51 @@ pub extern "C" fn haxe_array_pop(arr: *mut HaxeArray, out: *mut u8) -> bool {
         }
 
         true
+    }
+}
+
+/// Pop element from array and return it as a boxed value
+/// Returns null if array is empty
+#[no_mangle]
+pub extern "C" fn haxe_array_pop_ptr(arr: *mut HaxeArray) -> *mut u8 {
+    eprintln!("[DEBUG haxe_array_pop_ptr] Called with arr={:p}", arr);
+    if arr.is_null() {
+        eprintln!("[DEBUG haxe_array_pop_ptr] arr is null, returning null");
+        return ptr::null_mut();
+    }
+
+    unsafe {
+        let arr_ref = &mut *arr;
+        eprintln!("[DEBUG haxe_array_pop_ptr] arr.len={}, elem_size={}", arr_ref.len, arr_ref.elem_size);
+        if arr_ref.len == 0 {
+            eprintln!("[DEBUG haxe_array_pop_ptr] Array is empty, returning null");
+            return ptr::null_mut();
+        }
+
+        arr_ref.len -= 1;
+
+        // Get pointer to the element we're popping
+        let elem_ptr = arr_ref.ptr.add(arr_ref.len * arr_ref.elem_size);
+
+        // For primitive types (Int, Float), we need to read the value and box it
+        // For now, assume we're dealing with Int (i64 or i32) - read as i64
+        // The caller is responsible for knowing the type
+        if arr_ref.elem_size == 8 {
+            // 64-bit value - could be i64, f64, or pointer
+            let value = *(elem_ptr as *const i64);
+            eprintln!("[DEBUG haxe_array_pop_ptr] Popped 64-bit value: {}", value);
+            // Return the value directly (caller will handle boxing if needed)
+            value as *mut u8
+        } else if arr_ref.elem_size == 4 {
+            // 32-bit value - could be i32 or f32
+            let value = *(elem_ptr as *const i32);
+            eprintln!("[DEBUG haxe_array_pop_ptr] Popped 32-bit value: {}", value);
+            value as *mut u8
+        } else {
+            // For other sizes, return pointer to the element (caller must copy)
+            eprintln!("[DEBUG haxe_array_pop_ptr] Popped element at {:p}", elem_ptr);
+            elem_ptr
+        }
     }
 }
 

@@ -1394,6 +1394,39 @@ impl<'a> HirToMirContext<'a> {
         }
     }
 
+    /// Get known signature for extern runtime functions (not MIR wrappers)
+    /// This is used to override inferred types for functions like Math that need f64
+    fn get_extern_function_signature(&self, name: &str) -> Option<(Vec<IrType>, IrType)> {
+        let bool_type = IrType::Bool;
+
+        match name {
+            // Math functions - all work with f64
+            "haxe_math_abs" => Some((vec![IrType::F64], IrType::F64)),
+            "haxe_math_min" => Some((vec![IrType::F64, IrType::F64], IrType::F64)),
+            "haxe_math_max" => Some((vec![IrType::F64, IrType::F64], IrType::F64)),
+            "haxe_math_floor" => Some((vec![IrType::F64], IrType::F64)),
+            "haxe_math_ceil" => Some((vec![IrType::F64], IrType::F64)),
+            "haxe_math_round" => Some((vec![IrType::F64], IrType::F64)),
+            "haxe_math_sin" => Some((vec![IrType::F64], IrType::F64)),
+            "haxe_math_cos" => Some((vec![IrType::F64], IrType::F64)),
+            "haxe_math_tan" => Some((vec![IrType::F64], IrType::F64)),
+            "haxe_math_asin" => Some((vec![IrType::F64], IrType::F64)),
+            "haxe_math_acos" => Some((vec![IrType::F64], IrType::F64)),
+            "haxe_math_atan" => Some((vec![IrType::F64], IrType::F64)),
+            "haxe_math_atan2" => Some((vec![IrType::F64, IrType::F64], IrType::F64)),
+            "haxe_math_exp" => Some((vec![IrType::F64], IrType::F64)),
+            "haxe_math_log" => Some((vec![IrType::F64], IrType::F64)),
+            "haxe_math_pow" => Some((vec![IrType::F64, IrType::F64], IrType::F64)),
+            "haxe_math_sqrt" => Some((vec![IrType::F64], IrType::F64)),
+            "haxe_math_is_nan" => Some((vec![IrType::F64], bool_type.clone())),
+            "haxe_math_is_finite" => Some((vec![IrType::F64], bool_type)),
+            "haxe_math_fround" => Some((vec![IrType::F64], IrType::F64)),
+            "haxe_math_random" => Some((vec![], IrType::F64)),
+
+            _ => None,
+        }
+    }
+
     /// Register a forward reference to a stdlib MIR function that will be provided by module merging
     ///
     /// Unlike extern functions (which use C calling convention and are resolved by Cranelift),
@@ -1477,11 +1510,20 @@ impl<'a> HirToMirContext<'a> {
     fn get_or_register_extern_function(
         &mut self,
         name: &str,
-        param_types: Vec<IrType>,
-        return_type: IrType,
+        mut param_types: Vec<IrType>,
+        mut return_type: IrType,
     ) -> IrFunctionId {
         if name.contains("Channel") || name.contains("init") {
             eprintln!("DEBUG: [get_or_register_extern] Called with name='{}', {} params", name, param_types.len());
+        }
+
+        // Override with correct signature if this is a known extern function
+        // This is critical for Math functions to get f64 types instead of inferred i64
+        if let Some((correct_params, correct_return)) = self.get_extern_function_signature(name) {
+            eprintln!("DEBUG: [get_or_register_extern] Using registered signature for {}: {} params -> {:?}",
+                     name, correct_params.len(), correct_return);
+            param_types = correct_params;
+            return_type = correct_return;
         }
 
         // FIRST: Check if a MIR wrapper with this name already exists (has blocks)
@@ -2544,12 +2586,26 @@ impl<'a> HirToMirContext<'a> {
                                         let arg_reg = arg_regs[i];
                                         let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I32);
 
-                                        // Always allocate stack space and pass a pointer to the value.
-                                        // This is needed even for pointer values - if we're storing a pointer
-                                        // to an array, we need to pass a pointer TO the pointer value.
-                                        if let Some(stack_slot) = self.builder.build_alloc(arg_type.clone(), None) {
+                                        // For array operations, always allocate 8 bytes (elem_size is always 8)
+                                        // and extend smaller values to 64-bit
+                                        let (alloc_type, value_to_store) = match arg_type {
+                                            IrType::I32 => {
+                                                // Cast/extend i32 to i64 for consistent storage
+                                                let ext_val = self.builder.build_cast(arg_reg, IrType::I32, IrType::I64);
+                                                (IrType::I64, ext_val.unwrap_or(arg_reg))
+                                            }
+                                            IrType::F32 => {
+                                                // Cast/extend f32 to f64 for consistent storage
+                                                let ext_val = self.builder.build_cast(arg_reg, IrType::F32, IrType::F64);
+                                                (IrType::F64, ext_val.unwrap_or(arg_reg))
+                                            }
+                                            _ => (arg_type.clone(), arg_reg)
+                                        };
+
+                                        // Allocate stack space and pass a pointer to the value.
+                                        if let Some(stack_slot) = self.builder.build_alloc(alloc_type.clone(), None) {
                                             // Store the value into the stack slot
-                                            self.builder.build_store(stack_slot, arg_reg);
+                                            self.builder.build_store(stack_slot, value_to_store);
                                             // Use the pointer for the call
                                             final_arg_regs[i] = stack_slot;
                                         }
@@ -2651,12 +2707,24 @@ impl<'a> HirToMirContext<'a> {
                                                         let arg_reg = arg_regs[i];
                                                         let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I32);
 
-                                                        // Always allocate stack space and pass a pointer to the value.
-                                                        // This is needed even for pointer values - if we're storing a pointer
-                                                        // to an array, we need to pass a pointer TO the pointer value.
-                                                        if let Some(stack_slot) = self.builder.build_alloc(arg_type.clone(), None) {
+                                                        // For array operations, always allocate 8 bytes (elem_size is always 8)
+                                                        // and extend smaller values to 64-bit
+                                                        let (alloc_type, value_to_store) = match arg_type {
+                                                            IrType::I32 => {
+                                                                let ext_val = self.builder.build_cast(arg_reg, IrType::I32, IrType::I64);
+                                                                (IrType::I64, ext_val.unwrap_or(arg_reg))
+                                                            }
+                                                            IrType::F32 => {
+                                                                let ext_val = self.builder.build_cast(arg_reg, IrType::F32, IrType::F64);
+                                                                (IrType::F64, ext_val.unwrap_or(arg_reg))
+                                                            }
+                                                            _ => (arg_type.clone(), arg_reg)
+                                                        };
+
+                                                        // Allocate stack space and pass a pointer to the value.
+                                                        if let Some(stack_slot) = self.builder.build_alloc(alloc_type.clone(), None) {
                                                             // Store the value into the stack slot
-                                                            self.builder.build_store(stack_slot, arg_reg);
+                                                            self.builder.build_store(stack_slot, value_to_store);
                                                             // Use the pointer for the call
                                                             final_arg_regs[i] = stack_slot;
                                                         }
@@ -2783,12 +2851,24 @@ impl<'a> HirToMirContext<'a> {
                                                         let arg_reg = arg_regs[i];
                                                         let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I32);
 
-                                                        // Always allocate stack space and pass a pointer to the value.
-                                                        // This is needed even for pointer values - if we're storing a pointer
-                                                        // to an array, we need to pass a pointer TO the pointer value.
-                                                        if let Some(stack_slot) = self.builder.build_alloc(arg_type.clone(), None) {
+                                                        // For array operations, always allocate 8 bytes (elem_size is always 8)
+                                                        // and extend smaller values to 64-bit
+                                                        let (alloc_type, value_to_store) = match arg_type {
+                                                            IrType::I32 => {
+                                                                let ext_val = self.builder.build_cast(arg_reg, IrType::I32, IrType::I64);
+                                                                (IrType::I64, ext_val.unwrap_or(arg_reg))
+                                                            }
+                                                            IrType::F32 => {
+                                                                let ext_val = self.builder.build_cast(arg_reg, IrType::F32, IrType::F64);
+                                                                (IrType::F64, ext_val.unwrap_or(arg_reg))
+                                                            }
+                                                            _ => (arg_type.clone(), arg_reg)
+                                                        };
+
+                                                        // Allocate stack space and pass a pointer to the value.
+                                                        if let Some(stack_slot) = self.builder.build_alloc(alloc_type.clone(), None) {
                                                             // Store the value into the stack slot
-                                                            self.builder.build_store(stack_slot, arg_reg);
+                                                            self.builder.build_store(stack_slot, value_to_store);
                                                             // Use the pointer for the call
                                                             final_arg_regs[i] = stack_slot;
                                                         }
@@ -2885,12 +2965,24 @@ impl<'a> HirToMirContext<'a> {
                                                         let arg_reg = arg_regs[i];
                                                         let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I32);
 
-                                                        // Always allocate stack space and pass a pointer to the value.
-                                                        // This is needed even for pointer values - if we're storing a pointer
-                                                        // to an array, we need to pass a pointer TO the pointer value.
-                                                        if let Some(stack_slot) = self.builder.build_alloc(arg_type.clone(), None) {
+                                                        // For array operations, always allocate 8 bytes (elem_size is always 8)
+                                                        // and extend smaller values to 64-bit
+                                                        let (alloc_type, value_to_store) = match arg_type {
+                                                            IrType::I32 => {
+                                                                let ext_val = self.builder.build_cast(arg_reg, IrType::I32, IrType::I64);
+                                                                (IrType::I64, ext_val.unwrap_or(arg_reg))
+                                                            }
+                                                            IrType::F32 => {
+                                                                let ext_val = self.builder.build_cast(arg_reg, IrType::F32, IrType::F64);
+                                                                (IrType::F64, ext_val.unwrap_or(arg_reg))
+                                                            }
+                                                            _ => (arg_type.clone(), arg_reg)
+                                                        };
+
+                                                        // Allocate stack space and pass a pointer to the value.
+                                                        if let Some(stack_slot) = self.builder.build_alloc(alloc_type.clone(), None) {
                                                             // Store the value into the stack slot
-                                                            self.builder.build_store(stack_slot, arg_reg);
+                                                            self.builder.build_store(stack_slot, value_to_store);
                                                             // Use the pointer for the call
                                                             final_arg_regs[i] = stack_slot;
                                                         }

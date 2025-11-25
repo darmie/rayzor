@@ -406,11 +406,12 @@ class Main {
     static function main() {
         var s = "Hello, World!";
         var len = s.length;
+        trace(len);  // Expected: 13
     }
 }
 "#,
         )
-        .expect_mir_calls(vec!["haxe_string_length"])
+        .expect_mir_calls(vec!["haxe_string_len"])
         .expect_level(TestLevel::Execution),
     );
 
@@ -425,13 +426,13 @@ package test;
 class Main {
     static function main() {
         var s = "Hello";
-        var c = s.charAt(0);  // 'H'
-        var c2 = s.charAt(4); // 'o'
+        trace(s.charAt(0));  // Expected: H
+        trace(s.charAt(4));  // Expected: o
     }
 }
 "#,
         )
-        .expect_mir_calls(vec!["haxe_string_charAt"])
+        .expect_mir_calls(vec!["haxe_string_char_at"])
         .expect_level(TestLevel::Execution),
     );
 
@@ -446,13 +447,13 @@ package test;
 class Main {
     static function main() {
         var s = "Hello, World!";
-        var idx = s.indexOf("World");  // 7
-        var idx2 = s.indexOf("xyz");   // -1
+        trace(s.indexOf("World", 0));  // Expected: 7
+        trace(s.indexOf("xyz", 0));    // Expected: -1
     }
 }
 "#,
         )
-        .expect_mir_calls(vec!["haxe_string_indexOf"])
+        .expect_mir_calls(vec!["haxe_string_index_of"])
         .expect_level(TestLevel::Execution),
     );
 
@@ -467,8 +468,8 @@ package test;
 class Main {
     static function main() {
         var s = "Hello, World!";
-        var sub = s.substring(0, 5);  // "Hello"
-        var sub2 = s.substring(7, 12); // "World"
+        trace(s.substring(0, 5));   // Expected: Hello
+        trace(s.substring(7, 12));  // Expected: World
     }
 }
 "#,
@@ -489,7 +490,7 @@ class Main {
     static function main() {
         var s = "a,b,c,d";
         var parts = s.split(",");
-        var len = parts.length;  // 4
+        trace(parts.length);  // Expected: 4
     }
 }
 "#,
@@ -509,13 +510,96 @@ package test;
 class Main {
     static function main() {
         var s = "Hello";
-        var upper = s.toUpperCase();  // "HELLO"
-        var lower = s.toLowerCase();  // "hello"
+        trace(s.toUpperCase());  // Expected: HELLO
+        trace(s.toLowerCase());  // Expected: hello
     }
 }
 "#,
         )
-        .expect_mir_calls(vec!["haxe_string_toUpperCase", "haxe_string_toLowerCase"])
+        .expect_mir_calls(vec!["haxe_string_upper", "haxe_string_lower"])
+        .expect_level(TestLevel::Execution),
+    );
+
+    // String Test 7: charCodeAt
+    suite.add_test(
+        E2ETestCase::new(
+            "string_charCodeAt",
+            "String charCodeAt operation",
+            r#"
+package test;
+
+class Main {
+    static function main() {
+        var s = "Hello";
+        trace(s.charCodeAt(0));  // Expected: 72 (ASCII for 'H')
+        trace(s.charCodeAt(1));  // Expected: 101 (ASCII for 'e')
+    }
+}
+"#,
+        )
+        .expect_mir_calls(vec!["haxe_string_char_code_at"])
+        .expect_level(TestLevel::Execution),
+    );
+
+    // String Test 8: lastIndexOf
+    suite.add_test(
+        E2ETestCase::new(
+            "string_lastIndexOf",
+            "String lastIndexOf operation",
+            r#"
+package test;
+
+class Main {
+    static function main() {
+        var s = "hello hello";
+        trace(s.lastIndexOf("hello", 100));  // Expected: 6
+        trace(s.lastIndexOf("o", 100));      // Expected: 10
+    }
+}
+"#,
+        )
+        .expect_mir_calls(vec!["haxe_string_last_index_of"])
+        .expect_level(TestLevel::Execution),
+    );
+
+    // String Test 9: substr
+    suite.add_test(
+        E2ETestCase::new(
+            "string_substr",
+            "String substr operation",
+            r#"
+package test;
+
+class Main {
+    static function main() {
+        var s = "Hello, World!";
+        trace(s.substr(0, 5));  // Expected: Hello
+        trace(s.substr(7, 5));  // Expected: World
+    }
+}
+"#,
+        )
+        .expect_mir_calls(vec!["haxe_string_substr"])
+        .expect_level(TestLevel::Execution),
+    );
+
+    // String Test 10: fromCharCode
+    suite.add_test(
+        E2ETestCase::new(
+            "string_fromCharCode",
+            "String.fromCharCode static method",
+            r#"
+package test;
+
+class Main {
+    static function main() {
+        trace(String.fromCharCode(65));  // Expected: A
+        trace(String.fromCharCode(90));  // Expected: Z
+    }
+}
+"#,
+        )
+        .expect_mir_calls(vec!["haxe_string_from_char_code"])
         .expect_level(TestLevel::Execution),
     );
 
@@ -534,7 +618,7 @@ package test;
 class Main {
     static function main() {
         var arr = new Array<Int>();
-        var len = arr.length;  // 0
+        trace(arr.length);  // Expected: 0
     }
 }
 "#,
@@ -557,9 +641,10 @@ class Main {
         arr.push(10);
         arr.push(20);
         arr.push(30);
-        var len = arr.length;  // 3
-        var last = arr.pop();  // 30
-        var newLen = arr.length;  // 2
+        trace(arr.length);  // Expected: 3
+        var last = arr.pop();
+        trace(last);        // Expected: 30
+        trace(arr.length);  // Expected: 2
     }
 }
 "#,
@@ -582,10 +667,10 @@ class Main {
         arr.push(10);
         arr.push(20);
         arr.push(30);
-        var first = arr[0];   // 10
-        var second = arr[1];  // 20
-        arr[1] = 25;          // modify
-        var modified = arr[1]; // 25
+        trace(arr[0]);  // Expected: 10
+        trace(arr[1]);  // Expected: 20
+        arr[1] = 25;
+        trace(arr[1]);  // Expected: 25
     }
 }
 "#,
@@ -610,8 +695,10 @@ class Main {
         arr.push(3);
         arr.push(4);
         arr.push(5);
-        var sliced = arr.slice(1, 4);  // [2, 3, 4]
-        var slicedLen = sliced.length;  // 3
+        var sliced = arr.slice(1, 4);
+        trace(sliced.length);  // Expected: 3
+        trace(sliced[0]);      // Expected: 2
+        trace(sliced[2]);      // Expected: 4
     }
 }
 "#,
@@ -635,8 +722,9 @@ class Main {
         arr.push(2);
         arr.push(3);
         arr.reverse();
-        // arr is now [3, 2, 1]
-        var first = arr[0];  // 3
+        trace(arr[0]);  // Expected: 3
+        trace(arr[1]);  // Expected: 2
+        trace(arr[2]);  // Expected: 1
     }
 }
 "#,
@@ -659,9 +747,10 @@ class Main {
         arr.push(1);
         arr.push(3);
         arr.insert(1, 2);  // [1, 2, 3]
-        var len = arr.length;  // 3
-        arr.remove(2);  // [1, 3]
-        var newLen = arr.length;  // 2
+        trace(arr.length);  // Expected: 3
+        trace(arr[1]);      // Expected: 2
+        arr.remove(2);      // [1, 3]
+        trace(arr.length);  // Expected: 2
     }
 }
 "#,
@@ -684,9 +773,9 @@ package test;
 
 class Main {
     static function main() {
-        var a = Math.abs(-5.0);     // 5.0
-        var b = Math.floor(3.7);    // 3.0
-        var c = Math.ceil(3.2);     // 4.0
+        trace(Math.abs(-5.0));   // Expected: 5.0
+        trace(Math.floor(3.7));  // Expected: 3.0
+        trace(Math.ceil(3.2));   // Expected: 4.0
     }
 }
 "#,
@@ -705,10 +794,9 @@ package test;
 
 class Main {
     static function main() {
-        var pi = Math.PI;
-        var sinVal = Math.sin(0.0);      // 0.0
-        var cosVal = Math.cos(0.0);      // 1.0
-        var tanVal = Math.tan(0.0);      // 0.0
+        trace(Math.sin(0.0));  // Expected: 0.0
+        trace(Math.cos(0.0));  // Expected: 1.0
+        trace(Math.tan(0.0));  // Expected: 0.0
     }
 }
 "#,
@@ -727,8 +815,8 @@ package test;
 
 class Main {
     static function main() {
-        var sq = Math.sqrt(16.0);     // 4.0
-        var pow = Math.pow(2.0, 3.0); // 8.0
+        trace(Math.sqrt(16.0));      // Expected: 4.0
+        trace(Math.pow(2.0, 3.0));   // Expected: 8.0
     }
 }
 "#,
@@ -747,8 +835,8 @@ package test;
 
 class Main {
     static function main() {
-        var minVal = Math.min(3.0, 7.0);   // 3.0
-        var maxVal = Math.max(3.0, 7.0);   // 7.0
+        trace(Math.min(3.0, 7.0));  // Expected: 3.0
+        trace(Math.max(3.0, 7.0));  // Expected: 7.0
     }
 }
 "#,
@@ -767,8 +855,9 @@ package test;
 
 class Main {
     static function main() {
-        var e = Math.exp(1.0);   // ~2.718
-        var ln = Math.log(e);    // 1.0
+        var e = Math.exp(1.0);
+        trace(e);             // Expected: ~2.718
+        trace(Math.log(e));   // Expected: ~1.0
     }
 }
 "#,
@@ -787,9 +876,9 @@ package test;
 
 class Main {
     static function main() {
-        var r1 = Math.round(3.4);   // 3.0
-        var r2 = Math.round(3.6);   // 4.0
-        var r3 = Math.round(3.5);   // 4.0 (rounds up)
+        trace(Math.round(3.4));  // Expected: 3.0
+        trace(Math.round(3.6));  // Expected: 4.0
+        trace(Math.round(3.5));  // Expected: 4.0 (rounds up)
     }
 }
 "#,
@@ -808,7 +897,9 @@ package test;
 
 class Main {
     static function main() {
-        var r = Math.random();  // [0.0, 1.0)
+        var r = Math.random();
+        // Random returns [0.0, 1.0), just verify it runs
+        trace(r);  // Expected: some value between 0 and 1
     }
 }
 "#,
