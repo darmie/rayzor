@@ -30,6 +30,26 @@ class Main {
         trace(arr[0]);  // Should print 10
         trace(arr[1]);  // Should print 20
         trace(arr[2]);  // Should print 40
+
+        // Test 5: reverse
+        var arr2 = new Array<Int>();
+        arr2.push(1);
+        arr2.push(2);
+        arr2.push(3);
+        arr2.reverse();
+        trace(arr2[0]);  // Should print 3
+        trace(arr2[1]);  // Should print 2
+        trace(arr2[2]);  // Should print 1
+
+        // Test 6: insert
+        var arr3 = new Array<Int>();
+        arr3.push(1);
+        arr3.push(3);
+        arr3.insert(1, 2);  // Insert 2 at position 1: [1, 2, 3]
+        trace(arr3.length);  // Should print 3
+        trace(arr3[0]);  // Should print 1
+        trace(arr3[1]);  // Should print 2
+        trace(arr3[2]);  // Should print 3
     }
 }
 "#;
@@ -77,6 +97,13 @@ class Main {
     println!("10");
     println!("20");
     println!("40");
+    println!("3");  // reverse arr2[0]
+    println!("2");  // reverse arr2[1]
+    println!("1");  // reverse arr2[2]
+    println!("3");  // insert length
+    println!("1");  // insert arr3[0]
+    println!("2");  // insert arr3[1]
+    println!("3");  // insert arr3[2]
     println!("\n=== Actual Output ===\n");
 
     for module in mir_modules.iter().rev() {

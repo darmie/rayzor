@@ -216,7 +216,7 @@ dependencies = [
 [[package]]
 name = "cranelift"
 version = "0.127.0"
-source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#150da31351b6d302987b9655c5c12b3df85664e6"
+source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#6942622684d7e205585466ba3152f790b6092d23"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -228,7 +228,7 @@ dependencies = [
 [[package]]
 name = "cranelift-assembler-x64"
 version = "0.127.0"
-source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#150da31351b6d302987b9655c5c12b3df85664e6"
+source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#6942622684d7e205585466ba3152f790b6092d23"
 dependencies = [
  "cranelift-assembler-x64-meta",
 ]
@@ -236,7 +236,7 @@ dependencies = [
 [[package]]
 name = "cranelift-assembler-x64-meta"
 version = "0.127.0"
-source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#150da31351b6d302987b9655c5c12b3df85664e6"
+source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#6942622684d7e205585466ba3152f790b6092d23"
 dependencies = [
  "cranelift-srcgen",
 ]
@@ -244,7 +244,7 @@ dependencies = [
 [[package]]
 name = "cranelift-bforest"
 version = "0.127.0"
-source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#150da31351b6d302987b9655c5c12b3df85664e6"
+source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#6942622684d7e205585466ba3152f790b6092d23"
 dependencies = [
  "cranelift-entity",
 ]
@@ -252,12 +252,12 @@ dependencies = [
 [[package]]
 name = "cranelift-bitset"
 version = "0.127.0"
-source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#150da31351b6d302987b9655c5c12b3df85664e6"
+source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#6942622684d7e205585466ba3152f790b6092d23"
 
 [[package]]
 name = "cranelift-codegen"
 version = "0.127.0"
-source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#150da31351b6d302987b9655c5c12b3df85664e6"
+source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#6942622684d7e205585466ba3152f790b6092d23"
 dependencies = [
  "bumpalo",
  "cranelift-assembler-x64",
@@ -282,7 +282,7 @@ dependencies = [
 [[package]]
 name = "cranelift-codegen-meta"
 version = "0.127.0"
-source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#150da31351b6d302987b9655c5c12b3df85664e6"
+source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#6942622684d7e205585466ba3152f790b6092d23"
 dependencies = [
  "cranelift-assembler-x64-meta",
  "cranelift-codegen-shared",
@@ -293,12 +293,12 @@ dependencies = [
 [[package]]
 name = "cranelift-codegen-shared"
 version = "0.127.0"
-source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#150da31351b6d302987b9655c5c12b3df85664e6"
+source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#6942622684d7e205585466ba3152f790b6092d23"
 
 [[package]]
 name = "cranelift-control"
 version = "0.127.0"
-source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#150da31351b6d302987b9655c5c12b3df85664e6"
+source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#6942622684d7e205585466ba3152f790b6092d23"
 dependencies = [
  "arbitrary",
 ]
@@ -306,7 +306,7 @@ dependencies = [
 [[package]]
 name = "cranelift-entity"
 version = "0.127.0"
-source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#150da31351b6d302987b9655c5c12b3df85664e6"
+source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#6942622684d7e205585466ba3152f790b6092d23"
 dependencies = [
  "cranelift-bitset",
 ]
@@ -314,7 +314,7 @@ dependencies = [
 [[package]]
 name = "cranelift-frontend"
 version = "0.127.0"
-source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#150da31351b6d302987b9655c5c12b3df85664e6"
+source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#6942622684d7e205585466ba3152f790b6092d23"
 dependencies = [
  "cranelift-codegen",
  "log",
@@ -325,12 +325,12 @@ dependencies = [
 [[package]]
 name = "cranelift-isle"
 version = "0.127.0"
-source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#150da31351b6d302987b9655c5c12b3df85664e6"
+source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#6942622684d7e205585466ba3152f790b6092d23"
 
 [[package]]
 name = "cranelift-jit"
 version = "0.127.0"
-source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#150da31351b6d302987b9655c5c12b3df85664e6"
+source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#6942622684d7e205585466ba3152f790b6092d23"
 dependencies = [
  "anyhow",
  "cranelift-codegen",
@@ -349,7 +349,7 @@ dependencies = [
 [[package]]
 name = "cranelift-module"
 version = "0.127.0"
-source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#150da31351b6d302987b9655c5c12b3df85664e6"
+source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#6942622684d7e205585466ba3152f790b6092d23"
 dependencies = [
  "anyhow",
  "cranelift-codegen",
@@ -359,7 +359,7 @@ dependencies = [
 [[package]]
 name = "cranelift-native"
 version = "0.127.0"
-source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#150da31351b6d302987b9655c5c12b3df85664e6"
+source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#6942622684d7e205585466ba3152f790b6092d23"
 dependencies = [
  "cranelift-codegen",
  "libc",
@@ -369,7 +369,7 @@ dependencies = [
 [[package]]
 name = "cranelift-srcgen"
 version = "0.127.0"
-source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#150da31351b6d302987b9655c5c12b3df85664e6"
+source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#6942622684d7e205585466ba3152f790b6092d23"
 
 [[package]]
 name = "critical-section"
@@ -1032,7 +1032,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-internal-jit-icache-coherence"
 version = "40.0.0"
-source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#150da31351b6d302987b9655c5c12b3df85664e6"
+source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#6942622684d7e205585466ba3152f790b6092d23"
 dependencies = [
  "anyhow",
  "cfg-if",
@@ -1043,7 +1043,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-internal-math"
 version = "40.0.0"
-source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#150da31351b6d302987b9655c5c12b3df85664e6"
+source = "git+https://github.com/darmie/wasmtime?branch=fix-plt-aarch64#6942622684d7e205585466ba3152f790b6092d23"
 dependencies = [
  "libm",
 ]

@@ -59,4 +59,22 @@ path = "examples/test_integration_gaps.rs"
 name = "test_null_safety"
 path = "examples/test_null_safety.rs"
 
+[[example]]
+name = "test_core_types_e2e"
+path = "examples/test_core_types_e2e.rs"
 
+[[example]]
+name = "test_std_string_simple"
+path = "examples/test_std_string_simple.rs"
+
+[[example]]
+name = "test_dynamic_boxing"
+path = "examples/test_dynamic_boxing.rs"
+
+[[example]]
+name = "test_class_boxing"
+path = "examples/test_class_boxing.rs"
+
+[[example]]
+name = "test_dynamic_field_access"
+path = "examples/test_dynamic_field_access.rs"

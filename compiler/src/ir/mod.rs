@@ -26,6 +26,7 @@ pub mod optimizable;  // Generic optimization trait for different IR levels
 pub mod blade;  // BLADE format - Blazing Language Artifact Deployment Environment (.blade files)
 pub mod mir_builder;  // Programmatic MIR construction API
 pub mod environment_layout;  // Closure environment layout abstraction
+pub mod monomorphize;  // Monomorphization pass for generics
 
 pub use types::*;
 pub use instructions::*;
@@ -34,6 +35,7 @@ pub use functions::*;
 pub use modules::*;
 pub use builder::*;
 pub use environment_layout::{EnvironmentLayout, EnvironmentField};
+pub use monomorphize::{Monomorphizer, MonoKey, MonomorphizationStats};
 
 use std::fmt;
 use serde::{Serialize, Deserialize};

@@ -227,7 +227,7 @@ impl IrBuilder {
 
         // Default to Move ownership for all arguments (will be refined by HIR lowering)
         let arg_ownership = args.iter().map(|_| crate::ir::instructions::OwnershipMode::Move).collect();
-        self.add_instruction(IrInstruction::CallDirect { dest, func_id, args, arg_ownership })?;
+        self.add_instruction(IrInstruction::CallDirect { dest, func_id, args, arg_ownership, type_args: Vec::new() })?;
 
         // Register the return type for the result register
         if let Some(dest_reg) = dest {
@@ -251,6 +251,57 @@ impl IrBuilder {
                     eprintln!("DEBUG: CallDirect type mismatch - function returns {:?}, expected {:?}, inserting cast",
                               actual_return_type, ty);
                     // Insert cast from actual type to expected type
+                    return self.build_cast(dest_reg, actual_return_type.clone(), ty);
+                }
+            }
+        }
+
+        dest
+    }
+
+    /// Build a direct function call with generic type arguments
+    ///
+    /// This is used for calls to generic functions where the type arguments
+    /// are known at compile time. The monomorphization pass will use these
+    /// type_args to generate specialized function instantiations.
+    pub fn build_call_direct_with_type_args(
+        &mut self,
+        func_id: IrFunctionId,
+        args: Vec<IrId>,
+        ty: IrType,
+        type_args: Vec<IrType>,
+    ) -> Option<IrId> {
+        // Same logic as build_call_direct but with type_args
+        let actual_return_type = if let Some(func) = self.module.functions.get(&func_id) {
+            func.signature.return_type.clone()
+        } else if let Some(extern_func) = self.module.extern_functions.get(&func_id) {
+            extern_func.signature.return_type.clone()
+        } else {
+            ty.clone()
+        };
+
+        let dest = if actual_return_type == IrType::Void {
+            None
+        } else {
+            Some(self.alloc_reg()?)
+        };
+
+        let arg_ownership = args.iter().map(|_| crate::ir::instructions::OwnershipMode::Move).collect();
+        self.add_instruction(IrInstruction::CallDirect { dest, func_id, args, arg_ownership, type_args })?;
+
+        if let Some(dest_reg) = dest {
+            self.set_register_type(dest_reg, actual_return_type.clone());
+
+            if actual_return_type != ty {
+                let actual_is_ptr = matches!(actual_return_type, IrType::Ptr(_));
+                let expected_is_scalar = matches!(ty, IrType::I32 | IrType::I64 | IrType::Bool | IrType::F32 | IrType::F64);
+
+                if actual_is_ptr && expected_is_scalar {
+                    eprintln!("DEBUG: CallDirect (generic) type mismatch - function returns {:?}, expected {:?}, NOT inserting cast",
+                              actual_return_type, ty);
+                } else {
+                    eprintln!("DEBUG: CallDirect (generic) type mismatch - function returns {:?}, expected {:?}, inserting cast",
+                              actual_return_type, ty);
                     return self.build_cast(dest_reg, actual_return_type.clone(), ty);
                 }
             }

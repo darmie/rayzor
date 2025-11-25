@@ -2584,7 +2584,10 @@ impl<'a> HirToMirContext<'a> {
                                     // Check if bit i is set in the mask
                                     if (ptr_conversion_mask & (1 << i)) != 0 {
                                         let arg_reg = arg_regs[i];
-                                        let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I32);
+                                        // Default to I64 (pointer-sized) if type is unknown.
+                                        // This is safer than I32 since pointers and most values are 64-bit.
+                                        // Only extend KNOWN I32 values, not unknown ones that might be pointers.
+                                        let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I64);
 
                                         // For array operations, always allocate 8 bytes (elem_size is always 8)
                                         // and extend smaller values to 64-bit
@@ -2713,7 +2716,9 @@ impl<'a> HirToMirContext<'a> {
                                                 // Check if bit i is set in the mask
                                                 if (ptr_conversion_mask & (1 << i)) != 0 {
                                                     let arg_reg = arg_regs[i];
-                                                    let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I32);
+                                                    // Default to I64 (pointer-sized) if type is unknown.
+                                                    // This is safer than I32 since pointers and most values are 64-bit.
+                                                    let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I64);
 
                                                     // For array operations, always allocate 8 bytes (elem_size is always 8)
                                                     // and extend smaller values to 64-bit
@@ -2864,7 +2869,9 @@ impl<'a> HirToMirContext<'a> {
                                                 // Check if bit i is set in the mask
                                                 if (ptr_conversion_mask & (1 << i)) != 0 {
                                                     let arg_reg = arg_regs[i];
-                                                    let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I32);
+                                                    // Default to I64 (pointer-sized) if type is unknown.
+                                                    // This is safer than I32 since pointers and most values are 64-bit.
+                                                    let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I64);
 
                                                     // For array operations, always allocate 8 bytes (elem_size is always 8)
                                                     // and extend smaller values to 64-bit
@@ -2985,7 +2992,9 @@ impl<'a> HirToMirContext<'a> {
                                                 // Check if bit i is set in the mask
                                                 if (ptr_conversion_mask & (1 << i)) != 0 {
                                                     let arg_reg = arg_regs[i];
-                                                    let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I32);
+                                                    // Default to I64 (pointer-sized) if type is unknown.
+                                                    // This is safer than I32 since pointers and most values are 64-bit.
+                                                    let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I64);
 
                                                     // For array operations, always allocate 8 bytes (elem_size is always 8)
                                                     // and extend smaller values to 64-bit

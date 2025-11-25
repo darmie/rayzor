@@ -149,6 +149,8 @@ pub enum IrInstruction {
         args: Vec<IrId>,
         /// Ownership mode for each argument (Move, BorrowImmutable, BorrowMutable, Copy, Clone)
         arg_ownership: Vec<OwnershipMode>,
+        /// Type arguments for generic function instantiation (empty if non-generic)
+        type_args: Vec<IrType>,
     },
 
     /// Indirect function call (callee computed at runtime)

@@ -1358,6 +1358,7 @@ impl CraneliftBackend {
                 func_id,
                 args,
                 arg_ownership: _,
+                type_args: _, // Handled by monomorphization pass before codegen
             } => {
                 // TODO: Use arg_ownership to generate proper move/borrow/clone code
                 // Check if this is an extern function call

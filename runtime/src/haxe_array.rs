@@ -285,14 +285,14 @@ pub extern "C" fn haxe_array_pop_ptr(arr: *mut HaxeArray) -> *mut u8 {
 
 /// Insert element at index
 #[no_mangle]
-pub extern "C" fn haxe_array_insert(arr: *mut HaxeArray, index: usize, data: *const u8) {
+pub extern "C" fn haxe_array_insert(arr: *mut HaxeArray, index: i32, data: *const u8) {
     if arr.is_null() || data.is_null() {
         return;
     }
 
     unsafe {
         let arr_ref = &mut *arr;
-        let insert_pos = index.min(arr_ref.len);
+        let insert_pos = (index.max(0) as usize).min(arr_ref.len);
 
         // Ensure capacity
         if arr_ref.len >= arr_ref.cap {

@@ -482,7 +482,8 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 self.value_map.insert(*dest, result);
             }
 
-            IrInstruction::CallDirect { dest, func_id, args } => {
+            IrInstruction::CallDirect { dest, func_id, args, arg_ownership: _, type_args: _ } => {
+                // Note: type_args are handled by monomorphization pass before codegen
                 let result = self.compile_direct_call(*func_id, args)?;
                 if let Some(dest) = dest {
                     if let Some(result_val) = result {

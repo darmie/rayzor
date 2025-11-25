@@ -313,7 +313,7 @@ impl MirBuilder {
 
         // Default to Move ownership for all arguments
         let arg_ownership = adjusted_args.iter().map(|_| crate::ir::instructions::OwnershipMode::Move).collect();
-        self.insert_inst(IrInstruction::CallDirect { dest, func_id, args: adjusted_args, arg_ownership });
+        self.insert_inst(IrInstruction::CallDirect { dest, func_id, args: adjusted_args, arg_ownership, type_args: Vec::new() });
         dest
     }
 

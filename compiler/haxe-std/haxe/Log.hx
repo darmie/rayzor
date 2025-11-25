@@ -60,14 +60,13 @@ class Log {
 		exception.
 	**/
 	public static dynamic function trace(v:Dynamic, ?infos:PosInfos):Void {
-		var str = formatOutput(v, infos);
 		#if js
 		if (js.Syntax.typeof(untyped console) != "undefined" && (untyped console).log != null)
-			(untyped console).log(str);
+			(untyped console).log(formatOutput(v, infos));
 		#elseif lua
-		untyped __define_feature__("use._hx_print", _hx_print(str));
+		untyped __define_feature__("use._hx_print", _hx_print(formatOutput(v, infos)));
 		#elseif sys
-		Sys.println(str);
+		Sys.println(formatOutput(v, infos));
 		#else
 		throw new haxe.exceptions.NotImplementedException()
 		#end

@@ -14,7 +14,7 @@ use crate::pipeline::{
     PipelineConfig, CompilationResult,
 };
 use crate::dependency_graph::{DependencyGraph, DependencyAnalysis, CircularDependency};
-use crate::ir::{IrModule, IrInstruction, blade::{save_blade, load_blade, BladeMetadata}};
+use crate::ir::{IrModule, IrInstruction, Monomorphizer, blade::{save_blade, load_blade, BladeMetadata}};
 use parser::{HaxeFile, parse_haxe_file, parse_haxe_file_with_debug};
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -991,6 +991,17 @@ impl CompilationUnit {
             let func = &mir_module.functions[func_id];
             eprintln!("  - IrFunctionId({}) = '{}' (extern: {})",
                       func_id.0, func.name, func.cfg.blocks.is_empty());
+        }
+
+        // Run monomorphization pass to specialize generic functions
+        let mut monomorphizer = Monomorphizer::new();
+        monomorphizer.monomorphize_module(&mut mir_module);
+        let mono_stats = monomorphizer.stats();
+        if mono_stats.generic_functions_found > 0 || mono_stats.instantiations_created > 0 {
+            eprintln!("DEBUG: Monomorphization stats: {} generic functions, {} instantiations, {} call sites rewritten",
+                      mono_stats.generic_functions_found,
+                      mono_stats.instantiations_created,
+                      mono_stats.call_sites_rewritten);
         }
 
         // Store the MIR module

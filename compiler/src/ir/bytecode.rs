@@ -283,12 +283,17 @@ impl BytecodeWriter {
                 self.write_ir_id(*dest)?;
                 self.write_ir_id(*src)?;
             }
-            IrInstruction::CallDirect { dest, func_id, args } => {
+            IrInstruction::CallDirect { dest, func_id, args, arg_ownership: _, type_args } => {
                 self.write_ir_id(*dest)?;
                 self.write_function_id(*func_id)?;
                 self.write_u32(args.len() as u32)?;
                 for arg in args {
                     self.write_ir_id(*arg)?;
+                }
+                // Write type args count and types for generic instantiation
+                self.write_u32(type_args.len() as u32)?;
+                for ty in type_args {
+                    self.write_type(ty)?;
                 }
             }
             IrInstruction::Cmp { dest, op, left, right } => {
