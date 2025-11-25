@@ -361,3 +361,101 @@ pub extern "C" fn haxe_free_dynamic(dynamic: DynamicValue) {
         }
     }
 }
+
+// ============================================================================
+// Pointer-based boxing/unboxing wrappers for MIR (simpler ABI)
+// ============================================================================
+
+/// Box an Int as Dynamic (returns opaque pointer)
+/// This is a simplified wrapper that returns a pointer to a DynamicValue
+#[no_mangle]
+pub extern "C" fn haxe_box_int_ptr(value: i64) -> *mut u8 {
+    let dynamic = haxe_box_int(value);
+    // Allocate DynamicValue on heap and return pointer
+    let boxed = Box::new(dynamic);
+    Box::into_raw(boxed) as *mut u8
+}
+
+/// Box a Float as Dynamic (returns opaque pointer)
+#[no_mangle]
+pub extern "C" fn haxe_box_float_ptr(value: f64) -> *mut u8 {
+    let dynamic = haxe_box_float(value);
+    let boxed = Box::new(dynamic);
+    Box::into_raw(boxed) as *mut u8
+}
+
+/// Box a Bool as Dynamic (returns opaque pointer)
+#[no_mangle]
+pub extern "C" fn haxe_box_bool_ptr(value: bool) -> *mut u8 {
+    let dynamic = haxe_box_bool(value);
+    let boxed = Box::new(dynamic);
+    Box::into_raw(boxed) as *mut u8
+}
+
+/// Unbox an Int from Dynamic (takes opaque pointer)
+#[no_mangle]
+pub extern "C" fn haxe_unbox_int_ptr(ptr: *mut u8) -> i64 {
+    if ptr.is_null() {
+        return 0;
+    }
+    unsafe {
+        let dynamic_ptr = ptr as *const DynamicValue;
+        let dynamic = *dynamic_ptr;
+        haxe_unbox_int(dynamic)
+    }
+}
+
+/// Unbox a Float from Dynamic (takes opaque pointer)
+#[no_mangle]
+pub extern "C" fn haxe_unbox_float_ptr(ptr: *mut u8) -> f64 {
+    if ptr.is_null() {
+        return 0.0;
+    }
+    unsafe {
+        let dynamic_ptr = ptr as *const DynamicValue;
+        let dynamic = *dynamic_ptr;
+        haxe_unbox_float(dynamic)
+    }
+}
+
+/// Unbox a Bool from Dynamic (takes opaque pointer)
+#[no_mangle]
+pub extern "C" fn haxe_unbox_bool_ptr(ptr: *mut u8) -> bool {
+    if ptr.is_null() {
+        return false;
+    }
+    unsafe {
+        let dynamic_ptr = ptr as *const DynamicValue;
+        let dynamic = *dynamic_ptr;
+        haxe_unbox_bool(dynamic)
+    }
+}
+
+// ============================================================================
+// Reference type boxing/unboxing (Classes, Enums, Anonymous, Arrays, etc.)
+// ============================================================================
+
+/// Box a reference type (class, enum, anonymous object, array, etc.)
+/// The value is already a pointer, so we just wrap it with type metadata
+#[no_mangle]
+pub extern "C" fn haxe_box_reference_ptr(value_ptr: *mut u8, type_id: u32) -> *mut u8 {
+    let dynamic = DynamicValue {
+        type_id: TypeId(type_id),
+        value_ptr,
+    };
+    let boxed = Box::new(dynamic);
+    Box::into_raw(boxed) as *mut u8
+}
+
+/// Unbox a reference type - just extract the pointer
+#[no_mangle]
+pub extern "C" fn haxe_unbox_reference_ptr(ptr: *mut u8) -> *mut u8 {
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        let dynamic_ptr = ptr as *const DynamicValue;
+        let dynamic = *dynamic_ptr;
+        dynamic.value_ptr
+    }
+}

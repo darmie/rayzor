@@ -1077,9 +1077,14 @@ impl<'a> HirToMirContext<'a> {
                         let var_type = type_hint.or(Some(init_expr.ty));
 
                         // Auto-box if assigning concrete value to Dynamic variable
+                        // Auto-unbox if assigning Dynamic value to concrete variable
                         let final_value = if let Some(target_ty) = var_type {
-                            self.maybe_box_value(value_reg, init_expr.ty, target_ty)
-                                .unwrap_or(value_reg)
+                            // Try boxing first (concrete → Dynamic)
+                            let after_box = self.maybe_box_value(value_reg, init_expr.ty, target_ty)
+                                .unwrap_or(value_reg);
+                            // Then try unboxing (Dynamic → concrete)
+                            self.maybe_unbox_value(after_box, init_expr.ty, target_ty)
+                                .unwrap_or(after_box)
                         } else {
                             value_reg
                         };
@@ -1786,9 +1791,6 @@ impl<'a> HirToMirContext<'a> {
 
                 // Check if this is a method call (callee is a field access)
                 if let HirExprKind::Field { object, field } = &callee.kind {
-                    // eprintln!("DEBUG: Method call via Field access - object.ty={:?}, field={:?}, object.kind={:?}",
-                    //          object.ty, field, std::mem::discriminant(&object.kind));
-
                     // This is a method call: object.method(args)
                     // The method symbol should be in our function_map
                     if let Some(&func_id) = self.function_map.get(field) {
@@ -1817,13 +1819,66 @@ impl<'a> HirToMirContext<'a> {
                             .builder
                             .build_call_direct(func_id, arg_regs, actual_return_type);
                     } else {
-                        // Check if this is a rayzor stdlib method call
-                        // Try to detect by looking at the object type
+                        // Method not found by direct symbol lookup
+                        // Check if this is a Dynamic method call or stdlib method
                         let object_type = object.ty;
-                        // eprintln!(
-                        //     "DEBUG: Method not found in function_map, field={:?}, object_type={:?}",
-                        //     field, object_type
-                        // );
+
+                        // First check if the object is Dynamic - handle auto-unbox for method calls
+                        let type_table = self.type_table.borrow();
+                        if let Some(type_info) = type_table.get(object_type) {
+                            if matches!(type_info.kind, TypeKind::Dynamic) {
+                                // Dynamic method call - need to resolve method by name
+                                drop(type_table);
+
+                                let method_name = self.symbol_table.get_symbol(*field).map(|s| s.name);
+                                if let Some(name) = method_name {
+                                    // Look up function by name in function_map
+                                    let mut found_func = None;
+                                    for (sym, &func_id) in &self.function_map {
+                                        if let Some(sym_info) = self.symbol_table.get_symbol(*sym) {
+                                            if sym_info.name == name {
+                                                found_func = Some(func_id);
+                                                break;
+                                            }
+                                        }
+                                    }
+
+                                    if let Some(func_id) = found_func {
+                                        // Lower the object and unbox it
+                                        let obj_reg = self.lower_expression(object)?;
+
+                                        // Unbox the Dynamic to get the actual object pointer
+                                        let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
+                                        let unbox_func_id = self.get_or_register_extern_function(
+                                            "haxe_unbox_reference_ptr",
+                                            vec![ptr_u8.clone()],
+                                            ptr_u8.clone(),
+                                        );
+                                        let unboxed_obj = self.builder.build_call_direct(
+                                            unbox_func_id,
+                                            vec![obj_reg],
+                                            ptr_u8,
+                                        )?;
+
+                                        // Lower the arguments
+                                        let arg_regs: Vec<_> = std::iter::once(unboxed_obj)  // Add unboxed 'this' as first arg
+                                            .chain(args.iter().filter_map(|a| self.lower_expression(a)))
+                                            .collect();
+
+                                        // Get the function's actual return type
+                                        let actual_return_type = if let Some(func) = self.builder.module.functions.get(&func_id) {
+                                            func.signature.return_type.clone()
+                                        } else {
+                                            result_type.clone()
+                                        };
+
+                                        return self
+                                            .builder
+                                            .build_call_direct(func_id, arg_regs, actual_return_type);
+                                    }
+                                }
+                            }
+                        }
 
                         // Check if the object type is a rayzor stdlib class
                         let type_table = self.type_table.borrow();
@@ -2038,11 +2093,68 @@ impl<'a> HirToMirContext<'a> {
                         );
                     }
 
-                    // For instance method calls, check if this is a stdlib method
+                    // For instance method calls, check if this is a stdlib method or Dynamic method
                     // Note: Static methods like Thread.spawn() can also come through here with is_method=true
                     if *is_method && !args.is_empty() {
                         // The first arg is the receiver for instance method calls
                         let receiver_type = args[0].ty;
+
+                        // SPECIAL CASE: Handle Dynamic method calls
+                        // When receiver is Dynamic, we need to unbox and resolve method by name
+                        {
+                            let type_table = self.type_table.borrow();
+                            if let Some(type_info) = type_table.get(receiver_type) {
+                                if matches!(type_info.kind, TypeKind::Dynamic) {
+                                    drop(type_table);
+
+                                    // Look up method by name in function_map
+                                    let method_name = self.symbol_table.get_symbol(*symbol).map(|s| s.name);
+                                    if let Some(name) = method_name {
+                                        let mut found_func = None;
+                                        for (sym, &func_id) in &self.function_map {
+                                            if let Some(sym_info) = self.symbol_table.get_symbol(*sym) {
+                                                if sym_info.name == name {
+                                                    found_func = Some(func_id);
+                                                    break;
+                                                }
+                                            }
+                                        }
+
+                                        if let Some(func_id) = found_func {
+                                            // Lower the receiver and unbox it
+                                            let receiver_reg = self.lower_expression(&args[0])?;
+
+                                            // Unbox the Dynamic to get the actual object pointer
+                                            let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
+                                            let unbox_func_id = self.get_or_register_extern_function(
+                                                "haxe_unbox_reference_ptr",
+                                                vec![ptr_u8.clone()],
+                                                ptr_u8.clone(),
+                                            );
+                                            let unboxed_receiver = self.builder.build_call_direct(
+                                                unbox_func_id,
+                                                vec![receiver_reg],
+                                                ptr_u8,
+                                            )?;
+
+                                            // Lower the rest of arguments (skip receiver at index 0)
+                                            let arg_regs: Vec<_> = std::iter::once(unboxed_receiver)
+                                                .chain(args[1..].iter().filter_map(|a| self.lower_expression(a)))
+                                                .collect();
+
+                                            // Get the function's actual return type
+                                            let actual_return_type = if let Some(func) = self.builder.module.functions.get(&func_id) {
+                                                func.signature.return_type.clone()
+                                            } else {
+                                                result_type.clone()
+                                            };
+
+                                            return self.builder.build_call_direct(func_id, arg_regs, actual_return_type);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         // eprintln!(
                         //     "DEBUG: Instance method path - receiver_type={:?}",
                         //     receiver_type
@@ -4285,32 +4397,136 @@ impl<'a> HirToMirContext<'a> {
         }
 
         // Determine which boxing function to call based on value type
-        let box_func = match &value_kind_cloned {
-            Some(TypeKind::Int) => "box_int",
-            Some(TypeKind::Float) => "box_float",
-            Some(TypeKind::Bool) => "box_bool",
-            // TODO: box_string, box_null
+        match &value_kind_cloned {
+            // Value types (need malloc + copy)
+            Some(TypeKind::Int) => {
+                eprintln!("DEBUG: [BOXING] Auto-boxing Int to Dynamic using box_int");
+                let value_mir_type = self.builder.get_register_type(value)
+                    .unwrap_or_else(|| self.convert_type(value_ty));
+                let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
+                let box_func_id = self.get_or_register_extern_function("box_int", vec![value_mir_type], ptr_u8);
+                self.builder.build_call_direct(box_func_id, vec![value], IrType::Ptr(Box::new(IrType::U8)))
+            }
+            Some(TypeKind::Float) => {
+                eprintln!("DEBUG: [BOXING] Auto-boxing Float to Dynamic using box_float");
+                let value_mir_type = self.builder.get_register_type(value)
+                    .unwrap_or_else(|| self.convert_type(value_ty));
+                let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
+                let box_func_id = self.get_or_register_extern_function("box_float", vec![value_mir_type], ptr_u8);
+                self.builder.build_call_direct(box_func_id, vec![value], IrType::Ptr(Box::new(IrType::U8)))
+            }
+            Some(TypeKind::Bool) => {
+                eprintln!("DEBUG: [BOXING] Auto-boxing Bool to Dynamic using box_bool");
+                let value_mir_type = self.builder.get_register_type(value)
+                    .unwrap_or_else(|| self.convert_type(value_ty));
+                let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
+                let box_func_id = self.get_or_register_extern_function("box_bool", vec![value_mir_type], ptr_u8);
+                self.builder.build_call_direct(box_func_id, vec![value], IrType::Ptr(Box::new(IrType::U8)))
+            }
+
+            // Reference types (already pointers, just wrap with type_id)
+            Some(TypeKind::Class { .. })
+            | Some(TypeKind::Enum { .. })
+            | Some(TypeKind::Interface { .. })
+            | Some(TypeKind::Anonymous { .. })
+            | Some(TypeKind::Array { .. }) => {
+                eprintln!("DEBUG: [BOXING] Auto-boxing reference type {:?} to Dynamic using box_reference", value_kind_cloned);
+
+                // Get TypeId as u32
+                let type_id_u32 = value_ty.as_raw();
+
+                // Create constant for type_id
+                let type_id_const = self.builder.build_const(IrValue::U32(type_id_u32))?;
+
+                // Get pointer type
+                let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
+
+                // Call box_reference_ptr(value_ptr, type_id)
+                let box_func_id = self.get_or_register_extern_function(
+                    "haxe_box_reference_ptr",
+                    vec![ptr_u8.clone(), IrType::U32],
+                    ptr_u8.clone(),
+                );
+
+                self.builder.build_call_direct(box_func_id, vec![value, type_id_const], ptr_u8)
+            }
+
+            // TODO: String (special struct handling), Abstract (depends on underlying type)
             _ => {
                 eprintln!("DEBUG: [BOXING] Unsupported type for boxing: {:?}", value_kind_cloned);
-                return Some(value); // Skip boxing for unsupported types
+                Some(value) // Skip boxing for unsupported types
             }
+        }
+    }
+
+    /// Insert automatic unboxing if needed when reading from Dynamic
+    /// Returns the (potentially unboxed) value
+    fn maybe_unbox_value(&mut self, value: IrId, value_ty: TypeId, target_ty: TypeId) -> Option<IrId> {
+        use crate::tast::TypeKind;
+
+        // Check if value is Dynamic and target is concrete
+        // Clone TypeKind to avoid borrow checker issues
+        let (value_is_dynamic, target_kind_cloned) = {
+            let type_table = self.type_table.borrow();
+            let value_is_dyn = matches!(type_table.get(value_ty).map(|t| &t.kind), Some(TypeKind::Dynamic));
+            let target_kind = type_table.get(target_ty).map(|t| t.kind.clone());
+            (value_is_dyn, target_kind)
         };
 
-        eprintln!("DEBUG: [BOXING] Auto-boxing {:?} to Dynamic using {}", value_kind_cloned, box_func);
+        let target_is_dynamic = matches!(&target_kind_cloned, Some(TypeKind::Dynamic));
+        let needs_unboxing = value_is_dynamic && !target_is_dynamic;
 
-        // Get the value's MIR type
-        let value_mir_type = self.builder.get_register_type(value)
-            .unwrap_or_else(|| self.convert_type(value_ty));
+        if !needs_unboxing {
+            return Some(value);
+        }
 
-        // Call the boxing function
-        let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
-        let box_func_id = self.get_or_register_extern_function(
-            box_func,
-            vec![value_mir_type],
-            ptr_u8,
-        );
+        // Determine which unboxing function to call based on target type
+        match &target_kind_cloned {
+            // Value types (need to extract from heap)
+            Some(TypeKind::Int) => {
+                eprintln!("DEBUG: [UNBOXING] Auto-unboxing Dynamic to Int using unbox_int");
+                let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
+                let unbox_func_id = self.get_or_register_extern_function("unbox_int", vec![ptr_u8], IrType::I32);
+                self.builder.build_call_direct(unbox_func_id, vec![value], IrType::I32)
+            }
+            Some(TypeKind::Float) => {
+                eprintln!("DEBUG: [UNBOXING] Auto-unboxing Dynamic to Float using unbox_float");
+                let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
+                let unbox_func_id = self.get_or_register_extern_function("unbox_float", vec![ptr_u8], IrType::F64);
+                self.builder.build_call_direct(unbox_func_id, vec![value], IrType::F64)
+            }
+            Some(TypeKind::Bool) => {
+                eprintln!("DEBUG: [UNBOXING] Auto-unboxing Dynamic to Bool using unbox_bool");
+                let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
+                let unbox_func_id = self.get_or_register_extern_function("unbox_bool", vec![ptr_u8], IrType::Bool);
+                self.builder.build_call_direct(unbox_func_id, vec![value], IrType::Bool)
+            }
 
-        self.builder.build_call_direct(box_func_id, vec![value], IrType::Ptr(Box::new(IrType::U8)))
+            // Reference types (just extract the pointer)
+            Some(TypeKind::Class { .. })
+            | Some(TypeKind::Enum { .. })
+            | Some(TypeKind::Interface { .. })
+            | Some(TypeKind::Anonymous { .. })
+            | Some(TypeKind::Array { .. }) => {
+                eprintln!("DEBUG: [UNBOXING] Auto-unboxing Dynamic to reference type {:?} using unbox_reference", target_kind_cloned);
+
+                // Call haxe_unbox_reference_ptr to extract the pointer
+                let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
+                let unbox_func_id = self.get_or_register_extern_function(
+                    "haxe_unbox_reference_ptr",
+                    vec![ptr_u8.clone()],
+                    ptr_u8.clone(),
+                );
+
+                self.builder.build_call_direct(unbox_func_id, vec![value], ptr_u8)
+            }
+
+            // TODO: String (special struct handling), Abstract (depends on underlying type)
+            _ => {
+                eprintln!("DEBUG: [UNBOXING] Unsupported type for unboxing: {:?}", target_kind_cloned);
+                Some(value) // Skip unboxing for unsupported types
+            }
+        }
     }
 
     /// Bind a pattern with type information (registers locals for Cranelift)
@@ -4621,6 +4837,72 @@ impl<'a> HirToMirContext<'a> {
     }
 
     fn lower_field_access(&mut self, obj: IrId, field: SymbolId, receiver_ty: TypeId, field_ty: TypeId) -> Option<IrId> {
+        // SPECIAL CASE: Auto-unbox Dynamic for field access
+        // If receiver is Dynamic, automatically unbox to get the actual object pointer
+        let (obj, receiver_ty) = {
+            let type_table = self.type_table.borrow();
+            if let Some(ty) = type_table.get(receiver_ty) {
+                if matches!(ty.kind, TypeKind::Dynamic) {
+                    drop(type_table);
+
+                    // Unbox to get the actual object pointer
+                    let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
+                    let unbox_func_id = self.get_or_register_extern_function(
+                        "haxe_unbox_reference_ptr",
+                        vec![ptr_u8.clone()],
+                        ptr_u8.clone(),
+                    );
+                    let unboxed_obj = self.builder.build_call_direct(unbox_func_id, vec![obj], ptr_u8.clone())?;
+
+                    // Get the actual class type from the field's class
+                    // The field_index_map tells us which class this field belongs to
+                    // For Dynamic types, the field symbol may be a newly created placeholder,
+                    // so we need to look up by field name instead
+                    let (actual_type, _resolved_field) = if let Some(&(class_type_id, _field_idx)) = self.field_index_map.get(&field) {
+                        (class_type_id, field)
+                    } else {
+                        // Field not found by SymbolId - try looking up by name
+                        // This handles Dynamic field access where a new symbol was created
+                        let field_name = self.symbol_table.get_symbol(field).map(|s| s.name);
+
+                        if let Some(name) = field_name {
+                            // Search for any field with the same name in field_index_map
+                            let mut found = None;
+                            for (sym, &(class_ty, _idx)) in &self.field_index_map {
+                                if let Some(sym_info) = self.symbol_table.get_symbol(*sym) {
+                                    if sym_info.name == name {
+                                        // Get the field's actual type from the symbol
+                                        let resolved_field_ty = sym_info.type_id;
+                                        found = Some((class_ty, *sym, resolved_field_ty));
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if let Some((class_ty, resolved_sym, resolved_field_ty)) = found {
+                                // Early return with the correct field symbol AND correct field type
+                                return self.lower_field_access(unboxed_obj, resolved_sym, class_ty, resolved_field_ty);
+                            } else {
+                                (receiver_ty, field)
+                            }
+                        } else {
+                            (receiver_ty, field)
+                        }
+                    };
+
+                    // If we reach here, we couldn't resolve the field - fall through to normal handling
+                    // This shouldn't happen for valid Dynamic field access, but provides a fallback
+                    (unboxed_obj, actual_type)
+                } else {
+                    drop(type_table);
+                    (obj, receiver_ty)
+                }
+            } else {
+                drop(type_table);
+                (obj, receiver_ty)
+            }
+        };
+
         // SPECIAL CASE: Check if this is a property access on a @:coreType extern class
         // For example, Array.length should map to haxe_array_length() runtime call
         // These classes have no actual fields - all access must go through runtime functions

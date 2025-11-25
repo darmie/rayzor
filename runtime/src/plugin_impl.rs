@@ -199,6 +199,18 @@ register_symbol!("haxe_unbox_float", crate::type_system::haxe_unbox_float);
 register_symbol!("haxe_unbox_bool", crate::type_system::haxe_unbox_bool);
 register_symbol!("haxe_unbox_string", crate::type_system::haxe_unbox_string);
 
+// Pointer-based boxing/unboxing for MIR (simpler ABI)
+register_symbol!("haxe_box_int_ptr", crate::type_system::haxe_box_int_ptr);
+register_symbol!("haxe_box_float_ptr", crate::type_system::haxe_box_float_ptr);
+register_symbol!("haxe_box_bool_ptr", crate::type_system::haxe_box_bool_ptr);
+register_symbol!("haxe_unbox_int_ptr", crate::type_system::haxe_unbox_int_ptr);
+register_symbol!("haxe_unbox_float_ptr", crate::type_system::haxe_unbox_float_ptr);
+register_symbol!("haxe_unbox_bool_ptr", crate::type_system::haxe_unbox_bool_ptr);
+
+// Reference type boxing/unboxing (Classes, Enums, Anonymous, Arrays, etc.)
+register_symbol!("haxe_box_reference_ptr", crate::type_system::haxe_box_reference_ptr);
+register_symbol!("haxe_unbox_reference_ptr", crate::type_system::haxe_unbox_reference_ptr);
+
 // Std.string() with runtime type dispatch
 register_symbol!("haxe_std_string", crate::type_system::haxe_std_string);
 
