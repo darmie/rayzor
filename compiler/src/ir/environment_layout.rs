@@ -70,6 +70,7 @@ impl EnvironmentLayout {
                 IrType::Any => false,
                 IrType::Opaque { .. } => false,
                 IrType::TypeVar(_) => false,
+                IrType::Generic { .. } => false,  // Generic types treated as pointers
                 // Bool and floating point
                 IrType::Bool => true,  // I64 → I8 for bool
                 IrType::F32 | IrType::F64 => false,  // Float handled differently

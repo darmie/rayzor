@@ -201,7 +201,8 @@ impl CraneliftBackend {
                 // {i64 type_id, ptr value_ptr}
                 8 + self.get_pointer_size() as u64
             }
-            IrType::TypeVar(_) => 0, // Should be monomorphized
+            IrType::TypeVar(_) => 0, // Should be monomorphized before codegen
+            IrType::Generic { .. } => 0, // Should be monomorphized before codegen
         }
     }
 
@@ -236,7 +237,8 @@ impl CraneliftBackend {
             }
             IrType::Opaque { align, .. } => *align as u32,
             IrType::Any => 8, // Aligned to i64
-            IrType::TypeVar(_) => 1,
+            IrType::TypeVar(_) => 1, // Should be monomorphized before codegen
+            IrType::Generic { .. } => 1, // Should be monomorphized before codegen
         }
     }
 
@@ -2642,7 +2644,8 @@ impl CraneliftBackend {
             IrType::Any => Ok(types::I64),
             IrType::Function { .. } => Ok(types::I64),
             IrType::Opaque { .. } => Ok(types::I64),
-            IrType::TypeVar(_) => Ok(types::I64),
+            IrType::TypeVar(_) => Ok(types::I64), // Should be monomorphized
+            IrType::Generic { .. } => Ok(types::I64), // Should be monomorphized
         }
     }
 

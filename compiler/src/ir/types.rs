@@ -73,11 +73,63 @@ pub enum IrType {
         align: usize,
     },
     
-    /// Type variable (for generics before monomorphization)
+    /// Type variable / type parameter (e.g., "T" in Container<T>)
+    /// This represents a generic type parameter before monomorphization.
+    /// Also aliased as TypeParam for clarity in generic contexts.
     TypeVar(String),
-    
+
+    /// Generic type instantiation (e.g., Container<Int>, Array<String>)
+    /// Used to represent a concrete instantiation of a generic type.
+    Generic {
+        /// The base generic type (e.g., the IrType for Container)
+        base: Box<IrType>,
+        /// The concrete type arguments (e.g., [Int] for Container<Int>)
+        type_args: Vec<IrType>,
+    },
+
     /// Any type (dynamic)
     Any,
+}
+
+impl IrType {
+    /// Create a new type parameter (alias for TypeVar)
+    pub fn type_param(name: impl Into<String>) -> Self {
+        IrType::TypeVar(name.into())
+    }
+
+    /// Create a new generic instantiation
+    pub fn generic(base: IrType, type_args: Vec<IrType>) -> Self {
+        IrType::Generic {
+            base: Box::new(base),
+            type_args,
+        }
+    }
+
+    /// Check if this is a type parameter
+    pub fn is_type_param(&self) -> bool {
+        matches!(self, IrType::TypeVar(_))
+    }
+
+    /// Check if this is a generic instantiation
+    pub fn is_generic_instance(&self) -> bool {
+        matches!(self, IrType::Generic { .. })
+    }
+
+    /// Get the type parameter name if this is a TypeVar
+    pub fn type_param_name(&self) -> Option<&str> {
+        match self {
+            IrType::TypeVar(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// Get the base type and type args if this is a Generic
+    pub fn generic_parts(&self) -> Option<(&IrType, &[IrType])> {
+        match self {
+            IrType::Generic { base, type_args } => Some((base, type_args)),
+            _ => None,
+        }
+    }
 }
 
 /// Structure field
@@ -123,11 +175,12 @@ impl IrType {
                 tag_size + max_variant_size
             }
             IrType::Opaque { size, .. } => *size,
-            IrType::TypeVar(_) => panic!("Cannot get size of type variable"),
+            IrType::TypeVar(_) => panic!("Cannot get size of type variable before monomorphization"),
+            IrType::Generic { .. } => panic!("Cannot get size of generic type before monomorphization"),
             IrType::Any => std::mem::size_of::<usize>() * 2, // type_id + value_ptr
         }
     }
-    
+
     /// Get the alignment requirement of the type
     pub fn align(&self) -> usize {
         match self {
@@ -145,7 +198,8 @@ impl IrType {
             }
             IrType::Union { .. } => 4, // Assume 4-byte alignment for tag
             IrType::Opaque { align, .. } => *align,
-            IrType::TypeVar(_) => panic!("Cannot get alignment of type variable"),
+            IrType::TypeVar(_) => panic!("Cannot get alignment of type variable before monomorphization"),
+            IrType::Generic { .. } => panic!("Cannot get alignment of generic type before monomorphization"),
         }
     }
     
@@ -275,6 +329,14 @@ impl fmt::Display for IrType {
             IrType::Union { name, .. } => write!(f, "union {}", name),
             IrType::Opaque { name, .. } => write!(f, "opaque {}", name),
             IrType::TypeVar(name) => write!(f, "${}", name),
+            IrType::Generic { base, type_args } => {
+                write!(f, "{}<", base)?;
+                for (i, arg) in type_args.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{}", arg)?;
+                }
+                write!(f, ">")
+            }
             IrType::Any => write!(f, "any"),
         }
     }
