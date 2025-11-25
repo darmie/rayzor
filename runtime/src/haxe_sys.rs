@@ -164,6 +164,68 @@ pub extern "C" fn haxe_string_literal(ptr: *const u8, len: usize) -> *mut HaxeSt
     Box::into_raw(boxed)
 }
 
+/// Convert string to uppercase (wrapper returning pointer)
+/// Takes pointer to input string, returns pointer to new heap-allocated uppercase string
+#[no_mangle]
+pub extern "C" fn haxe_string_upper(s: *const HaxeString) -> *mut HaxeString {
+    if s.is_null() {
+        return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null(), len: 0 }));
+    }
+    unsafe {
+        let s_ref = &*s;
+        if s_ref.ptr.is_null() || s_ref.len == 0 {
+            return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null(), len: 0 }));
+        }
+        let slice = std::slice::from_raw_parts(s_ref.ptr, s_ref.len);
+        if let Ok(rust_str) = std::str::from_utf8(slice) {
+            let upper = rust_str.to_uppercase();
+            let bytes = upper.into_bytes().into_boxed_slice();
+            let len = bytes.len();
+            let ptr = Box::into_raw(bytes) as *const u8;
+            Box::into_raw(Box::new(HaxeString { ptr, len }))
+        } else {
+            // Invalid UTF-8, return copy of original
+            let mut new_bytes = Vec::with_capacity(s_ref.len);
+            new_bytes.extend_from_slice(slice);
+            let bytes = new_bytes.into_boxed_slice();
+            let len = bytes.len();
+            let ptr = Box::into_raw(bytes) as *const u8;
+            Box::into_raw(Box::new(HaxeString { ptr, len }))
+        }
+    }
+}
+
+/// Convert string to lowercase (wrapper returning pointer)
+/// Takes pointer to input string, returns pointer to new heap-allocated lowercase string
+#[no_mangle]
+pub extern "C" fn haxe_string_lower(s: *const HaxeString) -> *mut HaxeString {
+    if s.is_null() {
+        return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null(), len: 0 }));
+    }
+    unsafe {
+        let s_ref = &*s;
+        if s_ref.ptr.is_null() || s_ref.len == 0 {
+            return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null(), len: 0 }));
+        }
+        let slice = std::slice::from_raw_parts(s_ref.ptr, s_ref.len);
+        if let Ok(rust_str) = std::str::from_utf8(slice) {
+            let lower = rust_str.to_lowercase();
+            let bytes = lower.into_bytes().into_boxed_slice();
+            let len = bytes.len();
+            let ptr = Box::into_raw(bytes) as *const u8;
+            Box::into_raw(Box::new(HaxeString { ptr, len }))
+        } else {
+            // Invalid UTF-8, return copy of original
+            let mut new_bytes = Vec::with_capacity(s_ref.len);
+            new_bytes.extend_from_slice(slice);
+            let bytes = new_bytes.into_boxed_slice();
+            let len = bytes.len();
+            let ptr = Box::into_raw(bytes) as *const u8;
+            Box::into_raw(Box::new(HaxeString { ptr, len }))
+        }
+    }
+}
+
 // ============================================================================
 // Program Control
 // ============================================================================

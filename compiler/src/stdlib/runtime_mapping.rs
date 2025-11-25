@@ -381,8 +381,9 @@ impl StdlibMapping {
             map_method!(instance "String", "split" => "haxe_string_split", params: 1, returns: complex),
             map_method!(instance "String", "substr" => "haxe_string_substr", params: 2, returns: complex),
             map_method!(instance "String", "substring" => "haxe_string_substring", params: 2, returns: complex),
-            map_method!(instance "String", "toLowerCase" => "haxe_string_to_lower_case", params: 0, returns: complex),
-            map_method!(instance "String", "toUpperCase" => "haxe_string_to_upper_case", params: 0, returns: complex),
+            // toLowerCase/toUpperCase use pointer-returning wrapper functions (not out-param style)
+            map_method!(instance "String", "toLowerCase" => "haxe_string_lower", params: 0, returns: primitive),
+            map_method!(instance "String", "toUpperCase" => "haxe_string_upper", params: 0, returns: primitive),
             map_method!(instance "String", "toString" => "haxe_string_copy", params: 0, returns: complex),
         ];
 

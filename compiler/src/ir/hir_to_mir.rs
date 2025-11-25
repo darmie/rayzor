@@ -1701,13 +1701,18 @@ impl<'a> HirToMirContext<'a> {
                             // 1. Actual is pointer, expected is scalar (would truncate pointer)
                             // 2. Actual is String, expected is Ptr(Void) (would lose string data)
                             // 3. Actual is more specific than Ptr(Void)
+                            // 4. Actual is Ptr(String), expected is Ptr(Void) - preserve String type info for trace
                             let actual_is_ptr = matches!(&actual_type, IrType::Ptr(_));
                             let expected_is_ptr = matches!(&expected_type, IrType::Ptr(_));
                             let expected_is_void_ptr = matches!(&expected_type, IrType::Ptr(inner) if matches!(**inner, IrType::Void));
                             let actual_is_specific = matches!(&actual_type, IrType::String | IrType::I32 | IrType::I64 | IrType::F32 | IrType::F64 | IrType::Bool);
+                            // Only skip cast for Ptr(String) specifically - NOT for other pointer types like Ptr(U8)
+                            // which are used by concurrency primitives (Mutex, Thread, Channel, etc.)
+                            let actual_is_string_ptr = matches!(&actual_type, IrType::Ptr(inner) if matches!(**inner, IrType::String));
 
                             let should_skip_cast = (actual_is_ptr && !expected_is_ptr)  // pointer to scalar
-                                || (actual_is_specific && expected_is_void_ptr);         // specific type to void pointer
+                                || (actual_is_specific && expected_is_void_ptr)          // specific type to void pointer
+                                || (actual_is_string_ptr && expected_is_void_ptr);       // Ptr(String) to Ptr(Void)
 
                             if should_skip_cast {
                                 eprintln!("DEBUG: Variable type mismatch - symbol={:?}, actual: {:?}, expected: {:?}, SKIPPING cast (would lose type info)", symbol, actual_type, expected_type);
@@ -1880,6 +1885,71 @@ impl<'a> HirToMirContext<'a> {
                             }
                         }
 
+                        // Check if the object type is a String - handle String method calls
+                        {
+                            let type_table = self.type_table.borrow();
+                            if let Some(type_info) = type_table.get(object_type) {
+                                if matches!(type_info.kind, TypeKind::String) {
+                                    // Get the method name from the field symbol
+                                    let method_name = self.symbol_table.get_symbol(*field)
+                                        .and_then(|s| self.string_interner.get(s.name));
+
+                                    if let Some(method_name) = method_name {
+                                        // Look up the runtime function for this String method
+                                        if let Some((_sig, mapping)) = self.stdlib_mapping.find_by_name("String", method_name) {
+                                            let runtime_func = mapping.runtime_name;
+
+                                            eprintln!("DEBUG: [STRING METHOD] Found String.{} -> {}",
+                                                     method_name, runtime_func);
+
+                                            drop(type_table);
+
+                                            // Lower the object (the String pointer)
+                                            let obj_reg = self.lower_expression(object)?;
+
+                                            // Lower the method arguments
+                                            let method_arg_regs: Vec<_> = args
+                                                .iter()
+                                                .filter_map(|a| self.lower_expression(a))
+                                                .collect();
+
+                                            // Build param types: string_ptr, ...args
+                                            let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
+                                            let mut param_types = vec![string_ptr_ty.clone()];
+                                            for arg in &method_arg_regs {
+                                                let arg_ty = self.builder.get_register_type(*arg)
+                                                    .unwrap_or(IrType::I64);
+                                                param_types.push(arg_ty);
+                                            }
+
+                                            // Determine return type - for String methods returning String,
+                                            // they return a pointer to HaxeString
+                                            let return_type = if result_type == IrType::String {
+                                                string_ptr_ty.clone()
+                                            } else {
+                                                result_type.clone()
+                                            };
+
+                                            let runtime_func_id = self.get_or_register_extern_function(
+                                                runtime_func,
+                                                param_types,
+                                                return_type.clone(),
+                                            );
+
+                                            let mut call_args = vec![obj_reg];
+                                            call_args.extend(method_arg_regs);
+
+                                            return self.builder.build_call_direct(
+                                                runtime_func_id,
+                                                call_args,
+                                                return_type,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         // Check if the object type is a rayzor stdlib class
                         let type_table = self.type_table.borrow();
                         if let Some(type_info) = type_table.get(object_type) {
@@ -1993,11 +2063,13 @@ impl<'a> HirToMirContext<'a> {
                             .unwrap_or_else(|| self.convert_type(arg.ty));
 
                         // Determine which trace function to call based on type
-                        let trace_method = match arg_type {
+                        let trace_method = match &arg_type {
                             IrType::I32 | IrType::I64 => "traceInt",
                             IrType::F32 | IrType::F64 => "traceFloat",
                             IrType::Bool => "traceBool",
                             IrType::String => "traceString", // String is ptr+len struct
+                            // Also handle Ptr(String) - returned by String methods like toUpperCase()
+                            IrType::Ptr(inner) if matches!(inner.as_ref(), IrType::String) => "traceString",
                             _ => "traceAny", // Fallback for Dynamic or unknown types
                         };
 
@@ -2099,6 +2171,14 @@ impl<'a> HirToMirContext<'a> {
                         // The first arg is the receiver for instance method calls
                         let receiver_type = args[0].ty;
 
+                        // Debug: print receiver type info
+                        {
+                            let type_table = self.type_table.borrow();
+                            if let Some(type_info) = type_table.get(receiver_type) {
+                                eprintln!("DEBUG: [METHOD CALL] receiver_type={:?}, kind={:?}", receiver_type, type_info.kind);
+                            }
+                        }
+
                         // SPECIAL CASE: Handle Dynamic method calls
                         // When receiver is Dynamic, we need to unbox and resolve method by name
                         {
@@ -2121,24 +2201,45 @@ impl<'a> HirToMirContext<'a> {
                                         }
 
                                         if let Some(func_id) = found_func {
-                                            // Lower the receiver and unbox it
+                                            // Lower the receiver
                                             let receiver_reg = self.lower_expression(&args[0])?;
 
-                                            // Unbox the Dynamic to get the actual object pointer
-                                            let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
-                                            let unbox_func_id = self.get_or_register_extern_function(
-                                                "haxe_unbox_reference_ptr",
-                                                vec![ptr_u8.clone()],
-                                                ptr_u8.clone(),
-                                            );
-                                            let unboxed_receiver = self.builder.build_call_direct(
-                                                unbox_func_id,
-                                                vec![receiver_reg],
-                                                ptr_u8,
-                                            )?;
+                                            // Check if the receiver was boxed by examining its MIR register type.
+                                            // Boxing creates a Ptr(U8) value. If the receiver has a different
+                                            // pointer type (like Ptr(Void) from a stdlib function return),
+                                            // it wasn't boxed and shouldn't be unboxed.
+                                            let receiver_mir_type = self.builder.get_register_type(receiver_reg);
+                                            let should_unbox = receiver_mir_type.as_ref()
+                                                .map(|t| {
+                                                    // A boxed value has type Ptr(U8) from box_* functions
+                                                    // Unboxed stdlib returns typically have Ptr(Void)
+                                                    matches!(t, IrType::Ptr(inner) if matches!(**inner, IrType::U8))
+                                                })
+                                                .unwrap_or(true); // Assume boxed if type unknown
+
+                                            eprintln!("DEBUG: [DYNAMIC METHOD] receiver_mir_type: {:?}, should_unbox: {}",
+                                                     receiver_mir_type, should_unbox);
+
+                                            let actual_receiver = if should_unbox {
+                                                // Unbox the Dynamic to get the actual object pointer
+                                                let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
+                                                let unbox_func_id = self.get_or_register_extern_function(
+                                                    "haxe_unbox_reference_ptr",
+                                                    vec![ptr_u8.clone()],
+                                                    ptr_u8.clone(),
+                                                );
+                                                self.builder.build_call_direct(
+                                                    unbox_func_id,
+                                                    vec![receiver_reg],
+                                                    ptr_u8,
+                                                )?
+                                            } else {
+                                                eprintln!("DEBUG: [DYNAMIC METHOD] Skipping unbox - stdlib container method");
+                                                receiver_reg
+                                            };
 
                                             // Lower the rest of arguments (skip receiver at index 0)
-                                            let arg_regs: Vec<_> = std::iter::once(unboxed_receiver)
+                                            let arg_regs: Vec<_> = std::iter::once(actual_receiver)
                                                 .chain(args[1..].iter().filter_map(|a| self.lower_expression(a)))
                                                 .collect();
 
@@ -2155,6 +2256,162 @@ impl<'a> HirToMirContext<'a> {
                                 }
                             }
                         }
+
+                        // SPECIAL CASE: Handle MutexGuard method calls (Deref-like semantics)
+                        // When calling a method on MutexGuard<T> that doesn't exist on MutexGuard,
+                        // we need to auto-call .get() to get the inner T and then call the method on T
+                        {
+                            let type_table = self.type_table.borrow();
+                            if let Some(type_info) = type_table.get(receiver_type) {
+                                // Check if receiver is MutexGuard class
+                                if let TypeKind::Class { symbol_id, .. } = &type_info.kind {
+                                    // Get class name from symbol
+                                    let is_mutex_guard = self.symbol_table.get_symbol(*symbol_id)
+                                        .and_then(|s| self.string_interner.get(s.name))
+                                        .map(|n| n == "MutexGuard")
+                                        .unwrap_or(false);
+
+                                    if is_mutex_guard {
+                                        // Get the method name being called
+                                        let method_name = self.symbol_table.get_symbol(*symbol)
+                                            .and_then(|s| self.string_interner.get(s.name))
+                                            .map(|s| s.to_string());
+
+                                        // Check if this is a MutexGuard method (get, unlock) or an inner type method
+                                        let is_mutex_guard_method = method_name.as_ref()
+                                            .map(|n| n == "get" || n == "unlock")
+                                            .unwrap_or(false);
+
+                                        if !is_mutex_guard_method {
+                                            // Not a MutexGuard method - need to call .get() first
+                                            eprintln!("DEBUG: [MUTEX_GUARD DEREF] Calling .get() before method '{}' on MutexGuard",
+                                                     method_name.as_deref().unwrap_or("?"));
+
+                                            drop(type_table);
+
+                                            // Lower the MutexGuard receiver
+                                            let guard_reg = self.lower_expression(&args[0])?;
+
+                                            // Call MutexGuard_get to get the inner value
+                                            // First find the MutexGuard_get function
+                                            let mut guard_get_func = None;
+                                            for (sym, &func_id) in &self.function_map {
+                                                if let Some(sym_info) = self.symbol_table.get_symbol(*sym) {
+                                                    if let Some(name) = self.string_interner.get(sym_info.name) {
+                                                        if name == "MutexGuard_get" || name == "get" {
+                                                            // Check if this is for MutexGuard
+                                                            guard_get_func = Some(func_id);
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // Also try stdlib mapping
+                                            if guard_get_func.is_none() {
+                                                if let Some((_sig, mapping)) = self.stdlib_mapping.find_by_name("MutexGuard", "get") {
+                                                    let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
+                                                    guard_get_func = Some(self.get_or_register_extern_function(
+                                                        mapping.runtime_name,
+                                                        vec![ptr_u8.clone()],
+                                                        ptr_u8,
+                                                    ));
+                                                }
+                                            }
+
+                                            if let Some(get_func_id) = guard_get_func {
+                                                // Call .get() to get the inner value
+                                                let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
+                                                let inner_value = self.builder.build_call_direct(
+                                                    get_func_id,
+                                                    vec![guard_reg],
+                                                    ptr_u8,
+                                                )?;
+
+                                                // Now call the actual method on the inner value
+                                                // Lower the rest of arguments (skip receiver at index 0)
+                                                let arg_regs: Vec<_> = std::iter::once(inner_value)
+                                                    .chain(args[1..].iter().filter_map(|a| self.lower_expression(a)))
+                                                    .collect();
+
+                                                // Get the method function ID
+                                                if let Some(&func_id) = self.function_map.get(symbol) {
+                                                    let actual_return_type = if let Some(func) = self.builder.module.functions.get(&func_id) {
+                                                        func.signature.return_type.clone()
+                                                    } else {
+                                                        result_type.clone()
+                                                    };
+
+                                                    return self.builder.build_call_direct(func_id, arg_regs, actual_return_type);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // SPECIAL CASE: Handle String method calls
+                        // String methods like toUpperCase(), toLowerCase() need special routing
+                        {
+                            let type_table = self.type_table.borrow();
+                            if let Some(type_info) = type_table.get(receiver_type) {
+                                if matches!(type_info.kind, TypeKind::String) {
+                                    // Get the method name
+                                    let method_name = self.symbol_table.get_symbol(*symbol)
+                                        .and_then(|s| self.string_interner.get(s.name));
+
+                                    if let Some(method_name) = method_name {
+                                        // Look up the runtime function for this String method
+                                        if let Some((_sig, mapping)) = self.stdlib_mapping.find_by_name("String", method_name) {
+                                            let runtime_func = mapping.runtime_name;
+
+                                            eprintln!("DEBUG: [STRING METHOD] Variable path - Found String.{} -> {}",
+                                                     method_name, runtime_func);
+
+                                            drop(type_table);
+
+                                            // Lower the receiver (the String pointer, which is args[0])
+                                            let obj_reg = self.lower_expression(&args[0])?;
+
+                                            // Lower the method arguments (skip the receiver at index 0)
+                                            let method_arg_regs: Vec<_> = args[1..]
+                                                .iter()
+                                                .filter_map(|a| self.lower_expression(a))
+                                                .collect();
+
+                                            // Build param types: string_ptr, ...args
+                                            let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
+                                            let mut param_types = vec![string_ptr_ty.clone()];
+                                            for arg in &method_arg_regs {
+                                                let arg_ty = self.builder.get_register_type(*arg)
+                                                    .unwrap_or(IrType::I64);
+                                                param_types.push(arg_ty);
+                                            }
+
+                                            // Return type is pointer to HaxeString for String methods
+                                            let return_type = string_ptr_ty.clone();
+
+                                            let runtime_func_id = self.get_or_register_extern_function(
+                                                runtime_func,
+                                                param_types,
+                                                return_type.clone(),
+                                            );
+
+                                            let mut call_args = vec![obj_reg];
+                                            call_args.extend(method_arg_regs);
+
+                                            return self.builder.build_call_direct(
+                                                runtime_func_id,
+                                                call_args,
+                                                return_type,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         // eprintln!(
                         //     "DEBUG: Instance method path - receiver_type={:?}",
                         //     receiver_type

@@ -666,7 +666,7 @@ class Main {
     static function main() {
         var counter = new Mutex(new Counter());
         var guard = counter.lock();
-        guard.increment();
+        guard.get().increment();  // Use .get() to access inner value
         // Lock released when guard goes out of scope
     }
 }
