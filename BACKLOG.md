@@ -99,13 +99,13 @@ var stringStack = new Stack<String>();     // Should create Stack_String
 
 ### 1.5 Monomorphization Pass
 
-**Status:** 🟡 Infrastructure Complete, Instantiation Needed
+**Status:** 🟢 Core Complete - Specialization Working
 **Related Files:**
 - `compiler/src/ir/monomorphize.rs` - MonoKey, Monomorphizer, type substitution
-- `compiler/src/ir/builder.rs` - FunctionSignatureBuilder with type_params
+- `compiler/src/ir/builder.rs` - FunctionSignatureBuilder with type_params, build_call_direct_with_type_args
 - `compiler/src/ir/instructions.rs` - CallDirect with type_args
 - `compiler/src/ir/tast_to_hir.rs` - lower_type_params implementation
-- `compiler/src/ir/hir_to_mir.rs` - Class type param propagation to methods
+- `compiler/src/ir/hir_to_mir.rs` - Class type param propagation to methods, type_args inference
 
 **Tasks:**
 - [x] Design monomorphization strategy (lazy vs eager) - Using lazy instantiation
@@ -116,10 +116,13 @@ var stringStack = new Stack<String>();     // Should create Stack_String
 - [x] Add monomorphization statistics/reporting
 - [x] Propagate class type_params to method signatures
 - [x] Implement TAST->HIR type_params lowering
+- [x] Extract type_args from receiver's class type for instance method calls
+- [x] Infer type_args for static generic method calls from argument types
+- [x] Generate specialized function bodies (set__i32, id__i32, id__f64)
+- [x] Rewrite call sites to use specialized functions
 - [ ] Use SymbolFlags::GENERIC to identify monomorphizable types
 - [ ] Handle recursive generic instantiation
-- [ ] Generate specialized function bodies
-- [ ] Rewrite call sites to use specialized functions
+- [ ] Preserve TypeVar in MIR signatures (currently converted to Ptr(Void))
 
 **Reference:** Based on Zyntax proven approach - see GENERICS_DESIGN.md
 

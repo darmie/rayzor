@@ -1917,9 +1917,13 @@ impl<'a> HirToMirContext<'a> {
                 callee,
                 args,
                 is_method,
-                ..
+                type_args: hir_type_args,
             } => {
                 let result_type = self.convert_type(expr.ty);
+                // Convert HIR type_args to IrType for use in CallDirect
+                let converted_hir_type_args: Vec<IrType> = hir_type_args.iter()
+                    .map(|&ty_id| self.convert_type(ty_id))
+                    .collect();
 
                 // DEBUG: Check if void function is being called with dest
                 eprintln!("DEBUG: [CALL] expr.ty={:?}, result_type={:?}, is_method={}", expr.ty, result_type, is_method);
@@ -3325,23 +3329,100 @@ impl<'a> HirToMirContext<'a> {
                                 .filter_map(|a| self.lower_expression(a))
                                 .collect();
 
-                            eprintln!("DEBUG: [FUNCTION_MAP] Method call lowered {} args: {:?}", arg_regs.len(), arg_regs);
-                            let result = self
-                                .builder
-                                .build_call_direct(func_id, arg_regs, actual_return_type.clone());
+                            // Extract type_args from receiver's class type for generic method calls
+                            let ir_type_args = if !args.is_empty() {
+                                let receiver_type = args[0].ty;
+                                let type_args_copy = {
+                                    let type_table = self.type_table.borrow();
+                                    if let Some(receiver_info) = type_table.get(receiver_type) {
+                                        if let crate::tast::TypeKind::Class { type_args, .. } = &receiver_info.kind {
+                                            // Clone type_args before releasing borrow
+                                            type_args.clone()
+                                        } else {
+                                            Vec::new()
+                                        }
+                                    } else {
+                                        Vec::new()
+                                    }
+                                };
+                                // Convert TypeId type_args to IrType (borrow released)
+                                type_args_copy.iter().map(|&ty_id| self.convert_type(ty_id)).collect::<Vec<_>>()
+                            } else {
+                                Vec::new()
+                            };
+
+                            eprintln!("DEBUG: [FUNCTION_MAP] Method call lowered {} args: {:?}, type_args: {:?}", arg_regs.len(), arg_regs, ir_type_args);
+                            let result = if ir_type_args.is_empty() {
+                                self.builder.build_call_direct(func_id, arg_regs, actual_return_type.clone())
+                            } else {
+                                self.builder.build_call_direct_with_type_args(func_id, arg_regs, actual_return_type.clone(), ir_type_args)
+                            };
                             eprintln!("DEBUG: [FUNCTION_MAP] Result: {:?}", result);
                             return result;
                         } else {
-                            // Direct function call
+                            // Direct function call (static method or free function)
                             let arg_regs: Vec<_> = args
                                 .iter()
                                 .filter_map(|a| self.lower_expression(a))
                                 .collect();
 
-                            eprintln!("DEBUG: [FUNCTION_MAP] Direct call lowered {} args: {:?}", arg_regs.len(), arg_regs);
-                            let result = self
-                                .builder
-                                .build_call_direct(func_id, arg_regs, actual_return_type);
+                            // Infer type_args for static generic calls if not already provided
+                            let final_type_args = if converted_hir_type_args.is_empty() {
+                                // Check if the function has type parameters
+                                if let Some(func) = self.builder.module.functions.get(&func_id) {
+                                    if !func.signature.type_params.is_empty() && !args.is_empty() {
+                                        // Try to infer type_args from argument types
+                                        eprintln!("DEBUG: [TYPE INFERENCE] Function {} has type_params: {:?}", func.name, func.signature.type_params);
+                                        eprintln!("DEBUG: [TYPE INFERENCE] Function params: {:?}", func.signature.parameters.iter().map(|p| (&p.name, &p.ty)).collect::<Vec<_>>());
+
+                                        let mut inferred: Vec<IrType> = Vec::new();
+                                        for (_param_idx, type_param) in func.signature.type_params.iter().enumerate() {
+                                            // Look for a parameter using this type variable
+                                            let mut found = false;
+                                            for (i, sig_param) in func.signature.parameters.iter().enumerate() {
+                                                eprintln!("DEBUG: [TYPE INFERENCE] Checking param {} type {:?} against type_param {}", sig_param.name, sig_param.ty, type_param.name);
+                                                if let IrType::TypeVar(ref name) = sig_param.ty {
+                                                    if name == &type_param.name && i < args.len() {
+                                                        // Use the concrete type of the corresponding argument
+                                                        let arg_type = self.convert_type(args[i].ty);
+                                                        eprintln!("DEBUG: [TYPE INFERENCE] Inferred {}={:?} from arg {}", type_param.name, arg_type, i);
+                                                        inferred.push(arg_type);
+                                                        found = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            if !found {
+                                                // Couldn't infer this type param from signature params
+                                                // Try using the first argument's type as a fallback for single type param
+                                                if func.signature.type_params.len() == 1 && !args.is_empty() {
+                                                    let arg_type = self.convert_type(args[0].ty);
+                                                    eprintln!("DEBUG: [TYPE INFERENCE] Fallback: Inferred {}={:?} from first arg", type_param.name, arg_type);
+                                                    inferred.push(arg_type);
+                                                } else {
+                                                    eprintln!("DEBUG: [TYPE INFERENCE] Could not infer {}, using Any", type_param.name);
+                                                    inferred.push(IrType::Any);
+                                                }
+                                            }
+                                        }
+                                        inferred
+                                    } else {
+                                        Vec::new()
+                                    }
+                                } else {
+                                    Vec::new()
+                                }
+                            } else {
+                                converted_hir_type_args.clone()
+                            };
+
+                            // Use HIR type_args or inferred type_args for static generic calls
+                            eprintln!("DEBUG: [FUNCTION_MAP] Direct call lowered {} args: {:?}, final_type_args: {:?}", arg_regs.len(), arg_regs, final_type_args);
+                            let result = if final_type_args.is_empty() {
+                                self.builder.build_call_direct(func_id, arg_regs, actual_return_type)
+                            } else {
+                                self.builder.build_call_direct_with_type_args(func_id, arg_regs, actual_return_type, final_type_args)
+                            };
                             eprintln!("DEBUG: [FUNCTION_MAP] Result: {:?}", result);
                             return result;
                         }

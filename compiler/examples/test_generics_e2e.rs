@@ -146,6 +146,18 @@ fn compile_and_check(source: &str, name: &str) -> Result<MonoStats, String> {
     let mut stats = MonoStats::default();
 
     println!("  📋 User-defined functions in MIR:");
+    println!("  📦 Total functions in module: {}", mir_modules.iter().map(|m| m.functions.len()).sum::<usize>());
+
+    // Look for monomorphized functions (contain __ in name)
+    for module in &mir_modules {
+        for (_id, func) in &module.functions {
+            if func.name.contains("__") {
+                println!("  🎯 Monomorphized: {} (id={:?})", func.name, func.id);
+                stats.instantiations_created += 1;
+            }
+        }
+    }
+
     for module in &mir_modules {
         // Count functions with type parameters
         for (_id, func) in &module.functions {
@@ -171,6 +183,19 @@ fn compile_and_check(source: &str, name: &str) -> Result<MonoStats, String> {
             for param in &func.signature.parameters {
                 if contains_type_var(&param.ty) {
                     println!("  Function {} has TypeVar param: {}", func.name, param.name);
+                }
+            }
+
+            // Check for CallDirect instructions with type_args
+            for block in func.cfg.blocks.values() {
+                for instr in &block.instructions {
+                    if let compiler::ir::IrInstruction::CallDirect { func_id, type_args, .. } = instr {
+                        if !type_args.is_empty() {
+                            println!("  📞 Call with type_args in {}: func_id={:?}, type_args={:?}",
+                                func.name, func_id, type_args);
+                            stats.call_sites_rewritten += 1;
+                        }
+                    }
                 }
             }
         }
