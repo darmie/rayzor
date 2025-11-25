@@ -624,26 +624,244 @@ map.set(new Key(1, "foo"), "value");
 
 ## 6. Standard Library Implementation 🟡
 
-**Status:** Partial
+**Status:** Partial (~43% by function count)
+**Last Audit:** 2025-11-24
 
-### 6.1 Completed
-- [x] Vec<u8> (concrete implementation)
-- [x] String (Vec<u8> backed)
-- [x] Memory management (malloc/realloc/free)
+### 6.1 Implementation Coverage Summary
 
-### 6.2 Needed
+| Category | Classes | Functions | Status |
+|----------|---------|-----------|--------|
+| Core Types (String, Array, Math) | 3 | 55 | 🟡 String ✅, Array/Math ⚠️ |
+| Concurrency (Thread, Arc, Mutex, Channel) | 5 | 32 | ✅ 100% |
+| System I/O (Sys) | 1 | 4/20 | 🟡 20% |
+| Standard Utilities (Std, Type, Reflect) | 3 | 0 | 🔴 0% |
+| File System (File, FileSystem, etc.) | 6 | 0 | 🔴 0% |
+| Networking (Socket, Host, SSL) | 6 | 0 | 🔴 0% |
+| Data Structures (Maps, List) | 4 | 0 | 🔴 0% |
+| Date/Time | 1 | 0 | 🔴 0% |
+| **Total** | **37** | **94** | **~43%** |
 
-**Tasks:**
-- [ ] Vec<T> generic implementation
-- [ ] Array<T> (Haxe dynamic array)
-- [ ] Map<K, V> (hashmap)
-- [ ] Set<T>
-- [ ] Option<T>
-- [ ] Result<T, E>
-- [ ] Iterator<T> trait system
-- [ ] Range types
-- [ ] Math functions
-- [ ] String utilities
+### 6.2 Core Types Status
+
+**String Class - VERIFIED STABLE ✅ (2025-11-25):**
+- [x] length - get string length (haxe_string_len)
+- [x] charAt(index) - get character at index (haxe_string_char_at_ptr)
+- [x] charCodeAt(index) - get ASCII code at index (haxe_string_char_code_at_ptr)
+- [x] indexOf(needle, startIndex) - find substring (haxe_string_index_of_ptr)
+- [x] lastIndexOf(needle, startIndex) - find last occurrence (haxe_string_last_index_of_ptr)
+- [x] substr(pos, len) - extract substring by position (haxe_string_substr_ptr)
+- [x] substring(start, end) - extract substring by indices (haxe_string_substring_ptr)
+- [x] toUpperCase() - convert to uppercase (haxe_string_upper)
+- [x] toLowerCase() - convert to lowercase (haxe_string_lower)
+- [x] toString() - copy string (haxe_string_copy)
+- [x] String.fromCharCode(code) - create from char code (haxe_string_from_char_code)
+- [x] split(delimiter) - split string (haxe_string_split_ptr)
+
+> ✅ **Verified:** All 12 String methods tested and working with correct type handling.
+> Runtime functions use i32 for Int parameters, Ptr(String) for String parameters.
+
+**Array<T> Class - NEEDS VERIFICATION ⚠️:**
+- [?] Array<T> - 18 runtime functions (push, pop, slice, sort, splice, insert, etc.)
+
+**Math Class - NEEDS VERIFICATION ⚠️:**
+- [?] Math - 20 runtime functions (sin, cos, sqrt, abs, floor, ceil, random, etc.)
+
+> ⚠️ **Note:** Array and Math runtime implementations exist but need verification.
+
+**Concurrency Primitives (32 functions) - VERIFIED STABLE:**
+- [x] Thread<T> - 8 functions (spawn, join, isFinished, yieldNow, sleep, currentId)
+- [x] Arc<T> - 6 functions (init, clone, get, strongCount, tryUnwrap, asPtr)
+- [x] Mutex<T> - 6 functions (init, lock, tryLock, isLocked, guardGet, unlock)
+- [x] MutexGuard<T> - 2 functions (get, unlock)
+- [x] Channel<T> - 10 functions (init, send, trySend, receive, tryReceive, close, etc.)
+
+**Memory Management (5 functions):**
+- [x] Vec<u8> - malloc, realloc, free, len, capacity
+
+### 6.3 Partially Implemented 🟡
+
+**Sys Class (4/20 functions):**
+- [x] print (int/float/bool)
+- [x] println
+- [x] exit
+- [x] time
+- [ ] args (only count implemented)
+- [ ] getEnv, putEnv, environment
+- [ ] sleep
+- [ ] getCwd, setCwd
+- [ ] systemName
+- [ ] command
+- [ ] cpuTime
+- [ ] executablePath, programPath
+- [ ] getChar
+- [ ] stdin, stdout, stderr
+
+### 6.4 Not Implemented - HIGH PRIORITY 🔴
+
+**Priority 1: Standard Utilities (blocks many user programs)**
+
+**Std Class** - Type conversions
+```haxe
+extern class Std {
+    static function string(v:Dynamic):String;
+    static function int(v:Float):Int;
+    static function parseInt(s:String):Null<Int>;
+    static function parseFloat(s:String):Float;
+    static function random(max:Int):Int;
+    static function is(v:Dynamic, t:Dynamic):Bool;
+    static function downcast<T>(v:Dynamic, c:Class<T>):Null<T>;
+}
+```
+
+**Type Class** - Runtime reflection
+```haxe
+extern class Type {
+    static function getClass<T>(o:T):Class<T>;
+    static function getClassName(c:Class<Dynamic>):String;
+    static function getSuperClass(c:Class<Dynamic>):Class<Dynamic>;
+    static function getInstanceFields(c:Class<Dynamic>):Array<String>;
+    static function createInstance<T>(c:Class<T>, args:Array<Dynamic>):T;
+    static function createEmptyInstance<T>(c:Class<T>):T;
+    static function typeof(v:Dynamic):ValueType;
+    static function enumIndex(e:EnumValue):Int;
+    // ... more methods
+}
+```
+
+**Reflect Class** - Dynamic field access
+```haxe
+extern class Reflect {
+    static function field(o:Dynamic, name:String):Dynamic;
+    static function setField(o:Dynamic, name:String, value:Dynamic):Void;
+    static function hasField(o:Dynamic, name:String):Bool;
+    static function fields(o:Dynamic):Array<String>;
+    static function isFunction(f:Dynamic):Bool;
+    static function callMethod(o:Dynamic, func:Dynamic, args:Array<Dynamic>):Dynamic;
+    static function deleteField(o:Dynamic, name:String):Bool;
+    static function copy<T>(o:Null<T>):Null<T>;
+}
+```
+
+**Priority 2: File System I/O**
+
+**FileSystem Class**
+- exists, stat, isDirectory, isFile
+- createDirectory, deleteDirectory, deleteFile
+- readDirectory, rename, fullPath
+- absolutePath
+
+**File Class**
+- getContent, saveContent
+- getBytes, saveBytes
+- read, write, append
+- copy
+
+**FileInput/FileOutput Classes**
+- Stream-based I/O
+- readByte, readBytes, readLine, readAll
+- writeByte, writeBytes, writeString
+- close, flush, seek, tell
+
+### 6.5 Not Implemented - MEDIUM PRIORITY 🔴
+
+**Date Class**
+```haxe
+extern class Date {
+    function new(year:Int, month:Int, day:Int, hour:Int, min:Int, sec:Int);
+    function getTime():Float;
+    function getFullYear():Int;
+    function getMonth():Int;
+    function getDate():Int;
+    function getHours():Int;
+    function getMinutes():Int;
+    function getSeconds():Int;
+    function getDay():Int;
+    static function now():Date;
+    static function fromTime(t:Float):Date;
+    function toString():String;
+}
+```
+
+**Data Structure Classes**
+- IntMap<T> - Integer key hash map
+- StringMap<T> - String key hash map
+- ObjectMap<K,V> - Object key hash map
+- List<T> - Linked list
+
+**Exception/Stack Trace**
+- Exception class with stack trace
+- NativeStackTrace for capture
+
+### 6.6 Not Implemented - LOW PRIORITY 🔴
+
+**Networking (requires async)**
+- Host - DNS resolution
+- Socket - TCP/UDP sockets
+- sys.ssl.* - SSL/TLS support
+
+**System Threading (alternative to rayzor.concurrent)**
+- sys.thread.Lock
+- sys.thread.Mutex (different from rayzor.concurrent.Mutex)
+- sys.thread.Tls<T>
+- sys.thread.Semaphore
+- sys.thread.Condition
+- sys.thread.Deque
+
+**Compile-Time Features (N/A for JIT)**
+- MacroType - Macro metaprogramming
+
+### 6.7 Implementation Plan
+
+**Phase 1: Standard Utilities (Est. 3-4 days)**
+1. Implement Std class runtime functions
+2. Basic Type class (getClassName, typeof, is)
+3. Basic Reflect class (field, setField, hasField)
+
+**Phase 2: Complete Sys Class (Est. 2 days)**
+1. Environment variables (getEnv, putEnv)
+2. Working directory (getCwd, setCwd)
+3. System info (systemName, cpuTime)
+4. Command execution (command)
+
+**Phase 3: File System I/O (Est. 4-5 days)**
+1. FileSystem class (exists, stat, directory ops)
+2. File class (content read/write)
+3. FileInput/FileOutput streams
+
+**Phase 4: Date/Time (Est. 1-2 days)**
+1. Date class with all methods
+2. Date formatting and parsing
+
+**Phase 5: Data Structures (Est. 2-3 days)**
+1. IntMap<T> with runtime backing
+2. StringMap<T> with runtime backing
+3. ObjectMap<K,V> (may need generics)
+4. List<T> implementation
+
+**Phase 6: Advanced Features (Future)**
+1. Networking (requires async infrastructure)
+2. SSL/TLS support
+3. Enhanced reflection
+
+### 6.8 Runtime Implementation Strategy
+
+Each extern class requires:
+1. **Haxe Declaration** - `compiler/haxe-std/<Class>.hx` with `extern class` and `@:native` metadata
+2. **Rust Runtime** - `runtime/src/haxe_<class>.rs` with C-ABI functions
+3. **Symbol Registration** - Add to `runtime/src/plugin_impl.rs`
+4. **Stdlib Mapping** - Add to `compiler/src/stdlib/runtime_mapping.rs` if needed
+
+**Example Pattern:**
+```rust
+// runtime/src/haxe_std.rs
+#[no_mangle]
+pub extern "C" fn haxe_std_parse_int(s: *const u8, len: usize) -> i64 {
+    // Implementation
+}
+
+// runtime/src/plugin_impl.rs
+inventory::submit! { RayzorSymbol::new("haxe_std_parse_int", haxe_std_parse_int as *const ()) }
+```
 
 ---
 
@@ -1058,7 +1276,57 @@ E2E test infrastructure now supports all levels:
 - **Async state machines** build on generics and memory safety
 - Implementation should follow dependency order to avoid rework
 
-**Last Updated:** 2025-11-16
+**Last Updated:** 2025-11-25
+
+## Recent Progress (Session 2025-11-25)
+
+**Completed:**
+- ✅ **String class fully implemented and verified stable**
+  - 12 String methods working: length, charAt, charCodeAt, indexOf, lastIndexOf, substr, substring, toUpperCase, toLowerCase, toString, fromCharCode, split
+  - Fixed type inference for String method arguments (using TAST expression types)
+  - Fixed return type handling (I32 for Int-returning methods, Ptr(String) for String-returning)
+  - Fixed static method return type extraction from Function types
+  - Added extern function lookup in build_call_direct for correct register typing
+- ✅ Created comprehensive test_string_class.rs with all String methods
+- ✅ All String tests passing reliably (3/3 stability runs)
+
+**Key Fixes:**
+1. `hir_to_mir.rs`: Use `self.convert_type(arg.ty)` for accurate argument types
+2. `hir_to_mir.rs`: Return type mapping based on method name (I32 vs Ptr(String))
+3. `hir_to_mir.rs`: Extract return type from Function types for static methods
+4. `builder.rs`: Check `extern_functions` in `build_call_direct` for correct return types
+
+**Next Steps:**
+1. Implement Array class methods (push, pop, slice, etc.)
+2. Implement Math class methods (sin, cos, sqrt, etc.)
+3. Run test_core_types_e2e.rs to validate all core types
+
+---
+
+## Recent Progress (Session 2025-11-24)
+
+**Completed:**
+- ✅ ARM64 macOS JIT stability (MAP_JIT + pthread_jit_write_protect_np)
+- ✅ Cranelift fork PR review feedback addressed
+- ✅ 100% stability (20/20 test runs passing)
+- ✅ Comprehensive stdlib audit completed
+- ✅ Implementation plan documented in Section 6
+
+**Stdlib Audit Findings:**
+- 37 extern classes identified in haxe-std
+- 94 runtime functions exist (~43% coverage)
+- ⚠️ String, Array, Math need stability verification (may be outdated)
+- ✅ Concurrency primitives verified stable (Thread, Arc, Mutex, Channel)
+- High priority gaps: Std, Type, Reflect, File I/O
+
+**Next Steps:**
+1. Verify String, Array, Math runtime stability
+2. Implement Std class (string, parseInt, parseFloat, is)
+3. Implement basic Type/Reflect for runtime type info
+4. Complete Sys class (env vars, cwd, command execution)
+5. File System I/O
+
+---
 
 ## Recent Progress (Session 2025-11-16)
 

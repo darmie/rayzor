@@ -1917,8 +1917,9 @@ impl<'a> HirToMirContext<'a> {
                                             let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
                                             let mut param_types = vec![string_ptr_ty.clone()];
                                             for arg in &method_arg_regs {
+                                                // Haxe Int is i32, default to I32 for integer args
                                                 let arg_ty = self.builder.get_register_type(*arg)
-                                                    .unwrap_or(IrType::I64);
+                                                    .unwrap_or(IrType::I32);
                                                 param_types.push(arg_ty);
                                             }
 
@@ -2381,16 +2382,35 @@ impl<'a> HirToMirContext<'a> {
                                                 .collect();
 
                                             // Build param types: string_ptr, ...args
+                                            // Use TAST expression types for accuracy
                                             let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
                                             let mut param_types = vec![string_ptr_ty.clone()];
-                                            for arg in &method_arg_regs {
-                                                let arg_ty = self.builder.get_register_type(*arg)
-                                                    .unwrap_or(IrType::I64);
-                                                param_types.push(arg_ty);
+                                            for (i, arg) in args[1..].iter().enumerate() {
+                                                // Get type from TAST expression
+                                                let arg_ty = self.convert_type(arg.ty);
+                                                // For String args, convert to Ptr(String)
+                                                let param_ty = if arg_ty == IrType::String {
+                                                    string_ptr_ty.clone()
+                                                } else {
+                                                    // Fall back to register type if TAST gives us something unusual
+                                                    if matches!(arg_ty, IrType::Any | IrType::Void) {
+                                                        method_arg_regs.get(i)
+                                                            .and_then(|r| self.builder.get_register_type(*r))
+                                                            .unwrap_or(IrType::I32)
+                                                    } else {
+                                                        arg_ty
+                                                    }
+                                                };
+                                                param_types.push(param_ty);
                                             }
 
-                                            // Return type is pointer to HaxeString for String methods
-                                            let return_type = string_ptr_ty.clone();
+                                            // Determine return type based on method
+                                            // Methods that return Int (i32): length, charCodeAt, indexOf, lastIndexOf
+                                            // Methods that return String (Ptr<String>): charAt, substr, substring, toLowerCase, toUpperCase, toString
+                                            let return_type = match method_name {
+                                                "length" | "charCodeAt" | "indexOf" | "lastIndexOf" => IrType::I32,
+                                                _ => string_ptr_ty.clone(),
+                                            };
 
                                             let runtime_func_id = self.get_or_register_extern_function(
                                                 runtime_func,
@@ -2980,15 +3000,50 @@ impl<'a> HirToMirContext<'a> {
                                             eprintln!("DEBUG: [STATIC METHOD] Lowered {} args: {:?}", arg_regs.len(), arg_regs);
 
                                             // Get or register the extern runtime function
-                                            // Infer param types from actual arguments
-                                            let param_types: Vec<IrType> = arg_regs.iter()
-                                                .map(|reg| self.builder.get_register_type(*reg).unwrap_or(IrType::Any))
+                                            // Use TAST expression types for accuracy
+                                            let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
+                                            let param_types: Vec<IrType> = args.iter().enumerate()
+                                                .map(|(i, a)| {
+                                                    let arg_ty = self.convert_type(a.ty);
+                                                    // For String args, convert to Ptr(String)
+                                                    if arg_ty == IrType::String {
+                                                        string_ptr_ty.clone()
+                                                    } else if matches!(arg_ty, IrType::Any | IrType::Void) {
+                                                        // Fall back to register type
+                                                        arg_regs.get(i)
+                                                            .and_then(|r| self.builder.get_register_type(*r))
+                                                            .unwrap_or(IrType::I32)
+                                                    } else {
+                                                        arg_ty
+                                                    }
+                                                })
                                                 .collect();
+
+                                            // Determine the correct return type for the static method
+                                            // For String methods like fromCharCode, the return type is Ptr(String)
+                                            // The result_type from expr.ty might be a Function type for static methods
+                                            let actual_result_type = if runtime_func.contains("string") && method_name == "fromCharCode" {
+                                                string_ptr_ty.clone()
+                                            } else if matches!(result_type, IrType::Function { .. }) {
+                                                // If result_type is a Function type, extract the return type
+                                                if let IrType::Function { return_type: ret_ty, .. } = &result_type {
+                                                    if **ret_ty == IrType::String {
+                                                        string_ptr_ty.clone()
+                                                    } else {
+                                                        (**ret_ty).clone()
+                                                    }
+                                                } else {
+                                                    result_type.clone()
+                                                }
+                                            } else {
+                                                result_type.clone()
+                                            };
+
                                             let runtime_func_id = self
                                                 .get_or_register_extern_function(
                                                     &runtime_func,
                                                     param_types,
-                                                    result_type.clone(),
+                                                    actual_result_type.clone(),
                                                 );
 
                                             eprintln!("DEBUG: [STATIC METHOD] Registered runtime func {} with ID {:?}", runtime_func, runtime_func_id);
@@ -2997,7 +3052,7 @@ impl<'a> HirToMirContext<'a> {
                                             let result = self.builder.build_call_direct(
                                                 runtime_func_id,
                                                 arg_regs,
-                                                result_type,
+                                                actual_result_type,
                                             );
                                             eprintln!("DEBUG: [STATIC METHOD] Generated call, result: {:?}", result);
                                             return result;

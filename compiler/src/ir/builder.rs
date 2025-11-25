@@ -208,6 +208,9 @@ impl IrBuilder {
         // that void functions don't get destination registers allocated.
         let actual_return_type = if let Some(func) = self.module.functions.get(&func_id) {
             func.signature.return_type.clone()
+        } else if let Some(extern_func) = self.module.extern_functions.get(&func_id) {
+            // Check extern functions too (for runtime functions)
+            extern_func.signature.return_type.clone()
         } else {
             // Function not in module yet (might be a forward ref being called from a lambda).
             // Fall back to the provided type, but this is a known limitation.

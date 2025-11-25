@@ -180,6 +180,19 @@ register_symbol!("haxe_string_literal", crate::haxe_sys::haxe_string_literal);
 register_symbol!("haxe_string_upper", crate::haxe_sys::haxe_string_upper);
 register_symbol!("haxe_string_lower", crate::haxe_sys::haxe_string_lower);
 
+// String class methods (working with *const HaxeString from haxe_sys)
+// These use `_ptr` suffix to avoid conflicts with haxe_string.rs module
+register_symbol!("haxe_string_len", crate::haxe_sys::haxe_string_len);
+register_symbol!("haxe_string_char_at_ptr", crate::haxe_sys::haxe_string_char_at_ptr);
+register_symbol!("haxe_string_char_code_at_ptr", crate::haxe_sys::haxe_string_char_code_at_ptr);
+register_symbol!("haxe_string_index_of_ptr", crate::haxe_sys::haxe_string_index_of_ptr);
+register_symbol!("haxe_string_last_index_of_ptr", crate::haxe_sys::haxe_string_last_index_of_ptr);
+register_symbol!("haxe_string_substr_ptr", crate::haxe_sys::haxe_string_substr_ptr);
+register_symbol!("haxe_string_substring_ptr", crate::haxe_sys::haxe_string_substring_ptr);
+register_symbol!("haxe_string_from_char_code", crate::haxe_sys::haxe_string_from_char_code);
+register_symbol!("haxe_string_copy", crate::haxe_sys::haxe_string_copy);
+register_symbol!("haxe_string_split_ptr", crate::haxe_sys::haxe_string_split_ptr);
+
 // Program control
 register_symbol!("haxe_sys_exit", crate::haxe_sys::haxe_sys_exit);
 register_symbol!("haxe_sys_time", crate::haxe_sys::haxe_sys_time);

@@ -367,24 +367,29 @@ impl StdlibMapping {
     fn register_string_methods(&mut self) {
         let mappings = vec![
             // Static methods
-            map_method!(static "String", "fromCharCode" => "haxe_string_from_char_code", params: 1, returns: complex),
+            map_method!(static "String", "fromCharCode" => "haxe_string_from_char_code", params: 1, returns: primitive),
+
+            // Properties (treated as getters with 0 params)
+            map_method!(instance "String", "length" => "haxe_string_len", params: 0, returns: primitive),
 
             // Instance methods - character access
-            map_method!(instance "String", "charAt" => "haxe_string_char_at", params: 1, returns: primitive),
-            map_method!(instance "String", "charCodeAt" => "haxe_string_char_code_at", params: 1, returns: primitive),
+            // charAt returns String pointer (empty string for out of bounds)
+            map_method!(instance "String", "charAt" => "haxe_string_char_at_ptr", params: 1, returns: primitive),
+            // charCodeAt returns Null<Int> (-1 for out of bounds, which we represent as i64)
+            map_method!(instance "String", "charCodeAt" => "haxe_string_char_code_at_ptr", params: 1, returns: primitive),
 
             // Search operations
-            map_method!(instance "String", "indexOf" => "haxe_string_index_of", params: 2, returns: primitive),
-            map_method!(instance "String", "lastIndexOf" => "haxe_string_last_index_of", params: 2, returns: primitive),
+            map_method!(instance "String", "indexOf" => "haxe_string_index_of_ptr", params: 2, returns: primitive),
+            map_method!(instance "String", "lastIndexOf" => "haxe_string_last_index_of_ptr", params: 2, returns: primitive),
 
             // String transformations
-            map_method!(instance "String", "split" => "haxe_string_split", params: 1, returns: complex),
-            map_method!(instance "String", "substr" => "haxe_string_substr", params: 2, returns: complex),
-            map_method!(instance "String", "substring" => "haxe_string_substring", params: 2, returns: complex),
+            map_method!(instance "String", "split" => "haxe_string_split_ptr", params: 1, returns: complex),
+            map_method!(instance "String", "substr" => "haxe_string_substr_ptr", params: 2, returns: primitive),
+            map_method!(instance "String", "substring" => "haxe_string_substring_ptr", params: 2, returns: primitive),
             // toLowerCase/toUpperCase use pointer-returning wrapper functions (not out-param style)
             map_method!(instance "String", "toLowerCase" => "haxe_string_lower", params: 0, returns: primitive),
             map_method!(instance "String", "toUpperCase" => "haxe_string_upper", params: 0, returns: primitive),
-            map_method!(instance "String", "toString" => "haxe_string_copy", params: 0, returns: complex),
+            map_method!(instance "String", "toString" => "haxe_string_copy", params: 0, returns: primitive),
         ];
 
         self.register_from_tuples(mappings);
