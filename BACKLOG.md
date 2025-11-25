@@ -10,7 +10,7 @@ This document tracks major features, enhancements, and technical debt for the Ra
 
 ---
 
-## 1. Generics System 🔴
+## 1. Generics System 🟡
 
 **Priority:** High
 **Complexity:** High
@@ -18,17 +18,18 @@ This document tracks major features, enhancements, and technical debt for the Ra
 
 ### 1.1 Generic Metadata Support (@:generic)
 
-**Status:** 🟡 Parser Complete, Pipeline Integration Needed
+**Status:** 🟡 TAST Integration Complete, Constraint Validation Needed
 **Related Files:**
-- `parser/GENERIC_METADATA.md` - Parser implementation documentation
 - `GENERICS_DESIGN.md` - Overall design document
 - `parser/src/haxe_ast.rs` - AST metadata support
+- `compiler/src/tast/symbols.rs` - SymbolFlags with GENERIC flag
+- `compiler/src/tast/ast_lowering.rs` - Metadata extraction
 
 **Tasks:**
 - [x] Parser support for `@:generic` metadata
 - [x] AST representation of generic declarations
-- [ ] TAST integration - extract and validate `@:generic` metadata
-- [ ] Type parameter tracking in TypeTable
+- [x] TAST integration - extract and validate `@:generic` metadata
+- [x] Type parameter tracking in TypeTable (already existed)
 - [ ] Generic constraint validation
 - [ ] Abstract types with generics support
 - [ ] Generic metadata propagation through pipeline
@@ -52,14 +53,14 @@ var stringStack = new Stack<String>();     // Should create Stack_String
 
 ### 1.2 Type System Extensions
 
-**Status:** 🔴 Not Started
+**Status:** 🟢 Complete
 **Related Files:**
-- `compiler/src/ir/types.rs`
-- `compiler/src/tast/core.rs`
+- `compiler/src/ir/types.rs` - IrType::TypeVar and IrType::Generic
+- `compiler/src/tast/core.rs` - TypeKind::TypeParameter and GenericInstance
 
 **Tasks:**
-- [ ] Add `IrType::TypeParam(String)` variant
-- [ ] Add `IrType::Generic { base, type_args }` variant
+- [x] Add `IrType::TypeVar(String)` variant (already existed as TypeVar)
+- [x] Add `IrType::Generic { base, type_args }` variant
 - [ ] Add `IrType::Union { variants }` for sum types
 - [ ] Add type parameter constraints support
 - [ ] Implement type parameter substitution
