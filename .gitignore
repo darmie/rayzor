@@ -40,5 +40,5 @@ compiler/haxe-std/python/
 # Note: sys/ is NOT ignored - we maintain it for Rayzor runtime
 
 # Cranelift fork (local development only, use git dependency in production)
-cranelift-fork/
 
+cranelift-fork/
