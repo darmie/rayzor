@@ -291,6 +291,12 @@ impl SymbolFlags {
     pub const OPTIONAL: Self = Self(1 << 8);
     pub const DEPRECATED: Self = Self(1 << 9);
     pub const COMPILER_GENERATED: Self = Self(1 << 10);
+    /// @:generic - indicates the type should be monomorphized rather than type-erased
+    pub const GENERIC: Self = Self(1 << 11);
+    /// @:forward - forwards field access to underlying type (for abstracts)
+    pub const FORWARD: Self = Self(1 << 12);
+    /// @:native - has native runtime implementation
+    pub const NATIVE: Self = Self(1 << 13);
 
     pub const fn empty() -> Self {
         Self::NONE
@@ -318,6 +324,21 @@ impl SymbolFlags {
 
     pub const fn is_empty(self) -> bool {
         self.0 == 0
+    }
+
+    /// Check if this symbol requires monomorphization (@:generic)
+    pub const fn is_generic(self) -> bool {
+        self.contains(Self::GENERIC)
+    }
+
+    /// Check if this symbol has @:forward metadata
+    pub const fn is_forward(self) -> bool {
+        self.contains(Self::FORWARD)
+    }
+
+    /// Check if this symbol has @:native metadata
+    pub const fn is_native(self) -> bool {
+        self.contains(Self::NATIVE)
     }
 }
 
@@ -589,13 +610,27 @@ impl SymbolTable {
         // We need to find the symbol and update it
         // Since we use an arena, we can't directly mutate, but we can use unsafe code
         // to update the type_id field which doesn't affect memory layout
-        
+
         if let Some(&symbol_ref) = self.symbols_by_id.get(&id) {
             unsafe {
                 // SAFETY: We're only modifying the type_id field which doesn't affect
                 // the memory layout or any references. The symbol's identity remains the same.
                 let symbol_ptr = symbol_ref as *const Symbol as *mut Symbol;
                 (*symbol_ptr).type_id = type_id;
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Add flags to a symbol
+    pub fn add_symbol_flags(&mut self, id: SymbolId, flags: SymbolFlags) -> bool {
+        if let Some(&symbol_ref) = self.symbols_by_id.get(&id) {
+            unsafe {
+                // SAFETY: We're only modifying the flags field which doesn't affect
+                // the memory layout or any references.
+                let symbol_ptr = symbol_ref as *const Symbol as *mut Symbol;
+                (*symbol_ptr).flags = (*symbol_ptr).flags.union(flags);
             }
             return true;
         }

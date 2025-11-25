@@ -1839,6 +1839,42 @@ impl<'a> AstLowering<'a> {
         self.class_methods.insert(class_symbol, Vec::new());
         self.class_fields.insert(class_symbol, Vec::new());
 
+        // Extract metadata flags from @:generic, @:final, @:native, etc.
+        let mut symbol_flags = crate::tast::symbols::SymbolFlags::NONE;
+        for meta in &class_decl.meta {
+            match meta.name.as_str() {
+                "generic" | ":generic" => {
+                    symbol_flags = symbol_flags.union(crate::tast::symbols::SymbolFlags::GENERIC);
+                }
+                "final" | ":final" => {
+                    symbol_flags = symbol_flags.union(crate::tast::symbols::SymbolFlags::FINAL);
+                }
+                "native" | ":native" => {
+                    symbol_flags = symbol_flags.union(crate::tast::symbols::SymbolFlags::NATIVE);
+                }
+                "forward" | ":forward" => {
+                    symbol_flags = symbol_flags.union(crate::tast::symbols::SymbolFlags::FORWARD);
+                }
+                _ => {} // Other metadata handled elsewhere or ignored
+            }
+        }
+        // Also check for modifiers (final, extern, etc)
+        for modifier in &class_decl.modifiers {
+            match modifier {
+                parser::haxe_ast::Modifier::Final => {
+                    symbol_flags = symbol_flags.union(crate::tast::symbols::SymbolFlags::FINAL);
+                }
+                parser::haxe_ast::Modifier::Extern => {
+                    symbol_flags = symbol_flags.union(crate::tast::symbols::SymbolFlags::EXTERN);
+                }
+                _ => {}
+            }
+        }
+        // Apply flags to the class symbol
+        if !symbol_flags.is_empty() {
+            self.context.symbol_table.add_symbol_flags(class_symbol, symbol_flags);
+        }
+
         // Process type parameters
         let type_params = self.lower_type_parameters(&class_decl.type_params)?;
         let mut type_param_map: HashMap<InternedString, TypeId> =
