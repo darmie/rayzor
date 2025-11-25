@@ -278,6 +278,80 @@ register_symbol!("rayzor_channel_capacity", crate::concurrency::rayzor_channel_c
 register_symbol!("rayzor_channel_is_empty", crate::concurrency::rayzor_channel_is_empty);
 register_symbol!("rayzor_channel_is_full", crate::concurrency::rayzor_channel_is_full);
 
+// ============================================================================
+// Generic Vec<T> Functions
+// ============================================================================
+
+// Vec<Int> -> VecI32
+register_symbol!("rayzor_vec_i32_new", crate::generic_vec::rayzor_vec_i32_new);
+register_symbol!("rayzor_vec_i32_with_capacity", crate::generic_vec::rayzor_vec_i32_with_capacity);
+register_symbol!("rayzor_vec_i32_push", crate::generic_vec::rayzor_vec_i32_push);
+register_symbol!("rayzor_vec_i32_pop", crate::generic_vec::rayzor_vec_i32_pop);
+register_symbol!("rayzor_vec_i32_get", crate::generic_vec::rayzor_vec_i32_get);
+register_symbol!("rayzor_vec_i32_set", crate::generic_vec::rayzor_vec_i32_set);
+register_symbol!("rayzor_vec_i32_len", crate::generic_vec::rayzor_vec_i32_len);
+register_symbol!("rayzor_vec_i32_capacity", crate::generic_vec::rayzor_vec_i32_capacity);
+register_symbol!("rayzor_vec_i32_is_empty", crate::generic_vec::rayzor_vec_i32_is_empty);
+register_symbol!("rayzor_vec_i32_clear", crate::generic_vec::rayzor_vec_i32_clear);
+register_symbol!("rayzor_vec_i32_first", crate::generic_vec::rayzor_vec_i32_first);
+register_symbol!("rayzor_vec_i32_last", crate::generic_vec::rayzor_vec_i32_last);
+register_symbol!("rayzor_vec_i32_sort", crate::generic_vec::rayzor_vec_i32_sort);
+register_symbol!("rayzor_vec_i32_sort_by", crate::generic_vec::rayzor_vec_i32_sort_by);
+register_symbol!("rayzor_vec_i32_free", crate::generic_vec::rayzor_vec_i32_free);
+
+// Vec<Int64> -> VecI64
+register_symbol!("rayzor_vec_i64_new", crate::generic_vec::rayzor_vec_i64_new);
+register_symbol!("rayzor_vec_i64_push", crate::generic_vec::rayzor_vec_i64_push);
+register_symbol!("rayzor_vec_i64_pop", crate::generic_vec::rayzor_vec_i64_pop);
+register_symbol!("rayzor_vec_i64_get", crate::generic_vec::rayzor_vec_i64_get);
+register_symbol!("rayzor_vec_i64_set", crate::generic_vec::rayzor_vec_i64_set);
+register_symbol!("rayzor_vec_i64_len", crate::generic_vec::rayzor_vec_i64_len);
+register_symbol!("rayzor_vec_i64_is_empty", crate::generic_vec::rayzor_vec_i64_is_empty);
+register_symbol!("rayzor_vec_i64_clear", crate::generic_vec::rayzor_vec_i64_clear);
+register_symbol!("rayzor_vec_i64_first", crate::generic_vec::rayzor_vec_i64_first);
+register_symbol!("rayzor_vec_i64_last", crate::generic_vec::rayzor_vec_i64_last);
+register_symbol!("rayzor_vec_i64_free", crate::generic_vec::rayzor_vec_i64_free);
+
+// Vec<Float> -> VecF64
+register_symbol!("rayzor_vec_f64_new", crate::generic_vec::rayzor_vec_f64_new);
+register_symbol!("rayzor_vec_f64_push", crate::generic_vec::rayzor_vec_f64_push);
+register_symbol!("rayzor_vec_f64_pop", crate::generic_vec::rayzor_vec_f64_pop);
+register_symbol!("rayzor_vec_f64_get", crate::generic_vec::rayzor_vec_f64_get);
+register_symbol!("rayzor_vec_f64_set", crate::generic_vec::rayzor_vec_f64_set);
+register_symbol!("rayzor_vec_f64_len", crate::generic_vec::rayzor_vec_f64_len);
+register_symbol!("rayzor_vec_f64_is_empty", crate::generic_vec::rayzor_vec_f64_is_empty);
+register_symbol!("rayzor_vec_f64_clear", crate::generic_vec::rayzor_vec_f64_clear);
+register_symbol!("rayzor_vec_f64_first", crate::generic_vec::rayzor_vec_f64_first);
+register_symbol!("rayzor_vec_f64_last", crate::generic_vec::rayzor_vec_f64_last);
+register_symbol!("rayzor_vec_f64_sort", crate::generic_vec::rayzor_vec_f64_sort);
+register_symbol!("rayzor_vec_f64_sort_by", crate::generic_vec::rayzor_vec_f64_sort_by);
+register_symbol!("rayzor_vec_f64_free", crate::generic_vec::rayzor_vec_f64_free);
+
+// Vec<T> (reference types) -> VecPtr
+register_symbol!("rayzor_vec_ptr_new", crate::generic_vec::rayzor_vec_ptr_new);
+register_symbol!("rayzor_vec_ptr_push", crate::generic_vec::rayzor_vec_ptr_push);
+register_symbol!("rayzor_vec_ptr_pop", crate::generic_vec::rayzor_vec_ptr_pop);
+register_symbol!("rayzor_vec_ptr_get", crate::generic_vec::rayzor_vec_ptr_get);
+register_symbol!("rayzor_vec_ptr_set", crate::generic_vec::rayzor_vec_ptr_set);
+register_symbol!("rayzor_vec_ptr_len", crate::generic_vec::rayzor_vec_ptr_len);
+register_symbol!("rayzor_vec_ptr_is_empty", crate::generic_vec::rayzor_vec_ptr_is_empty);
+register_symbol!("rayzor_vec_ptr_clear", crate::generic_vec::rayzor_vec_ptr_clear);
+register_symbol!("rayzor_vec_ptr_first", crate::generic_vec::rayzor_vec_ptr_first);
+register_symbol!("rayzor_vec_ptr_last", crate::generic_vec::rayzor_vec_ptr_last);
+register_symbol!("rayzor_vec_ptr_sort_by", crate::generic_vec::rayzor_vec_ptr_sort_by);
+register_symbol!("rayzor_vec_ptr_free", crate::generic_vec::rayzor_vec_ptr_free);
+
+// Vec<Bool> -> VecBool
+register_symbol!("rayzor_vec_bool_new", crate::generic_vec::rayzor_vec_bool_new);
+register_symbol!("rayzor_vec_bool_push", crate::generic_vec::rayzor_vec_bool_push);
+register_symbol!("rayzor_vec_bool_pop", crate::generic_vec::rayzor_vec_bool_pop);
+register_symbol!("rayzor_vec_bool_get", crate::generic_vec::rayzor_vec_bool_get);
+register_symbol!("rayzor_vec_bool_set", crate::generic_vec::rayzor_vec_bool_set);
+register_symbol!("rayzor_vec_bool_len", crate::generic_vec::rayzor_vec_bool_len);
+register_symbol!("rayzor_vec_bool_is_empty", crate::generic_vec::rayzor_vec_bool_is_empty);
+register_symbol!("rayzor_vec_bool_clear", crate::generic_vec::rayzor_vec_bool_clear);
+register_symbol!("rayzor_vec_bool_free", crate::generic_vec::rayzor_vec_bool_free);
+
 /// Rayzor Runtime Plugin
 pub struct RayzorRuntimePlugin;
 

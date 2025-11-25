@@ -407,6 +407,8 @@ pub struct LoweringContext<'a> {
     pub import_resolver: &'a mut super::namespace::ImportResolver,
     /// Current package context
     pub current_package: Option<super::namespace::PackageId>,
+    /// Current switch discriminant type (for resolving enum constructors in pattern matching)
+    pub switch_discriminant_type: Option<TypeId>,
 }
 
 impl<'a> LoweringContext<'a> {
@@ -434,6 +436,7 @@ impl<'a> LoweringContext<'a> {
             namespace_resolver,
             import_resolver,
             current_package: None,
+            switch_discriminant_type: None,
         }
     }
 
@@ -821,6 +824,17 @@ impl<'a> AstLowering<'a> {
             }
         }
 
+        // Fallback: explicitly check the global root scope (ScopeId::first())
+        // This is needed for symbols like enum variants that are registered globally
+        // but may not be reachable through the current scope's parent chain
+        // (e.g., imported enums from other packages)
+        let root_scope = ScopeId::first();
+        if current_scope != root_scope {
+            if let Some(symbol) = self.context.symbol_table.lookup_symbol(root_scope, name) {
+                return Some(symbol.id);
+            }
+        }
+
         None
     }
 
@@ -1146,14 +1160,31 @@ impl<'a> AstLowering<'a> {
             for symbol_name in symbols {
                 let interned_name = self.context.intern_string(symbol_name);
 
-                // Create a placeholder symbol for the imported type
-                let imported_symbol = self
-                    .context
-                    .symbol_table
-                    .create_class_in_scope(interned_name, ScopeId::first());
+                // Build qualified path for namespace resolver lookup
+                let qualified_path = super::namespace::QualifiedPath {
+                    package: import.path[..import.path.len()-1].iter()
+                        .map(|s| self.context.intern_string(s))
+                        .collect(),
+                    name: interned_name,
+                };
 
-                // Update qualified name
-                self.context.update_symbol_qualified_name(imported_symbol);
+                // Check if symbol already exists in namespace resolver (from compiled dependencies)
+                // This is preferred over scope hierarchy because namespace has the real types
+                let imported_symbol = if let Some(existing) = self.context.namespace_resolver.lookup_symbol(&qualified_path) {
+                    existing
+                } else if let Some(existing) = self.resolve_symbol_in_scope_hierarchy(interned_name) {
+                    existing
+                } else {
+                    // Create a placeholder symbol for the imported type
+                    let new_sym = self
+                        .context
+                        .symbol_table
+                        .create_class_in_scope(interned_name, ScopeId::first());
+
+                    // Update qualified name
+                    self.context.update_symbol_qualified_name(new_sym);
+                    new_sym
+                };
 
                 // Add to root scope so it can be resolved globally
                 self.context
@@ -1504,6 +1535,24 @@ impl<'a> AstLowering<'a> {
                     .get_scope_mut(ScopeId::first())
                     .expect("Root scope should exist")
                     .add_symbol(enum_symbol, enum_name);
+
+                // IMPORTANT: Also pre-register enum variants so they can be resolved
+                // during pattern matching even before the enum is fully lowered
+                for variant in &enum_decl.constructors {
+                    let variant_name = self.context.intern_string(&variant.name);
+                    let variant_symbol = self.context.symbol_table.create_enum_variant_in_scope(
+                        variant_name,
+                        ScopeId::first(),
+                        enum_symbol,
+                    );
+
+                    // Add variant to root scope for global resolution
+                    self.context
+                        .scope_tree
+                        .get_scope_mut(ScopeId::first())
+                        .expect("Root scope should exist")
+                        .add_symbol(variant_symbol, variant_name);
+                }
             }
             TypeDeclaration::Typedef(typedef_decl) => {
                 let typedef_name = self.context.intern_string(&typedef_decl.name);
@@ -1629,27 +1678,16 @@ impl<'a> AstLowering<'a> {
                 let imported_symbol = if let Some(existing_symbol) =
                     self.context.namespace_resolver.lookup_symbol(&qualified_path_for_lookup)
                 {
-                    eprintln!("DEBUG [lower_import]: Found pre-registered symbol for {:?} at qualified path {:?}",
-                              self.context.string_interner.get(symbol_name), qualified_path_for_lookup);
-                    // Reuse the pre-registered symbol
+                    // Reuse the pre-registered symbol from namespace
                     existing_symbol
                 } else if let Some(existing_symbol) =
                     self.resolve_symbol_in_scope_hierarchy(symbol_name)
                 {
-                    eprintln!("DEBUG [lower_import]: Found symbol for {:?} in scope hierarchy",
-                              self.context.string_interner.get(symbol_name));
                     // Symbol already exists (likely from pre-registration)
-                    // Verify it's a class symbol
-                    if let Some(sym) = self.context.symbol_table.get_symbol(existing_symbol) {
-                        if sym.kind == crate::tast::symbols::SymbolKind::Class {
-                            // Reuse the pre-registered symbol
-                            existing_symbol
-                        } else {
-                            // Exists but not a class - create new class symbol
-                            let new_sym = self.context.symbol_table.create_class_in_scope(symbol_name, ScopeId::first());
-                            self.context.update_symbol_qualified_name(new_sym);
-                            new_sym
-                        }
+                    // Reuse the existing symbol regardless of its kind (Class, Enum, Interface, etc.)
+                    // This preserves the correct type info from the compiled file
+                    if self.context.symbol_table.get_symbol(existing_symbol).is_some() {
+                        existing_symbol
                     } else {
                         // Symbol ID exists but can't get symbol data - create new
                         let new_sym = self.context.symbol_table.create_class_in_scope(symbol_name, ScopeId::first());
@@ -1657,11 +1695,7 @@ impl<'a> AstLowering<'a> {
                         new_sym
                     }
                 } else {
-                    eprintln!("DEBUG [lower_import]: No pre-registered symbol found for {:?}, creating new",
-                              self.context.string_interner.get(symbol_name));
                     // Create a placeholder symbol for the imported type
-                    // In a full implementation, we would resolve the actual type from the module
-                    // For now, create a class symbol as a placeholder
                     let new_sym = self.context.symbol_table.create_class_in_scope(symbol_name, ScopeId::first());
                     self.context.update_symbol_qualified_name(new_sym);
                     new_sym
@@ -4655,9 +4689,7 @@ impl<'a> AstLowering<'a> {
                 args,
             } => {
                 // Resolve the base class type from type_path
-                eprintln!("DEBUG [NEW]: Resolving type_path for new expression: {:?}", type_path);
                 let base_class_type_id = self.resolve_type_path(type_path)?;
-                eprintln!("DEBUG [NEW]: Resolved to TypeId: {:?}", base_class_type_id);
 
                 // Lower constructor arguments
                 let arg_exprs = args
@@ -5246,12 +5278,7 @@ impl<'a> AstLowering<'a> {
                 }
 
                 // For non-Array types, use the generic iterator pattern (requires iterator classes)
-                let iterator_type_name = self.infer_iterator_type_name(&iterable_expr.expr_type);
-
-                // Log which iterator type would be needed
-                if let Some(ref iter_name) = iterator_type_name {
-                    eprintln!("DEBUG: For-in loop needs iterator type: {}", iter_name);
-                }
+                let _iterator_type_name = self.infer_iterator_type_name(&iterable_expr.expr_type);
 
                 // Create the loop body scope
                 let loop_body_scope_id = ScopeId::from_raw(self.context.next_scope_id());
@@ -5346,21 +5373,26 @@ impl<'a> AstLowering<'a> {
                 // Lower the discriminant expression
                 let discriminant = Box::new(self.lower_expression(expr)?);
 
+                // Store the discriminant type for use in pattern matching
+                // This allows resolving enum constructor names like "Some" to "Option.Some"
+                let prev_switch_type = self.context.switch_discriminant_type;
+                self.context.switch_discriminant_type = Some(discriminant.expr_type);
+
                 // Check if this is a switch expression or switch statement
                 // In a switch expression, all cases must have expression values
                 // In a switch statement, cases contain statements (like return)
                 let is_expression = cases.iter().all(|case| {
                     // Check if the case body is a simple expression (not a block with statements)
-                    !matches!(&case.body.kind, 
-                        ExprKind::Block(_) | 
+                    !matches!(&case.body.kind,
+                        ExprKind::Block(_) |
                         ExprKind::Return(_) |
-                        ExprKind::Break | 
+                        ExprKind::Break |
                         ExprKind::Continue |
                         ExprKind::Throw(_)
                     )
                 });
 
-                if is_expression {
+                let result = if is_expression {
                     // Lower as switch expression
                     let mut typed_cases = Vec::with_capacity(cases.len());
                     for case in cases {
@@ -5389,7 +5421,7 @@ impl<'a> AstLowering<'a> {
                         typed_cases.push(typed_case);
                     }
 
-                    // Lower the default case if present  
+                    // Lower the default case if present
                     let default_case = if let Some(default_expr) = default {
                         Some(Box::new(self.lower_expression(default_expr)?))
                     } else {
@@ -5402,7 +5434,12 @@ impl<'a> AstLowering<'a> {
                         cases: typed_cases,
                         default_case,
                     }
-                }
+                };
+
+                // Restore previous switch type
+                self.context.switch_discriminant_type = prev_switch_type;
+
+                result
             }
             ExprKind::Try { expr, catches } => {
                 // Lower the try expression
@@ -7588,6 +7625,47 @@ impl<'a> AstLowering<'a> {
         }
     }
 
+    /// Try to resolve an enum constructor using the switch discriminant type
+    /// This is needed for Haxe pattern matching where `case Some(v):` needs to
+    /// be resolved as `Option.Some` based on the switch expression's type
+    fn resolve_enum_constructor_from_discriminant(&self, constructor_name: InternedString) -> Option<SymbolId> {
+        // Get the current switch discriminant type
+        let discriminant_type = self.context.switch_discriminant_type?;
+
+        // Get the type to find the enum symbol
+        let type_table = self.context.type_table.borrow();
+
+        // Recursively unwrap GenericInstance to find the base enum
+        // Handles nested generics like Option<Option<Int>>
+        let mut current_type_id = discriminant_type;
+        let enum_symbol = loop {
+            let ty = type_table.get(current_type_id)?;
+            match &ty.kind {
+                crate::tast::core::TypeKind::Enum { symbol_id, .. } => break *symbol_id,
+                crate::tast::core::TypeKind::GenericInstance { base_type, .. } => {
+                    // Continue unwrapping to find the base enum
+                    current_type_id = *base_type;
+                }
+                _ => return None,
+            }
+        };
+        drop(type_table);
+
+        // Look up the enum's variants
+        let variants = self.context.symbol_table.get_enum_variants(enum_symbol)?;
+
+        // Find the variant with the matching name
+        for &variant_id in variants {
+            if let Some(variant_symbol) = self.context.symbol_table.get_symbol(variant_id) {
+                if variant_symbol.name == constructor_name {
+                    return Some(variant_id);
+                }
+            }
+        }
+
+        None
+    }
+
     /// Create a constructor expression for pattern matching
     fn create_constructor_expression(
         &mut self,
@@ -7598,17 +7676,16 @@ impl<'a> AstLowering<'a> {
             Pattern::Constructor { path, params } => {
                 // Resolve the constructor symbol
                 let constructor_name = self.context.intern_string(&path.name);
-                let constructor_symbol = self
-                    .resolve_symbol_in_scope_hierarchy(constructor_name)
-                    .ok_or_else(|| LoweringError::UnresolvedSymbol {
-                    name: path.name.clone(),
-                    location: SourceLocation::new(0, 0, 0, 0),
-                })?;
 
-                // println!(
-                //     "DEBUG: Create constructor expression '{}' resolved to symbol {:?}",
-                //     path.name, constructor_symbol
-                // );
+                // First try to resolve from switch discriminant type (for enum pattern matching)
+                // Then fall back to scope hierarchy lookup
+                let constructor_symbol = self
+                    .resolve_enum_constructor_from_discriminant(constructor_name)
+                    .or_else(|| self.resolve_symbol_in_scope_hierarchy(constructor_name))
+                    .ok_or_else(|| LoweringError::UnresolvedSymbol {
+                        name: path.name.clone(),
+                        location: SourceLocation::new(0, 0, 0, 0),
+                    })?;
 
                 if params.is_empty() {
                     // Simple constructor like Red, Green, Blue
@@ -7703,17 +7780,16 @@ impl<'a> AstLowering<'a> {
             Pattern::Constructor { path, params } => {
                 // Resolve the constructor symbol
                 let constructor_name = self.context.intern_string(&path.name);
-                let constructor_symbol = self
-                    .resolve_symbol_in_scope_hierarchy(constructor_name)
-                    .ok_or_else(|| LoweringError::UnresolvedSymbol {
-                    name: path.name.clone(),
-                    location: SourceLocation::new(0, 0, 0, 0),
-                })?;
 
-                // println!(
-                //     "DEBUG: Pattern constructor '{}' resolved to symbol {:?}",
-                //     path.name, constructor_symbol
-                // );
+                // First try to resolve from switch discriminant type (for enum pattern matching)
+                // Then fall back to scope hierarchy lookup
+                let constructor_symbol = self
+                    .resolve_enum_constructor_from_discriminant(constructor_name)
+                    .or_else(|| self.resolve_symbol_in_scope_hierarchy(constructor_name))
+                    .ok_or_else(|| LoweringError::UnresolvedSymbol {
+                        name: path.name.clone(),
+                        location: SourceLocation::new(0, 0, 0, 0),
+                    })?;
 
                 if params.is_empty() {
                     // Simple constructor like Red, Green, Blue

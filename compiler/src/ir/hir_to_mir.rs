@@ -96,6 +96,11 @@ pub struct HirToMirContext<'a> {
 
     /// Current class type for instance methods (used to resolve implicit field accesses)
     current_this_type: Option<TypeId>,
+
+    /// Mapping from variable SymbolIds to their monomorphized stdlib class names
+    /// Used to track Vec<Int> -> VecI32, Vec<Float> -> VecF64, etc.
+    /// This is needed because extern generic classes don't have proper TypeIds in the type table
+    monomorphized_var_types: HashMap<SymbolId, String>,
 }
 
 /// SSA-derived optimization hints from DFG analysis
@@ -183,6 +188,7 @@ impl<'a> HirToMirContext<'a> {
             symbol_table,
             current_env_layout: None,
             current_this_type: None,
+            monomorphized_var_types: HashMap::new(),
         }
     }
 
@@ -1160,12 +1166,57 @@ impl<'a> HirToMirContext<'a> {
                 // Lower initialization expression if present
                 if let Some(init_expr) = init {
                     eprintln!("DEBUG: Let statement - lowering init expression");
+
+                    // Check if this is a New expression for a generic stdlib class (Vec<T>)
+                    // We need to track the monomorphized class name for later method calls
+                    let monomorphized_class = if let HirExprKind::New { class_name, type_args, .. } = &init_expr.kind {
+                        let class_name_str = class_name.and_then(|interned| self.string_interner.get(interned));
+                        if class_name_str == Some("Vec") && !type_args.is_empty() {
+                            // Determine the monomorphized Vec variant from type args
+                            let first_arg = type_args[0];
+                            let type_table = self.type_table.borrow();
+                            let suffix = if let Some(arg_type) = type_table.get(first_arg) {
+                                match &arg_type.kind {
+                                    TypeKind::Int => Some("I32"),
+                                    TypeKind::Float => Some("F64"),
+                                    TypeKind::Bool => Some("Bool"),
+                                    TypeKind::String => Some("Ptr"),
+                                    TypeKind::Class { symbol_id, .. } => {
+                                        if let Some(class_info) = self.symbol_table.get_symbol(*symbol_id) {
+                                            if let Some(name) = self.string_interner.get(class_info.name) {
+                                                if name == "Int64" { Some("I64") } else { Some("Ptr") }
+                                            } else { Some("Ptr") }
+                                        } else { Some("Ptr") }
+                                    }
+                                    _ => Some("Ptr"),
+                                }
+                            } else {
+                                Some("Ptr")
+                            };
+                            drop(type_table);
+                            suffix.map(|s| format!("Vec{}", s))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
                     let value = self.lower_expression(init_expr);
                     eprintln!("DEBUG: Let statement - init lowered to: {:?}", value);
 
                     // Bind to pattern and register as local
                     if let Some(value_reg) = value {
                         eprintln!("DEBUG: Let statement - binding pattern {:?} with value_reg: {:?}", pattern, value_reg);
+
+                        // Track monomorphized class name for this variable (by SymbolId)
+                        if let Some(mono_class) = monomorphized_class {
+                            // Extract the SymbolId from the pattern
+                            if let HirPattern::Variable { symbol, name } = pattern {
+                                eprintln!("DEBUG: Let statement - tracking monomorphized class '{}' for variable '{}' (symbol {:?})", mono_class, name, symbol);
+                                self.monomorphized_var_types.insert(*symbol, mono_class);
+                            }
+                        }
 
                         // Determine the type for the binding
                         let var_type = type_hint.or(Some(init_expr.ty));
@@ -1377,32 +1428,105 @@ impl<'a> HirToMirContext<'a> {
         method_symbol: SymbolId,
         receiver_type: TypeId,
     ) -> Option<(&'static str, &'static str, &crate::stdlib::RuntimeFunctionCall)> {
-        // Get the method name from the symbol table
-        let method_name = if let Some(symbol) = self.symbol_table.get_symbol(method_symbol) {
-            self.string_interner.get(symbol.name)?
+        // Get the method name and optional qualified name from the symbol table
+        let (method_name, qualified_name) = if let Some(symbol) = self.symbol_table.get_symbol(method_symbol) {
+            let name = self.string_interner.get(symbol.name)?;
+            let qname = symbol.qualified_name.and_then(|qn| self.string_interner.get(qn));
+            (name, qname)
         } else {
             return None;
         };
 
-        // Get the class name from the receiver type
+        // Get the class name and type args from the receiver type
         let type_table = self.type_table.borrow();
-        let type_info = type_table.get(receiver_type)?;
+        let type_info = type_table.get(receiver_type);
 
-        let class_name = match &type_info.kind {
-            TypeKind::String => Some("String"),
-            TypeKind::Array { .. } => Some("Array"),
-            TypeKind::Class { symbol_id, .. } => {
+        // FALLBACK: If receiver_type is invalid (extern classes like Vec), try to detect class from qualified name
+        if type_info.is_none() {
+            drop(type_table);
+            eprintln!("DEBUG: [get_stdlib_runtime_info] receiver_type {:?} not in type_table, qualified_name={:?}", receiver_type, qualified_name);
+            if let Some(qname) = qualified_name {
+                // Pattern: "rayzor.Vec.get" or "test.Main.method"
+                let parts: Vec<&str> = qname.split('.').collect();
+                if parts.len() >= 2 {
+                    // Check if second-to-last part is "Vec"
+                    if let Some(&class_name) = parts.iter().rev().nth(1) {
+                        if class_name == "Vec" {
+                            // For Vec without type info, we can't monomorphize here
+                            // Try Vec variants in the mapping
+                            for variant in &["VecI32", "VecI64", "VecF64", "VecPtr", "VecBool"] {
+                                if let Some((sig, mapping)) = self.stdlib_mapping.find_by_name(variant, method_name) {
+                                    eprintln!("DEBUG: [FALLBACK] Found Vec method {} in {} mapping", method_name, variant);
+                                    // Return the first match - caller will need to handle type selection
+                                    return Some((sig.class, sig.method, mapping));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return None;
+        }
+
+        let type_info = type_info.unwrap();
+
+        let (base_class_name, type_args) = match &type_info.kind {
+            TypeKind::String => (Some("String"), Vec::new()),
+            TypeKind::Array { .. } => (Some("Array"), Vec::new()),
+            TypeKind::Class { symbol_id, type_args, .. } => {
                 // Get class name from symbol
-                if let Some(class_info) = self.symbol_table.get_symbol(*symbol_id) {
+                let name = if let Some(class_info) = self.symbol_table.get_symbol(*symbol_id) {
                     self.string_interner.get(class_info.name)
                 } else {
                     None
-                }
+                };
+                (name, type_args.clone())
             }
-            _ => None,
-        }?;
+            _ => (None, Vec::new()),
+        };
+
+        let base_class_name = base_class_name?;
+
+        // MONOMORPHIZATION: For generic extern classes like Vec<T>, monomorphize the class name
+        // based on type arguments. Vec<Int> -> VecI32, Vec<Float> -> VecF64, etc.
+        let monomorphized_class_name: Option<String> = if base_class_name == "Vec" && !type_args.is_empty() {
+            let first_arg = type_args[0];
+            let suffix = if let Some(arg_type) = type_table.get(first_arg) {
+                match &arg_type.kind {
+                    TypeKind::Int => Some("I32"),
+                    TypeKind::Float => Some("F64"),
+                    TypeKind::Bool => Some("Bool"),
+                    TypeKind::String => Some("Ptr"), // Strings are reference types
+                    TypeKind::Class { symbol_id, .. } => {
+                        // Check if it's Int64 (a class type representing 64-bit int)
+                        if let Some(class_info) = self.symbol_table.get_symbol(*symbol_id) {
+                            if let Some(name) = self.string_interner.get(class_info.name) {
+                                if name == "Int64" {
+                                    Some("I64")
+                                } else {
+                                    Some("Ptr") // Other classes are reference types
+                                }
+                            } else {
+                                Some("Ptr")
+                            }
+                        } else {
+                            Some("Ptr")
+                        }
+                    }
+                    _ => Some("Ptr"), // Default to pointer for other types
+                }
+            } else {
+                Some("Ptr") // Unknown type, use pointer
+            };
+            suffix.map(|s| format!("Vec{}", s))
+        } else {
+            None
+        };
 
         drop(type_table);
+
+        // Use monomorphized name if available, otherwise use base name
+        let class_name = monomorphized_class_name.as_deref().unwrap_or(base_class_name);
 
         // Try to find this method in the stdlib mapping
         // This avoids hardcoding class names and lets the StdlibMapping be the single source of truth
@@ -1483,6 +1607,70 @@ impl<'a> HirToMirContext<'a> {
             "Arc_strongCount" => Some((vec![ptr_u8.clone()], u64_type)),          // (arc) -> count
             "Arc_tryUnwrap" => Some((vec![ptr_u8.clone()], ptr_u8.clone())),      // (arc) -> value
             "Arc_asPtr" => Some((vec![ptr_u8.clone()], u64_type)),                // (arc) -> ptr_as_u64
+
+            // VecI32 methods
+            "VecI32_new" => Some((vec![], ptr_u8.clone())),                        // () -> vec
+            "VecI32_push" => Some((vec![ptr_u8.clone(), i32_type.clone()], void_type.clone())),  // (vec, value) -> void
+            "VecI32_pop" => Some((vec![ptr_u8.clone()], i32_type.clone())),       // (vec) -> value
+            "VecI32_get" => Some((vec![ptr_u8.clone(), IrType::I64], i32_type.clone())), // (vec, index) -> value
+            "VecI32_set" => Some((vec![ptr_u8.clone(), IrType::I64, i32_type.clone()], void_type.clone())), // (vec, index, value) -> void
+            "VecI32_length" => Some((vec![ptr_u8.clone()], IrType::I64)),         // (vec) -> len
+            "VecI32_capacity" => Some((vec![ptr_u8.clone()], IrType::I64)),       // (vec) -> cap
+            "VecI32_isEmpty" => Some((vec![ptr_u8.clone()], bool_type.clone())),  // (vec) -> bool
+            "VecI32_first" => Some((vec![ptr_u8.clone()], i32_type.clone())),     // (vec) -> value
+            "VecI32_last" => Some((vec![ptr_u8.clone()], i32_type.clone())),      // (vec) -> value
+            "VecI32_clear" => Some((vec![ptr_u8.clone()], void_type.clone())),    // (vec) -> void
+            "VecI32_sort" => Some((vec![ptr_u8.clone()], void_type.clone())),     // (vec) -> void
+            "VecI32_sortBy" => Some((vec![ptr_u8.clone(), ptr_u8.clone(), ptr_u8.clone()], void_type.clone())), // (vec, cmp_fn, env) -> void
+
+            // VecI64 methods
+            "VecI64_new" => Some((vec![], ptr_u8.clone())),
+            "VecI64_push" => Some((vec![ptr_u8.clone(), IrType::I64], void_type.clone())),
+            "VecI64_pop" => Some((vec![ptr_u8.clone()], IrType::I64)),
+            "VecI64_get" => Some((vec![ptr_u8.clone(), IrType::I64], IrType::I64)),
+            "VecI64_set" => Some((vec![ptr_u8.clone(), IrType::I64, IrType::I64], void_type.clone())),
+            "VecI64_length" => Some((vec![ptr_u8.clone()], IrType::I64)),
+            "VecI64_isEmpty" => Some((vec![ptr_u8.clone()], bool_type.clone())),
+            "VecI64_first" => Some((vec![ptr_u8.clone()], IrType::I64)),
+            "VecI64_last" => Some((vec![ptr_u8.clone()], IrType::I64)),
+            "VecI64_clear" => Some((vec![ptr_u8.clone()], void_type.clone())),
+
+            // VecF64 methods
+            "VecF64_new" => Some((vec![], ptr_u8.clone())),
+            "VecF64_push" => Some((vec![ptr_u8.clone(), IrType::F64], void_type.clone())),
+            "VecF64_pop" => Some((vec![ptr_u8.clone()], IrType::F64)),
+            "VecF64_get" => Some((vec![ptr_u8.clone(), IrType::I64], IrType::F64)),
+            "VecF64_set" => Some((vec![ptr_u8.clone(), IrType::I64, IrType::F64], void_type.clone())),
+            "VecF64_length" => Some((vec![ptr_u8.clone()], IrType::I64)),
+            "VecF64_isEmpty" => Some((vec![ptr_u8.clone()], bool_type.clone())),
+            "VecF64_first" => Some((vec![ptr_u8.clone()], IrType::F64)),
+            "VecF64_last" => Some((vec![ptr_u8.clone()], IrType::F64)),
+            "VecF64_clear" => Some((vec![ptr_u8.clone()], void_type.clone())),
+            "VecF64_sort" => Some((vec![ptr_u8.clone()], void_type.clone())),
+            "VecF64_sortBy" => Some((vec![ptr_u8.clone(), ptr_u8.clone(), ptr_u8.clone()], void_type.clone())),
+
+            // VecBool methods
+            "VecBool_new" => Some((vec![], ptr_u8.clone())),
+            "VecBool_push" => Some((vec![ptr_u8.clone(), bool_type.clone()], void_type.clone())),
+            "VecBool_pop" => Some((vec![ptr_u8.clone()], bool_type.clone())),
+            "VecBool_get" => Some((vec![ptr_u8.clone(), IrType::I64], bool_type.clone())),
+            "VecBool_set" => Some((vec![ptr_u8.clone(), IrType::I64, bool_type.clone()], void_type.clone())),
+            "VecBool_length" => Some((vec![ptr_u8.clone()], IrType::I64)),
+            "VecBool_isEmpty" => Some((vec![ptr_u8.clone()], bool_type.clone())),
+            "VecBool_clear" => Some((vec![ptr_u8.clone()], void_type.clone())),
+
+            // VecPtr methods (for reference types)
+            "VecPtr_new" => Some((vec![], ptr_u8.clone())),
+            "VecPtr_push" => Some((vec![ptr_u8.clone(), ptr_u8.clone()], void_type.clone())),
+            "VecPtr_pop" => Some((vec![ptr_u8.clone()], ptr_u8.clone())),
+            "VecPtr_get" => Some((vec![ptr_u8.clone(), IrType::I64], ptr_u8.clone())),
+            "VecPtr_set" => Some((vec![ptr_u8.clone(), IrType::I64, ptr_u8.clone()], void_type.clone())),
+            "VecPtr_length" => Some((vec![ptr_u8.clone()], IrType::I64)),
+            "VecPtr_isEmpty" => Some((vec![ptr_u8.clone()], bool_type.clone())),
+            "VecPtr_first" => Some((vec![ptr_u8.clone()], ptr_u8.clone())),
+            "VecPtr_last" => Some((vec![ptr_u8.clone()], ptr_u8.clone())),
+            "VecPtr_clear" => Some((vec![ptr_u8.clone()], void_type.clone())),
+            "VecPtr_sortBy" => Some((vec![ptr_u8.clone(), ptr_u8.clone(), ptr_u8.clone()], void_type.clone())),
 
             _ => None,
         }
@@ -2247,7 +2435,34 @@ impl<'a> HirToMirContext<'a> {
                         }
 
                         // Get or register the extern runtime function
-                        let param_types = vec![arg_type.clone()];
+                        // Note: Runtime trace functions expect specific types:
+                        // - haxe_trace_int expects i64
+                        // - haxe_trace_float expects f64
+                        // We need to cast arguments to match
+                        let (param_types, final_arg_reg) = match trace_method {
+                            "traceInt" => {
+                                // Runtime expects i64, cast from i32 if needed
+                                let cast_reg = if matches!(arg_type, IrType::I32) {
+                                    self.builder.build_cast(arg_reg, IrType::I32, IrType::I64)
+                                        .unwrap_or(arg_reg)
+                                } else {
+                                    arg_reg
+                                };
+                                (vec![IrType::I64], cast_reg)
+                            }
+                            "traceFloat" => {
+                                // Runtime expects f64, cast from f32 if needed
+                                let cast_reg = if matches!(arg_type, IrType::F32) {
+                                    self.builder.build_cast(arg_reg, IrType::F32, IrType::F64)
+                                        .unwrap_or(arg_reg)
+                                } else {
+                                    arg_reg
+                                };
+                                (vec![IrType::F64], cast_reg)
+                            }
+                            _ => (vec![arg_type.clone()], arg_reg),
+                        };
+
                         let runtime_func_id = self.get_or_register_extern_function(
                             runtime_func,
                             param_types,
@@ -2257,7 +2472,7 @@ impl<'a> HirToMirContext<'a> {
                         // Generate the call
                         return self.builder.build_call_direct(
                             runtime_func_id,
-                            vec![arg_reg],
+                            vec![final_arg_reg],
                             IrType::Void,
                         );
                     }
@@ -2317,6 +2532,10 @@ impl<'a> HirToMirContext<'a> {
                             let type_table = self.type_table.borrow();
                             if let Some(type_info) = type_table.get(receiver_type) {
                                 eprintln!("DEBUG: [METHOD CALL] receiver_type={:?}, kind={:?}", receiver_type, type_info.kind);
+                            } else {
+                                // Print method name for calls with invalid receiver type
+                                let method_name = self.symbol_table.get_symbol(*symbol).map(|s| self.string_interner.get(s.name));
+                                eprintln!("DEBUG: [METHOD CALL] receiver_type={:?} NOT IN TYPE TABLE, method={:?}", receiver_type, method_name);
                             }
                         }
 
@@ -2577,6 +2796,70 @@ impl<'a> HirToMirContext<'a> {
                         //     receiver_type
                         // );
 
+                        // PRIORITY CHECK: For extern generic classes like Vec<T>, the receiver type
+                        // may be TypeId::MAX (invalid). In this case, try to use the tracked
+                        // monomorphized class from variable assignment.
+                        if receiver_type == TypeId::from_raw(u32::MAX) {
+                            eprintln!("DEBUG: [MONO VAR CHECK] receiver_type is MAX, checking monomorphized_var_types ({} entries)",
+                                     self.monomorphized_var_types.len());
+
+                            // Try to extract the SymbolId from the receiver expression
+                            // The receiver (args[0]) should be a variable reference like HirExprKind::Variable
+                            let receiver_symbol = match &args[0].kind {
+                                HirExprKind::Variable { symbol, .. } => Some(*symbol),
+                                HirExprKind::Field { field, .. } => Some(*field),
+                                _ => None,
+                            };
+                            eprintln!("DEBUG: [MONO VAR CHECK] Receiver expression symbol: {:?}", receiver_symbol);
+
+                            if let Some(var_symbol) = receiver_symbol {
+                                // Check if this variable has a tracked monomorphized class
+                                if let Some(mono_class) = self.monomorphized_var_types.get(&var_symbol).cloned() {
+                                    // Get the method name
+                                    if let Some(method_sym) = self.symbol_table.get_symbol(*symbol) {
+                                        if let Some(method_name) = self.string_interner.get(method_sym.name) {
+                                            eprintln!("DEBUG: [MONO VAR DISPATCH] Found tracked class '{}' for variable {:?}, method '{}'",
+                                                     mono_class, var_symbol, method_name);
+
+                                            // Build the MIR wrapper function name: VecI32_push, VecF64_get, etc.
+                                            let mir_func_name = format!("{}_{}", mono_class, method_name);
+
+                                            // Get the signature from get_stdlib_mir_wrapper_signature
+                                            if let Some((mir_param_types, mir_return_type)) = self.get_stdlib_mir_wrapper_signature(&mir_func_name) {
+                                                eprintln!("DEBUG: [MONO VAR DISPATCH] Using MIR wrapper: {}", mir_func_name);
+
+                                                // Lower all arguments (including receiver)
+                                                let mut arg_regs = Vec::new();
+                                                for arg in args {
+                                                    if let Some(reg) = self.lower_expression(arg) {
+                                                        arg_regs.push(reg);
+                                                    }
+                                                }
+
+                                                // Register forward reference
+                                                let mir_func_id = self.register_stdlib_mir_forward_ref(
+                                                    &mir_func_name,
+                                                    mir_param_types.clone(),
+                                                    mir_return_type.clone(),
+                                                );
+
+                                                eprintln!("DEBUG: [MONO VAR DISPATCH] Registered forward ref to {} with ID {:?}", mir_func_name, mir_func_id);
+
+                                                // Generate the call
+                                                let result = self.builder.build_call_direct(
+                                                    mir_func_id,
+                                                    arg_regs,
+                                                    mir_return_type,
+                                                );
+                                                eprintln!("DEBUG: [MONO VAR DISPATCH] Generated call, result: {:?}", result);
+                                                return result;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         // Try the receiver type path first (for true instance methods)
                         if let Some((class_name, method_name, runtime_call)) =
                             self.get_stdlib_runtime_info(*symbol, receiver_type)
@@ -2584,8 +2867,10 @@ impl<'a> HirToMirContext<'a> {
                             let runtime_func = runtime_call.runtime_name;
                             let ptr_conversion_mask = runtime_call.params_need_ptr_conversion;
 
-                            // SPECIAL CASE: Check if this is a stdlib MIR function (Thread/Channel/Mutex/Arc)
-                            if ["Thread", "Channel", "Mutex", "Arc"].contains(&class_name) {
+                            // SPECIAL CASE: Check if this is a stdlib MIR function
+                            // For these classes, we have MIR wrapper functions that forward to extern runtime functions.
+                            // The wrappers take care of calling convention differences.
+                            if self.stdlib_mapping.is_mir_wrapper_class(class_name) {
                                 let mir_func_name = format!("{}_{}", class_name, method_name);
                                 eprintln!("DEBUG: [STDLIB MIR] Detected stdlib MIR function (instance): {}", mir_func_name);
 
@@ -2905,8 +3190,8 @@ impl<'a> HirToMirContext<'a> {
                                 };
 
                                 if let Some(class_name) = inferred_class {
-                                    // SPECIAL CASE: Check if this is a stdlib MIR function (Thread/Channel/Mutex/Arc)
-                                    if ["Thread", "Channel", "Mutex", "Arc"].contains(&class_name) {
+                                    // SPECIAL CASE: Check if this is a stdlib MIR function
+                                    if self.stdlib_mapping.is_mir_wrapper_class(class_name) {
                                         let mir_func_name = format!("{}_{}", class_name, method_name);
                                         eprintln!("DEBUG: [STDLIB MIR] Detected stdlib MIR function: {}", mir_func_name);
 
@@ -3024,9 +3309,10 @@ impl<'a> HirToMirContext<'a> {
                                 }
 
                                 // Last resort: try all stdlib classes
-                                // eprintln!(
-                                //     "DEBUG: Could not infer class, trying all stdlib classes"
-                                // );
+                                eprintln!(
+                                    "DEBUG: [LAST RESORT] Could not infer class for method '{}', trying all stdlib classes",
+                                    method_name
+                                );
                                 // Get all stdlib classes dynamically from the mapping
                                 // NOTE: We do NOT add stdlib MIR detection here because we don't know which class
                                 // to use - the fallback tries all classes and would match the wrong one
@@ -3534,10 +3820,10 @@ impl<'a> HirToMirContext<'a> {
             }
 
             HirExprKind::New {
-                class_type, args, class_name: hir_class_name, ..
+                class_type, type_args: hir_type_args, args, class_name: hir_class_name, ..
             } => {
                 let debug_class_name = hir_class_name.and_then(|interned| self.string_interner.get(interned));
-                eprintln!("DEBUG [NEW EXPR]: class_type={:?}, args.len={}, hir_class_name={:?}", class_type, args.len(), debug_class_name);
+                eprintln!("DEBUG [NEW EXPR]: class_type={:?}, args.len={}, hir_class_name={:?}, hir_type_args={:?}", class_type, args.len(), debug_class_name, hir_type_args);
 
                 // Check if this is an abstract type
                 let type_table = self.type_table.borrow();
@@ -3630,7 +3916,56 @@ impl<'a> HirToMirContext<'a> {
                     }
                 }
                 eprintln!("DEBUG [NEW EXPR]: resolved class_name={:?}", class_name);
-                if let Some(class_name) = class_name {
+
+                // MONOMORPHIZATION: For generic extern classes like Vec<T>, monomorphize the class name
+                // based on type arguments. Vec<Int> -> VecI32, Vec<Float> -> VecF64, etc.
+                // Use hir_type_args directly (from HIR) instead of type_table lookup (which may fail for extern classes)
+                let monomorphized_class_name: Option<String> = if let Some(base_name) = class_name {
+                    if base_name == "Vec" && !hir_type_args.is_empty() {
+                        // Get the first type argument and determine the monomorphized suffix
+                        let first_arg = hir_type_args[0];
+                        let type_table = self.type_table.borrow();
+                        let suffix = if let Some(arg_type) = type_table.get(first_arg) {
+                            match &arg_type.kind {
+                                crate::tast::TypeKind::Int => Some("I32"),
+                                crate::tast::TypeKind::Float => Some("F64"),
+                                crate::tast::TypeKind::Bool => Some("Bool"),
+                                crate::tast::TypeKind::String => Some("Ptr"),
+                                crate::tast::TypeKind::Class { symbol_id, .. } => {
+                                    // Check if it's Int64 (a class type representing 64-bit int)
+                                    if let Some(class_info) = self.symbol_table.get_symbol(*symbol_id) {
+                                        if let Some(name) = self.string_interner.get(class_info.name) {
+                                            if name == "Int64" {
+                                                Some("I64")
+                                            } else {
+                                                Some("Ptr") // Other classes are reference types
+                                            }
+                                        } else {
+                                            Some("Ptr")
+                                        }
+                                    } else {
+                                        Some("Ptr")
+                                    }
+                                }
+                                _ => Some("Ptr"),
+                            }
+                        } else {
+                            Some("Ptr") // If type not found, default to Ptr variant
+                        };
+                        drop(type_table);
+                        suffix.map(|s| format!("Vec{}", s))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                // Use monomorphized name if available, otherwise use original class name
+                let final_class_name = monomorphized_class_name.as_deref().or(class_name);
+                eprintln!("DEBUG [NEW EXPR]: final_class_name={:?} (monomorphized from {:?})", final_class_name, class_name);
+
+                if let Some(class_name) = final_class_name {
                     // Check if this class has a "new" constructor registered in the runtime mapping
                     let stdlib_mapping = crate::stdlib::runtime_mapping::StdlibMapping::new();
 

@@ -83,6 +83,7 @@ impl StdlibMapping {
         mapping.register_channel_methods();
         mapping.register_arc_methods();
         mapping.register_mutex_methods();
+        mapping.register_vec_methods();
 
         mapping
     }
@@ -162,6 +163,76 @@ impl StdlibMapping {
     /// Returns the RuntimeFunctionCall metadata if found
     pub fn find_by_runtime_name(&self, runtime_name: &str) -> Option<&RuntimeFunctionCall> {
         self.mappings.values().find(|call| call.runtime_name == runtime_name)
+    }
+
+    /// Check if a class name is a generic stdlib class that requires monomorphization
+    /// For example, "Vec" is generic and maps to VecI32, VecI64, VecF64, etc.
+    /// Returns the base name if it's a generic stdlib class, None otherwise
+    pub fn is_generic_stdlib_class(&self, class_name: &str) -> bool {
+        // Generic stdlib classes have monomorphized variants registered
+        // Vec -> VecI32, VecI64, VecF64, VecPtr, VecBool
+        match class_name {
+            "Vec" => self.is_stdlib_class("VecI32"),
+            _ => false,
+        }
+    }
+
+    /// Get the monomorphized class name for a generic stdlib class
+    /// E.g., Vec<Int> -> VecI32, Vec<Float> -> VecF64
+    /// Returns None if the class is not a generic stdlib class or the type param is unknown
+    pub fn get_monomorphized_class(&self, class_name: &str, type_param: &str) -> Option<&'static str> {
+        match class_name {
+            "Vec" => {
+                let mono_class = match type_param {
+                    "Int" => "VecI32",
+                    "Int64" => "VecI64",
+                    "Float" => "VecF64",
+                    "Bool" => "VecBool",
+                    _ => "VecPtr", // Pointer/reference types
+                };
+                // Verify the monomorphized class exists in our mapping
+                if self.is_stdlib_class(mono_class) {
+                    Some(mono_class)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Get all monomorphized variants for a generic stdlib class
+    /// E.g., "Vec" -> ["VecI32", "VecI64", "VecF64", "VecPtr", "VecBool"]
+    pub fn get_monomorphized_variants(&self, class_name: &str) -> Vec<&'static str> {
+        match class_name {
+            "Vec" => {
+                vec!["VecI32", "VecI64", "VecF64", "VecPtr", "VecBool"]
+                    .into_iter()
+                    .filter(|v| self.is_stdlib_class(v))
+                    .collect()
+            }
+            _ => vec![],
+        }
+    }
+
+    /// Check if a stdlib class uses MIR wrapper functions instead of direct extern calls.
+    /// MIR wrapper classes have functions defined in stdlib/thread.rs, stdlib/channel.rs, etc.
+    /// that need to be called as regular MIR functions (not extern C functions).
+    ///
+    /// Detection: MIR wrapper functions have runtime names in the format `{Class}_{method}`
+    /// (e.g., Thread_spawn, VecI32_push) rather than prefixed names like `rayzor_thread_spawn`
+    /// or `haxe_string_char_at`.
+    pub fn is_mir_wrapper_class(&self, class_name: &str) -> bool {
+        // Check if any method of this class has a MIR wrapper-style runtime name
+        self.mappings.iter().any(|(sig, call)| {
+            if sig.class != class_name {
+                return false;
+            }
+            // MIR wrapper names: {Class}_{method} (e.g., Thread_spawn, VecI32_push)
+            // Extern names use prefixes: rayzor_*, haxe_*
+            let expected_mir_name = format!("{}_{}", sig.class, sig.method);
+            call.runtime_name == expected_mir_name
+        })
     }
 
     /// Register a stdlib method -> runtime function mapping
@@ -599,6 +670,103 @@ impl StdlibMapping {
 
         self.register_from_tuples(mappings);
     }
+
+    // ============================================================================
+    // Vec<T> Methods (rayzor.Vec - monomorphized generic vectors)
+    // ============================================================================
+    //
+    // These are type-specialized vector methods for monomorphization.
+    // When the compiler sees Vec<Int>, it maps to VecI32 runtime functions.
+    // When it sees Vec<Float>, it maps to VecF64 runtime functions.
+    //
+    // The class names use the monomorphized naming convention:
+    // - "VecI32" for Vec<Int>
+    // - "VecI64" for Vec<Int64>
+    // - "VecF64" for Vec<Float>
+    // - "VecPtr" for Vec<T> where T is a reference type
+    // - "VecBool" for Vec<Bool>
+
+    fn register_vec_methods(&mut self) {
+        // Vec<Int> -> VecI32
+        // These map to MIR wrapper functions (VecI32_*) NOT directly to runtime functions
+        let vec_i32_mappings = vec![
+            map_method!(constructor "VecI32", "new" => "VecI32_new", params: 0, returns: complex),
+            map_method!(instance "VecI32", "push" => "VecI32_push", params: 1, returns: void),
+            map_method!(instance "VecI32", "pop" => "VecI32_pop", params: 0, returns: primitive),
+            map_method!(instance "VecI32", "get" => "VecI32_get", params: 1, returns: primitive),
+            map_method!(instance "VecI32", "set" => "VecI32_set", params: 2, returns: void),
+            map_method!(instance "VecI32", "length" => "VecI32_length", params: 0, returns: primitive),
+            map_method!(instance "VecI32", "capacity" => "VecI32_capacity", params: 0, returns: primitive),
+            map_method!(instance "VecI32", "isEmpty" => "VecI32_isEmpty", params: 0, returns: primitive),
+            map_method!(instance "VecI32", "clear" => "VecI32_clear", params: 0, returns: void),
+            map_method!(instance "VecI32", "first" => "VecI32_first", params: 0, returns: primitive),
+            map_method!(instance "VecI32", "last" => "VecI32_last", params: 0, returns: primitive),
+            map_method!(instance "VecI32", "sort" => "VecI32_sort", params: 0, returns: void),
+            map_method!(instance "VecI32", "sortBy" => "VecI32_sortBy", params: 2, returns: void),
+        ];
+        self.register_from_tuples(vec_i32_mappings);
+
+        // Vec<Int64> -> VecI64
+        let vec_i64_mappings = vec![
+            map_method!(constructor "VecI64", "new" => "VecI64_new", params: 0, returns: complex),
+            map_method!(instance "VecI64", "push" => "VecI64_push", params: 1, returns: void),
+            map_method!(instance "VecI64", "pop" => "VecI64_pop", params: 0, returns: primitive),
+            map_method!(instance "VecI64", "get" => "VecI64_get", params: 1, returns: primitive),
+            map_method!(instance "VecI64", "set" => "VecI64_set", params: 2, returns: void),
+            map_method!(instance "VecI64", "length" => "VecI64_length", params: 0, returns: primitive),
+            map_method!(instance "VecI64", "isEmpty" => "VecI64_isEmpty", params: 0, returns: primitive),
+            map_method!(instance "VecI64", "clear" => "VecI64_clear", params: 0, returns: void),
+            map_method!(instance "VecI64", "first" => "VecI64_first", params: 0, returns: primitive),
+            map_method!(instance "VecI64", "last" => "VecI64_last", params: 0, returns: primitive),
+        ];
+        self.register_from_tuples(vec_i64_mappings);
+
+        // Vec<Float> -> VecF64
+        let vec_f64_mappings = vec![
+            map_method!(constructor "VecF64", "new" => "VecF64_new", params: 0, returns: complex),
+            map_method!(instance "VecF64", "push" => "VecF64_push", params: 1, returns: void),
+            map_method!(instance "VecF64", "pop" => "VecF64_pop", params: 0, returns: primitive),
+            map_method!(instance "VecF64", "get" => "VecF64_get", params: 1, returns: primitive),
+            map_method!(instance "VecF64", "set" => "VecF64_set", params: 2, returns: void),
+            map_method!(instance "VecF64", "length" => "VecF64_length", params: 0, returns: primitive),
+            map_method!(instance "VecF64", "isEmpty" => "VecF64_isEmpty", params: 0, returns: primitive),
+            map_method!(instance "VecF64", "clear" => "VecF64_clear", params: 0, returns: void),
+            map_method!(instance "VecF64", "first" => "VecF64_first", params: 0, returns: primitive),
+            map_method!(instance "VecF64", "last" => "VecF64_last", params: 0, returns: primitive),
+            map_method!(instance "VecF64", "sort" => "VecF64_sort", params: 0, returns: void),
+            map_method!(instance "VecF64", "sortBy" => "VecF64_sortBy", params: 2, returns: void),
+        ];
+        self.register_from_tuples(vec_f64_mappings);
+
+        // Vec<T> where T is reference type -> VecPtr
+        let vec_ptr_mappings = vec![
+            map_method!(constructor "VecPtr", "new" => "VecPtr_new", params: 0, returns: complex),
+            map_method!(instance "VecPtr", "push" => "VecPtr_push", params: 1, returns: void),
+            map_method!(instance "VecPtr", "pop" => "VecPtr_pop", params: 0, returns: complex),
+            map_method!(instance "VecPtr", "get" => "VecPtr_get", params: 1, returns: complex),
+            map_method!(instance "VecPtr", "set" => "VecPtr_set", params: 2, returns: void),
+            map_method!(instance "VecPtr", "length" => "VecPtr_length", params: 0, returns: primitive),
+            map_method!(instance "VecPtr", "isEmpty" => "VecPtr_isEmpty", params: 0, returns: primitive),
+            map_method!(instance "VecPtr", "clear" => "VecPtr_clear", params: 0, returns: void),
+            map_method!(instance "VecPtr", "first" => "VecPtr_first", params: 0, returns: complex),
+            map_method!(instance "VecPtr", "last" => "VecPtr_last", params: 0, returns: complex),
+            map_method!(instance "VecPtr", "sortBy" => "VecPtr_sortBy", params: 2, returns: void),
+        ];
+        self.register_from_tuples(vec_ptr_mappings);
+
+        // Vec<Bool> -> VecBool
+        let vec_bool_mappings = vec![
+            map_method!(constructor "VecBool", "new" => "VecBool_new", params: 0, returns: complex),
+            map_method!(instance "VecBool", "push" => "VecBool_push", params: 1, returns: void),
+            map_method!(instance "VecBool", "pop" => "VecBool_pop", params: 0, returns: primitive),
+            map_method!(instance "VecBool", "get" => "VecBool_get", params: 1, returns: primitive),
+            map_method!(instance "VecBool", "set" => "VecBool_set", params: 2, returns: void),
+            map_method!(instance "VecBool", "length" => "VecBool_length", params: 0, returns: primitive),
+            map_method!(instance "VecBool", "isEmpty" => "VecBool_isEmpty", params: 0, returns: primitive),
+            map_method!(instance "VecBool", "clear" => "VecBool_clear", params: 0, returns: void),
+        ];
+        self.register_from_tuples(vec_bool_mappings);
+    }
 }
 
 impl Default for StdlibMapping {
@@ -697,5 +865,71 @@ mod tests {
         assert!(call.needs_out_param); // Returns complex type (opaque pointer)
         assert!(!call.has_self_param); // Constructors don't have self
         assert_eq!(call.param_count, 1);
+    }
+
+    #[test]
+    fn test_vec_methods() {
+        let mapping = StdlibMapping::new();
+
+        // Test VecI32 constructor
+        let sig = MethodSignature {
+            class: "VecI32",
+            method: "new",
+            is_static: true,
+            is_constructor: true,
+        };
+        let call = mapping.get(&sig).expect("VecI32 constructor should be mapped");
+        assert_eq!(call.runtime_name, "rayzor_vec_i32_new");
+        assert!(call.needs_out_param); // Returns complex type (pointer)
+        assert!(!call.has_self_param);
+        assert_eq!(call.param_count, 0);
+
+        // Test VecI32 push
+        let sig = MethodSignature {
+            class: "VecI32",
+            method: "push",
+            is_static: false,
+            is_constructor: false,
+        };
+        let call = mapping.get(&sig).expect("VecI32.push should be mapped");
+        assert_eq!(call.runtime_name, "rayzor_vec_i32_push");
+        assert!(!call.needs_out_param); // Returns void
+        assert!(call.has_self_param); // Instance method
+        assert_eq!(call.param_count, 1);
+        assert!(!call.has_return);
+
+        // Test VecF64 get
+        let sig = MethodSignature {
+            class: "VecF64",
+            method: "get",
+            is_static: false,
+            is_constructor: false,
+        };
+        let call = mapping.get(&sig).expect("VecF64.get should be mapped");
+        assert_eq!(call.runtime_name, "rayzor_vec_f64_get");
+        assert!(call.has_self_param);
+        assert_eq!(call.param_count, 1);
+        assert!(call.has_return);
+
+        // Test VecPtr for reference types
+        let sig = MethodSignature {
+            class: "VecPtr",
+            method: "push",
+            is_static: false,
+            is_constructor: false,
+        };
+        let call = mapping.get(&sig).expect("VecPtr.push should be mapped");
+        assert_eq!(call.runtime_name, "rayzor_vec_ptr_push");
+
+        // Test VecBool
+        let sig = MethodSignature {
+            class: "VecBool",
+            method: "pop",
+            is_static: false,
+            is_constructor: false,
+        };
+        let call = mapping.get(&sig).expect("VecBool.pop should be mapped");
+        assert_eq!(call.runtime_name, "rayzor_vec_bool_pop");
+        assert!(call.has_return); // Returns bool
     }
 }

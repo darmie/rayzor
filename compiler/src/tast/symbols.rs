@@ -1061,6 +1061,11 @@ impl SymbolTable {
         None
     }
 
+    /// Get the variants of an enum
+    pub fn get_enum_variants(&self, enum_symbol: SymbolId) -> Option<&Vec<SymbolId>> {
+        self.enum_variants.get(&enum_symbol)
+    }
+
     /// Get all used symbols
     pub fn used_symbols(&self) -> Vec<&Symbol> {
         self.all_symbols()

@@ -23,6 +23,9 @@ use std::ptr;
 pub mod vec;
 // Note: old string.rs removed due to ABI issues with struct returns
 
+// Generic Vec<T> runtime - type-specialized vectors for monomorphization
+pub mod generic_vec;
+
 // Export Haxe core type runtime modules
 pub mod concurrency; // Concurrency primitives (Thread, Arc, Mutex, Channel)
 pub mod haxe_array; // Dynamic Array API
@@ -39,6 +42,9 @@ pub mod plugin_impl; // Plugin registration
 pub use haxe_array::HaxeArray;
 pub use haxe_string::HaxeString;
 pub use vec::HaxeVec;
+
+// Re-export generic Vec types
+pub use generic_vec::{VecI32, VecI64, VecF64, VecPtr, VecBool};
 
 // Re-export plugin
 pub use plugin_impl::get_plugin;

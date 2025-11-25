@@ -39,6 +39,8 @@ private typedef VectorData<T> =
 	lua.Table<Int, T>
 	#elseif eval
 	eval.Vector<T>
+	#elseif rayzor
+	rayzor.Vec<T>
 	#else
 	Array<T>
 	#end;
@@ -80,6 +82,8 @@ abstract Vector<T>(VectorData<T>) {
 		this = untyped __lua_table__({length: length});
 		#elseif eval
 		this = new eval.Vector(length);
+		#elseif rayzor
+		this = new rayzor.Vec<T>();
 		#else
 		this = [];
 		untyped this.length = length;
@@ -98,6 +102,9 @@ abstract Vector<T>(VectorData<T>) {
 		this = [for (_ in 0...length) defaultValue];
 		#elseif python
 		this = python.Syntax.code("([{0}]*{1})", defaultValue, length);
+		#elseif rayzor
+		this = new rayzor.Vec<T>();
+		for (i in 0...length) this.push(defaultValue);
 		#else
 
 		#if flash10
@@ -136,6 +143,8 @@ abstract Vector<T>(VectorData<T>) {
 		return python.internal.ArrayImpl.unsafeGet(this, index);
 		#elseif eval
 		return this[index];
+		#elseif rayzor
+		return this.get(index);
 		#else
 		return this[index];
 		#end
@@ -154,6 +163,9 @@ abstract Vector<T>(VectorData<T>) {
 		return python.internal.ArrayImpl.unsafeSet(this, index, val);
 		#elseif eval
 		return this[index] = val;
+		#elseif rayzor
+		this.set(index, val);
+		return val;
 		#else
 		return this[index] = val;
 		#end
@@ -173,6 +185,8 @@ abstract Vector<T>(VectorData<T>) {
 		return this.length;
 		#elseif python
 		return this.length;
+		#elseif rayzor
+		return this.length();
 		#else
 		return untyped this.length;
 		#end

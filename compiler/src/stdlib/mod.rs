@@ -33,6 +33,7 @@ pub mod stdtypes;
 pub mod memory;
 pub mod vec_u8;
 pub mod runtime_mapping;
+pub mod vec;
 
 // Rayzor concurrent primitives
 pub mod thread;
@@ -79,6 +80,9 @@ pub fn build_stdlib() -> IrModule {
     thread::build_thread_type(&mut builder);
     channel::build_channel_type(&mut builder);
     sync::build_sync_types(&mut builder);
+
+    // Build Vec<T> extern declarations (monomorphized specializations)
+    vec::build_vec_externs(&mut builder);
 
     builder.finish()
 }
