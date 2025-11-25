@@ -4777,13 +4777,15 @@ impl<'a> HirToMirContext<'a> {
 
             // Type parameters and dynamic types
             Some(TypeKind::TypeParameter { symbol_id, .. }) => {
-                // Type parameters like T, U, etc. that haven't been resolved
-                // IMPORTANT: Generic type parameters are often used for class instances like
-                // Arc<T>, Channel<T>, Thread<T>, etc. When captured in closures, they represent
-                // heap-allocated objects and should be treated as pointers.
-                // Using I32 here causes pointer truncation bugs on 64-bit systems!
-                eprintln!("Warning: Unresolved TypeParameter (symbol_id={:?}, type_id={:?}), defaulting to Ptr(Void)", symbol_id, type_id);
-                IrType::Ptr(Box::new(IrType::Void))
+                // Type parameters like T, U, etc. - convert to IrType::TypeVar for monomorphization
+                // Look up the symbol name to get the type parameter name
+                let type_param_name = self.symbol_table.get_symbol(*symbol_id)
+                    .and_then(|sym| self.string_interner.get(sym.name))
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("T{}", symbol_id.as_raw()));
+
+                eprintln!("DEBUG: Converting TypeParameter {:?} to TypeVar(\"{}\")", symbol_id, type_param_name);
+                IrType::TypeVar(type_param_name)
             },
             Some(TypeKind::Dynamic) => {
                 // Dynamic type is used as a placeholder for unresolved generic type parameters
