@@ -14,7 +14,7 @@ use cranelift_codegen::ir::{ArgumentPurpose, BlockArg, Function};
 use cranelift_codegen::settings;
 use cranelift_frontend::Variable;
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_native;
 use std::collections::{HashMap, HashSet};
 
@@ -61,6 +61,13 @@ pub struct CraneliftBackend {
     /// The environment parameter for the current function being compiled
     /// This is used by ClosureEnv to access the environment
     current_env_param: Option<Value>,
+
+    /// Map from string content to its DataId in the module
+    /// Used to reuse string constants across functions
+    string_data: HashMap<String, DataId>,
+
+    /// Counter for unique string data names
+    string_counter: usize,
 }
 
 impl CraneliftBackend {
@@ -146,6 +153,8 @@ impl CraneliftBackend {
             module_counter: 0,
             defined_functions: HashSet::new(),
             current_env_param: None,
+            string_data: HashMap::new(),
+            string_counter: 0,
         })
     }
 
@@ -915,6 +924,8 @@ impl CraneliftBackend {
                     &mut self.module,
                     &mut self.closure_environments,
                     self.current_env_param,
+                    &mut self.string_data,
+                    &mut self.string_counter,
                 )?;
             }
 
@@ -1128,12 +1139,22 @@ impl CraneliftBackend {
         module: &mut JITModule,
         closure_environments: &mut HashMap<IrId, Value>,
         current_env_param: Option<Value>,
+        string_data: &mut HashMap<String, DataId>,
+        string_counter: &mut usize,
     ) -> Result<(), String> {
         use crate::ir::IrInstruction;
 
         match instruction {
             IrInstruction::Const { dest, value } => {
-                let cl_value = Self::translate_const_value(builder, value, function_map, module)?;
+                let cl_value = Self::translate_const_value(
+                    builder,
+                    value,
+                    function_map,
+                    runtime_functions,
+                    module,
+                    string_data,
+                    string_counter,
+                )?;
                 value_map.insert(*dest, cl_value);
             }
 
@@ -2500,7 +2521,10 @@ impl CraneliftBackend {
         builder: &mut FunctionBuilder,
         value: &IrValue,
         function_map: &HashMap<IrFunctionId, FuncId>,
+        runtime_functions: &mut HashMap<String, FuncId>,
         module: &mut JITModule,
+        string_data: &mut HashMap<String, DataId>,
+        string_counter: &mut usize,
     ) -> Result<Value, String> {
         use crate::ir::IrValue;
 
@@ -2521,10 +2545,57 @@ impl CraneliftBackend {
             IrValue::F64(v) => builder.ins().f64const(*v),
             IrValue::Bool(v) => builder.ins().iconst(types::I8, if *v { 1 } else { 0 }),
             IrValue::Null => builder.ins().iconst(types::I64, 0),
-            IrValue::String(_s) => {
-                // TODO: Properly allocate string constants in data section
-                // For now, return null pointer (empty string)
-                builder.ins().iconst(types::I64, 0)
+            IrValue::String(s) => {
+                // Allocate string data in data section and call runtime to create HaxeString
+                let data_id = if let Some(&existing) = string_data.get(s) {
+                    existing
+                } else {
+                    // Create new data section entry for this string
+                    let name = format!("str_{}", *string_counter);
+                    *string_counter += 1;
+
+                    let data_id = module
+                        .declare_data(&name, Linkage::Local, false, false)
+                        .map_err(|e| format!("Failed to declare string data: {}", e))?;
+
+                    let mut data_desc = DataDescription::new();
+                    data_desc.define(s.as_bytes().to_vec().into_boxed_slice());
+
+                    module
+                        .define_data(data_id, &data_desc)
+                        .map_err(|e| format!("Failed to define string data: {}", e))?;
+
+                    string_data.insert(s.clone(), data_id);
+                    data_id
+                };
+
+                // Get pointer to the string data
+                let gv = module.declare_data_in_func(data_id, builder.func);
+                let str_ptr = builder.ins().global_value(types::I64, gv);
+                let str_len = builder.ins().iconst(types::I64, s.len() as i64);
+
+                // Get or declare haxe_string_literal runtime function
+                let string_literal_func = if let Some(&func_id) = runtime_functions.get("haxe_string_literal") {
+                    func_id
+                } else {
+                    // Declare haxe_string_literal(ptr: *const u8, len: usize) -> *mut HaxeString
+                    let mut sig = module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64)); // ptr
+                    sig.params.push(AbiParam::new(types::I64)); // len
+                    sig.returns.push(AbiParam::new(types::I64)); // returns *mut HaxeString
+
+                    let func_id = module
+                        .declare_function("haxe_string_literal", Linkage::Import, &sig)
+                        .map_err(|e| format!("Failed to declare haxe_string_literal: {}", e))?;
+
+                    runtime_functions.insert("haxe_string_literal".to_string(), func_id);
+                    func_id
+                };
+
+                // Call haxe_string_literal(ptr, len) -> *mut HaxeString
+                let func_ref = module.declare_func_in_func(string_literal_func, builder.func);
+                let call = builder.ins().call(func_ref, &[str_ptr, str_len]);
+                builder.inst_results(call)[0]
             }
             IrValue::Function(mir_func_id) => {
                 // Get the Cranelift FuncId for this MIR function

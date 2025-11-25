@@ -176,6 +176,7 @@ register_symbol!("haxe_string_from_float", crate::haxe_sys::haxe_string_from_flo
 register_symbol!("haxe_string_from_bool", crate::haxe_sys::haxe_string_from_bool);
 register_symbol!("haxe_string_from_string", crate::haxe_sys::haxe_string_from_string);
 register_symbol!("haxe_string_from_null", crate::haxe_sys::haxe_string_from_null);
+register_symbol!("haxe_string_literal", crate::haxe_sys::haxe_string_literal);
 
 // Program control
 register_symbol!("haxe_sys_exit", crate::haxe_sys::haxe_sys_exit);

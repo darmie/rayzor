@@ -1,0 +1,76 @@
+/// Test trace with String type
+use compiler::codegen::CraneliftBackend;
+use compiler::compilation::{CompilationConfig, CompilationUnit};
+
+fn main() -> Result<(), String> {
+    println!("=== Testing trace with String ===\n");
+
+    let haxe_source = r#"
+package test;
+
+class Main {
+    static function main() {
+        // Test 1: String literal
+        var s:String = "Hello, World!";
+        trace(s);
+
+        // Test 2: Another string literal
+        var a:String = "Goodbye!";
+        trace(a);
+
+        // Test 3: Int to trace (should still work)
+        trace(42);
+    }
+}
+"#;
+
+    let mut unit = CompilationUnit::new(CompilationConfig::default());
+
+    println!("Loading stdlib...");
+    unit.load_stdlib()
+        .map_err(|e| format!("Failed to load stdlib: {}", e))?;
+
+    println!("Adding test file...");
+    unit.add_file(haxe_source, "test_trace_string.hx")
+        .map_err(|e| format!("Failed to add file: {}", e))?;
+
+    println!("Compiling to TAST...");
+    unit.lower_to_tast()
+        .map_err(|errors| format!("TAST errors: {:?}", errors))?;
+
+    println!("Getting MIR modules...");
+    let mir_modules = unit.get_mir_modules();
+    if mir_modules.is_empty() {
+        return Err("No MIR modules generated".to_string());
+    }
+
+    println!("MIR modules: {}", mir_modules.len());
+
+    println!("\nCompiling to native code...");
+    let plugin = rayzor_runtime::plugin_impl::get_plugin();
+    let symbols = plugin.runtime_symbols();
+    let symbols_ref: Vec<(&str, *const u8)> = symbols.iter().map(|(n, p)| (*n, *p)).collect();
+
+    let mut backend = CraneliftBackend::with_symbols(&symbols_ref)?;
+
+    for module in &mir_modules {
+        backend.compile_module(module)?;
+    }
+
+    println!("Codegen complete!\n");
+
+    println!("=== Expected Output ===");
+    println!("Hello, World!");
+    println!("Goodbye!");
+    println!("42");
+    println!("\n=== Actual Output ===\n");
+
+    for module in mir_modules.iter().rev() {
+        if backend.call_main(module).is_ok() {
+            println!("\n=== Test Complete ===");
+            return Ok(());
+        }
+    }
+
+    Err("Failed to execute main".to_string())
+}

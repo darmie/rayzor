@@ -74,10 +74,17 @@ pub extern "C" fn haxe_trace_string(ptr: *const u8, len: usize) {
     }
 }
 
-/// Trace string value (takes HaxeString struct directly)
+/// Trace string value (takes pointer to HaxeString struct)
 #[no_mangle]
-pub extern "C" fn haxe_trace_string_struct(s: HaxeString) {
-    haxe_trace_string(s.ptr, s.len);
+pub extern "C" fn haxe_trace_string_struct(s_ptr: *const HaxeString) {
+    if s_ptr.is_null() {
+        println!("null");
+        return;
+    }
+    unsafe {
+        let s = &*s_ptr;
+        haxe_trace_string(s.ptr, s.len);
+    }
 }
 
 /// Trace any value (fallback for Dynamic type)
@@ -146,6 +153,15 @@ pub extern "C" fn haxe_string_from_null() -> HaxeString {
         ptr: s.as_ptr(),
         len: s.len(),
     }
+}
+
+/// Create a string literal from embedded bytes
+/// Returns a pointer to a heap-allocated HaxeString struct
+/// The bytes are NOT copied - they must remain valid (e.g., in JIT code section)
+#[no_mangle]
+pub extern "C" fn haxe_string_literal(ptr: *const u8, len: usize) -> *mut HaxeString {
+    let boxed = Box::new(HaxeString { ptr, len });
+    Box::into_raw(boxed)
 }
 
 // ============================================================================

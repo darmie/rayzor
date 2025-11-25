@@ -2017,10 +2017,10 @@ impl<'a> HirToMirContext<'a> {
                             _ => "haxe_trace_any",
                         };
 
-                        // Special handling for String: use haxe_trace_string_struct that takes the whole struct
+                        // Special handling for String: use haxe_trace_string_struct that takes a pointer
                         if trace_method == "traceString" {
-                            // String is a struct (ptr+len), use the struct version of trace
-                            let param_types = vec![IrType::String];
+                            // String is represented as a pointer to HaxeString struct
+                            let param_types = vec![IrType::Ptr(Box::new(IrType::String))];
                             let string_trace_id = self.get_or_register_extern_function(
                                 "haxe_trace_string_struct",
                                 param_types,
@@ -4267,7 +4267,13 @@ impl<'a> HirToMirContext<'a> {
                     _ => self.builder.build_const(IrValue::F64(*f)), // Default to F64
                 }
             }
-            HirLiteral::String(s) => self.builder.build_string(s.to_string()),
+            HirLiteral::String(s) => {
+                // Resolve the interned string to get the actual content
+                let string_content = self.string_interner.get(*s)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| String::new());
+                self.builder.build_string(string_content)
+            }
             HirLiteral::Bool(b) => self.builder.build_bool(*b),
             HirLiteral::Regex { .. } => {
                 self.add_error(
