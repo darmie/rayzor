@@ -138,37 +138,13 @@ Rayzor implements a **multi-stage compilation pipeline** with sophisticated anal
 #### 1. Parser (`parser/` crate)
 
 - **Technology**: Nom parser combinators for composability
-- **Features**:
-  - Incremental parsing (re-parse only changed regions)
-  - Error recovery (continue parsing after errors)
-  - Precise source location tracking for diagnostics
-  - Comment preservation for documentation
-
-**Example:**
-```rust
-pub struct HaxeFile {
-    pub package: Option<String>,
-    pub imports: Vec<Import>,
-    pub declarations: Vec<Declaration>,
-}
-```
+- **Features**: Incremental parsing, error recovery, precise source location tracking
 
 #### 2. Type Checker (`compiler/src/tast/`)
 
-- **Bidirectional type checking**: Bottom-up inference + top-down checking
-- **Constraint-based type inference**: Unification algorithm for type variables
-- **Rich type system**: Generics, nullables, abstract types, function types
-- **Symbol management**: Hierarchical scopes with shadowing support
-
-**Example:**
-```rust
-pub struct TypedFile {
-    pub package: Option<String>,
-    pub imports: Vec<TypedImport>,
-    pub classes: Vec<TypedClass>,
-    pub functions: Vec<TypedFunction>,
-}
-```
+- Bidirectional type checking with constraint-based type inference
+- Rich type system: Generics, nullables, abstract types, function types
+- Hierarchical symbol management with shadowing support
 
 #### 3. Semantic Analysis (`compiler/src/semantic_graph/`)
 
@@ -178,78 +154,25 @@ Production-ready analysis infrastructure built in SSA form:
 - **Data Flow Graph (DFG)**: SSA form, def-use chains, value numbering
 - **Call Graph**: Inter-procedural analysis, recursion detection
 - **Ownership Graph**: Memory safety tracking (Rust-inspired)
-- **TypeFlowGuard**: Flow-sensitive type checking orchestrator
 
-**Uses:**
-- Dead code elimination
-- Null safety checking
-- Initialization analysis
-- Constant propagation
-- Common subexpression elimination
+#### 4. HIR (High-level IR)
 
-See [compiler/SSA_ARCHITECTURE.md](compiler/SSA_ARCHITECTURE.md) for details.
+Preserves high-level language features (closures, pattern matching, try-catch) with resolved symbols and optimization hints.
 
-#### 4. HIR (High-level IR) (`compiler/src/ir/hir.rs`)
+#### 5. MIR (Mid-level IR)
 
-Preserves high-level language features while adding resolution:
+Platform-independent optimization target in SSA form with standard IR instructions, explicit control flow, type metadata, and string pooling.
 
-- Closures, pattern matching, try-catch
-- Resolved symbols (no name lookup needed)
-- Optimization hints from semantic analysis
-- Source-level debugging support
+#### 6. Cranelift Backend
 
-```rust
-pub struct HirModule {
-    pub name: String,
-    pub functions: HashMap<SymbolId, HirFunction>,
-    pub types: HashMap<TypeId, HirTypeDecl>,
-    pub globals: HashMap<SymbolId, HirGlobal>,
-}
-```
+JIT compilation backend with:
+- MIR → Cranelift IR translation
+- Runtime function calling (Thread, Channel, Mutex, Arc)
+- Monomorphization for generic type specialization
 
-#### 5. MIR (Mid-level IR) (`compiler/src/ir/mod.rs`)
+#### 7. Diagnostics System
 
-Platform-independent optimization target in SSA form:
-
-- Standard IR instructions (add, mul, load, store, call)
-- Explicit control flow (branches, jumps, phi nodes)
-- Type metadata and RTTI system
-- String pool for constant strings
-- **Status: 98% complete** ✅
-
-```rust
-pub struct IrModule {
-    pub functions: HashMap<IrFunctionId, IrFunction>,
-    pub globals: Vec<IrGlobal>,
-    pub type_defs: Vec<IrTypeDef>,
-    pub string_pool: StringPool,
-}
-```
-
-**Implemented Features:**
-- ✅ All expression types (literals, binary ops, calls, field access)
-- ✅ Control flow (if, while, for, switch, try-catch)
-- ✅ Pattern matching (constructor, tuple, array, object patterns)
-- ✅ Type metadata registration (enums, classes, interfaces)
-- ✅ Global variables with initialization
-- ✅ Lambda/closure infrastructure (95% - body generation pending)
-
-#### 6. Diagnostics System
-
-Rich error messages with source locations and suggestions:
-
-```
-error[E0308]: type mismatch
-  --> example.hx:5:15
-   |
- 5 |     var x: Int = "hello";
-   |                  ^^^^^^^ expected Int, found String
-   |
-help: did you mean to convert the string to an integer?
-   |
- 5 |     var x: Int = Std.parseInt("hello");
-   |                  ++++++++++++         +
-```
+Rich error messages with source locations and suggestions.
 
 ---
 
@@ -338,21 +261,25 @@ rayzor build --aot --target=wasm --optimize=size
 - **Semantic Graphs**: SSA/DFG/CFG/ownership analysis
 - **TypeFlowGuard**: Flow-sensitive safety checking
 - **HIR**: High-level IR with semantic preservation
-- **MIR**: 98% complete lowering pipeline
+- **MIR**: Complete lowering pipeline with validation
+- **Cranelift Backend**: JIT compilation working
+- **Runtime**: Thread, Channel, Mutex, Arc concurrency primitives
+- **Generics**: Monomorphization with type specialization
 
 ### 🚧 In Progress
 
-- **MIR Polish**: 2% remaining (lambda body generation)
+- **Generics**: Standard library generic types (Vec<T>, Option<T>)
 - **Optimization Passes**: DCE, constant folding, CSE
+- **LLVM Backend**: Hot path tier-up support
 
 ### 📋 Next Steps
 
-1. **Cranelift Backend** (Phase 1 - 2-3 weeks)
-   - MIR → Cranelift IR translation
-   - Basic JIT compilation
-   - "Hello World" native executable
+1. **Standard Library Expansion**
+   - Generic collections (Vec<T>, Map<K,V>)
+   - Option<T> and Result<T,E> types
+   - More I/O primitives
 
-2. **LLVM Backend** (Phase 2 - 2-3 weeks)
+2. **LLVM Backend**
    - MIR → LLVM IR translation
    - Hot path tier-up support
    - Full optimization pipeline
@@ -364,65 +291,12 @@ rayzor build --aot --target=wasm --optimize=size
 
 ---
 
-## Crate Structure
-
-```
-rayzor/
-├── parser/              # Haxe parser (nom-based)
-│   ├── src/
-│   │   ├── haxe_parser.rs         # Main entry
-│   │   ├── haxe_parser_expr.rs    # Expression parsing
-│   │   ├── haxe_parser_decls.rs   # Declaration parsing
-│   │   ├── haxe_parser_types.rs   # Type parsing
-│   │   └── incremental_parser_enhanced.rs
-│   └── Cargo.toml
-│
-├── compiler/            # Main compiler infrastructure
-│   ├── src/
-│   │   ├── tast/                   # Type-checked AST
-│   │   │   ├── type_checker.rs
-│   │   │   ├── symbols.rs
-│   │   │   ├── type_flow_guard.rs
-│   │   │   └── core.rs
-│   │   │
-│   │   ├── semantic_graph/         # Analysis infrastructure
-│   │   │   ├── cfg.rs              # Control Flow Graph
-│   │   │   ├── dfg.rs              # Data Flow Graph (SSA)
-│   │   │   ├── call_graph.rs
-│   │   │   └── ownership_graph.rs
-│   │   │
-│   │   ├── ir/                     # Intermediate Representations
-│   │   │   ├── hir.rs              # High-level IR
-│   │   │   ├── tast_to_hir.rs      # TAST → HIR
-│   │   │   ├── hir_to_mir.rs       # HIR → MIR (98% complete)
-│   │   │   ├── mod.rs              # MIR definitions
-│   │   │   ├── builder.rs          # IR builder
-│   │   │   ├── optimization.rs     # Optimization passes
-│   │   │   └── validation.rs       # IR validation
-│   │   │
-│   │   └── pipeline.rs             # Compilation pipeline
-│   │
-│   ├── ARCHITECTURE.md             # Detailed architecture
-│   ├── SSA_ARCHITECTURE.md         # SSA integration
-│   ├── RAYZOR_ARCHITECTURE.md      # Vision & roadmap
-│   ├── LOWERING_STATUS.md          # Feature tracking
-│   └── Cargo.toml
-│
-├── diagnostics/         # Error reporting
-├── source_map/          # Source location tracking
-└── Cargo.toml
-```
-
----
-
 ## Documentation
 
 - **[ARCHITECTURE.md](compiler/ARCHITECTURE.md)** - Complete system architecture
 - **[SSA_ARCHITECTURE.md](compiler/SSA_ARCHITECTURE.md)** - SSA integration details
 - **[RAYZOR_ARCHITECTURE.md](compiler/RAYZOR_ARCHITECTURE.md)** - Vision, roadmap, tiered JIT
-- **[LOWERING_STATUS.md](compiler/LOWERING_STATUS.md)** - Feature implementation tracking
-- **[IMPLEMENTATION_ROADMAP.md](compiler/IMPLEMENTATION_ROADMAP.md)** - Development plan
-- **[PRODUCTION_READINESS.md](compiler/PRODUCTION_READINESS.md)** - Production checklist
+- **[BACKLOG.md](BACKLOG.md)** - Feature backlog and progress tracking
 
 ---
 
@@ -521,26 +395,30 @@ See [ARCHITECTURE.md](compiler/ARCHITECTURE.md#contributing) for:
 
 ## Roadmap
 
-### Near-term (3 months)
+### ✅ Completed
 
-- ✅ Complete MIR lowering (98% → 100%)
-- 🎯 Cranelift backend (JIT compilation)
-- 🎯 Basic runtime (GC, String, Array)
-- 🎯 "Hello World" native executable
+- Complete MIR lowering pipeline
+- Cranelift JIT backend with native code execution
+- Concurrency runtime (Thread, Channel, Mutex, Arc)
+- Generics with monomorphization
 
-### Medium-term (6 months)
+### 🚧 Near-term
 
-- 🎯 LLVM backend (hot path tier-up + AOT)
-- 🎯 Optimization pipeline (DCE, CSE, inlining)
-- 🎯 Standard library coverage (basic)
-- 🎯 Performance within 10% of Haxe/C++
+- Generic stdlib types (Vec<T>, Option<T>, Result<T,E>)
+- Optimization pipeline (DCE, CSE, inlining)
+- LLVM backend for hot path tier-up
 
-### Long-term (12 months)
+### 🎯 Medium-term
 
-- 🎯 WebAssembly target (browser + WASI)
-- 🎯 Production-ready for real projects
-- 🎯 IDE support (LSP server)
-- 🎯 Community adoption
+- WebAssembly target (browser + WASI)
+- Full Haxe standard library coverage
+- IDE support (LSP server)
+
+### 🔮 Long-term
+
+- Production-ready for real projects
+- Performance parity with Haxe/C++
+- Community adoption
 
 ---
 
