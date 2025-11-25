@@ -268,16 +268,19 @@ impl<'a> HirToMirContext<'a> {
                         } else {
                             None
                         };
-                        self.register_function_signature(
+                        // Pass class type params for generic class methods
+                        self.register_function_signature_with_class_type_params(
                             method.function.symbol_id,
                             &method.function,
                             this_type,
+                            &class.type_params,
                         );
                     }
 
-                    // Register constructor signature
+                    // Register constructor signature with class type params
                     if let Some(constructor) = &class.constructor {
-                        self.register_constructor_signature(class.symbol_id, constructor, *type_id);
+                        self.register_constructor_signature_with_class_type_params(
+                            class.symbol_id, constructor, *type_id, &class.type_params);
                     }
                 }
                 _ => {}
@@ -432,6 +435,97 @@ impl<'a> HirToMirContext<'a> {
         let func_id = self.builder.start_function(symbol_id, func_name, signature);
         self.function_map.insert(symbol_id, func_id);
         self.builder.finish_function(); // Close to allow next function to start
+    }
+
+    /// Register a function signature with class type parameters (for generic class methods)
+    /// This version includes the class's type parameters in the function signature
+    fn register_function_signature_with_class_type_params(
+        &mut self,
+        symbol_id: SymbolId,
+        hir_func: &HirFunction,
+        this_type: Option<TypeId>,
+        class_type_params: &[HirTypeParam],
+    ) {
+        let mut signature = self.build_function_signature_with_class_type_params(hir_func, class_type_params);
+
+        // For instance methods, add implicit 'this' parameter
+        if let Some(type_id) = this_type {
+            let this_type = match self.convert_type(type_id) {
+                IrType::Ptr(_) => IrType::Ptr(Box::new(IrType::Void)),
+                _ => IrType::Ptr(Box::new(IrType::Void)),
+            };
+            signature.parameters.insert(
+                0,
+                IrParameter {
+                    name: "this".to_string(),
+                    ty: this_type,
+                    reg: IrId::new(0),
+                    by_ref: false,
+                },
+            );
+        }
+
+        let func_name = self
+            .string_interner
+            .get(hir_func.name)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("func_{}", symbol_id.as_raw()));
+
+        let func_id = self.builder.start_function(symbol_id, func_name, signature);
+        self.function_map.insert(symbol_id, func_id);
+        self.builder.finish_function();
+    }
+
+    /// Register constructor signature with class type params (for generic classes)
+    fn register_constructor_signature_with_class_type_params(
+        &mut self,
+        class_symbol: SymbolId,
+        constructor: &HirConstructor,
+        type_id: TypeId,
+        class_type_params: &[HirTypeParam],
+    ) {
+        let this_type = match self.convert_type(type_id) {
+            IrType::Ptr(_) => IrType::Ptr(Box::new(IrType::Void)),
+            _ => IrType::Ptr(Box::new(IrType::Void)),
+        };
+        let mut sig_builder = FunctionSignatureBuilder::new()
+            .param("this".to_string(), this_type);
+
+        // Add class type parameters
+        for type_param in class_type_params {
+            let param_name = self.string_interner.get(type_param.name)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("T{}", type_param.name.as_raw()));
+            sig_builder = sig_builder.type_param(param_name);
+        }
+
+        // Add constructor parameters
+        for param in &constructor.params {
+            let param_name = self
+                .string_interner
+                .get(param.name)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("param_{}", param.symbol_id.as_raw()));
+            sig_builder = sig_builder.param(param_name, self.convert_type(param.ty));
+        }
+
+        let mut signature = sig_builder.returns(IrType::Void).build();
+
+        // Assign register IDs
+        for (i, param) in signature.parameters.iter_mut().enumerate() {
+            param.reg = IrId::new(i as u32);
+        }
+
+        let func_id = self.builder.start_function(class_symbol, "new".to_string(), signature);
+        self.function_map.insert(class_symbol, func_id);
+        self.constructor_map.insert(type_id, func_id);
+
+        let fallback_type_id = TypeId::from_raw(class_symbol.as_raw());
+        if fallback_type_id != type_id {
+            self.constructor_map.insert(fallback_type_id, func_id);
+        }
+
+        self.builder.finish_function();
     }
 
     /// Register constructor signature (Pass 1)
@@ -4729,6 +4823,53 @@ impl<'a> HirToMirContext<'a> {
     fn build_function_signature(&self, func: &HirFunction) -> super::IrFunctionSignature {
         let mut builder = FunctionSignatureBuilder::new();
 
+        // Add type parameters from the HIR function (for generic functions)
+        for type_param in &func.type_params {
+            let param_name = self.string_interner.get(type_param.name)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("T{}", type_param.name.as_raw()));
+            builder = builder.type_param(param_name);
+        }
+
+        for param in &func.params {
+            let param_type = self.convert_type(param.ty);
+            builder = builder.param(param.name.to_string(), param_type);
+        }
+
+        let return_type = self.convert_type(func.return_type);
+        builder = builder.returns(return_type);
+
+        if func.is_extern {
+            builder = builder.calling_convention(CallingConvention::C);
+        }
+
+        builder.build()
+    }
+
+    /// Build function signature with class type parameters (for generic class methods)
+    fn build_function_signature_with_class_type_params(
+        &self,
+        func: &HirFunction,
+        class_type_params: &[HirTypeParam],
+    ) -> super::IrFunctionSignature {
+        let mut builder = FunctionSignatureBuilder::new();
+
+        // Add class type parameters first (T, U, etc from the generic class)
+        for type_param in class_type_params {
+            let param_name = self.string_interner.get(type_param.name)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("T{}", type_param.name.as_raw()));
+            builder = builder.type_param(param_name);
+        }
+
+        // Add method's own type parameters (if any)
+        for type_param in &func.type_params {
+            let param_name = self.string_interner.get(type_param.name)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("T{}", type_param.name.as_raw()));
+            builder = builder.type_param(param_name);
+        }
+
         for param in &func.params {
             let param_type = self.convert_type(param.ty);
             builder = builder.param(param.name.to_string(), param_type);
@@ -4751,6 +4892,14 @@ impl<'a> HirToMirContext<'a> {
         class_type_id: TypeId,
     ) -> super::IrFunctionSignature {
         let mut builder = FunctionSignatureBuilder::new();
+
+        // Add type parameters from the HIR function (for generic methods)
+        for type_param in &func.type_params {
+            let param_name = self.string_interner.get(type_param.name)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("T{}", type_param.name.as_raw()));
+            builder = builder.type_param(param_name);
+        }
 
         // Add implicit 'this' parameter as first parameter
         // 'this' is always a pointer to the class instance, regardless of generic parameters

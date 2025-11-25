@@ -1716,9 +1716,14 @@ impl<'a> TastToHirContext<'a> {
         // TODO: Implement module field lowering
     }
     
-    fn lower_type_params(&mut self, _params: &[TypedTypeParameter]) -> Vec<HirTypeParam> {
-        // TODO: Implement type parameter lowering
-        Vec::new()
+    fn lower_type_params(&mut self, params: &[TypedTypeParameter]) -> Vec<HirTypeParam> {
+        params.iter().map(|param| {
+            HirTypeParam {
+                name: param.name.clone(),
+                bounds: param.constraints.clone(),
+                default: None, // TODO: Add default type support if needed
+            }
+        }).collect()
     }
     
     fn lower_param(&mut self, param: &TypedParameter) -> HirParam {

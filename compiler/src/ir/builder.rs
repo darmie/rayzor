@@ -7,7 +7,7 @@ use super::{
     IrModule, IrFunction, IrFunctionId, IrBasicBlock, IrBlockId,
     IrInstruction, IrTerminator, IrPhiNode, IrId, IrType, IrValue,
     IrSourceLocation, BinaryOp, UnaryOp, CompareOp,
-    IrFunctionSignature, IrParameter, CallingConvention,
+    IrFunctionSignature, IrParameter, CallingConvention, IrTypeParam,
     IrLocal, AllocationHint,
 };
 use crate::tast::SymbolId;
@@ -658,6 +658,7 @@ pub struct FunctionSignatureBuilder {
     return_type: IrType,
     calling_convention: CallingConvention,
     can_throw: bool,
+    type_params: Vec<IrTypeParam>,
 }
 
 impl FunctionSignatureBuilder {
@@ -667,7 +668,23 @@ impl FunctionSignatureBuilder {
             return_type: IrType::Void,
             calling_convention: CallingConvention::Haxe,
             can_throw: false,
+            type_params: Vec::new(),
         }
+    }
+
+    /// Add a type parameter to the function signature
+    pub fn type_param(mut self, name: String) -> Self {
+        self.type_params.push(IrTypeParam {
+            name,
+            constraints: Vec::new(),
+        });
+        self
+    }
+
+    /// Add a type parameter with constraints
+    pub fn type_param_with_constraints(mut self, name: String, constraints: Vec<String>) -> Self {
+        self.type_params.push(IrTypeParam { name, constraints });
+        self
     }
     
     pub fn param(mut self, name: String, ty: IrType) -> Self {
@@ -711,7 +728,7 @@ impl FunctionSignatureBuilder {
             return_type: self.return_type,
             calling_convention: self.calling_convention,
             can_throw: self.can_throw,
-            type_params: Vec::new(),
+            type_params: self.type_params,
             uses_sret: false, // Generic builder - caller can set manually if needed
         }
     }

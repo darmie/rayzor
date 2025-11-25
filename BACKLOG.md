@@ -99,19 +99,27 @@ var stringStack = new Stack<String>();     // Should create Stack_String
 
 ### 1.5 Monomorphization Pass
 
-**Status:** 🔴 Not Started
+**Status:** 🟡 Infrastructure Complete, Instantiation Needed
 **Related Files:**
-- `compiler/src/ir/monomorphize.rs` (new)
+- `compiler/src/ir/monomorphize.rs` - MonoKey, Monomorphizer, type substitution
+- `compiler/src/ir/builder.rs` - FunctionSignatureBuilder with type_params
+- `compiler/src/ir/instructions.rs` - CallDirect with type_args
+- `compiler/src/ir/tast_to_hir.rs` - lower_type_params implementation
+- `compiler/src/ir/hir_to_mir.rs` - Class type param propagation to methods
 
 **Tasks:**
-- [ ] Design monomorphization strategy (lazy vs eager)
+- [x] Design monomorphization strategy (lazy vs eager) - Using lazy instantiation
+- [x] Implement MonoKey caching (generic_func + type_args)
+- [x] Implement type substitution algorithm
+- [x] Generate specialized function names (mangling: Container__i32)
+- [x] Integrate into compilation pipeline
+- [x] Add monomorphization statistics/reporting
+- [x] Propagate class type_params to method signatures
+- [x] Implement TAST->HIR type_params lowering
 - [ ] Use SymbolFlags::GENERIC to identify monomorphizable types
-- [ ] Implement MonoKey caching (generic_func + type_args)
-- [ ] Implement type substitution algorithm
 - [ ] Handle recursive generic instantiation
-- [ ] Generate specialized function names
-- [ ] Integrate into compilation pipeline
-- [ ] Add monomorphization statistics/reporting
+- [ ] Generate specialized function bodies
+- [ ] Rewrite call sites to use specialized functions
 
 **Reference:** Based on Zyntax proven approach - see GENERICS_DESIGN.md
 
