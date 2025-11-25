@@ -66,22 +66,38 @@ var stringStack = new Stack<String>();     // Should create Stack_String
 - [ ] Implement type parameter substitution
 - [ ] Add generic type equivalence checking
 
-### 1.3 MIR Builder Enhancements
+### 1.3 TAST Generics Infrastructure
 
-**Status:** 🔴 Not Started
+**Status:** 🟢 Complete
 **Related Files:**
-- `compiler/src/ir/mir_builder.rs`
-- `compiler/src/ir/instructions.rs`
+- `compiler/src/tast/generics.rs` - GenericsEngine facade
+- `compiler/src/tast/generic_instantiation.rs` - GenericInstantiator
+- `compiler/src/tast/constraint_solver.rs` - ConstraintSolver, UnificationTable
+- `compiler/src/tast/tests/generics_test.rs` - Comprehensive test suite
 
 **Tasks:**
-- [ ] Add `type_param()` builder method
+- [x] GenericsEngine main facade
+- [x] GenericInstantiator for type instantiation
+- [x] ConstraintSolver for unification
+- [x] ConstraintValidator for constraint checking
+- [x] InstantiationCache for performance
+- [x] Cycle detection for recursive generics
+
+### 1.4 MIR Builder Enhancements
+
+**Status:** 🟡 Partially Complete
+**Related Files:**
+- `compiler/src/ir/mir_builder.rs`
+- `compiler/src/ir/types.rs` - IrType::TypeVar, IrType::Generic
+
+**Tasks:**
+- [x] IrType::TypeVar for type parameters
+- [x] IrType::Generic for generic instantiations
 - [ ] Add `begin_generic_function()` method
-- [ ] Add `union_type()` builder method
 - [ ] Add union creation/extraction instructions
-- [ ] Add struct composition instructions
 - [ ] Test generic MIR generation
 
-### 1.4 Monomorphization Pass
+### 1.5 Monomorphization Pass
 
 **Status:** 🔴 Not Started
 **Related Files:**
@@ -89,6 +105,7 @@ var stringStack = new Stack<String>();     // Should create Stack_String
 
 **Tasks:**
 - [ ] Design monomorphization strategy (lazy vs eager)
+- [ ] Use SymbolFlags::GENERIC to identify monomorphizable types
 - [ ] Implement MonoKey caching (generic_func + type_args)
 - [ ] Implement type substitution algorithm
 - [ ] Handle recursive generic instantiation
@@ -98,7 +115,7 @@ var stringStack = new Stack<String>();     // Should create Stack_String
 
 **Reference:** Based on Zyntax proven approach - see GENERICS_DESIGN.md
 
-### 1.5 Standard Library Generics
+### 1.6 Standard Library Generics
 
 **Status:** 🔴 Not Started
 
