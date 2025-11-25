@@ -122,21 +122,24 @@ var stringStack = new Stack<String>();     // Should create Stack_String
 - [x] Rewrite call sites to use specialized functions
 - [ ] Use SymbolFlags::GENERIC to identify monomorphizable types
 - [ ] Handle recursive generic instantiation
-- [ ] Preserve TypeVar in MIR signatures (currently converted to Ptr(Void))
+- [x] Preserve TypeVar in MIR signatures (TypeParameter → TypeVar conversion)
 
 **Reference:** Based on Zyntax proven approach - see GENERICS_DESIGN.md
 
 ### 1.6 Standard Library Generics
 
-**Status:** 🔴 Not Started
+**Status:** 🟡 Blocked on Enum Support
 
 **Tasks:**
-- [ ] Implement `Vec<T>` (generic vector)
-- [ ] Implement `Option<T>` (tagged union)
-- [ ] Implement `Result<T, E>` (tagged union)
-- [ ] Implement `Array<T>` (Haxe's dynamic array)
-- [ ] Implement `Map<K, V>` (hashmap)
+- [ ] Implement `Vec<T>` (generic vector) - Can proceed
+- [ ] Implement `Option<T>` (tagged union) - Requires enum type support in AST lowering
+- [ ] Implement `Result<T, E>` (tagged union) - Requires enum type support
+- [ ] Implement `Array<T>` (Haxe's dynamic array) - Existing haxe.ds.List
+- [ ] Implement `Map<K, V>` (hashmap) - Existing haxe.ds.Map
 - [ ] Test monomorphization with stdlib types
+
+**Note:** Option<T> and Result<T,E> already exist in haxe.ds but enum constructor
+resolution fails during AST lowering. Need to fix enum variant symbol resolution.
 
 ---
 
