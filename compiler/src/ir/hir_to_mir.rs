@@ -2614,9 +2614,16 @@ impl<'a> HirToMirContext<'a> {
                             }
 
                             // Get or register the extern runtime function
-                            // Infer param types from actual arguments (after conversion)
-                            let param_types: Vec<IrType> = final_arg_regs.iter()
-                                .map(|reg| self.builder.get_register_type(*reg).unwrap_or(IrType::Any))
+                            // Use actual argument types from TAST, applying ptr conversion where needed
+                            let param_types: Vec<IrType> = args.iter().enumerate()
+                                .map(|(i, arg)| {
+                                    // If this param was converted to a pointer, the type is Ptr
+                                    if ptr_conversion_mask != 0 && (ptr_conversion_mask & (1 << i)) != 0 {
+                                        IrType::Ptr(Box::new(IrType::U8))
+                                    } else {
+                                        self.convert_type(arg.ty)
+                                    }
+                                })
                                 .collect();
                             let runtime_func_id = self.get_or_register_extern_function(
                                 &runtime_func,
@@ -2698,45 +2705,52 @@ impl<'a> HirToMirContext<'a> {
                                         // Look up the RuntimeFunctionCall metadata by runtime function name
                                         // This means the runtime function expects a POINTER TO the value, not the value directly.
                                         let mut final_arg_regs = arg_regs.clone();
-                                        if let Some(runtime_call_metadata) = self.stdlib_mapping.find_by_runtime_name(&runtime_func) {
-                                            let ptr_conversion_mask = runtime_call_metadata.params_need_ptr_conversion;
-                                            if ptr_conversion_mask != 0 {
-                                                for i in 0..arg_regs.len() {
-                                                    // Check if bit i is set in the mask
-                                                    if (ptr_conversion_mask & (1 << i)) != 0 {
-                                                        let arg_reg = arg_regs[i];
-                                                        let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I32);
+                                        let ptr_conversion_mask = self.stdlib_mapping.find_by_runtime_name(&runtime_func)
+                                            .map(|m| m.params_need_ptr_conversion)
+                                            .unwrap_or(0);
+                                        if ptr_conversion_mask != 0 {
+                                            for i in 0..arg_regs.len() {
+                                                // Check if bit i is set in the mask
+                                                if (ptr_conversion_mask & (1 << i)) != 0 {
+                                                    let arg_reg = arg_regs[i];
+                                                    let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I32);
 
-                                                        // For array operations, always allocate 8 bytes (elem_size is always 8)
-                                                        // and extend smaller values to 64-bit
-                                                        let (alloc_type, value_to_store) = match arg_type {
-                                                            IrType::I32 => {
-                                                                let ext_val = self.builder.build_cast(arg_reg, IrType::I32, IrType::I64);
-                                                                (IrType::I64, ext_val.unwrap_or(arg_reg))
-                                                            }
-                                                            IrType::F32 => {
-                                                                let ext_val = self.builder.build_cast(arg_reg, IrType::F32, IrType::F64);
-                                                                (IrType::F64, ext_val.unwrap_or(arg_reg))
-                                                            }
-                                                            _ => (arg_type.clone(), arg_reg)
-                                                        };
-
-                                                        // Allocate stack space and pass a pointer to the value.
-                                                        if let Some(stack_slot) = self.builder.build_alloc(alloc_type.clone(), None) {
-                                                            // Store the value into the stack slot
-                                                            self.builder.build_store(stack_slot, value_to_store);
-                                                            // Use the pointer for the call
-                                                            final_arg_regs[i] = stack_slot;
+                                                    // For array operations, always allocate 8 bytes (elem_size is always 8)
+                                                    // and extend smaller values to 64-bit
+                                                    let (alloc_type, value_to_store) = match arg_type {
+                                                        IrType::I32 => {
+                                                            let ext_val = self.builder.build_cast(arg_reg, IrType::I32, IrType::I64);
+                                                            (IrType::I64, ext_val.unwrap_or(arg_reg))
                                                         }
+                                                        IrType::F32 => {
+                                                            let ext_val = self.builder.build_cast(arg_reg, IrType::F32, IrType::F64);
+                                                            (IrType::F64, ext_val.unwrap_or(arg_reg))
+                                                        }
+                                                        _ => (arg_type.clone(), arg_reg)
+                                                    };
+
+                                                    // Allocate stack space and pass a pointer to the value.
+                                                    if let Some(stack_slot) = self.builder.build_alloc(alloc_type.clone(), None) {
+                                                        // Store the value into the stack slot
+                                                        self.builder.build_store(stack_slot, value_to_store);
+                                                        // Use the pointer for the call
+                                                        final_arg_regs[i] = stack_slot;
                                                     }
                                                 }
                                             }
                                         }
 
                                         // Get or register the extern runtime function
-                                        // Infer param types from actual arguments (after conversion)
-                                        let param_types: Vec<IrType> = final_arg_regs.iter()
-                                            .map(|reg| self.builder.get_register_type(*reg).unwrap_or(IrType::Any))
+                                        // Use actual argument types from TAST, applying ptr conversion where needed
+                                        let param_types: Vec<IrType> = args.iter().enumerate()
+                                            .map(|(i, arg)| {
+                                                // If this param was converted to a pointer, the type is Ptr
+                                                if ptr_conversion_mask != 0 && (ptr_conversion_mask & (1 << i)) != 0 {
+                                                    IrType::Ptr(Box::new(IrType::U8))
+                                                } else {
+                                                    self.convert_type(arg.ty)
+                                                }
+                                            })
                                             .collect();
                                         let runtime_func_id = self.get_or_register_extern_function(
                                             &runtime_func,
@@ -2842,45 +2856,52 @@ impl<'a> HirToMirContext<'a> {
                                         // Look up the RuntimeFunctionCall metadata by runtime function name
                                         // This means the runtime function expects a POINTER TO the value, not the value directly.
                                         let mut final_arg_regs = arg_regs.clone();
-                                        if let Some(runtime_call_metadata) = self.stdlib_mapping.find_by_runtime_name(&runtime_func) {
-                                            let ptr_conversion_mask = runtime_call_metadata.params_need_ptr_conversion;
-                                            if ptr_conversion_mask != 0 {
-                                                for i in 0..arg_regs.len() {
-                                                    // Check if bit i is set in the mask
-                                                    if (ptr_conversion_mask & (1 << i)) != 0 {
-                                                        let arg_reg = arg_regs[i];
-                                                        let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I32);
+                                        let ptr_conversion_mask = self.stdlib_mapping.find_by_runtime_name(&runtime_func)
+                                            .map(|m| m.params_need_ptr_conversion)
+                                            .unwrap_or(0);
+                                        if ptr_conversion_mask != 0 {
+                                            for i in 0..arg_regs.len() {
+                                                // Check if bit i is set in the mask
+                                                if (ptr_conversion_mask & (1 << i)) != 0 {
+                                                    let arg_reg = arg_regs[i];
+                                                    let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I32);
 
-                                                        // For array operations, always allocate 8 bytes (elem_size is always 8)
-                                                        // and extend smaller values to 64-bit
-                                                        let (alloc_type, value_to_store) = match arg_type {
-                                                            IrType::I32 => {
-                                                                let ext_val = self.builder.build_cast(arg_reg, IrType::I32, IrType::I64);
-                                                                (IrType::I64, ext_val.unwrap_or(arg_reg))
-                                                            }
-                                                            IrType::F32 => {
-                                                                let ext_val = self.builder.build_cast(arg_reg, IrType::F32, IrType::F64);
-                                                                (IrType::F64, ext_val.unwrap_or(arg_reg))
-                                                            }
-                                                            _ => (arg_type.clone(), arg_reg)
-                                                        };
-
-                                                        // Allocate stack space and pass a pointer to the value.
-                                                        if let Some(stack_slot) = self.builder.build_alloc(alloc_type.clone(), None) {
-                                                            // Store the value into the stack slot
-                                                            self.builder.build_store(stack_slot, value_to_store);
-                                                            // Use the pointer for the call
-                                                            final_arg_regs[i] = stack_slot;
+                                                    // For array operations, always allocate 8 bytes (elem_size is always 8)
+                                                    // and extend smaller values to 64-bit
+                                                    let (alloc_type, value_to_store) = match arg_type {
+                                                        IrType::I32 => {
+                                                            let ext_val = self.builder.build_cast(arg_reg, IrType::I32, IrType::I64);
+                                                            (IrType::I64, ext_val.unwrap_or(arg_reg))
                                                         }
+                                                        IrType::F32 => {
+                                                            let ext_val = self.builder.build_cast(arg_reg, IrType::F32, IrType::F64);
+                                                            (IrType::F64, ext_val.unwrap_or(arg_reg))
+                                                        }
+                                                        _ => (arg_type.clone(), arg_reg)
+                                                    };
+
+                                                    // Allocate stack space and pass a pointer to the value.
+                                                    if let Some(stack_slot) = self.builder.build_alloc(alloc_type.clone(), None) {
+                                                        // Store the value into the stack slot
+                                                        self.builder.build_store(stack_slot, value_to_store);
+                                                        // Use the pointer for the call
+                                                        final_arg_regs[i] = stack_slot;
                                                     }
                                                 }
                                             }
                                         }
 
                                         // Get or register the extern runtime function
-                                        // Infer param types from actual arguments (after conversion)
-                                        let param_types: Vec<IrType> = final_arg_regs.iter()
-                                            .map(|reg| self.builder.get_register_type(*reg).unwrap_or(IrType::Any))
+                                        // Use actual argument types from TAST, applying ptr conversion where needed
+                                        let param_types: Vec<IrType> = args.iter().enumerate()
+                                            .map(|(i, arg)| {
+                                                // If this param was converted to a pointer, the type is Ptr
+                                                if ptr_conversion_mask != 0 && (ptr_conversion_mask & (1 << i)) != 0 {
+                                                    IrType::Ptr(Box::new(IrType::U8))
+                                                } else {
+                                                    self.convert_type(arg.ty)
+                                                }
+                                            })
                                             .collect();
                                         let runtime_func_id = self.get_or_register_extern_function(
                                             &runtime_func,
@@ -2956,45 +2977,52 @@ impl<'a> HirToMirContext<'a> {
                                         // Look up the RuntimeFunctionCall metadata by runtime function name
                                         // This means the runtime function expects a POINTER TO the value, not the value directly.
                                         let mut final_arg_regs = arg_regs.clone();
-                                        if let Some(runtime_call_metadata) = self.stdlib_mapping.find_by_runtime_name(&runtime_func) {
-                                            let ptr_conversion_mask = runtime_call_metadata.params_need_ptr_conversion;
-                                            if ptr_conversion_mask != 0 {
-                                                for i in 0..arg_regs.len() {
-                                                    // Check if bit i is set in the mask
-                                                    if (ptr_conversion_mask & (1 << i)) != 0 {
-                                                        let arg_reg = arg_regs[i];
-                                                        let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I32);
+                                        let ptr_conversion_mask = self.stdlib_mapping.find_by_runtime_name(&runtime_func)
+                                            .map(|m| m.params_need_ptr_conversion)
+                                            .unwrap_or(0);
+                                        if ptr_conversion_mask != 0 {
+                                            for i in 0..arg_regs.len() {
+                                                // Check if bit i is set in the mask
+                                                if (ptr_conversion_mask & (1 << i)) != 0 {
+                                                    let arg_reg = arg_regs[i];
+                                                    let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I32);
 
-                                                        // For array operations, always allocate 8 bytes (elem_size is always 8)
-                                                        // and extend smaller values to 64-bit
-                                                        let (alloc_type, value_to_store) = match arg_type {
-                                                            IrType::I32 => {
-                                                                let ext_val = self.builder.build_cast(arg_reg, IrType::I32, IrType::I64);
-                                                                (IrType::I64, ext_val.unwrap_or(arg_reg))
-                                                            }
-                                                            IrType::F32 => {
-                                                                let ext_val = self.builder.build_cast(arg_reg, IrType::F32, IrType::F64);
-                                                                (IrType::F64, ext_val.unwrap_or(arg_reg))
-                                                            }
-                                                            _ => (arg_type.clone(), arg_reg)
-                                                        };
-
-                                                        // Allocate stack space and pass a pointer to the value.
-                                                        if let Some(stack_slot) = self.builder.build_alloc(alloc_type.clone(), None) {
-                                                            // Store the value into the stack slot
-                                                            self.builder.build_store(stack_slot, value_to_store);
-                                                            // Use the pointer for the call
-                                                            final_arg_regs[i] = stack_slot;
+                                                    // For array operations, always allocate 8 bytes (elem_size is always 8)
+                                                    // and extend smaller values to 64-bit
+                                                    let (alloc_type, value_to_store) = match arg_type {
+                                                        IrType::I32 => {
+                                                            let ext_val = self.builder.build_cast(arg_reg, IrType::I32, IrType::I64);
+                                                            (IrType::I64, ext_val.unwrap_or(arg_reg))
                                                         }
+                                                        IrType::F32 => {
+                                                            let ext_val = self.builder.build_cast(arg_reg, IrType::F32, IrType::F64);
+                                                            (IrType::F64, ext_val.unwrap_or(arg_reg))
+                                                        }
+                                                        _ => (arg_type.clone(), arg_reg)
+                                                    };
+
+                                                    // Allocate stack space and pass a pointer to the value.
+                                                    if let Some(stack_slot) = self.builder.build_alloc(alloc_type.clone(), None) {
+                                                        // Store the value into the stack slot
+                                                        self.builder.build_store(stack_slot, value_to_store);
+                                                        // Use the pointer for the call
+                                                        final_arg_regs[i] = stack_slot;
                                                     }
                                                 }
                                             }
                                         }
 
                                         // Get or register the extern runtime function
-                                        // Infer param types from actual arguments (after conversion)
-                                        let param_types: Vec<IrType> = final_arg_regs.iter()
-                                            .map(|reg| self.builder.get_register_type(*reg).unwrap_or(IrType::Any))
+                                        // Use actual argument types from TAST, applying ptr conversion where needed
+                                        let param_types: Vec<IrType> = args.iter().enumerate()
+                                            .map(|(i, arg)| {
+                                                // If this param was converted to a pointer, the type is Ptr
+                                                if ptr_conversion_mask != 0 && (ptr_conversion_mask & (1 << i)) != 0 {
+                                                    IrType::Ptr(Box::new(IrType::U8))
+                                                } else {
+                                                    self.convert_type(arg.ty)
+                                                }
+                                            })
                                             .collect();
                                         let runtime_func_id = self.get_or_register_extern_function(
                                             &runtime_func,
