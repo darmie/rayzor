@@ -101,6 +101,10 @@ pub struct HirToMirContext<'a> {
     /// Used to track Vec<Int> -> VecI32, Vec<Float> -> VecF64, etc.
     /// This is needed because extern generic classes don't have proper TypeIds in the type table
     monomorphized_var_types: HashMap<SymbolId, String>,
+
+    /// Enums that need RTTI registration
+    /// Maps enum SymbolId -> (runtime_type_id, enum_name, variant_names)
+    enums_for_registration: HashMap<SymbolId, (u32, String, Vec<String>)>,
 }
 
 /// SSA-derived optimization hints from DFG analysis
@@ -189,6 +193,7 @@ impl<'a> HirToMirContext<'a> {
             current_env_layout: None,
             current_this_type: None,
             monomorphized_var_types: HashMap::new(),
+            enums_for_registration: HashMap::new(),
         }
     }
 
@@ -1165,7 +1170,7 @@ impl<'a> HirToMirContext<'a> {
             } => {
                 // Lower initialization expression if present
                 if let Some(init_expr) = init {
-                    eprintln!("DEBUG: Let statement - lowering init expression");
+                    // DEBUG: eprintln!("Let statement - lowering init expression");
 
                     // Check if this is a New expression for a generic stdlib class (Vec<T>)
                     // We need to track the monomorphized class name for later method calls
@@ -1203,17 +1208,12 @@ impl<'a> HirToMirContext<'a> {
                     };
 
                     let value = self.lower_expression(init_expr);
-                    eprintln!("DEBUG: Let statement - init lowered to: {:?}", value);
 
                     // Bind to pattern and register as local
                     if let Some(value_reg) = value {
-                        eprintln!("DEBUG: Let statement - binding pattern {:?} with value_reg: {:?}", pattern, value_reg);
-
                         // Track monomorphized class name for this variable (by SymbolId)
                         if let Some(mono_class) = monomorphized_class {
-                            // Extract the SymbolId from the pattern
-                            if let HirPattern::Variable { symbol, name } = pattern {
-                                eprintln!("DEBUG: Let statement - tracking monomorphized class '{}' for variable '{}' (symbol {:?})", mono_class, name, symbol);
+                            if let HirPattern::Variable { symbol, .. } = pattern {
                                 self.monomorphized_var_types.insert(*symbol, mono_class);
                             }
                         }
@@ -1235,9 +1235,6 @@ impl<'a> HirToMirContext<'a> {
                         };
 
                         self.bind_pattern_with_type(pattern, final_value, var_type, *is_mutable);
-                        eprintln!("DEBUG: Let statement - AFTER bind, symbol_map now has {} entries", self.symbol_map.len());
-                    } else {
-                        eprintln!("DEBUG: Let statement - NO VALUE from init expression!");
                     }
                 }
             }
@@ -1990,6 +1987,51 @@ impl<'a> HirToMirContext<'a> {
         func_id
     }
 
+    /// Record an enum for RTTI registration
+    /// This collects enum metadata during lowering so it can be registered at module init
+    fn record_enum_for_registration(&mut self, enum_symbol_id: SymbolId, _type_id: TypeId) {
+        // Skip if already recorded
+        if self.enums_for_registration.contains_key(&enum_symbol_id) {
+            return;
+        }
+
+        // Calculate runtime type ID (symbol_id + 1000 offset)
+        let runtime_type_id = enum_symbol_id.as_raw() + 1000;
+
+        // Get enum name from symbol table
+        let enum_name = self.symbol_table
+            .get_symbol(enum_symbol_id)
+            .and_then(|s| self.string_interner.get(s.name))
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("Enum_{}", enum_symbol_id.as_raw()));
+
+        // Get variant names from the symbol table's enum_variants map
+        let variant_names: Vec<String> = if let Some(variant_ids) = self.symbol_table.get_enum_variants(enum_symbol_id) {
+            variant_ids.iter()
+                .filter_map(|&var_id| {
+                    self.symbol_table.get_symbol(var_id)
+                        .and_then(|sym| self.string_interner.get(sym.name))
+                        .map(|s| s.to_string())
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        eprintln!("DEBUG: [RTTI] Recording enum '{}' (type_id={}) with variants: {:?}",
+                  enum_name, runtime_type_id, variant_names);
+
+        self.enums_for_registration.insert(
+            enum_symbol_id,
+            (runtime_type_id, enum_name, variant_names),
+        );
+    }
+
+    /// Get collected enum RTTI data for registration
+    pub fn get_enums_for_registration(&self) -> &HashMap<SymbolId, (u32, String, Vec<String>)> {
+        &self.enums_for_registration
+    }
+
     /// Lower a HIR expression to MIR value
     fn lower_expression(&mut self, expr: &HirExpr) -> Option<IrId> {
         // eprintln!("DEBUG: lower_expression - {:?}", std::mem::discriminant(&expr.kind));
@@ -2528,11 +2570,30 @@ impl<'a> HirToMirContext<'a> {
                         // Lower the argument first to get the actual MIR register
                         let arg_reg = self.lower_expression(arg)?;
 
-                        // Check if the HIR type is an enum - if so, treat as Int
+                        // Check if the HIR type is an enum
+                        // Also check if the arg is a variable and look up its declared type
+                        // (trace() takes Dynamic, so arg.ty might be Dynamic even if the variable is an enum)
                         let type_table = self.type_table.borrow();
-                        let hir_type_kind = type_table.get(arg.ty).map(|ti| ti.kind.clone());
+                        let mut hir_type_kind = type_table.get(arg.ty).map(|ti| ti.kind.clone());
+
+                        // If arg.ty is Dynamic but the argument is a variable, look up the variable's declared type
+                        // This is needed because trace() accepts Dynamic, so the expression type might be Dynamic
+                        // even when the underlying variable has a more specific type (like an enum)
+                        if matches!(&hir_type_kind, Some(crate::tast::core::TypeKind::Dynamic) | None) {
+                            if let HirExprKind::Variable { symbol, .. } = &arg.kind {
+                                if let Some(sym) = self.symbol_table.get_symbol(*symbol) {
+                                    let var_type_kind = type_table.get(sym.type_id).map(|ti| ti.kind.clone());
+                                    if var_type_kind.is_some() {
+                                        hir_type_kind = var_type_kind;
+                                    }
+                                }
+                            }
+                        }
                         drop(type_table);
-                        let is_enum = matches!(&hir_type_kind, Some(crate::tast::core::TypeKind::Enum { .. }));
+
+                        // For enum variables, the discriminant will be printed as an integer
+                        // Direct enum variant expressions (Color.Red) are handled above and print variant names
+                        // TODO: Implement RTTI registration to print variant names for enum variables
 
                         // Get the actual MIR type from the register (not the HIR type)
                         // This is important because HIR types may be vague (Ptr(Void)) but
@@ -2541,9 +2602,7 @@ impl<'a> HirToMirContext<'a> {
                             .unwrap_or_else(|| self.convert_type(arg.ty));
 
                         // Determine which trace function to call based on type
-                        let trace_method = if is_enum {
-                            "traceInt" // Enums are represented as discriminant values
-                        } else {
+                        let trace_method = {
                             match &arg_type {
                                 IrType::I32 | IrType::I64 => "traceInt",
                                 IrType::F32 | IrType::F64 => "traceFloat",
@@ -5288,7 +5347,7 @@ impl<'a> HirToMirContext<'a> {
             // Complex types - represented as pointers (i64)
             Some(TypeKind::Class { .. }) => IrType::Ptr(Box::new(IrType::Void)),
             Some(TypeKind::Interface { .. }) => IrType::Ptr(Box::new(IrType::Void)),
-            Some(TypeKind::Enum { .. }) => IrType::I32, // Enums as tagged unions
+            Some(TypeKind::Enum { .. }) => IrType::I64, // Enums as discriminant values (i64 to match Haxe Int)
             Some(TypeKind::Array { element_type, .. }) => {
                 let elem_ty = self.convert_type(*element_type);
                 IrType::Ptr(Box::new(elem_ty)) // Arrays as pointers
@@ -5766,9 +5825,30 @@ impl<'a> HirToMirContext<'a> {
                 self.builder.build_call_direct(unbox_func_id, vec![value], IrType::Bool)
             }
 
+            // Enums: Check if this is actually an enum discriminant (i64) rather than a boxed value
+            // When accessing Color.Green, the HIR may incorrectly type it as Dynamic,
+            // but the actual MIR value is an i64 discriminant, not a boxed pointer
+            Some(TypeKind::Enum { .. }) => {
+                // Check the actual register type - if it's i64, don't unbox
+                let actual_type = self.builder.get_register_type(value);
+                if matches!(actual_type, Some(IrType::I64) | Some(IrType::I32)) {
+                    eprintln!("DEBUG: [UNBOXING] Skipping unbox for enum - value is already i64 discriminant");
+                    return Some(value);
+                }
+                eprintln!("DEBUG: [UNBOXING] Auto-unboxing Dynamic to Enum using unbox_reference");
+
+                // Call haxe_unbox_reference_ptr to extract the pointer
+                let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
+                let unbox_func_id = self.get_or_register_extern_function(
+                    "haxe_unbox_reference_ptr",
+                    vec![ptr_u8.clone()],
+                    ptr_u8.clone(),
+                );
+                self.builder.build_call_direct(unbox_func_id, vec![value], ptr_u8)
+            }
+
             // Reference types (just extract the pointer)
             Some(TypeKind::Class { .. })
-            | Some(TypeKind::Enum { .. })
             | Some(TypeKind::Interface { .. })
             | Some(TypeKind::Anonymous { .. })
             | Some(TypeKind::Array { .. }) => {
@@ -5803,7 +5883,6 @@ impl<'a> HirToMirContext<'a> {
     ) {
         match pattern {
             HirPattern::Variable { name, symbol } => {
-                eprintln!("DEBUG: Binding variable '{}' (symbol {:?}) to register {:?}", name, symbol, value);
                 // Bind the value to the symbol
                 self.symbol_map.insert(*symbol, value);
 
@@ -5826,7 +5905,6 @@ impl<'a> HirToMirContext<'a> {
                         let hint_is_scalar = matches!(&var_type_from_hint, IrType::I32 | IrType::I64 | IrType::Bool | IrType::F32 | IrType::F64);
 
                         if (hint_is_void_ptr && actual_is_specific) || (actual_is_ptr && hint_is_scalar) {
-                            eprintln!("DEBUG:   Variable '{}' type mismatch - hint says {:?} but actual register is {:?}, using actual", name, var_type_from_hint, actual_type);
                             actual_type.clone()
                         } else {
                             var_type_from_hint
@@ -5835,7 +5913,6 @@ impl<'a> HirToMirContext<'a> {
                         var_type_from_hint
                     };
 
-                    eprintln!("DEBUG:   Variable '{}' type_id={:?} -> {:?}", name, type_id, var_type);
                     if let Some(func) = self.builder.current_function_mut() {
                         func.locals.insert(
                             value,
@@ -5847,7 +5924,6 @@ impl<'a> HirToMirContext<'a> {
                                 allocation: super::AllocationHint::Stack,
                             },
                         );
-                        eprintln!("DEBUG:   Registered local '{}' with register {:?} and type {:?}", name, value, var_type);
                     }
                 }
             }

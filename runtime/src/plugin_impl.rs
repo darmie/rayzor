@@ -172,6 +172,11 @@ register_symbol!("haxe_trace_string", crate::haxe_sys::haxe_trace_string);
 register_symbol!("haxe_trace_string_struct", crate::haxe_sys::haxe_trace_string_struct);
 register_symbol!("haxe_trace_any", crate::haxe_sys::haxe_trace_any);
 
+// Enum RTTI
+register_symbol!("haxe_register_enum", crate::type_system::haxe_register_enum);
+register_symbol!("haxe_enum_variant_name", crate::type_system::haxe_enum_variant_name);
+register_symbol!("haxe_trace_enum", crate::type_system::haxe_trace_enum);
+
 // Std.string() - Type-specific conversions
 register_symbol!("haxe_string_from_int", crate::haxe_sys::haxe_string_from_int);
 register_symbol!("haxe_string_from_float", crate::haxe_sys::haxe_string_from_float);

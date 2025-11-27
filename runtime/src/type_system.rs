@@ -72,18 +72,40 @@ pub struct StringPtr {
     pub len: usize,
 }
 
+/// Enum variant metadata
+#[derive(Clone)]
+pub struct EnumVariantInfo {
+    /// Variant name (e.g., "Red", "Ok")
+    pub name: &'static str,
+    /// Number of parameters (0 for simple variants like Color.Red)
+    pub param_count: usize,
+    // TODO: Add parameter type info for full RTTI
+}
+
+/// Enum type metadata
+#[derive(Clone)]
+pub struct EnumInfo {
+    /// Enum type name (e.g., "Color", "Option")
+    pub name: &'static str,
+    /// Variant metadata indexed by discriminant
+    pub variants: &'static [EnumVariantInfo],
+}
+
 /// Type metadata
 ///
 /// Contains all runtime information needed for a type:
 /// - Size and alignment for memory allocation
 /// - toString function for string conversion
 /// - Type name for debugging
+/// - Optional enum info for enum types
 #[derive(Clone)]
 pub struct TypeInfo {
     pub name: &'static str,
     pub size: usize,
     pub align: usize,
     pub to_string: ToStringFn,
+    /// Enum-specific metadata (None for non-enum types)
+    pub enum_info: Option<&'static EnumInfo>,
 }
 
 /// Global type registry
@@ -101,6 +123,7 @@ pub fn init_type_system() {
         size: 0,
         align: 1,
         to_string: void_to_string,
+        enum_info: None,
     });
 
     registry.insert(TYPE_NULL, TypeInfo {
@@ -108,6 +131,7 @@ pub fn init_type_system() {
         size: 0,
         align: 1,
         to_string: null_to_string,
+        enum_info: None,
     });
 
     registry.insert(TYPE_BOOL, TypeInfo {
@@ -115,6 +139,7 @@ pub fn init_type_system() {
         size: std::mem::size_of::<bool>(),
         align: std::mem::align_of::<bool>(),
         to_string: bool_to_string,
+        enum_info: None,
     });
 
     registry.insert(TYPE_INT, TypeInfo {
@@ -122,6 +147,7 @@ pub fn init_type_system() {
         size: std::mem::size_of::<i64>(),
         align: std::mem::align_of::<i64>(),
         to_string: int_to_string,
+        enum_info: None,
     });
 
     registry.insert(TYPE_FLOAT, TypeInfo {
@@ -129,6 +155,7 @@ pub fn init_type_system() {
         size: std::mem::size_of::<f64>(),
         align: std::mem::align_of::<f64>(),
         to_string: float_to_string,
+        enum_info: None,
     });
 
     registry.insert(TYPE_STRING, TypeInfo {
@@ -136,6 +163,7 @@ pub fn init_type_system() {
         size: std::mem::size_of::<StringPtr>(),
         align: std::mem::align_of::<StringPtr>(),
         to_string: string_to_string,
+        enum_info: None,
     });
 
     *TYPE_REGISTRY.write().unwrap() = Some(registry);
@@ -153,6 +181,117 @@ pub fn register_type(type_id: TypeId, info: TypeInfo) {
 pub fn get_type_info(type_id: TypeId) -> Option<TypeInfo> {
     let registry = TYPE_REGISTRY.read().unwrap();
     registry.as_ref()?.get(&type_id).cloned()
+}
+
+/// Get enum variant name by type ID and discriminant
+/// Returns None if not an enum type or discriminant is out of range
+pub fn get_enum_variant_name(type_id: TypeId, discriminant: i64) -> Option<&'static str> {
+    let registry = TYPE_REGISTRY.read().unwrap();
+    let type_info = registry.as_ref()?.get(&type_id)?;
+    let enum_info = type_info.enum_info?;
+    let idx = discriminant as usize;
+    if idx < enum_info.variants.len() {
+        Some(enum_info.variants[idx].name)
+    } else {
+        None
+    }
+}
+
+/// Get enum variant info by type ID and discriminant
+pub fn get_enum_variant_info(type_id: TypeId, discriminant: i64) -> Option<&'static EnumVariantInfo> {
+    let registry = TYPE_REGISTRY.read().unwrap();
+    let type_info = registry.as_ref()?.get(&type_id)?;
+    let enum_info = type_info.enum_info?;
+    let idx = discriminant as usize;
+    enum_info.variants.get(idx)
+}
+
+/// Register an enum type with its variant metadata
+#[no_mangle]
+pub extern "C" fn haxe_register_enum(
+    type_id: u32,
+    name_ptr: *const u8,
+    name_len: usize,
+    variants_ptr: *const EnumVariantInfo,
+    variants_len: usize,
+) {
+    // Safety: We trust the compiler to pass valid pointers
+    // The variant data must be static (lifetime 'static)
+    unsafe {
+        let name_slice = std::slice::from_raw_parts(name_ptr, name_len);
+        let name_str = std::str::from_utf8_unchecked(name_slice);
+        // SAFETY: The compiler ensures this data lives for 'static
+        let name: &'static str = std::mem::transmute(name_str);
+
+        let variants: &'static [EnumVariantInfo] =
+            std::slice::from_raw_parts(variants_ptr, variants_len);
+
+        // Create a static EnumInfo - we need to leak it since TypeInfo expects &'static
+        let enum_info = Box::leak(Box::new(EnumInfo {
+            name,
+            variants,
+        }));
+
+        let type_info = TypeInfo {
+            name,
+            size: std::mem::size_of::<i64>(), // Enums are represented as i64 discriminants
+            align: std::mem::align_of::<i64>(),
+            to_string: enum_to_string,
+            enum_info: Some(enum_info),
+        };
+
+        register_type(TypeId(type_id), type_info);
+    }
+}
+
+/// toString implementation for enum types
+/// Takes a pointer to (type_id: u32, discriminant: i64) tuple
+unsafe extern "C" fn enum_to_string(value_ptr: *const u8) -> StringPtr {
+    // Enum values are stored as just the discriminant (i64)
+    // We need to look up the type from context - for now return the discriminant as string
+    let discriminant = *(value_ptr as *const i64);
+
+    // For now, just format the discriminant - proper lookup requires type_id context
+    // This will be improved when we have proper Dynamic boxing with type_id
+    let s = format!("{}", discriminant);
+    let leaked = Box::leak(s.into_boxed_str());
+    StringPtr {
+        ptr: leaked.as_ptr(),
+        len: leaked.len(),
+    }
+}
+
+/// Get enum variant name as a HaxeString pointer
+/// Returns the variant name for the given type_id and discriminant
+/// Returns null if not an enum or discriminant is out of range
+#[no_mangle]
+pub extern "C" fn haxe_enum_variant_name(type_id: u32, discriminant: i64) -> *mut crate::haxe_string::HaxeString {
+    use crate::haxe_string::HaxeString;
+
+    if let Some(name) = get_enum_variant_name(TypeId(type_id), discriminant) {
+        // Create a HaxeString from the static variant name
+        // cap=0 indicates static/borrowed string that shouldn't be freed
+        let result = Box::new(HaxeString {
+            ptr: name.as_ptr() as *mut u8,
+            len: name.len(),
+            cap: 0, // Static string, don't free
+        });
+        Box::into_raw(result)
+    } else {
+        std::ptr::null_mut()
+    }
+}
+
+/// Trace an enum value by type_id and discriminant
+/// Prints the variant name if available, otherwise the discriminant
+#[no_mangle]
+pub extern "C" fn haxe_trace_enum(type_id: i64, discriminant: i64) {
+    if let Some(name) = get_enum_variant_name(TypeId(type_id as u32), discriminant) {
+        println!("{}", name);
+    } else {
+        // Fallback to discriminant if enum not registered
+        println!("{}", discriminant);
+    }
 }
 
 // ============================================================================
@@ -504,6 +643,12 @@ pub extern "C" fn haxe_box_reference_ptr(value_ptr: *mut u8, type_id: u32) -> *m
 #[no_mangle]
 pub extern "C" fn haxe_unbox_reference_ptr(ptr: *mut u8) -> *mut u8 {
     if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    // Debug: Check for suspicious pointer values (like boolean 1 being passed as pointer)
+    let ptr_val = ptr as usize;
+    if ptr_val < 0x1000 {
+        eprintln!("WARNING: haxe_unbox_reference_ptr received suspicious pointer: {:p} (value={})", ptr, ptr_val);
         return std::ptr::null_mut();
     }
     unsafe {
