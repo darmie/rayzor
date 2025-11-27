@@ -160,17 +160,12 @@ pub unsafe extern "C" fn rayzor_free(ptr: *mut u8, size: u64) {
     dealloc(ptr, layout);
 }
 
-/// Initialize the runtime (called before any other runtime functions)
-#[no_mangle]
-pub extern "C" fn rayzor_runtime_init() {
-    // Initialize the type system for Dynamic value support
+/// Initialize RTTI (Runtime Type Information) for Dynamic value support.
+/// This registers built-in types (Int, Float, Bool, String, etc.) so that
+/// boxed Dynamic values can be inspected, traced, and converted to strings.
+/// Must be called before any code that uses Dynamic boxing/unboxing.
+pub fn init_rtti() {
     type_system::init_type_system();
-}
-
-/// Shutdown the runtime (called when program exits)
-#[no_mangle]
-pub extern "C" fn rayzor_runtime_shutdown() {
-    // Nothing to do - Rust handles cleanup automatically
 }
 
 #[cfg(test)]

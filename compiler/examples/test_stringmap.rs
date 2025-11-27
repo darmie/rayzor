@@ -121,6 +121,9 @@ fn compile_to_native(modules: &[Arc<IrModule>]) -> Result<CraneliftBackend, Stri
 }
 
 fn execute_main(backend: &mut CraneliftBackend, modules: &[Arc<IrModule>]) -> Result<(), String> {
+    // Initialize RTTI for Dynamic value support (needed for StringMap which stores boxed values)
+    rayzor_runtime::init_rtti();
+
     for module in modules.iter().rev() {
         if backend.call_main(module).is_ok() {
             return Ok(());
