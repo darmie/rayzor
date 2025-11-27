@@ -87,6 +87,8 @@ impl StdlibMapping {
         mapping.register_arc_methods();
         mapping.register_mutex_methods();
         mapping.register_vec_methods();
+        mapping.register_stringmap_methods();
+        mapping.register_intmap_methods();
 
         mapping
     }
@@ -246,7 +248,7 @@ impl StdlibMapping {
 
 /// Macro to register stdlib methods more concisely
 macro_rules! map_method {
-    // Constructor - returns complex type (opaque pointer to extern class)
+    // Constructor - returns complex type via out param (opaque pointer to extern class)
     (constructor $class:expr, $method:expr => $runtime:expr, params: $params:expr, returns: complex) => {
         (
             MethodSignature {
@@ -261,6 +263,27 @@ macro_rules! map_method {
                 has_self_param: false,
                 param_count: $params,
                 has_return: false,
+                params_need_ptr_conversion: 0,
+            }
+        )
+    };
+
+    // Constructor - returns pointer directly (no out param)
+    // Use this for extern class constructors that return ptr directly (e.g., haxe_stringmap_new)
+    (constructor $class:expr, $method:expr => $runtime:expr, params: $params:expr, returns: primitive) => {
+        (
+            MethodSignature {
+                class: $class,
+                method: $method,
+                is_static: true,  // Constructors are called like static methods
+                is_constructor: true,
+            },
+            RuntimeFunctionCall {
+                runtime_name: $runtime,
+                needs_out_param: false,
+                has_self_param: false,
+                param_count: $params,
+                has_return: true,  // Returns pointer directly
                 params_need_ptr_conversion: 0,
             }
         )
@@ -849,6 +872,74 @@ impl StdlibMapping {
             map_method!(instance "VecBool", "clear" => "VecBool_clear", params: 0, returns: void),
         ];
         self.register_from_tuples(vec_bool_mappings);
+    }
+
+    // ============================================================================
+    // StringMap<T> Methods (haxe.ds.StringMap)
+    // ============================================================================
+    //
+    // StringMap is an extern class that provides a hash map with String keys.
+    // Values are type-erased at runtime (stored as pointers).
+
+    fn register_stringmap_methods(&mut self) {
+        let mappings = vec![
+            // Constructor: new StringMap<T>() -> StringMap<T>
+            // Returns pointer directly (primitive return style)
+            map_method!(constructor "StringMap", "new" => "haxe_stringmap_new", params: 0, returns: primitive),
+            // StringMap<T>::set(key: String, value: T) -> Void
+            // Args: [self=map_ptr, key=String, value=T]
+            // Value (arg index 2) needs to be boxed/converted to pointer
+            // Bitmask: 0b100 = bit 2 set
+            map_method!(instance "StringMap", "set" => "haxe_stringmap_set", params: 2, returns: void, ptr_params: 0b100),
+            // StringMap<T>::get(key: String) -> Null<T>
+            // Returns pointer directly
+            map_method!(instance "StringMap", "get" => "haxe_stringmap_get", params: 1, returns: primitive),
+            // StringMap<T>::exists(key: String) -> Bool
+            map_method!(instance "StringMap", "exists" => "haxe_stringmap_exists", params: 1, returns: primitive),
+            // StringMap<T>::remove(key: String) -> Bool
+            map_method!(instance "StringMap", "remove" => "haxe_stringmap_remove", params: 1, returns: primitive),
+            // StringMap<T>::clear() -> Void
+            map_method!(instance "StringMap", "clear" => "haxe_stringmap_clear", params: 0, returns: void),
+            // StringMap<T>::toString() -> String
+            // Returns pointer directly
+            map_method!(instance "StringMap", "toString" => "haxe_stringmap_to_string", params: 0, returns: primitive),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // IntMap<T> Methods (haxe.ds.IntMap)
+    // ============================================================================
+    //
+    // IntMap is an extern class that provides a hash map with Int keys.
+    // Values are type-erased at runtime (stored as pointers).
+
+    fn register_intmap_methods(&mut self) {
+        let mappings = vec![
+            // Constructor: new IntMap<T>() -> IntMap<T>
+            // Returns pointer directly (primitive return style)
+            map_method!(constructor "IntMap", "new" => "haxe_intmap_new", params: 0, returns: primitive),
+            // IntMap<T>::set(key: Int, value: T) -> Void
+            // Args: [self=map_ptr, key=Int, value=T]
+            // Value (arg index 2) needs to be boxed/converted to pointer
+            // Bitmask: 0b100 = bit 2 set
+            map_method!(instance "IntMap", "set" => "haxe_intmap_set", params: 2, returns: void, ptr_params: 0b100),
+            // IntMap<T>::get(key: Int) -> Null<T>
+            // Returns pointer directly
+            map_method!(instance "IntMap", "get" => "haxe_intmap_get", params: 1, returns: primitive),
+            // IntMap<T>::exists(key: Int) -> Bool
+            map_method!(instance "IntMap", "exists" => "haxe_intmap_exists", params: 1, returns: primitive),
+            // IntMap<T>::remove(key: Int) -> Bool
+            map_method!(instance "IntMap", "remove" => "haxe_intmap_remove", params: 1, returns: primitive),
+            // IntMap<T>::clear() -> Void
+            map_method!(instance "IntMap", "clear" => "haxe_intmap_clear", params: 0, returns: void),
+            // IntMap<T>::toString() -> String
+            // Returns pointer directly
+            map_method!(instance "IntMap", "toString" => "haxe_intmap_to_string", params: 0, returns: primitive),
+        ];
+
+        self.register_from_tuples(mappings);
     }
 }
 

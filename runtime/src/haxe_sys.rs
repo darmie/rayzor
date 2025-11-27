@@ -1067,3 +1067,291 @@ pub extern "C" fn haxe_filesystem_absolute_path(path: *const HaxeString) -> *mut
         }
     }
 }
+
+// ============================================================================
+// StringMap<T> (haxe.ds.StringMap)
+// ============================================================================
+//
+// StringMap is a hash map with String keys. Since we're type-erased at runtime,
+// values are stored as raw pointers (*mut u8 representing Dynamic/boxed values).
+
+use std::collections::HashMap;
+
+/// Opaque handle to a StringMap instance
+/// The map stores String -> *mut u8 (pointer to boxed value)
+pub struct HaxeStringMap {
+    map: HashMap<String, *mut u8>,
+}
+
+/// Create a new StringMap
+/// StringMap.new(): StringMap<T>
+#[no_mangle]
+pub extern "C" fn haxe_stringmap_new() -> *mut HaxeStringMap {
+    Box::into_raw(Box::new(HaxeStringMap {
+        map: HashMap::new(),
+    }))
+}
+
+/// Set a value in the StringMap
+/// StringMap.set(key: String, value: T): Void
+#[no_mangle]
+pub extern "C" fn haxe_stringmap_set(map_ptr: *mut HaxeStringMap, key: *const HaxeString, value: *mut u8) {
+    if map_ptr.is_null() {
+        return;
+    }
+    unsafe {
+        let map = &mut *map_ptr;
+        if let Some(key_str) = haxe_string_to_rust(key) {
+            map.map.insert(key_str, value);
+        }
+    }
+}
+
+/// Get a value from the StringMap
+/// StringMap.get(key: String): Null<T>
+/// Returns null (null pointer) if key doesn't exist
+#[no_mangle]
+pub extern "C" fn haxe_stringmap_get(map_ptr: *mut HaxeStringMap, key: *const HaxeString) -> *mut u8 {
+    if map_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        let map = &*map_ptr;
+        if let Some(key_str) = haxe_string_to_rust(key) {
+            map.map.get(&key_str).copied().unwrap_or(std::ptr::null_mut())
+        } else {
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Check if a key exists in the StringMap
+/// StringMap.exists(key: String): Bool
+#[no_mangle]
+pub extern "C" fn haxe_stringmap_exists(map_ptr: *mut HaxeStringMap, key: *const HaxeString) -> bool {
+    if map_ptr.is_null() {
+        return false;
+    }
+    unsafe {
+        let map = &*map_ptr;
+        if let Some(key_str) = haxe_string_to_rust(key) {
+            map.map.contains_key(&key_str)
+        } else {
+            false
+        }
+    }
+}
+
+/// Remove a key from the StringMap
+/// StringMap.remove(key: String): Bool
+/// Returns true if the key existed and was removed
+#[no_mangle]
+pub extern "C" fn haxe_stringmap_remove(map_ptr: *mut HaxeStringMap, key: *const HaxeString) -> bool {
+    if map_ptr.is_null() {
+        return false;
+    }
+    unsafe {
+        let map = &mut *map_ptr;
+        if let Some(key_str) = haxe_string_to_rust(key) {
+            map.map.remove(&key_str).is_some()
+        } else {
+            false
+        }
+    }
+}
+
+/// Clear all entries from the StringMap
+/// StringMap.clear(): Void
+#[no_mangle]
+pub extern "C" fn haxe_stringmap_clear(map_ptr: *mut HaxeStringMap) {
+    if map_ptr.is_null() {
+        return;
+    }
+    unsafe {
+        let map = &mut *map_ptr;
+        map.map.clear();
+    }
+}
+
+/// Get the number of keys in the map (for iteration support)
+#[no_mangle]
+pub extern "C" fn haxe_stringmap_count(map_ptr: *mut HaxeStringMap) -> i64 {
+    if map_ptr.is_null() {
+        return 0;
+    }
+    unsafe {
+        let map = &*map_ptr;
+        map.map.len() as i64
+    }
+}
+
+/// Get all keys as an array
+/// Returns pointer to array of HaxeString pointers, sets out_len to count
+#[no_mangle]
+pub extern "C" fn haxe_stringmap_keys(map_ptr: *mut HaxeStringMap, out_len: *mut i64) -> *mut *mut HaxeString {
+    if map_ptr.is_null() || out_len.is_null() {
+        if !out_len.is_null() {
+            unsafe { *out_len = 0; }
+        }
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        let map = &*map_ptr;
+        let keys: Vec<*mut HaxeString> = map.map.keys()
+            .map(|k| rust_string_to_haxe(k.clone()))
+            .collect();
+        *out_len = keys.len() as i64;
+        Box::into_raw(keys.into_boxed_slice()) as *mut *mut HaxeString
+    }
+}
+
+/// Convert StringMap to string representation
+/// StringMap.toString(): String
+#[no_mangle]
+pub extern "C" fn haxe_stringmap_to_string(map_ptr: *mut HaxeStringMap) -> *mut HaxeString {
+    if map_ptr.is_null() {
+        return rust_string_to_haxe("{}".to_string());
+    }
+    unsafe {
+        let map = &*map_ptr;
+        let entries: Vec<String> = map.map.keys()
+            .map(|k| format!("{} => ...", k))
+            .collect();
+        let result = format!("{{{}}}", entries.join(", "));
+        rust_string_to_haxe(result)
+    }
+}
+
+// ============================================================================
+// IntMap<T> (haxe.ds.IntMap)
+// ============================================================================
+//
+// IntMap is a hash map with Int keys. Values are stored as raw pointers.
+
+/// Opaque handle to an IntMap instance
+pub struct HaxeIntMap {
+    map: HashMap<i64, *mut u8>,
+}
+
+/// Create a new IntMap
+/// IntMap.new(): IntMap<T>
+#[no_mangle]
+pub extern "C" fn haxe_intmap_new() -> *mut HaxeIntMap {
+    Box::into_raw(Box::new(HaxeIntMap {
+        map: HashMap::new(),
+    }))
+}
+
+/// Set a value in the IntMap
+/// IntMap.set(key: Int, value: T): Void
+#[no_mangle]
+pub extern "C" fn haxe_intmap_set(map_ptr: *mut HaxeIntMap, key: i64, value: *mut u8) {
+    if map_ptr.is_null() {
+        return;
+    }
+    unsafe {
+        let map = &mut *map_ptr;
+        map.map.insert(key, value);
+    }
+}
+
+/// Get a value from the IntMap
+/// IntMap.get(key: Int): Null<T>
+/// Returns null (null pointer) if key doesn't exist
+#[no_mangle]
+pub extern "C" fn haxe_intmap_get(map_ptr: *mut HaxeIntMap, key: i64) -> *mut u8 {
+    if map_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        let map = &*map_ptr;
+        map.map.get(&key).copied().unwrap_or(std::ptr::null_mut())
+    }
+}
+
+/// Check if a key exists in the IntMap
+/// IntMap.exists(key: Int): Bool
+#[no_mangle]
+pub extern "C" fn haxe_intmap_exists(map_ptr: *mut HaxeIntMap, key: i64) -> bool {
+    if map_ptr.is_null() {
+        return false;
+    }
+    unsafe {
+        let map = &*map_ptr;
+        map.map.contains_key(&key)
+    }
+}
+
+/// Remove a key from the IntMap
+/// IntMap.remove(key: Int): Bool
+/// Returns true if the key existed and was removed
+#[no_mangle]
+pub extern "C" fn haxe_intmap_remove(map_ptr: *mut HaxeIntMap, key: i64) -> bool {
+    if map_ptr.is_null() {
+        return false;
+    }
+    unsafe {
+        let map = &mut *map_ptr;
+        map.map.remove(&key).is_some()
+    }
+}
+
+/// Clear all entries from the IntMap
+/// IntMap.clear(): Void
+#[no_mangle]
+pub extern "C" fn haxe_intmap_clear(map_ptr: *mut HaxeIntMap) {
+    if map_ptr.is_null() {
+        return;
+    }
+    unsafe {
+        let map = &mut *map_ptr;
+        map.map.clear();
+    }
+}
+
+/// Get the number of keys in the map
+#[no_mangle]
+pub extern "C" fn haxe_intmap_count(map_ptr: *mut HaxeIntMap) -> i64 {
+    if map_ptr.is_null() {
+        return 0;
+    }
+    unsafe {
+        let map = &*map_ptr;
+        map.map.len() as i64
+    }
+}
+
+/// Get all keys as an array
+/// Returns pointer to array of i64, sets out_len to count
+#[no_mangle]
+pub extern "C" fn haxe_intmap_keys(map_ptr: *mut HaxeIntMap, out_len: *mut i64) -> *mut i64 {
+    if map_ptr.is_null() || out_len.is_null() {
+        if !out_len.is_null() {
+            unsafe { *out_len = 0; }
+        }
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        let map = &*map_ptr;
+        let keys: Vec<i64> = map.map.keys().copied().collect();
+        *out_len = keys.len() as i64;
+        Box::into_raw(keys.into_boxed_slice()) as *mut i64
+    }
+}
+
+/// Convert IntMap to string representation
+/// IntMap.toString(): String
+#[no_mangle]
+pub extern "C" fn haxe_intmap_to_string(map_ptr: *mut HaxeIntMap) -> *mut HaxeString {
+    if map_ptr.is_null() {
+        return rust_string_to_haxe("{}".to_string());
+    }
+    unsafe {
+        let map = &*map_ptr;
+        let entries: Vec<String> = map.map.keys()
+            .map(|k| format!("{} => ...", k))
+            .collect();
+        let result = format!("{{{}}}", entries.join(", "));
+        rust_string_to_haxe(result)
+    }
+}

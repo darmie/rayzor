@@ -241,6 +241,32 @@ register_symbol!("haxe_filesystem_full_path", crate::haxe_sys::haxe_filesystem_f
 register_symbol!("haxe_filesystem_absolute_path", crate::haxe_sys::haxe_filesystem_absolute_path);
 
 // ============================================================================
+// StringMap<T> (haxe.ds.StringMap)
+// ============================================================================
+register_symbol!("haxe_stringmap_new", crate::haxe_sys::haxe_stringmap_new);
+register_symbol!("haxe_stringmap_set", crate::haxe_sys::haxe_stringmap_set);
+register_symbol!("haxe_stringmap_get", crate::haxe_sys::haxe_stringmap_get);
+register_symbol!("haxe_stringmap_exists", crate::haxe_sys::haxe_stringmap_exists);
+register_symbol!("haxe_stringmap_remove", crate::haxe_sys::haxe_stringmap_remove);
+register_symbol!("haxe_stringmap_clear", crate::haxe_sys::haxe_stringmap_clear);
+register_symbol!("haxe_stringmap_count", crate::haxe_sys::haxe_stringmap_count);
+register_symbol!("haxe_stringmap_keys", crate::haxe_sys::haxe_stringmap_keys);
+register_symbol!("haxe_stringmap_to_string", crate::haxe_sys::haxe_stringmap_to_string);
+
+// ============================================================================
+// IntMap<T> (haxe.ds.IntMap)
+// ============================================================================
+register_symbol!("haxe_intmap_new", crate::haxe_sys::haxe_intmap_new);
+register_symbol!("haxe_intmap_set", crate::haxe_sys::haxe_intmap_set);
+register_symbol!("haxe_intmap_get", crate::haxe_sys::haxe_intmap_get);
+register_symbol!("haxe_intmap_exists", crate::haxe_sys::haxe_intmap_exists);
+register_symbol!("haxe_intmap_remove", crate::haxe_sys::haxe_intmap_remove);
+register_symbol!("haxe_intmap_clear", crate::haxe_sys::haxe_intmap_clear);
+register_symbol!("haxe_intmap_count", crate::haxe_sys::haxe_intmap_count);
+register_symbol!("haxe_intmap_keys", crate::haxe_sys::haxe_intmap_keys);
+register_symbol!("haxe_intmap_to_string", crate::haxe_sys::haxe_intmap_to_string);
+
+// ============================================================================
 // Type System (Dynamic values and Std.string)
 // ============================================================================
 

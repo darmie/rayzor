@@ -1691,7 +1691,20 @@ impl<'a> AstLowering<'a> {
                     // Symbol already exists (likely from pre-registration)
                     // Reuse the existing symbol regardless of its kind (Class, Enum, Interface, etc.)
                     // This preserves the correct type info from the compiled file
-                    if self.context.symbol_table.get_symbol(existing_symbol).is_some() {
+                    if let Some(sym) = self.context.symbol_table.get_symbol(existing_symbol) {
+                        // CRITICAL FIX: If the symbol has an invalid type_id, create a type for it
+                        // This happens for extern classes that were created as placeholders but
+                        // never had their type assigned
+                        if !sym.type_id.is_valid() && sym.kind == crate::tast::symbols::SymbolKind::Class {
+                            let class_type = self.context.type_table.borrow_mut().create_type(
+                                crate::tast::core::TypeKind::Class {
+                                    symbol_id: existing_symbol,
+                                    type_args: Vec::new(),
+                                },
+                            );
+                            self.context.symbol_table.update_symbol_type(existing_symbol, class_type);
+                            self.context.symbol_table.register_type_symbol_mapping(class_type, existing_symbol);
+                        }
                         existing_symbol
                     } else {
                         // Symbol ID exists but can't get symbol data - create new
@@ -1703,6 +1716,19 @@ impl<'a> AstLowering<'a> {
                     // Create a placeholder symbol for the imported type
                     let new_sym = self.context.symbol_table.create_class_in_scope(symbol_name, ScopeId::first());
                     self.context.update_symbol_qualified_name(new_sym);
+
+                    // CRITICAL: For imported classes (especially extern classes like StringMap),
+                    // we must create a class type and link it to the symbol. Without this,
+                    // new StringMap<Int>() will have TypeId::invalid() because the symbol has no type.
+                    let class_type = self.context.type_table.borrow_mut().create_type(
+                        crate::tast::core::TypeKind::Class {
+                            symbol_id: new_sym,
+                            type_args: Vec::new(), // Type args are applied at instantiation
+                        },
+                    );
+                    self.context.symbol_table.update_symbol_type(new_sym, class_type);
+                    self.context.symbol_table.register_type_symbol_mapping(class_type, new_sym);
+
                     new_sym
                 };
 

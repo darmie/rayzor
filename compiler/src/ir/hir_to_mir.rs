@@ -1735,6 +1735,30 @@ impl<'a> HirToMirContext<'a> {
             "haxe_filesystem_full_path" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::Ptr(Box::new(IrType::Void)))),
             "haxe_filesystem_absolute_path" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::Ptr(Box::new(IrType::Void)))),
 
+            // StringMap<T> functions (haxe.ds.StringMap)
+            // StringMap is an opaque pointer handle to a Rust HashMap<String, *mut u8>
+            "haxe_stringmap_new" => Some((vec![], IrType::Ptr(Box::new(IrType::Void)))),
+            "haxe_stringmap_set" => Some((vec![IrType::Ptr(Box::new(IrType::Void)), IrType::Ptr(Box::new(IrType::Void)), IrType::Ptr(Box::new(IrType::Void))], IrType::Void)),
+            "haxe_stringmap_get" => Some((vec![IrType::Ptr(Box::new(IrType::Void)), IrType::Ptr(Box::new(IrType::Void))], IrType::Ptr(Box::new(IrType::Void)))),
+            "haxe_stringmap_exists" => Some((vec![IrType::Ptr(Box::new(IrType::Void)), IrType::Ptr(Box::new(IrType::Void))], IrType::Bool)),
+            "haxe_stringmap_remove" => Some((vec![IrType::Ptr(Box::new(IrType::Void)), IrType::Ptr(Box::new(IrType::Void))], IrType::Bool)),
+            "haxe_stringmap_clear" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::Void)),
+            "haxe_stringmap_count" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::I64)),
+            "haxe_stringmap_keys" => Some((vec![IrType::Ptr(Box::new(IrType::Void)), IrType::Ptr(Box::new(IrType::I64))], IrType::Ptr(Box::new(IrType::Void)))),
+            "haxe_stringmap_to_string" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::Ptr(Box::new(IrType::Void)))),
+
+            // IntMap<T> functions (haxe.ds.IntMap)
+            // IntMap is an opaque pointer handle to a Rust HashMap<i64, *mut u8>
+            "haxe_intmap_new" => Some((vec![], IrType::Ptr(Box::new(IrType::Void)))),
+            "haxe_intmap_set" => Some((vec![IrType::Ptr(Box::new(IrType::Void)), IrType::I64, IrType::Ptr(Box::new(IrType::Void))], IrType::Void)),
+            "haxe_intmap_get" => Some((vec![IrType::Ptr(Box::new(IrType::Void)), IrType::I64], IrType::Ptr(Box::new(IrType::Void)))),
+            "haxe_intmap_exists" => Some((vec![IrType::Ptr(Box::new(IrType::Void)), IrType::I64], IrType::Bool)),
+            "haxe_intmap_remove" => Some((vec![IrType::Ptr(Box::new(IrType::Void)), IrType::I64], IrType::Bool)),
+            "haxe_intmap_clear" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::Void)),
+            "haxe_intmap_count" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::I64)),
+            "haxe_intmap_keys" => Some((vec![IrType::Ptr(Box::new(IrType::Void)), IrType::Ptr(Box::new(IrType::I64))], IrType::Ptr(Box::new(IrType::I64)))),
+            "haxe_intmap_to_string" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::Ptr(Box::new(IrType::Void)))),
+
             _ => None,
         }
     }
@@ -4236,7 +4260,7 @@ impl<'a> HirToMirContext<'a> {
                     let found_constructor = stdlib_mapping.find_constructor(class_name);
                     eprintln!("DEBUG [NEW EXPR]: find_constructor('{}') = {:?}", class_name, found_constructor.as_ref().map(|(_, rc)| rc.runtime_name));
                     if let Some((_method_sig, runtime_call)) = found_constructor {
-                        // Found a constructor mapping! Call the MIR wrapper function
+                        // Found a constructor mapping!
                         let wrapper_name = runtime_call.runtime_name;
 
                         // Lower arguments
@@ -4255,11 +4279,23 @@ impl<'a> HirToMirContext<'a> {
                         // not the class struct itself
                         let result_type = IrType::Ptr(Box::new(IrType::U8));
 
-                        let wrapper_func_id = self.register_stdlib_mir_forward_ref(
-                            wrapper_name,
-                            param_types,
-                            result_type.clone(),
-                        );
+                        // For constructors that return primitive (direct extern call), use extern function
+                        // For constructors that need_out_param (wrapper), use MIR forward ref
+                        let wrapper_func_id = if runtime_call.needs_out_param {
+                            // Complex constructors need a MIR wrapper
+                            self.register_stdlib_mir_forward_ref(
+                                wrapper_name,
+                                param_types,
+                                result_type.clone(),
+                            )
+                        } else {
+                            // Simple constructors are direct extern calls
+                            self.get_or_register_extern_function(
+                                wrapper_name,
+                                param_types,
+                                result_type.clone(),
+                            )
+                        };
 
                         // Call the wrapper and return the result
                         let result = self.builder.build_call_direct(
