@@ -352,6 +352,59 @@ pub extern "C" fn haxe_std_string(dynamic: DynamicValue) -> StringPtr {
     }
 }
 
+/// Convert a Dynamic value to HaxeString pointer using runtime type dispatch
+///
+/// This is the pointer-returning version of Std.string(Dynamic)
+/// Returns *mut HaxeString for proper ABI compatibility
+#[no_mangle]
+pub extern "C" fn haxe_std_string_ptr(dynamic_ptr: *mut u8) -> *mut crate::haxe_string::HaxeString {
+    use crate::haxe_string::HaxeString;
+
+    if dynamic_ptr.is_null() {
+        // Return "null" for null pointer
+        let s = "null";
+        return Box::into_raw(Box::new(HaxeString {
+            ptr: s.as_ptr() as *mut u8,
+            len: s.len(),
+            cap: 0,
+        }));
+    }
+
+    unsafe {
+        let dynamic = *(dynamic_ptr as *const DynamicValue);
+
+        // Handle null type
+        if dynamic.type_id == TYPE_NULL || dynamic.value_ptr.is_null() {
+            let s = "null";
+            return Box::into_raw(Box::new(HaxeString {
+                ptr: s.as_ptr() as *mut u8,
+                len: s.len(),
+                cap: 0,
+            }));
+        }
+
+        // Look up type info and call toString, then convert to HaxeString
+        if let Some(type_info) = get_type_info(dynamic.type_id) {
+            let str_ptr = (type_info.to_string)(dynamic.value_ptr);
+            // Convert StringPtr to HaxeString (adding cap=0)
+            Box::into_raw(Box::new(HaxeString {
+                ptr: str_ptr.ptr as *mut u8,
+                len: str_ptr.len,
+                cap: 0, // StringPtr strings are either static or leaked
+            }))
+        } else {
+            // Unknown type, return type name
+            let s = format!("<unknown type {}>", dynamic.type_id.0);
+            let bytes = s.into_bytes();
+            let len = bytes.len();
+            let cap = bytes.capacity();
+            let ptr = bytes.as_ptr() as *mut u8;
+            std::mem::forget(bytes);
+            Box::into_raw(Box::new(HaxeString { ptr, len, cap }))
+        }
+    }
+}
+
 /// Free a Dynamic value
 #[no_mangle]
 pub extern "C" fn haxe_free_dynamic(dynamic: DynamicValue) {

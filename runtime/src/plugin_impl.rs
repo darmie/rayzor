@@ -231,6 +231,7 @@ register_symbol!("haxe_unbox_reference_ptr", crate::type_system::haxe_unbox_refe
 
 // Std.string() with runtime type dispatch
 register_symbol!("haxe_std_string", crate::type_system::haxe_std_string);
+register_symbol!("haxe_std_string_ptr", crate::type_system::haxe_std_string_ptr);
 
 // Memory management for Dynamic values
 register_symbol!("haxe_free_dynamic", crate::type_system::haxe_free_dynamic);

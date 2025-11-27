@@ -90,13 +90,32 @@ pub extern "C" fn haxe_trace_string_struct(s_ptr: *const HaxeString) {
     }
 }
 
-/// Trace any value (fallback for Dynamic type)
-/// For now, just prints the raw i64 value until we have Std.string()
+/// Trace any Dynamic value using Std.string() for proper type dispatch
+/// The value is expected to be a pointer to a DynamicValue (boxed Dynamic)
 #[no_mangle]
-pub extern "C" fn haxe_trace_any(value: i64) {
-    // Without type information, we can only print the raw value
-    // TODO: Once Std.string() is implemented, use that instead
-    println!("{}", value);
+pub extern "C" fn haxe_trace_any(dynamic_ptr: *mut u8) {
+    if dynamic_ptr.is_null() {
+        println!("null");
+        return;
+    }
+
+    unsafe {
+        // Call haxe_std_string_ptr to convert Dynamic to HaxeString
+        let string_ptr = crate::type_system::haxe_std_string_ptr(dynamic_ptr);
+
+        if !string_ptr.is_null() {
+            let haxe_str = &*string_ptr;
+            if !haxe_str.ptr.is_null() && haxe_str.len > 0 {
+                let slice = std::slice::from_raw_parts(haxe_str.ptr, haxe_str.len);
+                if let Ok(s) = std::str::from_utf8(slice) {
+                    println!("{}", s);
+                    return;
+                }
+            }
+        }
+        // Fallback
+        println!("<Dynamic@{:p}>", dynamic_ptr);
+    }
 }
 
 // ============================================================================
