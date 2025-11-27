@@ -4223,6 +4223,55 @@ impl<'a> HirToMirContext<'a> {
                     _ => {}
                 }
 
+                // Special handling for string concatenation with +
+                if matches!(op, HirBinaryOp::Add) {
+                    let lhs_type = self.convert_type(lhs.ty);
+                    let rhs_type = self.convert_type(rhs.ty);
+
+                    let lhs_is_string = matches!(&lhs_type, IrType::String) ||
+                        matches!(&lhs_type, IrType::Ptr(inner) if matches!(inner.as_ref(), IrType::String));
+                    let rhs_is_string = matches!(&rhs_type, IrType::String) ||
+                        matches!(&rhs_type, IrType::Ptr(inner) if matches!(inner.as_ref(), IrType::String));
+
+                    if lhs_is_string || rhs_is_string {
+                        eprintln!("DEBUG: [STRING CONCAT] Detected string concatenation, lhs_type={:?}, rhs_type={:?}", lhs_type, rhs_type);
+
+                        // Lower both operands
+                        let lhs_reg = self.lower_expression(lhs)?;
+                        let rhs_reg = self.lower_expression(rhs)?;
+
+                        // Convert non-string operand to string if needed
+                        let lhs_str_val = if !lhs_is_string {
+                            self.convert_to_string(lhs_reg, &lhs_type)?
+                        } else {
+                            lhs_reg
+                        };
+
+                        let rhs_str_val = if !rhs_is_string {
+                            self.convert_to_string(rhs_reg, &rhs_type)?
+                        } else {
+                            rhs_reg
+                        };
+
+                        // String values are already pointers (*HaxeString):
+                        // - string literals from haxe_string_literal return *mut HaxeString
+                        // - conversion functions like int_to_string also return pointers
+                        // Pass them directly to string_concat which expects *HaxeString args
+                        let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
+                        let concat_func_id = self.register_stdlib_mir_forward_ref(
+                            "string_concat",
+                            vec![string_ptr_ty.clone(), string_ptr_ty.clone()],
+                            string_ptr_ty.clone(),
+                        );
+
+                        return self.builder.build_call_direct(
+                            concat_func_id,
+                            vec![lhs_str_val, rhs_str_val],
+                            string_ptr_ty,
+                        );
+                    }
+                }
+
                 let mut lhs_reg = self.lower_expression(lhs)?;
                 let mut rhs_reg = self.lower_expression(rhs)?;
 
@@ -5391,6 +5440,54 @@ impl<'a> HirToMirContext<'a> {
 
     /// Insert automatic boxing if needed when assigning to Dynamic
     /// Returns the (potentially boxed) value and whether boxing was applied
+    /// Convert a value to a string pointer
+    /// Uses the appropriate *_to_string MIR wrapper based on the source type
+    fn convert_to_string(&mut self, value: IrId, from_type: &IrType) -> Option<IrId> {
+        let mir_wrapper = match from_type {
+            IrType::I32 | IrType::I64 => "int_to_string",
+            IrType::F32 | IrType::F64 => "float_to_string",
+            IrType::Bool => "bool_to_string",
+            IrType::String | IrType::Ptr(_) => {
+                // Already a string (or pointer that should be string)
+                return Some(value);
+            }
+            _ => "int_to_string", // Fallback
+        };
+
+        eprintln!("DEBUG: [CONVERT TO STRING] Using {} for type {:?}", mir_wrapper, from_type);
+
+        // Cast i32 to i64 if needed (int_to_string expects i32 but we should handle i64 too)
+        let final_value = if matches!(from_type, IrType::I64) && mir_wrapper == "int_to_string" {
+            // int_to_string takes i32, so reduce i64 to i32
+            self.builder.build_cast(value, IrType::I64, IrType::I32).unwrap_or(value)
+        } else {
+            value
+        };
+
+        // Get the parameter and return types for the MIR wrapper
+        // Note: *_to_string wrappers return String, not Ptr(String)
+        let (param_type, return_type) = match mir_wrapper {
+            "int_to_string" => (IrType::I32, IrType::String),
+            "float_to_string" => (IrType::F64, IrType::String),
+            "bool_to_string" => (IrType::Bool, IrType::String),
+            _ => (IrType::I32, IrType::String),
+        };
+
+        // Register forward reference to the MIR wrapper
+        let func_id = self.register_stdlib_mir_forward_ref(
+            mir_wrapper,
+            vec![param_type],
+            return_type.clone(),
+        );
+
+        // Generate the call
+        self.builder.build_call_direct(
+            func_id,
+            vec![final_value],
+            return_type,
+        )
+    }
+
     fn maybe_box_value(&mut self, value: IrId, value_ty: TypeId, target_ty: TypeId) -> Option<IrId> {
         use crate::tast::TypeKind;
 
