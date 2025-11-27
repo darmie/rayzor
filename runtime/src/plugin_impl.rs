@@ -222,6 +222,25 @@ register_symbol!("haxe_sys_cpu_time", crate::haxe_sys::haxe_sys_cpu_time);
 register_symbol!("haxe_sys_program_path", crate::haxe_sys::haxe_sys_program_path);
 
 // ============================================================================
+// File I/O (sys.io.File)
+// ============================================================================
+register_symbol!("haxe_file_get_content", crate::haxe_sys::haxe_file_get_content);
+register_symbol!("haxe_file_save_content", crate::haxe_sys::haxe_file_save_content);
+register_symbol!("haxe_file_copy", crate::haxe_sys::haxe_file_copy);
+
+// ============================================================================
+// FileSystem (sys.FileSystem)
+// ============================================================================
+register_symbol!("haxe_filesystem_exists", crate::haxe_sys::haxe_filesystem_exists);
+register_symbol!("haxe_filesystem_is_directory", crate::haxe_sys::haxe_filesystem_is_directory);
+register_symbol!("haxe_filesystem_create_directory", crate::haxe_sys::haxe_filesystem_create_directory);
+register_symbol!("haxe_filesystem_delete_file", crate::haxe_sys::haxe_filesystem_delete_file);
+register_symbol!("haxe_filesystem_delete_directory", crate::haxe_sys::haxe_filesystem_delete_directory);
+register_symbol!("haxe_filesystem_rename", crate::haxe_sys::haxe_filesystem_rename);
+register_symbol!("haxe_filesystem_full_path", crate::haxe_sys::haxe_filesystem_full_path);
+register_symbol!("haxe_filesystem_absolute_path", crate::haxe_sys::haxe_filesystem_absolute_path);
+
+// ============================================================================
 // Type System (Dynamic values and Std.string)
 // ============================================================================
 

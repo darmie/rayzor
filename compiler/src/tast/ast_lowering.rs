@@ -1296,6 +1296,8 @@ impl<'a> AstLowering<'a> {
             "Reflect",
             "Std",
             "Sys",
+            "File",
+            "FileSystem",
             "StringBuf",
             "StringTools",
             "EReg",

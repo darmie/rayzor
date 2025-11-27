@@ -80,6 +80,8 @@ impl StdlibMapping {
         mapping.register_math_methods();
         mapping.register_sys_methods();
         mapping.register_std_methods();
+        mapping.register_file_methods();
+        mapping.register_filesystem_methods();
         mapping.register_thread_methods();
         mapping.register_channel_methods();
         mapping.register_arc_methods();
@@ -587,6 +589,50 @@ impl StdlibMapping {
             map_method!(static "Std", "parseFloat" => "haxe_std_parse_float", params: 1, returns: primitive),
             // Std.random(x: Int) -> Int
             map_method!(static "Std", "random" => "haxe_std_random", params: 1, returns: primitive),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // File I/O Methods (sys.io.File)
+    // ============================================================================
+
+    fn register_file_methods(&mut self) {
+        let mappings = vec![
+            // File.getContent(path: String) -> String
+            map_method!(static "File", "getContent" => "haxe_file_get_content", params: 1, returns: complex),
+            // File.saveContent(path: String, content: String) -> Void
+            map_method!(static "File", "saveContent" => "haxe_file_save_content", params: 2, returns: void),
+            // File.copy(srcPath: String, dstPath: String) -> Void
+            map_method!(static "File", "copy" => "haxe_file_copy", params: 2, returns: void),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // FileSystem Methods (sys.FileSystem)
+    // ============================================================================
+
+    fn register_filesystem_methods(&mut self) {
+        let mappings = vec![
+            // FileSystem.exists(path: String) -> Bool
+            map_method!(static "FileSystem", "exists" => "haxe_filesystem_exists", params: 1, returns: primitive),
+            // FileSystem.isDirectory(path: String) -> Bool
+            map_method!(static "FileSystem", "isDirectory" => "haxe_filesystem_is_directory", params: 1, returns: primitive),
+            // FileSystem.createDirectory(path: String) -> Void
+            map_method!(static "FileSystem", "createDirectory" => "haxe_filesystem_create_directory", params: 1, returns: void),
+            // FileSystem.deleteFile(path: String) -> Void
+            map_method!(static "FileSystem", "deleteFile" => "haxe_filesystem_delete_file", params: 1, returns: void),
+            // FileSystem.deleteDirectory(path: String) -> Void
+            map_method!(static "FileSystem", "deleteDirectory" => "haxe_filesystem_delete_directory", params: 1, returns: void),
+            // FileSystem.rename(path: String, newPath: String) -> Void
+            map_method!(static "FileSystem", "rename" => "haxe_filesystem_rename", params: 2, returns: void),
+            // FileSystem.fullPath(relPath: String) -> String
+            map_method!(static "FileSystem", "fullPath" => "haxe_filesystem_full_path", params: 1, returns: complex),
+            // FileSystem.absolutePath(relPath: String) -> String
+            map_method!(static "FileSystem", "absolutePath" => "haxe_filesystem_absolute_path", params: 1, returns: complex),
         ];
 
         self.register_from_tuples(mappings);

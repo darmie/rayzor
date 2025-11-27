@@ -857,3 +857,213 @@ pub extern "C" fn haxe_sys_program_path() -> *mut HaxeString {
         Err(_) => std::ptr::null_mut(),
     }
 }
+
+// ============================================================================
+// File I/O (sys.io.File)
+// ============================================================================
+
+/// Helper to convert HaxeString pointer to Rust String
+unsafe fn haxe_string_to_rust(s: *const HaxeString) -> Option<String> {
+    if s.is_null() {
+        return None;
+    }
+    let s_ref = &*s;
+    if s_ref.ptr.is_null() || s_ref.len == 0 {
+        return Some(String::new());
+    }
+    let slice = std::slice::from_raw_parts(s_ref.ptr, s_ref.len);
+    std::str::from_utf8(slice).ok().map(|s| s.to_string())
+}
+
+/// Helper to create HaxeString from Rust String
+fn rust_string_to_haxe(s: String) -> *mut HaxeString {
+    let bytes = s.into_bytes();
+    let len = bytes.len();
+    let cap = bytes.capacity();
+    let ptr = bytes.as_ptr() as *mut u8;
+    std::mem::forget(bytes);
+    Box::into_raw(Box::new(HaxeString { ptr, len, cap }))
+}
+
+/// Read entire file content as string
+/// File.getContent(path: String): String
+#[no_mangle]
+pub extern "C" fn haxe_file_get_content(path: *const HaxeString) -> *mut HaxeString {
+    unsafe {
+        match haxe_string_to_rust(path) {
+            Some(path_str) => {
+                match std::fs::read_to_string(&path_str) {
+                    Ok(content) => rust_string_to_haxe(content),
+                    Err(e) => {
+                        eprintln!("File.getContent error: {} - {}", path_str, e);
+                        std::ptr::null_mut()
+                    }
+                }
+            }
+            None => std::ptr::null_mut(),
+        }
+    }
+}
+
+/// Write string content to file
+/// File.saveContent(path: String, content: String): Void
+#[no_mangle]
+pub extern "C" fn haxe_file_save_content(path: *const HaxeString, content: *const HaxeString) {
+    unsafe {
+        let path_str = match haxe_string_to_rust(path) {
+            Some(s) => s,
+            None => return,
+        };
+        let content_str = match haxe_string_to_rust(content) {
+            Some(s) => s,
+            None => String::new(),
+        };
+        if let Err(e) = std::fs::write(&path_str, content_str) {
+            eprintln!("File.saveContent error: {} - {}", path_str, e);
+        }
+    }
+}
+
+/// Copy file from src to dst
+/// File.copy(srcPath: String, dstPath: String): Void
+#[no_mangle]
+pub extern "C" fn haxe_file_copy(src: *const HaxeString, dst: *const HaxeString) {
+    unsafe {
+        let src_str = match haxe_string_to_rust(src) {
+            Some(s) => s,
+            None => return,
+        };
+        let dst_str = match haxe_string_to_rust(dst) {
+            Some(s) => s,
+            None => return,
+        };
+        if let Err(e) = std::fs::copy(&src_str, &dst_str) {
+            eprintln!("File.copy error: {} -> {} - {}", src_str, dst_str, e);
+        }
+    }
+}
+
+// ============================================================================
+// FileSystem (sys.FileSystem)
+// ============================================================================
+
+/// Check if file or directory exists
+/// FileSystem.exists(path: String): Bool
+#[no_mangle]
+pub extern "C" fn haxe_filesystem_exists(path: *const HaxeString) -> bool {
+    unsafe {
+        match haxe_string_to_rust(path) {
+            Some(path_str) => std::path::Path::new(&path_str).exists(),
+            None => false,
+        }
+    }
+}
+
+/// Check if path is a directory
+/// FileSystem.isDirectory(path: String): Bool
+#[no_mangle]
+pub extern "C" fn haxe_filesystem_is_directory(path: *const HaxeString) -> bool {
+    unsafe {
+        match haxe_string_to_rust(path) {
+            Some(path_str) => std::path::Path::new(&path_str).is_dir(),
+            None => false,
+        }
+    }
+}
+
+/// Create directory (recursively)
+/// FileSystem.createDirectory(path: String): Void
+#[no_mangle]
+pub extern "C" fn haxe_filesystem_create_directory(path: *const HaxeString) {
+    unsafe {
+        if let Some(path_str) = haxe_string_to_rust(path) {
+            if let Err(e) = std::fs::create_dir_all(&path_str) {
+                eprintln!("FileSystem.createDirectory error: {} - {}", path_str, e);
+            }
+        }
+    }
+}
+
+/// Delete file
+/// FileSystem.deleteFile(path: String): Void
+#[no_mangle]
+pub extern "C" fn haxe_filesystem_delete_file(path: *const HaxeString) {
+    unsafe {
+        if let Some(path_str) = haxe_string_to_rust(path) {
+            if let Err(e) = std::fs::remove_file(&path_str) {
+                eprintln!("FileSystem.deleteFile error: {} - {}", path_str, e);
+            }
+        }
+    }
+}
+
+/// Delete directory (must be empty)
+/// FileSystem.deleteDirectory(path: String): Void
+#[no_mangle]
+pub extern "C" fn haxe_filesystem_delete_directory(path: *const HaxeString) {
+    unsafe {
+        if let Some(path_str) = haxe_string_to_rust(path) {
+            if let Err(e) = std::fs::remove_dir(&path_str) {
+                eprintln!("FileSystem.deleteDirectory error: {} - {}", path_str, e);
+            }
+        }
+    }
+}
+
+/// Rename/move file or directory
+/// FileSystem.rename(path: String, newPath: String): Void
+#[no_mangle]
+pub extern "C" fn haxe_filesystem_rename(path: *const HaxeString, new_path: *const HaxeString) {
+    unsafe {
+        let path_str = match haxe_string_to_rust(path) {
+            Some(s) => s,
+            None => return,
+        };
+        let new_path_str = match haxe_string_to_rust(new_path) {
+            Some(s) => s,
+            None => return,
+        };
+        if let Err(e) = std::fs::rename(&path_str, &new_path_str) {
+            eprintln!("FileSystem.rename error: {} -> {} - {}", path_str, new_path_str, e);
+        }
+    }
+}
+
+/// Get full/absolute path
+/// FileSystem.fullPath(relPath: String): String
+#[no_mangle]
+pub extern "C" fn haxe_filesystem_full_path(path: *const HaxeString) -> *mut HaxeString {
+    unsafe {
+        match haxe_string_to_rust(path) {
+            Some(path_str) => {
+                match std::fs::canonicalize(&path_str) {
+                    Ok(full_path) => rust_string_to_haxe(full_path.to_string_lossy().into_owned()),
+                    Err(_) => std::ptr::null_mut(),
+                }
+            }
+            None => std::ptr::null_mut(),
+        }
+    }
+}
+
+/// Get absolute path (doesn't need to exist)
+/// FileSystem.absolutePath(relPath: String): String
+#[no_mangle]
+pub extern "C" fn haxe_filesystem_absolute_path(path: *const HaxeString) -> *mut HaxeString {
+    unsafe {
+        match haxe_string_to_rust(path) {
+            Some(path_str) => {
+                let abs_path = if std::path::Path::new(&path_str).is_absolute() {
+                    path_str
+                } else {
+                    match std::env::current_dir() {
+                        Ok(cwd) => cwd.join(&path_str).to_string_lossy().into_owned(),
+                        Err(_) => path_str,
+                    }
+                };
+                rust_string_to_haxe(abs_path)
+            }
+            None => std::ptr::null_mut(),
+        }
+    }
+}

@@ -1720,6 +1720,21 @@ impl<'a> HirToMirContext<'a> {
             "haxe_std_parse_float" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::F64)),
             "haxe_std_random" => Some((vec![IrType::I64], IrType::I64)),
 
+            // File I/O functions (sys.io.File)
+            "haxe_file_get_content" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::Ptr(Box::new(IrType::Void)))),
+            "haxe_file_save_content" => Some((vec![IrType::Ptr(Box::new(IrType::Void)), IrType::Ptr(Box::new(IrType::Void))], IrType::Void)),
+            "haxe_file_copy" => Some((vec![IrType::Ptr(Box::new(IrType::Void)), IrType::Ptr(Box::new(IrType::Void))], IrType::Void)),
+
+            // FileSystem functions (sys.FileSystem)
+            "haxe_filesystem_exists" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::Bool)),
+            "haxe_filesystem_is_directory" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::Bool)),
+            "haxe_filesystem_create_directory" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::Void)),
+            "haxe_filesystem_delete_file" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::Void)),
+            "haxe_filesystem_delete_directory" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::Void)),
+            "haxe_filesystem_rename" => Some((vec![IrType::Ptr(Box::new(IrType::Void)), IrType::Ptr(Box::new(IrType::Void))], IrType::Void)),
+            "haxe_filesystem_full_path" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::Ptr(Box::new(IrType::Void)))),
+            "haxe_filesystem_absolute_path" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::Ptr(Box::new(IrType::Void)))),
+
             _ => None,
         }
     }
