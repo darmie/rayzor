@@ -669,3 +669,191 @@ pub extern "C" fn haxe_sys_time() -> f64 {
 pub extern "C" fn haxe_sys_args_count() -> i32 {
     std::env::args().count() as i32
 }
+
+// ============================================================================
+// Environment Variables
+// ============================================================================
+
+/// Get environment variable value
+/// Returns null if the variable doesn't exist
+#[no_mangle]
+pub extern "C" fn haxe_sys_get_env(name: *const HaxeString) -> *mut HaxeString {
+    if name.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let name_ref = &*name;
+        if name_ref.ptr.is_null() || name_ref.len == 0 {
+            return std::ptr::null_mut();
+        }
+
+        let slice = std::slice::from_raw_parts(name_ref.ptr, name_ref.len);
+        let var_name = match std::str::from_utf8(slice) {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        };
+
+        match std::env::var(var_name) {
+            Ok(value) => {
+                let bytes = value.into_bytes();
+                let len = bytes.len();
+                let cap = bytes.capacity();
+                let ptr = bytes.as_ptr() as *mut u8;
+                std::mem::forget(bytes);
+                Box::into_raw(Box::new(HaxeString { ptr, len, cap }))
+            }
+            Err(_) => std::ptr::null_mut(), // Variable not found
+        }
+    }
+}
+
+/// Set environment variable value
+/// If value is null, removes the environment variable
+#[no_mangle]
+pub extern "C" fn haxe_sys_put_env(name: *const HaxeString, value: *const HaxeString) {
+    if name.is_null() {
+        return;
+    }
+
+    unsafe {
+        let name_ref = &*name;
+        if name_ref.ptr.is_null() || name_ref.len == 0 {
+            return;
+        }
+
+        let slice = std::slice::from_raw_parts(name_ref.ptr, name_ref.len);
+        let var_name = match std::str::from_utf8(slice) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+
+        if value.is_null() {
+            // Remove the environment variable
+            std::env::remove_var(var_name);
+        } else {
+            let value_ref = &*value;
+            if value_ref.ptr.is_null() {
+                std::env::remove_var(var_name);
+            } else {
+                let value_slice = std::slice::from_raw_parts(value_ref.ptr, value_ref.len);
+                if let Ok(val_str) = std::str::from_utf8(value_slice) {
+                    std::env::set_var(var_name, val_str);
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Working Directory
+// ============================================================================
+
+/// Get current working directory
+#[no_mangle]
+pub extern "C" fn haxe_sys_get_cwd() -> *mut HaxeString {
+    match std::env::current_dir() {
+        Ok(path) => {
+            let path_str = path.to_string_lossy().into_owned();
+            let bytes = path_str.into_bytes();
+            let len = bytes.len();
+            let cap = bytes.capacity();
+            let ptr = bytes.as_ptr() as *mut u8;
+            std::mem::forget(bytes);
+            Box::into_raw(Box::new(HaxeString { ptr, len, cap }))
+        }
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Set current working directory
+#[no_mangle]
+pub extern "C" fn haxe_sys_set_cwd(path: *const HaxeString) {
+    if path.is_null() {
+        return;
+    }
+
+    unsafe {
+        let path_ref = &*path;
+        if path_ref.ptr.is_null() || path_ref.len == 0 {
+            return;
+        }
+
+        let slice = std::slice::from_raw_parts(path_ref.ptr, path_ref.len);
+        if let Ok(path_str) = std::str::from_utf8(slice) {
+            let _ = std::env::set_current_dir(path_str);
+        }
+    }
+}
+
+// ============================================================================
+// Sleep
+// ============================================================================
+
+/// Sleep for the specified number of seconds
+#[no_mangle]
+pub extern "C" fn haxe_sys_sleep(seconds: f64) {
+    if seconds <= 0.0 {
+        return;
+    }
+
+    let duration = std::time::Duration::from_secs_f64(seconds);
+    std::thread::sleep(duration);
+}
+
+// ============================================================================
+// System Information
+// ============================================================================
+
+/// Get the system/OS name
+/// Returns "Windows", "Linux", "Mac", or "BSD"
+#[no_mangle]
+pub extern "C" fn haxe_sys_system_name() -> *mut HaxeString {
+    let name = if cfg!(target_os = "windows") {
+        "Windows"
+    } else if cfg!(target_os = "macos") {
+        "Mac"
+    } else if cfg!(target_os = "linux") {
+        "Linux"
+    } else if cfg!(target_os = "freebsd") || cfg!(target_os = "openbsd") || cfg!(target_os = "netbsd") {
+        "BSD"
+    } else {
+        "Unknown"
+    };
+
+    // Return a static string (cap=0 means no-free)
+    Box::into_raw(Box::new(HaxeString {
+        ptr: name.as_ptr() as *mut u8,
+        len: name.len(),
+        cap: 0,
+    }))
+}
+
+/// Get CPU time for current process (in seconds)
+#[no_mangle]
+pub extern "C" fn haxe_sys_cpu_time() -> f64 {
+    // This is a simplified implementation - full accuracy would require platform-specific code
+    // On Unix, we could use getrusage() for accurate CPU time
+    // On Windows, we could use GetProcessTimes()
+    // For portability, we use a static start time and return elapsed time
+    static START_TIME: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let start = START_TIME.get_or_init(std::time::Instant::now);
+    start.elapsed().as_secs_f64()
+}
+
+/// Get path to current executable
+#[no_mangle]
+pub extern "C" fn haxe_sys_program_path() -> *mut HaxeString {
+    match std::env::current_exe() {
+        Ok(path) => {
+            let path_str = path.to_string_lossy().into_owned();
+            let bytes = path_str.into_bytes();
+            let len = bytes.len();
+            let cap = bytes.capacity();
+            let ptr = bytes.as_ptr() as *mut u8;
+            std::mem::forget(bytes);
+            Box::into_raw(Box::new(HaxeString { ptr, len, cap }))
+        }
+        Err(_) => std::ptr::null_mut(),
+    }
+}

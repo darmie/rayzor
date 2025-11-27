@@ -555,6 +555,207 @@ pub extern "C" fn haxe_free_dynamic(dynamic: DynamicValue) {
 }
 
 // ============================================================================
+// Std class functions
+// ============================================================================
+
+/// Convert a Float to an Int, rounded towards 0
+/// Implements Std.int(x:Float):Int
+#[no_mangle]
+pub extern "C" fn haxe_std_int(x: f64) -> i64 {
+    // Truncate towards zero (same as casting in Rust)
+    // Handle special cases
+    if x.is_nan() {
+        return 0;
+    }
+    if x.is_infinite() {
+        if x.is_sign_positive() {
+            return i64::MAX;
+        } else {
+            return i64::MIN;
+        }
+    }
+    x.trunc() as i64
+}
+
+/// Parse a String to an Int
+/// Implements Std.parseInt(x:String):Null<Int>
+/// Returns the parsed value, or i64::MIN as a sentinel for null
+/// (caller should check for this and convert to null)
+#[no_mangle]
+pub extern "C" fn haxe_std_parse_int(str_ptr: *const crate::haxe_string::HaxeString) -> i64 {
+    use crate::haxe_string::HaxeString;
+
+    if str_ptr.is_null() {
+        return i64::MIN; // Sentinel for null
+    }
+
+    let haxe_str = unsafe { &*str_ptr };
+    if haxe_str.ptr.is_null() || haxe_str.len == 0 {
+        return i64::MIN; // Sentinel for null
+    }
+
+    let bytes = unsafe { std::slice::from_raw_parts(haxe_str.ptr, haxe_str.len) };
+    let s = match std::str::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => return i64::MIN,
+    };
+
+    // Trim leading whitespace
+    let s = s.trim_start();
+    if s.is_empty() {
+        return i64::MIN;
+    }
+
+    // Handle optional sign
+    let (sign, s) = if s.starts_with('-') {
+        (-1i64, &s[1..])
+    } else if s.starts_with('+') {
+        (1i64, &s[1..])
+    } else {
+        (1i64, s)
+    };
+
+    // Check for hex prefix (0x or 0X)
+    let (radix, s) = if s.starts_with("0x") || s.starts_with("0X") {
+        (16, &s[2..])
+    } else {
+        (10, s)
+    };
+
+    // Parse digits until invalid character
+    let mut result: i64 = 0;
+    let mut has_digits = false;
+
+    for c in s.chars() {
+        let digit = match c.to_digit(radix) {
+            Some(d) => d as i64,
+            None => break, // Stop at invalid character
+        };
+        has_digits = true;
+        result = result.saturating_mul(radix as i64).saturating_add(digit);
+    }
+
+    if !has_digits {
+        return i64::MIN; // No valid digits found
+    }
+
+    sign.saturating_mul(result)
+}
+
+/// Parse a String to a Float
+/// Implements Std.parseFloat(x:String):Float
+/// Returns NaN if parsing fails
+#[no_mangle]
+pub extern "C" fn haxe_std_parse_float(str_ptr: *const crate::haxe_string::HaxeString) -> f64 {
+    use crate::haxe_string::HaxeString;
+
+    if str_ptr.is_null() {
+        return f64::NAN;
+    }
+
+    let haxe_str = unsafe { &*str_ptr };
+    if haxe_str.ptr.is_null() || haxe_str.len == 0 {
+        return f64::NAN;
+    }
+
+    let bytes = unsafe { std::slice::from_raw_parts(haxe_str.ptr, haxe_str.len) };
+    let s = match std::str::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => return f64::NAN,
+    };
+
+    // Trim leading whitespace
+    let s = s.trim_start();
+    if s.is_empty() {
+        return f64::NAN;
+    }
+
+    // Try to parse as much as possible
+    // Rust's parse is strict, so we need to find the valid prefix
+    let mut end_idx = 0;
+    let mut has_dot = false;
+    let mut has_exp = false;
+    let chars: Vec<char> = s.chars().collect();
+
+    // Handle optional sign
+    if !chars.is_empty() && (chars[0] == '-' || chars[0] == '+') {
+        end_idx = 1;
+    }
+
+    // Parse integer part
+    while end_idx < chars.len() && chars[end_idx].is_ascii_digit() {
+        end_idx += 1;
+    }
+
+    // Parse decimal part
+    if end_idx < chars.len() && chars[end_idx] == '.' {
+        has_dot = true;
+        end_idx += 1;
+        while end_idx < chars.len() && chars[end_idx].is_ascii_digit() {
+            end_idx += 1;
+        }
+    }
+
+    // Parse exponent part
+    if end_idx < chars.len() && (chars[end_idx] == 'e' || chars[end_idx] == 'E') {
+        let exp_start = end_idx;
+        end_idx += 1;
+        if end_idx < chars.len() && (chars[end_idx] == '-' || chars[end_idx] == '+') {
+            end_idx += 1;
+        }
+        let exp_digits_start = end_idx;
+        while end_idx < chars.len() && chars[end_idx].is_ascii_digit() {
+            end_idx += 1;
+        }
+        // Only include exponent if there were digits after e/E
+        if end_idx == exp_digits_start {
+            end_idx = exp_start; // Revert to before 'e'
+        } else {
+            has_exp = true;
+        }
+    }
+
+    if end_idx == 0 || (end_idx == 1 && (chars[0] == '-' || chars[0] == '+')) {
+        return f64::NAN;
+    }
+
+    let parse_str: String = chars[..end_idx].iter().collect();
+    parse_str.parse::<f64>().unwrap_or(f64::NAN)
+}
+
+/// Return a random integer between 0 (inclusive) and max (exclusive)
+/// Implements Std.random(x:Int):Int
+#[no_mangle]
+pub extern "C" fn haxe_std_random(max: i64) -> i64 {
+    if max <= 1 {
+        return 0;
+    }
+
+    // Use a simple LCG (Linear Congruential Generator) with thread-local state
+    use std::cell::Cell;
+    thread_local! {
+        static SEED: Cell<u64> = Cell::new(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(12345)
+        );
+    }
+
+    SEED.with(|seed| {
+        // LCG parameters (same as glibc)
+        let a: u64 = 1103515245;
+        let c: u64 = 12345;
+        let m: u64 = 1 << 31;
+
+        let new_seed = (a.wrapping_mul(seed.get()).wrapping_add(c)) % m;
+        seed.set(new_seed);
+
+        (new_seed as i64) % max
+    })
+}
+
+// ============================================================================
 // Pointer-based boxing/unboxing wrappers for MIR (simpler ABI)
 // ============================================================================
 

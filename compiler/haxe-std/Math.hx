@@ -225,6 +225,7 @@ extern class Math {
 		Returns a pseudo-random number which is greater than or equal to `0.0`,
 		and less than `1.0`.
 	**/
+	@:native("haxe_math_random")
 	static function random():Float;
 
 	#if (flash || cpp || eval)

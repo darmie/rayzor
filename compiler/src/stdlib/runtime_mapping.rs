@@ -79,6 +79,7 @@ impl StdlibMapping {
         mapping.register_array_methods();
         mapping.register_math_methods();
         mapping.register_sys_methods();
+        mapping.register_std_methods();
         mapping.register_thread_methods();
         mapping.register_channel_methods();
         mapping.register_arc_methods();
@@ -546,10 +547,46 @@ impl StdlibMapping {
 
     fn register_sys_methods(&mut self) {
         let mappings = vec![
+            // I/O
             map_method!(static "Sys", "print" => "haxe_string_print", params: 1, returns: void),
             map_method!(static "Sys", "println" => "haxe_sys_println", params: 0, returns: void),
+            // Program control
             map_method!(static "Sys", "exit" => "haxe_sys_exit", params: 1, returns: void),
             map_method!(static "Sys", "time" => "haxe_sys_time", params: 0, returns: primitive),
+            map_method!(static "Sys", "cpuTime" => "haxe_sys_cpu_time", params: 0, returns: primitive),
+            // Environment
+            map_method!(static "Sys", "getEnv" => "haxe_sys_get_env", params: 1, returns: complex),
+            map_method!(static "Sys", "putEnv" => "haxe_sys_put_env", params: 2, returns: void),
+            // Working directory
+            map_method!(static "Sys", "getCwd" => "haxe_sys_get_cwd", params: 0, returns: complex),
+            map_method!(static "Sys", "setCwd" => "haxe_sys_set_cwd", params: 1, returns: void),
+            // Sleep
+            map_method!(static "Sys", "sleep" => "haxe_sys_sleep", params: 1, returns: void),
+            // System info
+            map_method!(static "Sys", "systemName" => "haxe_sys_system_name", params: 0, returns: complex),
+            map_method!(static "Sys", "programPath" => "haxe_sys_program_path", params: 0, returns: complex),
+            map_method!(static "Sys", "executablePath" => "haxe_sys_program_path", params: 0, returns: complex),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // Std Class Methods
+    // ============================================================================
+
+    fn register_std_methods(&mut self) {
+        let mappings = vec![
+            // Std.string(v: Dynamic) -> String
+            map_method!(static "Std", "string" => "haxe_std_string_ptr", params: 1, returns: complex),
+            // Std.int(x: Float) -> Int
+            map_method!(static "Std", "int" => "haxe_std_int", params: 1, returns: primitive),
+            // Std.parseInt(x: String) -> Null<Int>
+            map_method!(static "Std", "parseInt" => "haxe_std_parse_int", params: 1, returns: primitive),
+            // Std.parseFloat(x: String) -> Float
+            map_method!(static "Std", "parseFloat" => "haxe_std_parse_float", params: 1, returns: primitive),
+            // Std.random(x: Int) -> Int
+            map_method!(static "Std", "random" => "haxe_std_random", params: 1, returns: primitive),
         ];
 
         self.register_from_tuples(mappings);

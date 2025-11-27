@@ -1277,9 +1277,11 @@ impl<'a> AstLowering<'a> {
             }
         }
 
-        // Also register some core types that may not have full definitions
-        // but are recognized by the compiler
-        let core_types = [
+        // Register root-level stdlib classes that need to be resolvable by name.
+        // These are top-level Haxe standard library classes (Std.hx, Sys.hx, Math.hx, etc.)
+        // that exist as extern classes and need their symbols pre-registered so the compiler
+        // can resolve references like `Std.int()` or `Math.sin()` before loading the full definitions.
+        let toplevel_stdlib_classes = [
             "Dynamic",
             "Class",
             "Enum",
@@ -1293,6 +1295,7 @@ impl<'a> AstLowering<'a> {
             "Math",
             "Reflect",
             "Std",
+            "Sys",
             "StringBuf",
             "StringTools",
             "EReg",
@@ -1305,7 +1308,7 @@ impl<'a> AstLowering<'a> {
             "UInt",
         ];
 
-        for type_name in &core_types {
+        for type_name in &toplevel_stdlib_classes {
             let interned_name = self.context.intern_string(type_name);
             let builtin_symbol = self
                 .context
@@ -4092,128 +4095,141 @@ impl<'a> AstLowering<'a> {
                                     // Check if this symbol represents a class declaration (not just a variable of class type)
                                     if symbol.kind == crate::tast::symbols::SymbolKind::Class {
                                         // This is a class name, so this is a static method call
-                                        if let Ok(type_table) = self.context.type_table.try_borrow()
+                                        //
+                                        // For extern classes (Std, Math, Sys, etc.), the type_id may be invalid
+                                        // because they don't have concrete type definitions in the type table.
+                                        // In that case, use the symbol_id directly as the class_symbol.
+                                        let class_symbol = if symbol.type_id == TypeId::invalid() {
+                                            // Extern class - use the symbol_id directly
+                                            symbol_id
+                                        } else if let Ok(type_table) = self.context.type_table.try_borrow() {
+                                            // Try to get the class symbol from the type table
+                                            if let Some(type_info) = type_table.get(symbol.type_id) {
+                                                if let crate::tast::core::TypeKind::Class { symbol_id: ts_symbol, .. } = &type_info.kind {
+                                                    *ts_symbol
+                                                } else {
+                                                    // Type exists but isn't a Class - use symbol_id as fallback
+                                                    symbol_id
+                                                }
+                                            } else {
+                                                // Type not in table - use symbol_id as fallback
+                                                symbol_id
+                                            }
+                                        } else {
+                                            // Can't borrow type table - use symbol_id as fallback
+                                            symbol_id
+                                        };
+
+                                        // This is a static method call
+                                        let method_name =
+                                            self.context.intern_string(field);
+
+                                        // Look for the method in this class
+                                        let method_symbol = if let Some(methods) =
+                                            self.class_methods.get(&class_symbol)
                                         {
-                                            if let Some(type_info) = type_table.get(symbol.type_id)
-                                            {
-                                                if let crate::tast::core::TypeKind::Class {
-                                                    symbol_id: class_symbol,
-                                                    ..
-                                                } = &type_info.kind
+                                            let found = methods
+                                                .iter()
+                                                .find(|(name, _, _)| {
+                                                    *name == method_name
+                                                })
+                                                .map(|(_, symbol, _)| *symbol);
+
+                                            if let Some(sym) = found {
+                                                sym
+                                            } else {
+
+                                                let new_symbol = self.context
+                                                    .symbol_table
+                                                    .create_function(method_name);
+
+                                                // IMPORTANT: Set qualified name for the new symbol based on class + method
+                                                if let Some(class_sym) = self.context.symbol_table.get_symbol(class_symbol) {
+                                                    if let Some(class_qname) = class_sym.qualified_name
+                                                        .and_then(|qn| self.context.string_interner.get(qn))
+                                                    {
+                                                        let method_qname = format!("{}.{}", class_qname,
+                                                            self.context.string_interner.get(method_name).unwrap_or(""));
+                                                        let method_qname_interned = self.context.intern_string(&method_qname);
+                                                        self.context.symbol_table.update_qualified_name(
+                                                            new_symbol,
+                                                            &self.context.scope_tree,
+                                                            &self.context.string_interner
+                                                        );
+                                                        // Override with our computed qualified name
+                                                        if let Some(sym_mut) = self.context.symbol_table.get_symbol_mut(new_symbol) {
+                                                            sym_mut.qualified_name = Some(method_qname_interned);
+                                                        }
+                                                    }
+                                                }
+                                                new_symbol
+                                            }
+                                        } else {
+                                            let new_symbol = self.context
+                                                .symbol_table
+                                                .create_function(method_name);
+
+                                            // IMPORTANT: Set qualified name for the new symbol based on class + method
+                                            if let Some(class_sym) = self.context.symbol_table.get_symbol(class_symbol) {
+                                                if let Some(class_qname) = class_sym.qualified_name
+                                                    .and_then(|qn| self.context.string_interner.get(qn))
                                                 {
-                                                    // This is a static method call
-                                                    let method_name =
-                                                        self.context.intern_string(field);
-
-                                                    // Look for the method in this class
-                                                    let method_symbol = if let Some(methods) =
-                                                        self.class_methods.get(class_symbol)
-                                                    {
-                                                        let found = methods
-                                                            .iter()
-                                                            .find(|(name, _, _)| {
-                                                                *name == method_name
-                                                            })
-                                                            .map(|(_, symbol, _)| *symbol);
-
-                                                        if let Some(sym) = found {
-                                                            sym
-                                                        } else {
-
-                                                            let new_symbol = self.context
-                                                                .symbol_table
-                                                                .create_function(method_name);
-
-                                                            // IMPORTANT: Set qualified name for the new symbol based on class + method
-                                                            if let Some(class_sym) = self.context.symbol_table.get_symbol(*class_symbol) {
-                                                                if let Some(class_qname) = class_sym.qualified_name
-                                                                    .and_then(|qn| self.context.string_interner.get(qn))
-                                                                {
-                                                                    let method_qname = format!("{}.{}", class_qname,
-                                                                        self.context.string_interner.get(method_name).unwrap_or(""));
-                                                                    let method_qname_interned = self.context.intern_string(&method_qname);
-                                                                    self.context.symbol_table.update_qualified_name(
-                                                                        new_symbol,
-                                                                        &self.context.scope_tree,
-                                                                        &self.context.string_interner
-                                                                    );
-                                                                    // Override with our computed qualified name
-                                                                    if let Some(sym_mut) = self.context.symbol_table.get_symbol_mut(new_symbol) {
-                                                                        sym_mut.qualified_name = Some(method_qname_interned);
-                                                                    }
-                                                                }
-                                                            }
-                                                            new_symbol
-                                                        }
-                                                    } else {
-                                                        let new_symbol = self.context
-                                                            .symbol_table
-                                                            .create_function(method_name);
-
-                                                        // IMPORTANT: Set qualified name for the new symbol based on class + method
-                                                        if let Some(class_sym) = self.context.symbol_table.get_symbol(*class_symbol) {
-                                                            if let Some(class_qname) = class_sym.qualified_name
-                                                                .and_then(|qn| self.context.string_interner.get(qn))
-                                                            {
-                                                                let method_qname = format!("{}.{}", class_qname,
-                                                                    self.context.string_interner.get(method_name).unwrap_or(""));
-                                                                let method_qname_interned = self.context.intern_string(&method_qname);
-                                                                if let Some(sym_mut) = self.context.symbol_table.get_symbol_mut(new_symbol) {
-                                                                    sym_mut.qualified_name = Some(method_qname_interned);
-                                                                }
-                                                            }
-                                                        }
-                                                        new_symbol
-                                                    };
-
-                                                    let kind =
-                                                        TypedExpressionKind::StaticMethodCall {
-                                                            class_symbol: *class_symbol,
-                                                            method_symbol,
-                                                            arguments: arg_exprs,
-                                                            type_arguments: Vec::new(),
-                                                        };
-
-                                                    // Get method return type
-                                                    let expr_type = if let Some(symbol) = self
-                                                        .context
-                                                        .symbol_table
-                                                        .get_symbol(method_symbol)
-                                                    {
-                                                        symbol.type_id
-                                                    } else {
-                                                        self.context
-                                                            .type_table
-                                                            .borrow()
-                                                            .dynamic_type()
-                                                    };
-
-                                                    let usage = VariableUsage::Copy;
-                                                    let lifetime_id =
-                                                        self.assign_lifetime(&kind, &expr_type);
-                                                    let metadata =
-                                                        self.analyze_expression_metadata(&kind);
-
-                                                    // Calculate the span for the field name specifically
-                                                    // The field appears after the object expression and a dot
-                                                    let field_span = parser::haxe_ast::Span::new(
-                                                        obj_expr.span.end + 1, // +1 for the dot
-                                                        obj_expr.span.end + 1 + field.len(),
-                                                    );
-
-                                                    return Ok(TypedExpression {
-                                                        expr_type,
-                                                        kind,
-                                                        usage,
-                                                        lifetime_id,
-                                                        source_location: self
-                                                            .context
-                                                            .span_to_location(&field_span),
-                                                        metadata,
-                                                    });
+                                                    let method_qname = format!("{}.{}", class_qname,
+                                                        self.context.string_interner.get(method_name).unwrap_or(""));
+                                                    let method_qname_interned = self.context.intern_string(&method_qname);
+                                                    if let Some(sym_mut) = self.context.symbol_table.get_symbol_mut(new_symbol) {
+                                                        sym_mut.qualified_name = Some(method_qname_interned);
+                                                    }
                                                 }
                                             }
-                                        }
+                                            new_symbol
+                                        };
+
+                                        let kind =
+                                            TypedExpressionKind::StaticMethodCall {
+                                                class_symbol,
+                                                method_symbol,
+                                                arguments: arg_exprs,
+                                                type_arguments: Vec::new(),
+                                            };
+
+                                        // Get method return type
+                                        let expr_type = if let Some(symbol) = self
+                                            .context
+                                            .symbol_table
+                                            .get_symbol(method_symbol)
+                                        {
+                                            symbol.type_id
+                                        } else {
+                                            self.context
+                                                .type_table
+                                                .borrow()
+                                                .dynamic_type()
+                                        };
+
+                                        let usage = VariableUsage::Copy;
+                                        let lifetime_id =
+                                            self.assign_lifetime(&kind, &expr_type);
+                                        let metadata =
+                                            self.analyze_expression_metadata(&kind);
+
+                                        // Calculate the span for the field name specifically
+                                        // The field appears after the object expression and a dot
+                                        let field_span = parser::haxe_ast::Span::new(
+                                            obj_expr.span.end + 1, // +1 for the dot
+                                            obj_expr.span.end + 1 + field.len(),
+                                        );
+
+                                        return Ok(TypedExpression {
+                                            expr_type,
+                                            kind,
+                                            usage,
+                                            lifetime_id,
+                                            source_location: self
+                                                .context
+                                                .span_to_location(&field_span),
+                                            metadata,
+                                        });
                                     }
                                 }
                             }

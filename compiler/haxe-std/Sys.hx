@@ -24,11 +24,11 @@
 	This class provides access to various base functions of system platforms.
 	Look in the `sys` package for more system APIs.
 **/
-@:require(sys)
 extern class Sys {
 	/**
 		Prints any value to the standard output.
 	**/
+	@:native("haxe_string_print")
 	static function print(v:Dynamic):Void;
 
 	/**
@@ -36,6 +36,7 @@ extern class Sys {
 		On Windows, this function outputs a CRLF newline.
 		LF newlines are printed on all other platforms.
 	**/
+	@:native("haxe_sys_println")
 	static function println(v:Dynamic):Void;
 
 	/**
@@ -52,6 +53,7 @@ extern class Sys {
 		Returns the value of the given environment variable, or `null` if it
 		doesn't exist.
 	**/
+	@:native("haxe_sys_get_env")
 	static function getEnv(s:String):String;
 
 	/**
@@ -61,6 +63,7 @@ extern class Sys {
 
 		(java) This functionality is not available on Java; calling this function will throw.
 	**/
+	@:native("haxe_sys_put_env")
 	static function putEnv(s:String, v:Null<String>):Void;
 
 	/**
@@ -81,6 +84,7 @@ extern class Sys {
 	/**
 		Suspends execution for the given length of time (in seconds).
 	**/
+	@:native("haxe_sys_sleep")
 	static function sleep(seconds:Float):Void;
 
 	/**
@@ -92,6 +96,7 @@ extern class Sys {
 	/**
 		Gets the current working directory (usually the one in which the program was started).
 	**/
+	@:native("haxe_sys_get_cwd")
 	static function getCwd():String;
 
 	/**
@@ -99,6 +104,7 @@ extern class Sys {
 
 		(java) This functionality is not available on Java; calling this function will throw.
 	**/
+	@:native("haxe_sys_set_cwd")
 	static function setCwd(s:String):Void;
 
 	/**
@@ -108,6 +114,7 @@ extern class Sys {
 		 - `"BSD"`
 		 - `"Mac"`
 	**/
+	@:native("haxe_sys_system_name")
 	static function systemName():String;
 
 	/**
@@ -133,22 +140,26 @@ extern class Sys {
 		(macro)(eval) Being invoked in a macro or eval context (e.g. with `-x` or `--run`) immediately terminates
 		the compilation process, which also prevents the execution of any `--next` sections of compilation arguments.
 	**/
+	@:native("haxe_sys_exit")
 	static function exit(code:Int):Void;
 
 	/**
 		Gives the most precise timestamp value available (in seconds).
 	**/
+	@:native("haxe_sys_time")
 	static function time():Float;
 
 	/**
 		Gives the most precise timestamp value available (in seconds),
 		but only accounts for the actual time spent running on the CPU for the current thread/process.
 	**/
+	@:native("haxe_sys_cpu_time")
 	static function cpuTime():Float;
 
 	/**
 		Returns the path to the current executable that we are running.
 	**/
+	@:native("haxe_sys_program_path")
 	@:deprecated("Use programPath instead") static function executablePath():String;
 
 	/**
@@ -156,6 +167,7 @@ extern class Sys {
 		Concretely, for an executable binary, it returns the path to the binary.
 		For a script (e.g. a PHP file), it returns the path to the script.
 	**/
+	@:native("haxe_sys_program_path")
 	static function programPath():String;
 
 	/**

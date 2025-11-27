@@ -205,6 +205,22 @@ register_symbol!("haxe_sys_exit", crate::haxe_sys::haxe_sys_exit);
 register_symbol!("haxe_sys_time", crate::haxe_sys::haxe_sys_time);
 register_symbol!("haxe_sys_args_count", crate::haxe_sys::haxe_sys_args_count);
 
+// Environment
+register_symbol!("haxe_sys_get_env", crate::haxe_sys::haxe_sys_get_env);
+register_symbol!("haxe_sys_put_env", crate::haxe_sys::haxe_sys_put_env);
+
+// Working directory
+register_symbol!("haxe_sys_get_cwd", crate::haxe_sys::haxe_sys_get_cwd);
+register_symbol!("haxe_sys_set_cwd", crate::haxe_sys::haxe_sys_set_cwd);
+
+// Sleep
+register_symbol!("haxe_sys_sleep", crate::haxe_sys::haxe_sys_sleep);
+
+// System info
+register_symbol!("haxe_sys_system_name", crate::haxe_sys::haxe_sys_system_name);
+register_symbol!("haxe_sys_cpu_time", crate::haxe_sys::haxe_sys_cpu_time);
+register_symbol!("haxe_sys_program_path", crate::haxe_sys::haxe_sys_program_path);
+
 // ============================================================================
 // Type System (Dynamic values and Std.string)
 // ============================================================================
@@ -234,9 +250,13 @@ register_symbol!("haxe_unbox_bool_ptr", crate::type_system::haxe_unbox_bool_ptr)
 register_symbol!("haxe_box_reference_ptr", crate::type_system::haxe_box_reference_ptr);
 register_symbol!("haxe_unbox_reference_ptr", crate::type_system::haxe_unbox_reference_ptr);
 
-// Std.string() with runtime type dispatch
+// Std class functions
 register_symbol!("haxe_std_string", crate::type_system::haxe_std_string);
 register_symbol!("haxe_std_string_ptr", crate::type_system::haxe_std_string_ptr);
+register_symbol!("haxe_std_int", crate::type_system::haxe_std_int);
+register_symbol!("haxe_std_parse_int", crate::type_system::haxe_std_parse_int);
+register_symbol!("haxe_std_parse_float", crate::type_system::haxe_std_parse_float);
+register_symbol!("haxe_std_random", crate::type_system::haxe_std_random);
 
 // Memory management for Dynamic values
 register_symbol!("haxe_free_dynamic", crate::type_system::haxe_free_dynamic);

@@ -252,18 +252,27 @@ impl IrBuilder {
             self.set_register_type(dest_reg, actual_return_type.clone());
 
             // Check if function's actual return type matches expected type
-            // If not, insert a Cast instruction (but NOT if actual is pointer and expected is scalar)
+            // If not, insert a Cast instruction (but NOT if it would lose type precision)
             if actual_return_type != ty {
                 // Don't cast from pointer to scalar - that's a bug in type inference for generics
                 // When the actual return type is a pointer (class instance) but expected type is
                 // a scalar like I32, it means generic type resolution failed. Trust the actual type.
                 let actual_is_ptr = matches!(actual_return_type, IrType::Ptr(_));
+                let actual_is_scalar = matches!(actual_return_type, IrType::I32 | IrType::I64 | IrType::Bool | IrType::F32 | IrType::F64);
                 let expected_is_scalar = matches!(ty, IrType::I32 | IrType::I64 | IrType::Bool | IrType::F32 | IrType::F64);
+                let expected_is_ptr = matches!(ty, IrType::Ptr(_));
 
                 if actual_is_ptr && expected_is_scalar {
                     eprintln!("DEBUG: CallDirect type mismatch - function returns {:?}, expected {:?}, but NOT inserting cast (pointer->scalar would lose data)",
                               actual_return_type, ty);
-                    // Type already registered above
+                    // Type already registered above - trust actual type
+                } else if actual_is_scalar && expected_is_ptr {
+                    // Don't cast from scalar to pointer - the function returns a concrete type
+                    // (e.g., F64 from Sys.time()) but the HIR expects Dynamic (Ptr(Void)).
+                    // Trust the actual return type to preserve type information.
+                    eprintln!("DEBUG: CallDirect type mismatch - function returns {:?}, expected {:?}, but NOT inserting cast (scalar->pointer would lose type info)",
+                              actual_return_type, ty);
+                    // Type already registered above - trust actual type
                 } else {
                     eprintln!("DEBUG: CallDirect type mismatch - function returns {:?}, expected {:?}, inserting cast",
                               actual_return_type, ty);
