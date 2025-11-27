@@ -2382,6 +2382,70 @@ impl<'a> HirToMirContext<'a> {
                     if symbol_name == "trace" && args.len() == 1 {
                         let arg = &args[0];
 
+                        // Check if arg is a class type - if so, we'll try to call toString() on it
+                        // The toString method name follows the pattern: {ClassName}_toString
+                        let type_table = self.type_table.borrow();
+                        let class_info = if let Some(type_info) = type_table.get(arg.ty) {
+                            if let crate::tast::core::TypeKind::Class { symbol_id, .. } = &type_info.kind {
+                                // Get class name
+                                self.symbol_table.get_symbol(*symbol_id)
+                                    .and_then(|s| self.string_interner.get(s.name))
+                                    .map(|name| name.to_string())
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        drop(type_table);
+
+                        // If this is a class type, try to call toString() on it
+                        if let Some(class_name) = class_info {
+                            eprintln!("DEBUG: [TRACE] Class '{}' detected, calling toString()", class_name);
+                            // Lower the object first
+                            let obj_reg = self.lower_expression(arg)?;
+
+                            // Try to find a toString function - methods are named without class prefix in MIR
+                            let tostring_func_name = "toString";
+
+                            // toString() returns *String, takes this pointer
+                            let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
+                            let _this_ty = IrType::Ptr(Box::new(IrType::Void));
+
+                            // Try to find the toString function in the current module
+                            // Look through the module's functions to find one matching the name
+                            let tostring_id = self.builder.module.functions.iter()
+                                .find(|(_, func)| func.name == tostring_func_name)
+                                .map(|(id, _)| *id);
+
+                            eprintln!("DEBUG: [TRACE] Looking for '{}', found: {:?}, module has {} functions",
+                                tostring_func_name, tostring_id, self.builder.module.functions.len());
+
+                            // If not found, we'll fall through to traceAny
+                            if let Some(tostring_id) = tostring_id {
+                                // Call toString
+                                let string_reg = self.builder.build_call_direct(
+                                    tostring_id,
+                                    vec![obj_reg],
+                                    string_ptr_ty.clone(),
+                                )?;
+
+                                // Now trace the string result
+                                let string_trace_id = self.get_or_register_extern_function(
+                                    "haxe_trace_string_struct",
+                                    vec![string_ptr_ty],
+                                    IrType::Void,
+                                );
+                                return self.builder.build_call_direct(
+                                    string_trace_id,
+                                    vec![string_reg],
+                                    IrType::Void,
+                                );
+                            } else {
+                                eprintln!("DEBUG: [TRACE] toString function '{}' not found, falling back to traceAny", tostring_func_name);
+                            }
+                        }
+
                         // Lower the argument first to get the actual MIR register
                         let arg_reg = self.lower_expression(arg)?;
 
