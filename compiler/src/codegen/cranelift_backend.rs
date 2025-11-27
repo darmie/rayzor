@@ -2703,6 +2703,9 @@ impl CraneliftBackend {
 
         println!("  🚀 Executing {}()...", main_func.name);
 
+        // Initialize the runtime (type system, etc.) before calling user code
+        rayzor_runtime::rayzor_runtime_init();
+
         // Call the main function (assuming it's void main() -> void)
         // This is unsafe because we're calling JIT-compiled code
         unsafe {

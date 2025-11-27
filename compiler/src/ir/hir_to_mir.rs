@@ -3246,41 +3246,98 @@ impl<'a> HirToMirContext<'a> {
 
                             // Apply pointer conversion for parameters that need it (metadata-driven)
                             // The RuntimeFunctionCall metadata specifies which params need conversion via bitmask
-                            // This means the runtime function expects a POINTER TO the value, not the value directly.
-                            // This is required for functions like haxe_array_push which copy data from the pointer.
+                            // This means the runtime function expects a BOXED DYNAMIC value (tagged pointer).
+                            // We use haxe_box_*_ptr functions to create properly tagged Dynamic values.
                             let mut final_arg_regs = arg_regs.clone();
                             if ptr_conversion_mask != 0 {
                                 for i in 0..arg_regs.len() {
                                     // Check if bit i is set in the mask
                                     if (ptr_conversion_mask & (1 << i)) != 0 {
                                         let arg_reg = arg_regs[i];
-                                        // Default to I64 (pointer-sized) if type is unknown.
-                                        // This is safer than I32 since pointers and most values are 64-bit.
-                                        // Only extend KNOWN I32 values, not unknown ones that might be pointers.
                                         let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I64);
 
-                                        // For array operations, always allocate 8 bytes (elem_size is always 8)
-                                        // and extend smaller values to 64-bit
-                                        let (alloc_type, value_to_store) = match arg_type {
+                                        // Use proper Dynamic boxing based on the argument type
+                                        // This creates a tagged Dynamic value that can be unboxed later
+                                        let boxed_reg = match &arg_type {
                                             IrType::I32 => {
-                                                // Cast/extend i32 to i64 for consistent storage
-                                                let ext_val = self.builder.build_cast(arg_reg, IrType::I32, IrType::I64);
-                                                (IrType::I64, ext_val.unwrap_or(arg_reg))
+                                                // Box int using haxe_box_int_ptr
+                                                let box_func = self.get_or_register_extern_function(
+                                                    "haxe_box_int_ptr",
+                                                    vec![IrType::I32],
+                                                    IrType::Ptr(Box::new(IrType::U8)),
+                                                );
+                                                self.builder.build_call_direct(
+                                                    box_func,
+                                                    vec![arg_reg],
+                                                    IrType::Ptr(Box::new(IrType::U8)),
+                                                )
                                             }
-                                            IrType::F32 => {
-                                                // Cast/extend f32 to f64 for consistent storage
-                                                let ext_val = self.builder.build_cast(arg_reg, IrType::F32, IrType::F64);
-                                                (IrType::F64, ext_val.unwrap_or(arg_reg))
+                                            IrType::I64 => {
+                                                // Box int64 - use haxe_box_int_ptr after truncating
+                                                // Note: This may lose precision for large values
+                                                let truncated = self.builder.build_cast(arg_reg, IrType::I64, IrType::I32);
+                                                let truncated_reg = truncated.unwrap_or(arg_reg);
+                                                let box_func = self.get_or_register_extern_function(
+                                                    "haxe_box_int_ptr",
+                                                    vec![IrType::I32],
+                                                    IrType::Ptr(Box::new(IrType::U8)),
+                                                );
+                                                self.builder.build_call_direct(
+                                                    box_func,
+                                                    vec![truncated_reg],
+                                                    IrType::Ptr(Box::new(IrType::U8)),
+                                                )
                                             }
-                                            _ => (arg_type.clone(), arg_reg)
+                                            IrType::F32 | IrType::F64 => {
+                                                // Box float using haxe_box_float_ptr
+                                                let float_val = if arg_type == IrType::F32 {
+                                                    self.builder.build_cast(arg_reg, IrType::F32, IrType::F64)
+                                                        .unwrap_or(arg_reg)
+                                                } else {
+                                                    arg_reg
+                                                };
+                                                let box_func = self.get_or_register_extern_function(
+                                                    "haxe_box_float_ptr",
+                                                    vec![IrType::F64],
+                                                    IrType::Ptr(Box::new(IrType::U8)),
+                                                );
+                                                self.builder.build_call_direct(
+                                                    box_func,
+                                                    vec![float_val],
+                                                    IrType::Ptr(Box::new(IrType::U8)),
+                                                )
+                                            }
+                                            IrType::Bool => {
+                                                // Box bool using haxe_box_bool_ptr
+                                                let box_func = self.get_or_register_extern_function(
+                                                    "haxe_box_bool_ptr",
+                                                    vec![IrType::Bool],
+                                                    IrType::Ptr(Box::new(IrType::U8)),
+                                                );
+                                                self.builder.build_call_direct(
+                                                    box_func,
+                                                    vec![arg_reg],
+                                                    IrType::Ptr(Box::new(IrType::U8)),
+                                                )
+                                            }
+                                            IrType::Ptr(_) | IrType::Struct { .. } => {
+                                                // Already a pointer/reference type - no boxing needed
+                                                Some(arg_reg)
+                                            }
+                                            _ => {
+                                                // For other types, fallback to stack allocation
+                                                // (This preserves the old behavior for edge cases)
+                                                if let Some(stack_slot) = self.builder.build_alloc(arg_type.clone(), None) {
+                                                    self.builder.build_store(stack_slot, arg_reg);
+                                                    Some(stack_slot)
+                                                } else {
+                                                    Some(arg_reg)
+                                                }
+                                            }
                                         };
 
-                                        // Allocate stack space and pass a pointer to the value.
-                                        if let Some(stack_slot) = self.builder.build_alloc(alloc_type.clone(), None) {
-                                            // Store the value into the stack slot
-                                            self.builder.build_store(stack_slot, value_to_store);
-                                            // Use the pointer for the call
-                                            final_arg_regs[i] = stack_slot;
+                                        if let Some(boxed) = boxed_reg {
+                                            final_arg_regs[i] = boxed;
                                         }
                                     }
                                 }

@@ -46,6 +46,33 @@ class Main {
 }
 "#;
     run_test(source2, "stringmap_set");
+
+    // Test 3: StringMap get
+    println!("\nTest 3: StringMap get");
+    let source3 = r#"
+import haxe.ds.StringMap;
+
+class Main {
+    static function main() {
+        var map = new StringMap<Int>();
+
+        // Set values
+        map.set("one", 1);
+        map.set("two", 2);
+        map.set("three", 3);
+
+        // Get values
+        var v1 = map.get("one");
+        var v2 = map.get("two");
+        var v3 = map.get("three");
+
+        trace(v1);  // 1
+        trace(v2);  // 2
+        trace(v3);  // 3
+    }
+}
+"#;
+    run_test(source3, "stringmap_get");
 }
 
 fn run_test(source: &str, name: &str) {
