@@ -157,13 +157,9 @@ pub extern "C" fn haxe_array_get_ptr(arr: *const HaxeArray, index: usize) -> *mu
 /// Push element onto array
 #[no_mangle]
 pub extern "C" fn haxe_array_push(arr: *mut HaxeArray, data: *const u8) {
-    eprintln!("[DEBUG haxe_array_push] Called with arr={:?}, data={:?}", arr, data);
     if arr.is_null() || data.is_null() {
-        eprintln!("[DEBUG haxe_array_push] arr or data is null, returning");
         return;
     }
-    eprintln!("[DEBUG haxe_array_push] Before: arr.ptr={:?}, arr.len={}, arr.cap={}, arr.elem_size={}",
-              unsafe { (*arr).ptr }, unsafe { (*arr).len }, unsafe { (*arr).cap }, unsafe { (*arr).elem_size });
 
     unsafe {
         let arr_ref = &mut *arr;
@@ -199,16 +195,6 @@ pub extern "C" fn haxe_array_push(arr: *mut HaxeArray, data: *const u8) {
 
         // Add element
         let elem_ptr = arr_ref.ptr.add(arr_ref.len * arr_ref.elem_size);
-
-        // Debug: show what we're copying
-        if arr_ref.elem_size == 8 {
-            let val = *(data as *const i64);
-            eprintln!("[DEBUG haxe_array_push] Copying 8-byte value: {} (0x{:x})", val, val);
-        } else if arr_ref.elem_size == 4 {
-            let val = *(data as *const i32);
-            eprintln!("[DEBUG haxe_array_push] Copying 4-byte value: {}", val);
-        }
-
         ptr::copy_nonoverlapping(data, elem_ptr, arr_ref.elem_size);
         arr_ref.len += 1;
     }

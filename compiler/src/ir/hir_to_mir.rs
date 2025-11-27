@@ -3373,8 +3373,17 @@ impl<'a> HirToMirContext<'a> {
                                                 )
                                             }
                                             IrType::Ptr(_) | IrType::Struct { .. } => {
-                                                // Already a pointer/reference type - no boxing needed
-                                                Some(arg_reg)
+                                                // Pointer/reference types still need stack allocation for ptr_params
+                                                // because the runtime function expects a pointer TO the value,
+                                                // and the value itself is a pointer we need to pass BY REFERENCE.
+                                                // Example: haxe_array_push(arr, data) where data = &value
+                                                // For Array<Thread>, value is a pointer, so data = &pointer
+                                                if let Some(stack_slot) = self.builder.build_alloc(arg_type.clone(), None) {
+                                                    self.builder.build_store(stack_slot, arg_reg);
+                                                    Some(stack_slot)
+                                                } else {
+                                                    Some(arg_reg)
+                                                }
                                             }
                                             _ => {
                                                 // For other types, fallback to stack allocation
