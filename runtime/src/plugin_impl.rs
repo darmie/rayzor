@@ -62,7 +62,8 @@ register_symbol!("haxe_string_char_at", crate::haxe_string::haxe_string_char_at)
 register_symbol!("haxe_string_char_code_at", crate::haxe_string::haxe_string_char_code_at);
 
 // Operations
-register_symbol!("haxe_string_concat", crate::haxe_string::haxe_string_concat);
+// Use the pointer-returning version from string.rs to avoid struct return ABI issues
+register_symbol!("haxe_string_concat", crate::string::haxe_string_concat_ptr);
 register_symbol!("haxe_string_substring", crate::haxe_string::haxe_string_substring);
 register_symbol!("haxe_string_substr", crate::haxe_string::haxe_string_substr);
 register_symbol!("haxe_string_to_upper_case", crate::haxe_string::haxe_string_to_upper_case);

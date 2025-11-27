@@ -21,7 +21,8 @@ use std::ptr;
 
 // Export Vec module (old API - keeping for backward compat)
 pub mod vec;
-// Note: old string.rs removed due to ABI issues with struct returns
+// String module with return-value style concat
+pub mod string;
 
 // Generic Vec<T> runtime - type-specialized vectors for monomorphization
 pub mod generic_vec;

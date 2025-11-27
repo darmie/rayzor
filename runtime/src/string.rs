@@ -17,9 +17,8 @@ pub struct HaxeString {
     pub cap: usize,
 }
 
-/// Create a new empty string
-#[no_mangle]
-pub extern "C" fn haxe_string_new() -> HaxeString {
+/// Create a new empty string (internal helper, not exported)
+pub fn haxe_string_new() -> HaxeString {
     const INITIAL_CAPACITY: usize = 16;
 
     unsafe {
@@ -38,9 +37,8 @@ pub extern "C" fn haxe_string_new() -> HaxeString {
     }
 }
 
-/// Create a string from a C string (null-terminated)
-#[no_mangle]
-pub extern "C" fn haxe_string_from_cstr(cstr: *const u8) -> HaxeString {
+/// Create a string from a C string (null-terminated) - internal helper
+fn haxe_string_from_cstr(cstr: *const u8) -> HaxeString {
     unsafe {
         if cstr.is_null() {
             return haxe_string_new();
@@ -68,9 +66,8 @@ pub extern "C" fn haxe_string_from_cstr(cstr: *const u8) -> HaxeString {
     }
 }
 
-/// Create a string from bytes with length
-#[no_mangle]
-pub extern "C" fn haxe_string_from_bytes(bytes: *const u8, len: usize) -> HaxeString {
+/// Create a string from bytes with length - internal helper
+fn haxe_string_from_bytes(bytes: *const u8, len: usize) -> HaxeString {
     unsafe {
         if bytes.is_null() || len == 0 {
             return haxe_string_new();
@@ -92,9 +89,8 @@ pub extern "C" fn haxe_string_from_bytes(bytes: *const u8, len: usize) -> HaxeSt
     }
 }
 
-/// Get the length of the string in bytes
-#[no_mangle]
-pub extern "C" fn haxe_string_len(s: *const HaxeString) -> usize {
+/// Get the length of the string in bytes - internal helper
+fn haxe_string_len(s: *const HaxeString) -> usize {
     unsafe {
         if s.is_null() {
             return 0;
@@ -103,9 +99,8 @@ pub extern "C" fn haxe_string_len(s: *const HaxeString) -> usize {
     }
 }
 
-/// Get a byte at index
-#[no_mangle]
-pub extern "C" fn haxe_string_char_at(s: *const HaxeString, index: usize) -> u8 {
+/// Get a byte at index - internal helper
+fn haxe_string_char_at(s: *const HaxeString, index: usize) -> u8 {
     unsafe {
         if s.is_null() {
             return 0;
@@ -120,9 +115,18 @@ pub extern "C" fn haxe_string_char_at(s: *const HaxeString, index: usize) -> u8 
     }
 }
 
-/// Concatenate two strings
+/// Concatenate two strings and return a heap-allocated result pointer
+/// This avoids struct return ABI issues
 #[no_mangle]
-pub extern "C" fn haxe_string_concat(a: *const HaxeString, b: *const HaxeString) -> HaxeString {
+pub extern "C" fn haxe_string_concat_ptr(a: *const HaxeString, b: *const HaxeString) -> *mut HaxeString {
+    let result = haxe_string_concat_impl(a, b);
+    // Allocate on heap and return pointer
+    let boxed = Box::new(result);
+    Box::into_raw(boxed)
+}
+
+/// Concatenate two strings (returns value - may have ABI issues with large structs)
+fn haxe_string_concat_impl(a: *const HaxeString, b: *const HaxeString) -> HaxeString {
     unsafe {
         if a.is_null() && b.is_null() {
             return haxe_string_new();
@@ -174,9 +178,8 @@ pub extern "C" fn haxe_string_concat(a: *const HaxeString, b: *const HaxeString)
     }
 }
 
-/// Get a substring
-#[no_mangle]
-pub extern "C" fn haxe_string_substr(s: *const HaxeString, start: usize, len: usize) -> HaxeString {
+/// Get a substring - internal helper
+fn haxe_string_substr(s: *const HaxeString, start: usize, len: usize) -> HaxeString {
     unsafe {
         if s.is_null() {
             return haxe_string_new();
@@ -198,9 +201,9 @@ pub extern "C" fn haxe_string_substr(s: *const HaxeString, start: usize, len: us
     }
 }
 
-/// Convert to lowercase (ASCII only for now)
-#[no_mangle]
-pub extern "C" fn haxe_string_to_lower(s: *const HaxeString) -> HaxeString {
+/// Convert to lowercase (ASCII only for now) - internal helper
+#[allow(dead_code)]
+fn haxe_string_to_lower(s: *const HaxeString) -> HaxeString {
     unsafe {
         if s.is_null() {
             return haxe_string_new();
@@ -220,9 +223,9 @@ pub extern "C" fn haxe_string_to_lower(s: *const HaxeString) -> HaxeString {
     }
 }
 
-/// Convert to uppercase (ASCII only for now)
-#[no_mangle]
-pub extern "C" fn haxe_string_to_upper(s: *const HaxeString) -> HaxeString {
+/// Convert to uppercase (ASCII only for now) - internal helper
+#[allow(dead_code)]
+fn haxe_string_to_upper(s: *const HaxeString) -> HaxeString {
     unsafe {
         if s.is_null() {
             return haxe_string_new();
@@ -242,9 +245,9 @@ pub extern "C" fn haxe_string_to_upper(s: *const HaxeString) -> HaxeString {
     }
 }
 
-/// Free a string
-#[no_mangle]
-pub extern "C" fn haxe_string_free(s: *mut HaxeString) {
+/// Free a string - internal helper
+#[allow(dead_code)]
+fn haxe_string_free(s: *mut HaxeString) {
     unsafe {
         if s.is_null() {
             return;
@@ -263,9 +266,9 @@ pub extern "C" fn haxe_string_free(s: *mut HaxeString) {
     }
 }
 
-/// Get pointer to the string data (for debugging/printing)
-#[no_mangle]
-pub extern "C" fn haxe_string_as_ptr(s: *const HaxeString) -> *const u8 {
+/// Get pointer to the string data (for debugging/printing) - internal helper
+#[allow(dead_code)]
+fn haxe_string_as_ptr(s: *const HaxeString) -> *const u8 {
     unsafe {
         if s.is_null() {
             return ptr::null();

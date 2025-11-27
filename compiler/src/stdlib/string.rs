@@ -3,10 +3,13 @@
 /// Provides string operations with actual MIR function bodies
 
 use crate::ir::mir_builder::MirBuilder;
-use crate::ir::{IrType, CallingConvention, BinaryOp, CompareOp};
+use crate::ir::{IrType, CallingConvention, CompareOp};
 
 /// Build all string type functions
 pub fn build_string_type(builder: &mut MirBuilder) {
+    // Declare extern functions first
+    declare_string_externs(builder);
+
     build_string_new(builder);
     build_string_concat(builder);
     build_string_length(builder);
@@ -20,6 +23,20 @@ pub fn build_string_type(builder: &mut MirBuilder) {
     build_string_to_float(builder);
     build_string_from_chars(builder);
     build_trace(builder);
+}
+
+/// Declare extern runtime functions for string operations
+fn declare_string_externs(builder: &mut MirBuilder) {
+    // extern fn haxe_string_concat(a: *String, b: *String) -> *String
+    // Returns a pointer to avoid struct return ABI issues
+    let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
+    let func_id = builder.begin_function("haxe_string_concat")
+        .param("a", string_ptr_ty.clone())
+        .param("b", string_ptr_ty.clone())
+        .returns(string_ptr_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
 }
 
 /// Build: fn string_new() -> String
@@ -40,15 +57,16 @@ fn build_string_new(builder: &mut MirBuilder) {
     builder.ret(Some(empty_str));
 }
 
-/// Build: fn string_concat(s1: &String, s2: &String) -> String
-/// Concatenates two strings
+/// Build: fn string_concat(s1: *String, s2: *String) -> *String
+/// Concatenates two strings by calling the runtime function
+/// Returns a pointer to avoid struct return ABI issues
 fn build_string_concat(builder: &mut MirBuilder) {
-    let string_ref_ty = IrType::Ref(Box::new(IrType::String));
+    let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
 
     let func_id = builder.begin_function("string_concat")
-        .param("s1", string_ref_ty.clone())
-        .param("s2", string_ref_ty.clone())
-        .returns(IrType::String)
+        .param("s1", string_ptr_ty.clone())
+        .param("s2", string_ptr_ty.clone())
+        .returns(string_ptr_ty.clone())
         .calling_convention(CallingConvention::C)
         .build();
 
@@ -60,13 +78,11 @@ fn build_string_concat(builder: &mut MirBuilder) {
     let s1_ptr = builder.get_param(0);
     let s2_ptr = builder.get_param(1);
 
-    // Load the actual strings from the references
-    let s1 = builder.load(s1_ptr, IrType::String);
-    let s2 = builder.load(s2_ptr, IrType::String);
+    // Call extern runtime function directly
+    let extern_id = builder.get_function_by_name("haxe_string_concat")
+        .expect("haxe_string_concat not found");
+    let result = builder.call(extern_id, vec![s1_ptr, s2_ptr]).unwrap();
 
-    // Use BinaryOp::Add for string concatenation
-    // (This is lowered to appropriate string concat operation in codegen)
-    let result = builder.bin_op(BinaryOp::Add, s1, s2);
     builder.ret(Some(result));
 }
 
