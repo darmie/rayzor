@@ -160,10 +160,12 @@ pub unsafe extern "C" fn rayzor_free(ptr: *mut u8, size: u64) {
     dealloc(ptr, layout);
 }
 
-/// Initialize RTTI (Runtime Type Information) for Dynamic value support.
-/// This registers built-in types (Int, Float, Bool, String, etc.) so that
-/// boxed Dynamic values can be inspected, traced, and converted to strings.
-/// Must be called before any code that uses Dynamic boxing/unboxing.
+/// Initialize RTTI (Runtime Type Information) for user-defined types.
+///
+/// Note: Primitive types (Int, Float, Bool, String, etc.) are automatically
+/// registered on first access via lazy initialization. This function is only
+/// needed if you want to register custom user-defined types before they're
+/// accessed, or to force early initialization.
 pub fn init_rtti() {
     type_system::init_type_system();
 }

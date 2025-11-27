@@ -1072,19 +1072,29 @@ pub extern "C" fn haxe_filesystem_absolute_path(path: *const HaxeString) -> *mut
 // StringMap<T> (haxe.ds.StringMap)
 // ============================================================================
 //
-// StringMap is a hash map with String keys. Since we're type-erased at runtime,
-// values are stored as raw pointers (*mut u8 representing Dynamic/boxed values).
+// High-performance StringMap with inline value storage.
+// Values are stored as raw 64-bit values (u64) - no boxing, no heap allocation per value.
+// Type is known at compile time; the runtime stores raw bits.
+//
+// For primitives (Int, Float, Bool): value is stored directly as bits
+// For pointers (String, objects): pointer value is stored as u64
+//
+// This gives us:
+// - No heap allocation per value (values inline in HashMap)
+// - No type tags (type known at compile time)
+// - Cache-friendly layout
+// - Zero-cost abstraction over HashMap<String, u64>
 
 use std::collections::HashMap;
 
-/// Opaque handle to a StringMap instance
-/// The map stores String -> *mut u8 (pointer to boxed value)
+/// High-performance StringMap with inline 8-byte value storage
+/// Values are stored as raw u64 bits - no boxing overhead
+#[repr(C)]
 pub struct HaxeStringMap {
-    map: HashMap<String, *mut u8>,
+    map: HashMap<String, u64>,
 }
 
 /// Create a new StringMap
-/// StringMap.new(): StringMap<T>
 #[no_mangle]
 pub extern "C" fn haxe_stringmap_new() -> *mut HaxeStringMap {
     Box::into_raw(Box::new(HaxeStringMap {
@@ -1093,9 +1103,9 @@ pub extern "C" fn haxe_stringmap_new() -> *mut HaxeStringMap {
 }
 
 /// Set a value in the StringMap
-/// StringMap.set(key: String, value: T): Void
+/// Value is passed as raw u64 bits (compiler handles type conversion)
 #[no_mangle]
-pub extern "C" fn haxe_stringmap_set(map_ptr: *mut HaxeStringMap, key: *const HaxeString, value: *mut u8) {
+pub extern "C" fn haxe_stringmap_set(map_ptr: *mut HaxeStringMap, key: *const HaxeString, value: u64) {
     if map_ptr.is_null() {
         return;
     }
@@ -1108,25 +1118,24 @@ pub extern "C" fn haxe_stringmap_set(map_ptr: *mut HaxeStringMap, key: *const Ha
 }
 
 /// Get a value from the StringMap
-/// StringMap.get(key: String): Null<T>
-/// Returns null (null pointer) if key doesn't exist
+/// Returns raw u64 bits (compiler handles type conversion)
+/// Returns 0 if key doesn't exist (caller should use exists() to distinguish)
 #[no_mangle]
-pub extern "C" fn haxe_stringmap_get(map_ptr: *mut HaxeStringMap, key: *const HaxeString) -> *mut u8 {
+pub extern "C" fn haxe_stringmap_get(map_ptr: *mut HaxeStringMap, key: *const HaxeString) -> u64 {
     if map_ptr.is_null() {
-        return std::ptr::null_mut();
+        return 0;
     }
     unsafe {
         let map = &*map_ptr;
         if let Some(key_str) = haxe_string_to_rust(key) {
-            map.map.get(&key_str).copied().unwrap_or(std::ptr::null_mut())
+            map.map.get(&key_str).copied().unwrap_or(0)
         } else {
-            std::ptr::null_mut()
+            0
         }
     }
 }
 
 /// Check if a key exists in the StringMap
-/// StringMap.exists(key: String): Bool
 #[no_mangle]
 pub extern "C" fn haxe_stringmap_exists(map_ptr: *mut HaxeStringMap, key: *const HaxeString) -> bool {
     if map_ptr.is_null() {
@@ -1143,7 +1152,6 @@ pub extern "C" fn haxe_stringmap_exists(map_ptr: *mut HaxeStringMap, key: *const
 }
 
 /// Remove a key from the StringMap
-/// StringMap.remove(key: String): Bool
 /// Returns true if the key existed and was removed
 #[no_mangle]
 pub extern "C" fn haxe_stringmap_remove(map_ptr: *mut HaxeStringMap, key: *const HaxeString) -> bool {
@@ -1161,7 +1169,6 @@ pub extern "C" fn haxe_stringmap_remove(map_ptr: *mut HaxeStringMap, key: *const
 }
 
 /// Clear all entries from the StringMap
-/// StringMap.clear(): Void
 #[no_mangle]
 pub extern "C" fn haxe_stringmap_clear(map_ptr: *mut HaxeStringMap) {
     if map_ptr.is_null() {
@@ -1173,7 +1180,7 @@ pub extern "C" fn haxe_stringmap_clear(map_ptr: *mut HaxeStringMap) {
     }
 }
 
-/// Get the number of keys in the map (for iteration support)
+/// Get the number of entries in the map
 #[no_mangle]
 pub extern "C" fn haxe_stringmap_count(map_ptr: *mut HaxeStringMap) -> i64 {
     if map_ptr.is_null() {
@@ -1206,7 +1213,6 @@ pub extern "C" fn haxe_stringmap_keys(map_ptr: *mut HaxeStringMap, out_len: *mut
 }
 
 /// Convert StringMap to string representation
-/// StringMap.toString(): String
 #[no_mangle]
 pub extern "C" fn haxe_stringmap_to_string(map_ptr: *mut HaxeStringMap) -> *mut HaxeString {
     if map_ptr.is_null() {
@@ -1214,8 +1220,8 @@ pub extern "C" fn haxe_stringmap_to_string(map_ptr: *mut HaxeStringMap) -> *mut 
     }
     unsafe {
         let map = &*map_ptr;
-        let entries: Vec<String> = map.map.keys()
-            .map(|k| format!("{} => ...", k))
+        let entries: Vec<String> = map.map.iter()
+            .map(|(k, v)| format!("{} => {}", k, v))
             .collect();
         let result = format!("{{{}}}", entries.join(", "));
         rust_string_to_haxe(result)
@@ -1226,15 +1232,16 @@ pub extern "C" fn haxe_stringmap_to_string(map_ptr: *mut HaxeStringMap) -> *mut 
 // IntMap<T> (haxe.ds.IntMap)
 // ============================================================================
 //
-// IntMap is a hash map with Int keys. Values are stored as raw pointers.
+// High-performance IntMap with inline value storage.
+// Same design as StringMap - values stored as raw u64 bits.
 
-/// Opaque handle to an IntMap instance
+/// High-performance IntMap with inline 8-byte value storage
+#[repr(C)]
 pub struct HaxeIntMap {
-    map: HashMap<i64, *mut u8>,
+    map: HashMap<i64, u64>,
 }
 
 /// Create a new IntMap
-/// IntMap.new(): IntMap<T>
 #[no_mangle]
 pub extern "C" fn haxe_intmap_new() -> *mut HaxeIntMap {
     Box::into_raw(Box::new(HaxeIntMap {
@@ -1243,9 +1250,9 @@ pub extern "C" fn haxe_intmap_new() -> *mut HaxeIntMap {
 }
 
 /// Set a value in the IntMap
-/// IntMap.set(key: Int, value: T): Void
+/// Value is passed as raw u64 bits
 #[no_mangle]
-pub extern "C" fn haxe_intmap_set(map_ptr: *mut HaxeIntMap, key: i64, value: *mut u8) {
+pub extern "C" fn haxe_intmap_set(map_ptr: *mut HaxeIntMap, key: i64, value: u64) {
     if map_ptr.is_null() {
         return;
     }
@@ -1256,21 +1263,19 @@ pub extern "C" fn haxe_intmap_set(map_ptr: *mut HaxeIntMap, key: i64, value: *mu
 }
 
 /// Get a value from the IntMap
-/// IntMap.get(key: Int): Null<T>
-/// Returns null (null pointer) if key doesn't exist
+/// Returns raw u64 bits, 0 if key doesn't exist
 #[no_mangle]
-pub extern "C" fn haxe_intmap_get(map_ptr: *mut HaxeIntMap, key: i64) -> *mut u8 {
+pub extern "C" fn haxe_intmap_get(map_ptr: *mut HaxeIntMap, key: i64) -> u64 {
     if map_ptr.is_null() {
-        return std::ptr::null_mut();
+        return 0;
     }
     unsafe {
         let map = &*map_ptr;
-        map.map.get(&key).copied().unwrap_or(std::ptr::null_mut())
+        map.map.get(&key).copied().unwrap_or(0)
     }
 }
 
 /// Check if a key exists in the IntMap
-/// IntMap.exists(key: Int): Bool
 #[no_mangle]
 pub extern "C" fn haxe_intmap_exists(map_ptr: *mut HaxeIntMap, key: i64) -> bool {
     if map_ptr.is_null() {
@@ -1283,7 +1288,6 @@ pub extern "C" fn haxe_intmap_exists(map_ptr: *mut HaxeIntMap, key: i64) -> bool
 }
 
 /// Remove a key from the IntMap
-/// IntMap.remove(key: Int): Bool
 /// Returns true if the key existed and was removed
 #[no_mangle]
 pub extern "C" fn haxe_intmap_remove(map_ptr: *mut HaxeIntMap, key: i64) -> bool {
@@ -1297,7 +1301,6 @@ pub extern "C" fn haxe_intmap_remove(map_ptr: *mut HaxeIntMap, key: i64) -> bool
 }
 
 /// Clear all entries from the IntMap
-/// IntMap.clear(): Void
 #[no_mangle]
 pub extern "C" fn haxe_intmap_clear(map_ptr: *mut HaxeIntMap) {
     if map_ptr.is_null() {
@@ -1309,7 +1312,7 @@ pub extern "C" fn haxe_intmap_clear(map_ptr: *mut HaxeIntMap) {
     }
 }
 
-/// Get the number of keys in the map
+/// Get the number of entries in the map
 #[no_mangle]
 pub extern "C" fn haxe_intmap_count(map_ptr: *mut HaxeIntMap) -> i64 {
     if map_ptr.is_null() {
@@ -1340,7 +1343,6 @@ pub extern "C" fn haxe_intmap_keys(map_ptr: *mut HaxeIntMap, out_len: *mut i64) 
 }
 
 /// Convert IntMap to string representation
-/// IntMap.toString(): String
 #[no_mangle]
 pub extern "C" fn haxe_intmap_to_string(map_ptr: *mut HaxeIntMap) -> *mut HaxeString {
     if map_ptr.is_null() {
@@ -1348,8 +1350,8 @@ pub extern "C" fn haxe_intmap_to_string(map_ptr: *mut HaxeIntMap) -> *mut HaxeSt
     }
     unsafe {
         let map = &*map_ptr;
-        let entries: Vec<String> = map.map.keys()
-            .map(|k| format!("{} => ...", k))
+        let entries: Vec<String> = map.map.iter()
+            .map(|(k, v)| format!("{} => {}", k, v))
             .collect();
         let result = format!("{{{}}}", entries.join(", "));
         rust_string_to_haxe(result)

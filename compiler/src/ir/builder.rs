@@ -358,7 +358,19 @@ impl IrBuilder {
         to_ty: IrType,
     ) -> Option<IrId> {
         let dest = self.alloc_reg()?;
-        self.add_instruction(IrInstruction::Cast { dest, src, from_ty, to_ty })?;
+        self.add_instruction(IrInstruction::Cast { dest, src, from_ty: from_ty.clone(), to_ty: to_ty.clone() })?;
+        // Track the result type
+        self.set_register_type(dest, to_ty);
+        Some(dest)
+    }
+
+    /// Build a bitcast instruction (reinterpret bits without conversion)
+    /// Used for type-punning like f64 -> u64 (same bits, different interpretation)
+    pub fn build_bitcast(&mut self, src: IrId, to_ty: IrType) -> Option<IrId> {
+        let dest = self.alloc_reg()?;
+        self.add_instruction(IrInstruction::BitCast { dest, src, ty: to_ty.clone() })?;
+        // Track the result type
+        self.set_register_type(dest, to_ty);
         Some(dest)
     }
     

@@ -1101,10 +1101,13 @@ impl<'a> HirToMirContext<'a> {
                     if let Some(index_const) =
                         self.builder.build_const(IrValue::I32(field_index as i32))
                     {
-                        // Use I32 as default field type (TODO: get actual type)
+                        // Get the actual field type from the symbol table
+                        let field_ty = self.symbol_table.get_symbol(field_init.field)
+                            .map(|s| self.convert_type(s.type_id))
+                            .unwrap_or(IrType::I32);
                         if let Some(field_ptr) =
                             self.builder
-                                .build_gep(this_reg, vec![index_const], IrType::I32)
+                                .build_gep(this_reg, vec![index_const], field_ty)
                         {
                             self.builder.build_store(field_ptr, value_reg);
                         }
@@ -3153,6 +3156,9 @@ impl<'a> HirToMirContext<'a> {
                         {
                             let runtime_func = runtime_call.runtime_name;
                             let ptr_conversion_mask = runtime_call.params_need_ptr_conversion;
+                            let raw_value_mask = runtime_call.raw_value_params;
+                            let returns_raw_value = runtime_call.returns_raw_value;
+                            let extend_i64_mask = runtime_call.extend_to_i64_params;
 
                             // SPECIAL CASE: Check if this is a stdlib MIR function
                             // For these classes, we have MIR wrapper functions that forward to extern runtime functions.
@@ -3244,12 +3250,58 @@ impl<'a> HirToMirContext<'a> {
                                 .filter_map(|a| self.lower_expression(a))
                                 .collect();
 
-                            // Apply pointer conversion for parameters that need it (metadata-driven)
-                            // The RuntimeFunctionCall metadata specifies which params need conversion via bitmask
-                            // This means the runtime function expects a BOXED DYNAMIC value (tagged pointer).
-                            // We use haxe_box_*_ptr functions to create properly tagged Dynamic values.
+                            // Apply raw value conversion for high-performance inline storage (StringMap, IntMap)
+                            // Values are cast to u64 raw bits - no boxing, no heap allocation
                             let mut final_arg_regs = arg_regs.clone();
-                            if ptr_conversion_mask != 0 {
+                            if raw_value_mask != 0 {
+                                for i in 0..arg_regs.len() {
+                                    if (raw_value_mask & (1 << i)) != 0 {
+                                        let arg_reg = arg_regs[i];
+                                        let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I64);
+
+                                        // Cast value to U64 raw bits - zero-cost for same-size types
+                                        let raw_reg = match &arg_type {
+                                            IrType::I32 => {
+                                                // Zero-extend i32 to u64
+                                                self.builder.build_cast(arg_reg, IrType::I32, IrType::U64)
+                                            }
+                                            IrType::I64 => {
+                                                // Reinterpret i64 as u64 (same bits) - use cast
+                                                self.builder.build_cast(arg_reg, IrType::I64, IrType::U64)
+                                            }
+                                            IrType::F64 => {
+                                                // Reinterpret f64 bits as u64 - use BitCast instruction
+                                                self.builder.build_bitcast(arg_reg, IrType::U64)
+                                            }
+                                            IrType::F32 => {
+                                                // Extend f32 to f64, then reinterpret as u64
+                                                let f64_reg = self.builder.build_cast(arg_reg, IrType::F32, IrType::F64)
+                                                    .unwrap_or(arg_reg);
+                                                self.builder.build_bitcast(f64_reg, IrType::U64)
+                                            }
+                                            IrType::Bool => {
+                                                // Zero-extend bool to u64
+                                                self.builder.build_cast(arg_reg, IrType::Bool, IrType::U64)
+                                            }
+                                            IrType::Ptr(_) => {
+                                                // Pointer to u64 (address as integer)
+                                                self.builder.build_cast(arg_reg, arg_type.clone(), IrType::U64)
+                                            }
+                                            _ => {
+                                                // For other types, try direct cast to U64
+                                                self.builder.build_cast(arg_reg, arg_type.clone(), IrType::U64)
+                                            }
+                                        };
+
+                                        if let Some(raw) = raw_reg {
+                                            final_arg_regs[i] = raw;
+                                        }
+                                    }
+                                }
+                            }
+                            // Apply pointer conversion for parameters that need it (DEPRECATED - use raw_value_params)
+                            // This creates boxed Dynamic values for legacy runtime functions.
+                            else if ptr_conversion_mask != 0 {
                                 for i in 0..arg_regs.len() {
                                     // Check if bit i is set in the mask
                                     if (ptr_conversion_mask & (1 << i)) != 0 {
@@ -3343,30 +3395,128 @@ impl<'a> HirToMirContext<'a> {
                                 }
                             }
 
+                            // Apply i32 -> i64 extension for IntMap key parameters
+                            // This is needed because Haxe Int is 32-bit but the runtime uses 64-bit keys
+                            if extend_i64_mask != 0 {
+                                for i in 0..final_arg_regs.len() {
+                                    if (extend_i64_mask & (1 << i)) != 0 {
+                                        let arg_reg = final_arg_regs[i];
+                                        let arg_type = self.builder.get_register_type(arg_reg).unwrap_or(IrType::I32);
+
+                                        // Only extend i32 to i64, skip if already i64
+                                        if arg_type == IrType::I32 {
+                                            if let Some(extended) = self.builder.build_cast(arg_reg, IrType::I32, IrType::I64) {
+                                                final_arg_regs[i] = extended;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             // Get or register the extern runtime function
-                            // Use actual argument types from TAST, applying ptr conversion where needed
+                            // Use actual argument types from TAST, applying type conversion where needed
                             let param_types: Vec<IrType> = args.iter().enumerate()
                                 .map(|(i, arg)| {
-                                    // If this param was converted to a pointer, the type is Ptr
-                                    if ptr_conversion_mask != 0 && (ptr_conversion_mask & (1 << i)) != 0 {
+                                    // Raw value params are passed as U64 (high-performance inline storage)
+                                    if raw_value_mask != 0 && (raw_value_mask & (1 << i)) != 0 {
+                                        IrType::U64
+                                    }
+                                    // Extended i64 params need i64 type in signature
+                                    else if extend_i64_mask != 0 && (extend_i64_mask & (1 << i)) != 0 {
+                                        IrType::I64
+                                    }
+                                    // Legacy ptr_conversion params are passed as Ptr (boxed Dynamic)
+                                    else if ptr_conversion_mask != 0 && (ptr_conversion_mask & (1 << i)) != 0 {
                                         IrType::Ptr(Box::new(IrType::U8))
                                     } else {
                                         self.convert_type(arg.ty)
                                     }
                                 })
                                 .collect();
+
+                            // For functions that return raw values (u64), we need to:
+                            // 1. Resolve the actual type parameter T from the receiver's generic args
+                            // 2. Call with U64 return type
+                            // 3. Cast the result to the resolved type
+                            let resolved_return_type = if returns_raw_value {
+                                // Try to resolve T from receiver's generic arguments
+                                let type_table = self.type_table.borrow();
+                                if let Some(receiver_info) = type_table.get(receiver_type) {
+                                    if let crate::tast::TypeKind::Class { type_args, .. } = &receiver_info.kind {
+                                        if !type_args.is_empty() {
+                                            let concrete_type = self.convert_type(type_args[0]);
+                                            concrete_type
+                                        } else {
+                                            result_type.clone()
+                                        }
+                                    } else {
+                                        result_type.clone()
+                                    }
+                                } else {
+                                    result_type.clone()
+                                }
+                            } else {
+                                result_type.clone()
+                            };
+
+                            let call_return_type = if returns_raw_value {
+                                IrType::U64
+                            } else {
+                                resolved_return_type.clone()
+                            };
+
                             let runtime_func_id = self.get_or_register_extern_function(
                                 &runtime_func,
                                 param_types,
-                                result_type.clone(),
+                                call_return_type.clone(),
                             );
 
                             // Generate the call to the runtime function
-                            return self.builder.build_call_direct(
+                            let call_result = self.builder.build_call_direct(
                                 runtime_func_id,
                                 final_arg_regs,
-                                result_type,
+                                call_return_type,
                             );
+
+                            // If this returns raw value, cast U64 back to the resolved type parameter
+                            if returns_raw_value {
+                                if let Some(raw_reg) = call_result {
+                                    // Cast U64 to the resolved type parameter
+                                    let final_result = match &resolved_return_type {
+                                        IrType::I32 => {
+                                            self.builder.build_cast(raw_reg, IrType::U64, IrType::I32)
+                                        }
+                                        IrType::I64 => {
+                                            self.builder.build_cast(raw_reg, IrType::U64, IrType::I64)
+                                        }
+                                        IrType::F64 => {
+                                            self.builder.build_bitcast(raw_reg, IrType::F64)
+                                        }
+                                        IrType::F32 => {
+                                            // Bitcast to F64, then convert to F32
+                                            if let Some(f64_reg) = self.builder.build_bitcast(raw_reg, IrType::F64) {
+                                                self.builder.build_cast(f64_reg, IrType::F64, IrType::F32)
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        IrType::Bool => {
+                                            self.builder.build_cast(raw_reg, IrType::U64, IrType::Bool)
+                                        }
+                                        IrType::Ptr(_) => {
+                                            // Interpret as pointer
+                                            self.builder.build_cast(raw_reg, IrType::U64, resolved_return_type.clone())
+                                        }
+                                        _ => {
+                                            // For unknown types, return the raw u64
+                                            Some(raw_reg)
+                                        }
+                                    };
+                                    return final_result;
+                                }
+                            }
+
+                            return call_result;
                         }
 
                         // Fallback: Use stdlib mapping to try all possible class/method combinations
@@ -6269,22 +6419,28 @@ impl<'a> HirToMirContext<'a> {
                         if let Some(index_const) =
                             self.builder.build_const(IrValue::I32(field_index as i32))
                         {
-                            // Get the type of the field from the value being assigned
-                            let field_ty = if let Some(func) = self.builder.current_function() {
-                                func.locals
-                                    .get(&value)
-                                    .map(|local| local.ty.clone())
-                                    .unwrap_or(IrType::I32)
-                            } else {
-                                IrType::I32
-                            };
+                            // Get the type of the field from the FIELD'S DECLARED TYPE in symbol table
+                            // NOT from the value's type, which may be incorrect (e.g., I32 for String parameter)
+                            let field_ty = self.symbol_table.get_symbol(*field)
+                                .map(|s| self.convert_type(s.type_id))
+                                .unwrap_or_else(|| {
+                                    // Fallback: find field by name
+                                    let field_name = self.symbol_table.get_symbol(*field).map(|s| s.name);
+                                    for (sym, _) in &self.field_index_map {
+                                        if let Some(sym_info) = self.symbol_table.get_symbol(*sym) {
+                                            if field_name == Some(sym_info.name) {
+                                                return self.convert_type(sym_info.type_id);
+                                            }
+                                        }
+                                    }
+                                    IrType::I32
+                                });
 
                             // Use GEP to get field pointer, then store
                             if let Some(field_ptr) =
                                 self.builder.build_gep(obj_reg, vec![index_const], field_ty)
                             {
                                 self.builder.build_store(field_ptr, value);
-                                // eprintln!("DEBUG: Field write successful");
                             }
                         }
                     } else {
@@ -6324,8 +6480,20 @@ impl<'a> HirToMirContext<'a> {
         // If receiver is Dynamic, automatically unbox to get the actual object pointer
         let (obj, receiver_ty) = {
             let type_table = self.type_table.borrow();
+            let obj_ir_type = self.builder.get_register_type(obj);
             if let Some(ty) = type_table.get(receiver_ty) {
                 if matches!(ty.kind, TypeKind::Dynamic) {
+                    // Check if the object's IR type is already a non-boxed pointer
+                    // If the IR type is Ptr(Void), this is likely a raw pointer from StringMap/IntMap.get(),
+                    // NOT a boxed Dynamic value. In that case, skip unboxing.
+                    if let Some(IrType::Ptr(inner)) = &obj_ir_type {
+                        if matches!(**inner, IrType::Void) {
+                            // This is a raw pointer (e.g., from StringMap<Point>.get()),
+                            // not a boxed Dynamic value. Skip unboxing.
+                            drop(type_table);
+                            return self.lower_field_access_for_class(obj, field, field_ty);
+                        }
+                    }
                     drop(type_table);
 
                     // Unbox to get the actual object pointer
@@ -6556,6 +6724,77 @@ impl<'a> HirToMirContext<'a> {
         self.builder.set_register_type(field_value, field_ir_ty);
 
         // eprintln!("DEBUG: Field access successful - value={:?}", field_value);
+        Some(field_value)
+    }
+
+    /// Direct field access for class objects without Dynamic unboxing.
+    /// Used when we know the object is a raw pointer (e.g., from StringMap<Point>.get())
+    /// but TAST thinks it's Dynamic because the type parameter wasn't resolved.
+    fn lower_field_access_for_class(&mut self, obj: IrId, field: SymbolId, field_ty: TypeId) -> Option<IrId> {
+        // Look up the field index from our field_index_map
+        // Also get the actual field type from the symbol table, NOT from the passed-in field_ty
+        // which may be Dynamic due to unresolved type parameters
+        let (_, field_index, actual_field_type) = match self.field_index_map.get(&field) {
+            Some(&(class_ty, idx)) => {
+                // Get the actual field type from the symbol table
+                let sym_type = self.symbol_table.get_symbol(field)
+                    .map(|s| s.type_id)
+                    .unwrap_or(field_ty);
+                (class_ty, idx, sym_type)
+            },
+            None => {
+                // Fallback: Try to find field by name instead of SymbolId
+                let field_name = self
+                    .symbol_table
+                    .get_symbol(field)
+                    .map(|s| s.name)?;
+
+                // Search for any field with the same name
+                let mut found = None;
+                for (sym, &(class_ty, idx)) in &self.field_index_map {
+                    if let Some(sym_info) = self.symbol_table.get_symbol(*sym) {
+                        if sym_info.name == field_name {
+                            // Get the actual field type from the matched symbol
+                            found = Some((class_ty, idx, sym_info.type_id));
+                            break;
+                        }
+                    }
+                }
+
+                match found {
+                    Some(result) => result,
+                    None => {
+                        let name_str = self.string_interner.get(field_name).unwrap_or("<unknown>");
+                        self.add_error(
+                            &format!(
+                                "Field '{}' ({:?}) index not found for raw pointer access",
+                                name_str, field
+                            ),
+                            SourceLocation::unknown(),
+                        );
+                        return None;
+                    }
+                }
+            }
+        };
+
+        // Create constant for field index
+        let index_const = self.builder.build_const(IrValue::I32(field_index as i32))?;
+
+        // Get the type of the field from the actual field symbol, NOT the Dynamic-typed field_ty
+        let field_ir_ty = self.convert_type(actual_field_type);
+
+        // Use GetElementPtr to get pointer to the field
+        let field_ptr = self
+            .builder
+            .build_gep(obj, vec![index_const], field_ir_ty.clone())?;
+
+        // Load the value from the field pointer
+        let field_value = self.builder.build_load(field_ptr, field_ir_ty.clone())?;
+
+        // Register the type of the loaded value
+        self.builder.set_register_type(field_value, field_ir_ty);
+
         Some(field_value)
     }
 

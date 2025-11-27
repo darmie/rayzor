@@ -39,12 +39,26 @@ pub struct RuntimeFunctionCall {
     /// Whether this method returns a value
     pub has_return: bool,
 
-    /// Which parameters need to be converted from values to pointers
-    /// This is a bitmask where bit N indicates parameter N needs pointer conversion.
-    /// For example: params_need_ptr_conversion = 0b10 means param[1] needs conversion
-    /// (bit 0 = param 0, bit 1 = param 1, etc.)
-    /// This is used for runtime functions that take `*const u8` for data parameters.
+    /// Which parameters need to be converted from values to boxed Dynamic pointers
+    /// This is a bitmask where bit N indicates parameter N needs Dynamic boxing.
+    /// DEPRECATED: Use raw_value_params for high-performance inline storage.
     pub params_need_ptr_conversion: u32,
+
+    /// Which parameters should be passed as raw u64 bits (no boxing).
+    /// This is a bitmask where bit N indicates parameter N should be cast to u64.
+    /// Used for high-performance collections (StringMap, IntMap) that store values inline.
+    /// The compiler casts Int/Float/Bool/Ptr to raw u64 bits at the call site.
+    pub raw_value_params: u32,
+
+    /// Whether the return value is raw u64 bits that should be cast to the type parameter.
+    /// Used for StringMap<T>.get() and IntMap<T>.get() which return T as raw u64.
+    /// The compiler will cast the u64 return value to the resolved type parameter.
+    pub returns_raw_value: bool,
+
+    /// Which parameters should be sign-extended from i32 to i64.
+    /// This is a bitmask where bit N indicates parameter N should be extended.
+    /// Used for IntMap key parameters which are Haxe Int (i32) but runtime expects i64.
+    pub extend_to_i64_params: u32,
 }
 
 /// Method signature in Haxe stdlib
@@ -264,6 +278,9 @@ macro_rules! map_method {
                 param_count: $params,
                 has_return: false,
                 params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
             }
         )
     };
@@ -285,6 +302,9 @@ macro_rules! map_method {
                 param_count: $params,
                 has_return: true,  // Returns pointer directly
                 params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
             }
         )
     };
@@ -305,11 +325,86 @@ macro_rules! map_method {
                 param_count: $params,
                 has_return: true,
                 params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
             }
         )
     };
 
-    // Instance method returning primitive with pointer conversion metadata
+    // Instance method returning primitive with i64 extension for int params
+    // Used for IntMap methods where Haxe Int (i32) must be extended to runtime i64
+    (instance $class:expr, $method:expr => $runtime:expr, params: $params:expr, returns: primitive, extend_i64: $extend_mask:expr) => {
+        (
+            MethodSignature {
+                class: $class,
+                method: $method,
+                is_static: false,
+                is_constructor: false,
+            },
+            RuntimeFunctionCall {
+                runtime_name: $runtime,
+                needs_out_param: false,
+                has_self_param: true,
+                param_count: $params,
+                has_return: true,
+                params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: $extend_mask,
+            }
+        )
+    };
+
+    // Instance method returning raw value (u64 that needs cast to type param T)
+    // Used for StringMap<T>.get() and IntMap<T>.get()
+    (instance $class:expr, $method:expr => $runtime:expr, params: $params:expr, returns: raw_value) => {
+        (
+            MethodSignature {
+                class: $class,
+                method: $method,
+                is_static: false,
+                is_constructor: false,
+            },
+            RuntimeFunctionCall {
+                runtime_name: $runtime,
+                needs_out_param: false,
+                has_self_param: true,
+                param_count: $params,
+                has_return: true,
+                params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: true,
+                extend_to_i64_params: 0,
+            }
+        )
+    };
+
+    // Instance method returning raw value with i64 extension for int params
+    // Used for IntMap<T>.get() where key is Haxe Int (i32) but runtime expects i64
+    (instance $class:expr, $method:expr => $runtime:expr, params: $params:expr, returns: raw_value, extend_i64: $extend_mask:expr) => {
+        (
+            MethodSignature {
+                class: $class,
+                method: $method,
+                is_static: false,
+                is_constructor: false,
+            },
+            RuntimeFunctionCall {
+                runtime_name: $runtime,
+                needs_out_param: false,
+                has_self_param: true,
+                param_count: $params,
+                has_return: true,
+                params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: true,
+                extend_to_i64_params: $extend_mask,
+            }
+        )
+    };
+
+    // Instance method returning primitive with pointer conversion metadata (DEPRECATED - use raw_value_params)
     (instance $class:expr, $method:expr => $runtime:expr, params: $params:expr, returns: primitive, ptr_params: $ptr_mask:expr) => {
         (
             MethodSignature {
@@ -325,6 +420,9 @@ macro_rules! map_method {
                 param_count: $params,
                 has_return: true,
                 params_need_ptr_conversion: $ptr_mask,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
             }
         )
     };
@@ -345,6 +443,9 @@ macro_rules! map_method {
                 param_count: $params,
                 has_return: false,
                 params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
             }
         )
     };
@@ -365,11 +466,14 @@ macro_rules! map_method {
                 param_count: $params,
                 has_return: false,
                 params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
             }
         )
     };
 
-    // Instance method returning void with pointer conversion metadata
+    // Instance method returning void with pointer conversion metadata (DEPRECATED - use raw_value_params)
     (instance $class:expr, $method:expr => $runtime:expr, params: $params:expr, returns: void, ptr_params: $ptr_mask:expr) => {
         (
             MethodSignature {
@@ -385,6 +489,56 @@ macro_rules! map_method {
                 param_count: $params,
                 has_return: false,
                 params_need_ptr_conversion: $ptr_mask,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
+            }
+        )
+    };
+
+    // Instance method returning void with raw value params (high-performance, no boxing)
+    (instance $class:expr, $method:expr => $runtime:expr, params: $params:expr, returns: void, raw_value_params: $raw_mask:expr) => {
+        (
+            MethodSignature {
+                class: $class,
+                method: $method,
+                is_static: false,
+                is_constructor: false,
+            },
+            RuntimeFunctionCall {
+                runtime_name: $runtime,
+                needs_out_param: false,
+                has_self_param: true,
+                param_count: $params,
+                has_return: false,
+                params_need_ptr_conversion: 0,
+                raw_value_params: $raw_mask,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
+            }
+        )
+    };
+
+    // Instance method returning void with raw value params AND i64 extension
+    // Used for IntMap<T>.set(key: Int, value: T) where key needs i32->i64 and value needs raw u64
+    (instance $class:expr, $method:expr => $runtime:expr, params: $params:expr, returns: void, raw_value_params: $raw_mask:expr, extend_i64: $extend_mask:expr) => {
+        (
+            MethodSignature {
+                class: $class,
+                method: $method,
+                is_static: false,
+                is_constructor: false,
+            },
+            RuntimeFunctionCall {
+                runtime_name: $runtime,
+                needs_out_param: false,
+                has_self_param: true,
+                param_count: $params,
+                has_return: false,
+                params_need_ptr_conversion: 0,
+                raw_value_params: $raw_mask,
+                returns_raw_value: false,
+                extend_to_i64_params: $extend_mask,
             }
         )
     };
@@ -405,6 +559,9 @@ macro_rules! map_method {
                 param_count: $params,
                 has_return: true,
                 params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
             }
         )
     };
@@ -425,6 +582,9 @@ macro_rules! map_method {
                 param_count: $params,
                 has_return: false,
                 params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
             }
         )
     };
@@ -445,6 +605,9 @@ macro_rules! map_method {
                 param_count: $params,
                 has_return: false,
                 params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
             }
         )
     };
@@ -887,13 +1050,13 @@ impl StdlibMapping {
             // Returns pointer directly (primitive return style)
             map_method!(constructor "StringMap", "new" => "haxe_stringmap_new", params: 0, returns: primitive),
             // StringMap<T>::set(key: String, value: T) -> Void
-            // Args: [self=map_ptr, key=String, value=T]
-            // Value (arg index 2) needs to be boxed/converted to pointer
-            // Bitmask: 0b100 = bit 2 set
-            map_method!(instance "StringMap", "set" => "haxe_stringmap_set", params: 2, returns: void, ptr_params: 0b100),
-            // StringMap<T>::get(key: String) -> Null<T>
-            // Returns pointer directly
-            map_method!(instance "StringMap", "get" => "haxe_stringmap_get", params: 1, returns: primitive),
+            // Args: [self=map_ptr, key=String, value=u64]
+            // Value is passed as raw u64 bits (no boxing) - high-performance inline storage
+            // The compiler will cast the value to u64 at the call site
+            map_method!(instance "StringMap", "set" => "haxe_stringmap_set", params: 2, returns: void, raw_value_params: 0b100),
+            // StringMap<T>::get(key: String) -> T (as u64)
+            // Returns raw u64 bits, compiler casts back to resolved type parameter T
+            map_method!(instance "StringMap", "get" => "haxe_stringmap_get", params: 1, returns: raw_value),
             // StringMap<T>::exists(key: String) -> Bool
             map_method!(instance "StringMap", "exists" => "haxe_stringmap_exists", params: 1, returns: primitive),
             // StringMap<T>::remove(key: String) -> Bool
@@ -916,22 +1079,27 @@ impl StdlibMapping {
     // Values are type-erased at runtime (stored as pointers).
 
     fn register_intmap_methods(&mut self) {
+        // Parameter indices (0-indexed, including self):
+        // - 0: self (map_ptr)
+        // - 1: key (Int, needs i32->i64 extension)
+        // - 2: value (T, needs raw u64 conversion)
         let mappings = vec![
             // Constructor: new IntMap<T>() -> IntMap<T>
             // Returns pointer directly (primitive return style)
             map_method!(constructor "IntMap", "new" => "haxe_intmap_new", params: 0, returns: primitive),
             // IntMap<T>::set(key: Int, value: T) -> Void
-            // Args: [self=map_ptr, key=Int, value=T]
-            // Value (arg index 2) needs to be boxed/converted to pointer
-            // Bitmask: 0b100 = bit 2 set
-            map_method!(instance "IntMap", "set" => "haxe_intmap_set", params: 2, returns: void, ptr_params: 0b100),
-            // IntMap<T>::get(key: Int) -> Null<T>
-            // Returns pointer directly
-            map_method!(instance "IntMap", "get" => "haxe_intmap_get", params: 1, returns: primitive),
+            // Args: [self=map_ptr, key=i64(extended), value=u64(raw)]
+            // Key is extended from i32 to i64, value is passed as raw u64 bits
+            map_method!(instance "IntMap", "set" => "haxe_intmap_set", params: 2, returns: void, raw_value_params: 0b100, extend_i64: 0b010),
+            // IntMap<T>::get(key: Int) -> T (as u64)
+            // Key is extended from i32 to i64, returns raw u64 bits for type parameter T
+            map_method!(instance "IntMap", "get" => "haxe_intmap_get", params: 1, returns: raw_value, extend_i64: 0b010),
             // IntMap<T>::exists(key: Int) -> Bool
-            map_method!(instance "IntMap", "exists" => "haxe_intmap_exists", params: 1, returns: primitive),
+            // Key is extended from i32 to i64
+            map_method!(instance "IntMap", "exists" => "haxe_intmap_exists", params: 1, returns: primitive, extend_i64: 0b010),
             // IntMap<T>::remove(key: Int) -> Bool
-            map_method!(instance "IntMap", "remove" => "haxe_intmap_remove", params: 1, returns: primitive),
+            // Key is extended from i32 to i64
+            map_method!(instance "IntMap", "remove" => "haxe_intmap_remove", params: 1, returns: primitive, extend_i64: 0b010),
             // IntMap<T>::clear() -> Void
             map_method!(instance "IntMap", "clear" => "haxe_intmap_clear", params: 0, returns: void),
             // IntMap<T>::toString() -> String

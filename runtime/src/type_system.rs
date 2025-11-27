@@ -26,8 +26,11 @@
 //!    let s = dynamic_to_string(dynamic);  // Dispatches based on type_id
 //!    ```
 
-use std::sync::RwLock;
+use std::sync::{RwLock, Once};
 use std::collections::HashMap;
+
+/// Ensures primitive types are registered exactly once
+static INIT_PRIMITIVES: Once = Once::new();
 
 /// Runtime type identifier
 ///
@@ -171,6 +174,9 @@ pub fn init_type_system() {
 
 /// Register a user-defined type (class, enum, etc.)
 pub fn register_type(type_id: TypeId, info: TypeInfo) {
+    // Ensure primitives are initialized first
+    ensure_primitives_registered();
+
     let mut registry = TYPE_REGISTRY.write().unwrap();
     if let Some(ref mut map) = *registry {
         map.insert(type_id, info);
@@ -178,14 +184,28 @@ pub fn register_type(type_id: TypeId, info: TypeInfo) {
 }
 
 /// Get type info for a TypeId
+///
+/// Primitive types (Void, Null, Bool, Int, Float, String) are lazily initialized
+/// and always available. No explicit init_type_system() call is needed for primitives.
 pub fn get_type_info(type_id: TypeId) -> Option<TypeInfo> {
+    // Lazily initialize primitive types on first access
+    ensure_primitives_registered();
+
     let registry = TYPE_REGISTRY.read().unwrap();
     registry.as_ref()?.get(&type_id).cloned()
+}
+
+/// Ensure primitive types are registered (called lazily)
+fn ensure_primitives_registered() {
+    INIT_PRIMITIVES.call_once(|| {
+        init_type_system();
+    });
 }
 
 /// Get enum variant name by type ID and discriminant
 /// Returns None if not an enum type or discriminant is out of range
 pub fn get_enum_variant_name(type_id: TypeId, discriminant: i64) -> Option<&'static str> {
+    ensure_primitives_registered();
     let registry = TYPE_REGISTRY.read().unwrap();
     let type_info = registry.as_ref()?.get(&type_id)?;
     let enum_info = type_info.enum_info?;

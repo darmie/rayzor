@@ -1990,6 +1990,12 @@ impl CraneliftBackend {
                     (types::I32, types::I64) => builder.ins().sextend(types::I64, src_val),
                     (types::I64, types::I32) => builder.ins().ireduce(types::I32, src_val),
 
+                    // Bool (I8) to integer conversions (zero-extend for raw value storage)
+                    (types::I8, types::I32) => builder.ins().uextend(types::I32, src_val),
+                    (types::I8, types::I64) => builder.ins().uextend(types::I64, src_val),
+                    (types::I32, types::I8) => builder.ins().ireduce(types::I8, src_val),
+                    (types::I64, types::I8) => builder.ins().ireduce(types::I8, src_val),
+
                     // Same type - just copy
                     (from, to) if from == to => src_val,
 
@@ -1997,6 +2003,39 @@ impl CraneliftBackend {
                         return Err(format!(
                             "Unsupported cast from {:?} to {:?}",
                             from_ty, to_ty
+                        ))
+                    }
+                };
+
+                value_map.insert(*dest, result);
+            }
+
+            IrInstruction::BitCast { dest, src, ty } => {
+                // BitCast - reinterpret bits without conversion
+                // Used for Float <-> U64 raw value storage (preserves bit pattern)
+                let src_val = *value_map
+                    .get(src)
+                    .ok_or_else(|| format!("BitCast source {:?} not found in value_map", src))?;
+
+                let src_ty = builder.func.dfg.value_type(src_val);
+                let dest_ty = Self::mir_type_to_cranelift_static(ty)?;
+
+                let result = match (src_ty, dest_ty) {
+                    // Float to Int (reinterpret bits)
+                    (types::F64, types::I64) => builder.ins().bitcast(types::I64, MemFlags::new(), src_val),
+                    (types::F32, types::I32) => builder.ins().bitcast(types::I32, MemFlags::new(), src_val),
+
+                    // Int to Float (reinterpret bits)
+                    (types::I64, types::F64) => builder.ins().bitcast(types::F64, MemFlags::new(), src_val),
+                    (types::I32, types::F32) => builder.ins().bitcast(types::F32, MemFlags::new(), src_val),
+
+                    // Same type - just copy
+                    (from, to) if from == to => src_val,
+
+                    _ => {
+                        return Err(format!(
+                            "Unsupported bitcast from {:?} to {:?}",
+                            src_ty, dest_ty
                         ))
                     }
                 };
