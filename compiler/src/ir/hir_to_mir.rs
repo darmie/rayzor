@@ -2438,15 +2438,45 @@ impl<'a> HirToMirContext<'a> {
                             None
                         };
 
-                        // Check if it's an enum - for now just log it
-                        if let Some(crate::tast::core::TypeKind::Enum { symbol_id, .. }) = &type_kind {
-                            let enum_name = self.symbol_table.get_symbol(*symbol_id)
-                                .and_then(|s| self.string_interner.get(s.name))
-                                .unwrap_or("<unknown>");
-                            eprintln!("DEBUG: [TRACE] Enum '{}' detected - enum tracing not fully implemented yet", enum_name);
-                            // TODO: For enums, we need to get the variant name and any parameters
-                            // For now, we'll fall through to traceAny which will print the discriminant
+                        // Check if the trace argument is an enum variant expression (e.g., Color.Red)
+                        // If so, we can print the variant name directly
+                        if let HirExprKind::Field { object, field } = &arg.kind {
+                            if let HirExprKind::Variable { symbol: enum_symbol, .. } = &object.kind {
+                                if let Some(enum_sym) = self.symbol_table.get_symbol(*enum_symbol) {
+                                    use crate::tast::SymbolKind;
+                                    if enum_sym.kind == SymbolKind::Enum {
+                                        // Get the variant name
+                                        let field_sym = self.symbol_table.get_symbol(*field);
+                                        if let Some(variant_name) = field_sym.and_then(|s| self.string_interner.get(s.name)) {
+                                            // Create a string constant with the variant name
+                                            // IrValue::String will be converted by Cranelift to call haxe_string_literal
+                                            // which returns a *mut HaxeString pointer
+                                            let variant_name_str = variant_name.to_string();
+                                            let string_ptr = self.builder.build_const(IrValue::String(variant_name_str))?;
+
+                                            // Get or create the string trace function
+                                            let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
+                                            let string_trace_id = self.get_or_register_extern_function(
+                                                "haxe_trace_string_struct",
+                                                vec![string_ptr_ty],
+                                                IrType::Void,
+                                            );
+
+                                            // Trace the string
+                                            return self.builder.build_call_direct(
+                                                string_trace_id,
+                                                vec![string_ptr],
+                                                IrType::Void,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                         }
+
+                        // Check if it's an enum variable - print discriminant for now
+                        // Full variant name lookup for variables would require runtime RTTI
+                        // Direct enum variant expressions (Color.Red) are handled above
 
                         // If this is a class type, try to call toString() on it
                         if let Some(class_name) = class_info {

@@ -9,8 +9,8 @@ use std::sync::Arc;
 fn main() {
     println!("=== Enum Tracing Test ===\n");
 
-    // Test 1: Simple enum
-    println!("Test 1: Simple enum");
+    // Test 1: Direct enum variant trace (should print variant name)
+    println!("Test 1: Direct enum variant trace");
     let source1 = r#"
 enum Color {
     Red;
@@ -20,16 +20,34 @@ enum Color {
 
 class Main {
     static function main() {
-        var c = Color.Red;
-        trace(c);  // Should print "Red"
+        trace(Color.Red);  // Should print "Red"
+        trace(Color.Blue); // Should print "Blue"
     }
 }
 "#;
-    run_test(source1, "simple_enum");
+    run_test(source1, "direct_enum_trace");
 
-    // Test 2: Enum with parameters
-    println!("\nTest 2: Enum with parameters");
+    // Test 2: Enum variable trace (prints discriminant for now)
+    println!("\nTest 2: Enum variable trace");
     let source2 = r#"
+enum Color {
+    Red;
+    Green;
+    Blue;
+}
+
+class Main {
+    static function main() {
+        var c = Color.Green;
+        trace(c);  // Prints discriminant (1) until RTTI is implemented
+    }
+}
+"#;
+    run_test(source2, "enum_var_trace");
+
+    // Test 3: Enum with parameters
+    println!("\nTest 3: Enum with parameters");
+    let source3 = r#"
 enum Result {
     Ok(value:Int);
     Error(msg:String);
@@ -42,7 +60,7 @@ class Main {
     }
 }
 "#;
-    run_test(source2, "enum_with_params");
+    run_test(source3, "enum_with_params");
 }
 
 fn run_test(source: &str, name: &str) {
