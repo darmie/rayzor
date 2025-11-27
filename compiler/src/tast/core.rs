@@ -531,8 +531,14 @@ impl TypeTable {
         if !id.is_valid() {
             return None;
         }
-        
+
         self.types.get(id.as_raw() as usize).copied()
+    }
+
+    /// Iterate over all types in the table
+    /// Returns an iterator of (TypeId, &Type) pairs
+    pub fn iter(&self) -> impl Iterator<Item = (TypeId, &Type)> {
+        self.types.iter().enumerate().map(|(idx, ty)| (TypeId::from_raw(idx as u32), *ty))
     }
     
     /// Get a type by its ID (unchecked)

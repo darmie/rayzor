@@ -62,6 +62,9 @@ pub struct CompilationUnit {
 
     /// MIR modules generated during compilation (collected from pipeline results)
     mir_modules: Vec<std::sync::Arc<crate::ir::IrModule>>,
+
+    /// Stdlib typed files loaded on-demand (typedefs, etc. that need to be in HIR)
+    loaded_stdlib_typed_files: Vec<TypedFile>,
 }
 
 /// Configuration for compilation
@@ -325,6 +328,7 @@ impl CompilationUnit {
             failed_type_loads: HashSet::new(),
             pipeline,
             mir_modules: Vec::new(),
+            loaded_stdlib_typed_files: Vec::new(),
         }
     }
 
@@ -405,8 +409,13 @@ impl CompilationUnit {
 
         // Try to compile - if it fails due to missing dependencies, extract and load them
         match self.compile_file_with_shared_state(&filename, &source) {
-            Ok(_typed_file) => {
+            Ok(typed_file) => {
                 eprintln!("  ✓ Successfully compiled and registered: {}", qualified_path);
+                // Store typedef files so they're included in HIR conversion
+                if !typed_file.type_aliases.is_empty() {
+                    eprintln!("    (contains {} type aliases)", typed_file.type_aliases.len());
+                }
+                self.loaded_stdlib_typed_files.push(typed_file);
                 Ok(())
             },
             Err(errors) => {
@@ -460,14 +469,22 @@ impl CompilationUnit {
                     // If we successfully loaded at least one dependency, retry compilation
                     if load_success {
                         eprintln!("  Retrying compilation of {} after loading dependencies...", qualified_path);
-                        return self.compile_file_with_shared_state(&filename, &source)
-                            .map(|_| ()) // Discard TypedFile, just return ()
-                            .map_err(|errors| {
+                        match self.compile_file_with_shared_state(&filename, &source) {
+                            Ok(typed_file) => {
+                                // Store typedef files so they're included in HIR conversion
+                                if !typed_file.type_aliases.is_empty() {
+                                    eprintln!("    (contains {} type aliases after retry)", typed_file.type_aliases.len());
+                                }
+                                self.loaded_stdlib_typed_files.push(typed_file);
+                                return Ok(());
+                            }
+                            Err(errors) => {
                                 let error_msgs: Vec<String> = errors.iter()
                                     .map(|e| e.message.clone())
                                     .collect();
-                                format!("Errors compiling {} (after loading dependencies): {}", filename, error_msgs.join(", "))
-                            });
+                                return Err(format!("Errors compiling {} (after loading dependencies): {}", filename, error_msgs.join(", ")));
+                            }
+                        }
                     }
                 }
 
@@ -1046,7 +1063,25 @@ impl CompilationUnit {
         let mut all_typed_files = Vec::new();
         let mut all_errors = Vec::new();
 
-        // Step 2: Stdlib files loaded on-demand via imports (no upfront compilation)
+        // Step 2: Pre-load stdlib files for explicit imports in user files
+        // This ensures typedefs like sys.FileStat are available before compilation
+        let imports_to_load: Vec<String> = self.user_files.iter()
+            .filter_map(|file| file.input.as_ref().map(|source| (file.filename.clone(), source.clone())))
+            .flat_map(|(filename, source)| {
+                parser::parse_haxe_file(&filename, &source, false)
+                    .map(|ast| {
+                        ast.imports.iter()
+                            .filter(|import| import.path.len() >= 2)
+                            .map(|import| import.path.join("."))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+
+        for qualified_path in imports_to_load {
+            let _ = self.load_import_file(&qualified_path);
+        }
 
         // Step 3: Compile import.hx files using SHARED state
         let import_sources: Vec<(String, String)> = self.import_hx_files.iter()
@@ -1167,6 +1202,13 @@ impl CompilationUnit {
         if !all_errors.is_empty() {
             self.print_compilation_errors(&all_errors);
             return Err(all_errors);
+        }
+
+        // Step 6: Include loaded stdlib files (typedefs, etc.) in the result
+        // These were loaded on-demand during import resolution and contain type aliases
+        // that need to be processed by HIR
+        for stdlib_file in std::mem::take(&mut self.loaded_stdlib_typed_files) {
+            all_typed_files.push(stdlib_file);
         }
 
         Ok(all_typed_files)

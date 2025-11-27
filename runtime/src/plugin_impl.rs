@@ -237,12 +237,15 @@ register_symbol!("haxe_file_copy", crate::haxe_sys::haxe_file_copy);
 // ============================================================================
 register_symbol!("haxe_filesystem_exists", crate::haxe_sys::haxe_filesystem_exists);
 register_symbol!("haxe_filesystem_is_directory", crate::haxe_sys::haxe_filesystem_is_directory);
+register_symbol!("haxe_filesystem_is_file", crate::haxe_sys::haxe_filesystem_is_file);
 register_symbol!("haxe_filesystem_create_directory", crate::haxe_sys::haxe_filesystem_create_directory);
 register_symbol!("haxe_filesystem_delete_file", crate::haxe_sys::haxe_filesystem_delete_file);
 register_symbol!("haxe_filesystem_delete_directory", crate::haxe_sys::haxe_filesystem_delete_directory);
 register_symbol!("haxe_filesystem_rename", crate::haxe_sys::haxe_filesystem_rename);
 register_symbol!("haxe_filesystem_full_path", crate::haxe_sys::haxe_filesystem_full_path);
 register_symbol!("haxe_filesystem_absolute_path", crate::haxe_sys::haxe_filesystem_absolute_path);
+register_symbol!("haxe_filesystem_stat", crate::haxe_sys::haxe_filesystem_stat);
+register_symbol!("haxe_filesystem_read_directory", crate::haxe_sys::haxe_filesystem_read_directory);
 
 // ============================================================================
 // StringMap<T> (haxe.ds.StringMap)

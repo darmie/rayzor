@@ -1115,6 +1115,168 @@ pub extern "C" fn haxe_filesystem_absolute_path(path: *const HaxeString) -> *mut
     }
 }
 
+/// FileStat struct - matches Haxe's sys.FileStat typedef
+/// All fields are 8 bytes for consistent sizing/boxing
+/// Date fields stored as f64 timestamps (seconds since Unix epoch)
+#[repr(C)]
+pub struct HaxeFileStat {
+    pub gid: i64,    // group id
+    pub uid: i64,    // user id
+    pub atime: f64,  // access time (seconds since epoch)
+    pub mtime: f64,  // modification time (seconds since epoch)
+    pub ctime: f64,  // creation/change time (seconds since epoch)
+    pub size: i64,   // file size in bytes
+    pub dev: i64,    // device id
+    pub ino: i64,    // inode number
+    pub nlink: i64,  // number of hard links
+    pub rdev: i64,   // device type (special files)
+    pub mode: i64,   // permission bits
+}
+
+/// Get file/directory statistics
+/// FileSystem.stat(path: String): FileStat
+#[no_mangle]
+pub extern "C" fn haxe_filesystem_stat(path: *const HaxeString) -> *mut HaxeFileStat {
+    unsafe {
+        match haxe_string_to_rust(path) {
+            Some(path_str) => {
+                match std::fs::metadata(&path_str) {
+                    Ok(meta) => {
+                        // Convert SystemTime to f64 (seconds since Unix epoch)
+                        let to_timestamp = |time: std::io::Result<std::time::SystemTime>| -> f64 {
+                            time.ok()
+                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map(|d| d.as_secs_f64())
+                                .unwrap_or(0.0)
+                        };
+
+                        let stat = Box::new(HaxeFileStat {
+                            #[cfg(unix)]
+                            gid: {
+                                use std::os::unix::fs::MetadataExt;
+                                meta.gid() as i64
+                            },
+                            #[cfg(not(unix))]
+                            gid: 0,
+
+                            #[cfg(unix)]
+                            uid: {
+                                use std::os::unix::fs::MetadataExt;
+                                meta.uid() as i64
+                            },
+                            #[cfg(not(unix))]
+                            uid: 0,
+
+                            atime: to_timestamp(meta.accessed()),
+                            mtime: to_timestamp(meta.modified()),
+                            ctime: to_timestamp(meta.created()),
+                            size: meta.len() as i64,
+
+                            #[cfg(unix)]
+                            dev: {
+                                use std::os::unix::fs::MetadataExt;
+                                meta.dev() as i64
+                            },
+                            #[cfg(not(unix))]
+                            dev: 0,
+
+                            #[cfg(unix)]
+                            ino: {
+                                use std::os::unix::fs::MetadataExt;
+                                meta.ino() as i64
+                            },
+                            #[cfg(not(unix))]
+                            ino: 0,
+
+                            #[cfg(unix)]
+                            nlink: {
+                                use std::os::unix::fs::MetadataExt;
+                                meta.nlink() as i64
+                            },
+                            #[cfg(not(unix))]
+                            nlink: 1,
+
+                            #[cfg(unix)]
+                            rdev: {
+                                use std::os::unix::fs::MetadataExt;
+                                meta.rdev() as i64
+                            },
+                            #[cfg(not(unix))]
+                            rdev: 0,
+
+                            #[cfg(unix)]
+                            mode: {
+                                use std::os::unix::fs::MetadataExt;
+                                meta.mode() as i64
+                            },
+                            #[cfg(not(unix))]
+                            mode: if meta.is_dir() { 0o755 } else { 0o644 } as i64,
+                        });
+                        Box::into_raw(stat)
+                    }
+                    Err(_) => std::ptr::null_mut(),
+                }
+            }
+            None => std::ptr::null_mut(),
+        }
+    }
+}
+
+/// Check if path is a file (not directory)
+/// FileSystem.isFile(path: String): Bool
+#[no_mangle]
+pub extern "C" fn haxe_filesystem_is_file(path: *const HaxeString) -> bool {
+    unsafe {
+        match haxe_string_to_rust(path) {
+            Some(path_str) => std::path::Path::new(&path_str).is_file(),
+            None => false,
+        }
+    }
+}
+
+/// Read directory contents
+/// FileSystem.readDirectory(path: String): Array<String>
+#[no_mangle]
+pub extern "C" fn haxe_filesystem_read_directory(path: *const HaxeString) -> *mut crate::haxe_array::HaxeArray {
+    use crate::haxe_array::{HaxeArray, haxe_array_new, haxe_array_push};
+
+    unsafe {
+        let path_str = match haxe_string_to_rust(path) {
+            Some(s) => s,
+            None => return std::ptr::null_mut(),
+        };
+
+        let entries = match std::fs::read_dir(&path_str) {
+            Ok(entries) => entries,
+            Err(_) => return std::ptr::null_mut(),
+        };
+
+        // Allocate array on heap
+        let arr = Box::into_raw(Box::new(std::mem::zeroed::<HaxeArray>()));
+
+        // Initialize array with 8-byte element size (pointer to HaxeString)
+        haxe_array_new(arr, 8);
+
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                // Skip . and ..
+                if name == "." || name == ".." {
+                    continue;
+                }
+
+                let haxe_str = rust_string_to_haxe(name.to_string());
+                if !haxe_str.is_null() {
+                    // Push pointer to string (pass address of the pointer)
+                    let str_ptr = haxe_str as u64;
+                    haxe_array_push(arr, &str_ptr as *const u64 as *const u8);
+                }
+            }
+        }
+
+        arr
+    }
+}
+
 // ============================================================================
 // StringMap<T> (haxe.ds.StringMap)
 // ============================================================================

@@ -1270,8 +1270,14 @@ impl<'a> AstLowering<'a> {
                     TypeDeclaration::Enum(enum_decl) => {
                         let _ = self.lower_enum_declaration(enum_decl);
                     }
+                    TypeDeclaration::Typedef(typedef_decl) => {
+                        let _ = self.lower_typedef_declaration(typedef_decl);
+                    }
+                    TypeDeclaration::Abstract(abstract_decl) => {
+                        let _ = self.lower_abstract_declaration(abstract_decl);
+                    }
                     _ => {
-                        // Other declarations can be pre-registered only for now
+                        // Package declarations etc.
                     }
                 }
             }

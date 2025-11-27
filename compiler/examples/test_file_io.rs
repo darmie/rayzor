@@ -166,6 +166,60 @@ class Main {
 }
 "#;
     run_test(source7, "filesystem_rename");
+
+    // Test 8: FileSystem.stat with field access
+    println!("\nTest 8: FileSystem.stat (with field access)");
+    let source8 = r#"
+import sys.FileSystem;
+import sys.FileStat;
+import sys.io.File;
+
+class Main {
+    static function main() {
+        var testPath = "/tmp/rayzor_stat_test.txt";
+
+        // Create a test file with known content
+        File.saveContent(testPath, "Hello World!");
+
+        // Get file stats and access fields
+        var stat = FileSystem.stat(testPath);
+        trace(stat.size);  // Should be 12 (length of "Hello World!")
+
+        // Clean up
+        FileSystem.deleteFile(testPath);
+    }
+}
+"#;
+    run_test(source8, "filesystem_stat");
+
+    // Test 9: FileSystem.readDirectory - Basic call test
+    // NOTE: Accessing .length on returned Array<String> needs proper type propagation
+    println!("\nTest 9: FileSystem.readDirectory (basic)");
+    let source9 = r#"
+import sys.FileSystem;
+import sys.io.File;
+
+class Main {
+    static function main() {
+        var testDir = "/tmp/rayzor_readdir_test";
+
+        // Create test directory and files
+        FileSystem.createDirectory(testDir);
+        File.saveContent(testDir + "/file1.txt", "content1");
+        File.saveContent(testDir + "/file2.txt", "content2");
+
+        // Read directory - just verify it returns something
+        var entries = FileSystem.readDirectory(testDir);
+        trace(entries != null);  // true
+
+        // Clean up
+        FileSystem.deleteFile(testDir + "/file1.txt");
+        FileSystem.deleteFile(testDir + "/file2.txt");
+        FileSystem.deleteDirectory(testDir);
+    }
+}
+"#;
+    run_test(source9, "filesystem_read_directory");
 }
 
 fn run_test(source: &str, name: &str) {
