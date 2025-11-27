@@ -858,6 +858,53 @@ pub extern "C" fn haxe_sys_program_path() -> *mut HaxeString {
     }
 }
 
+/// Execute a shell command and return the exit code
+/// Sys.command(cmd: String, args: Array<String>): Int
+/// When args is null, cmd is passed directly to the shell
+#[no_mangle]
+pub extern "C" fn haxe_sys_command(cmd: *const HaxeString) -> i32 {
+    unsafe {
+        let cmd_str = match haxe_string_to_rust(cmd) {
+            Some(s) => s,
+            None => return -1,
+        };
+
+        // Execute command via shell
+        #[cfg(target_os = "windows")]
+        let output = std::process::Command::new("cmd")
+            .args(["/C", &cmd_str])
+            .status();
+
+        #[cfg(not(target_os = "windows"))]
+        let output = std::process::Command::new("sh")
+            .args(["-c", &cmd_str])
+            .status();
+
+        match output {
+            Ok(status) => status.code().unwrap_or(-1),
+            Err(_) => -1,
+        }
+    }
+}
+
+/// Read a single character from stdin
+/// Sys.getChar(echo: Bool): Int
+#[no_mangle]
+pub extern "C" fn haxe_sys_get_char(echo: bool) -> i32 {
+    use std::io::Read;
+
+    let mut buffer = [0u8; 1];
+    match std::io::stdin().read_exact(&mut buffer) {
+        Ok(_) => {
+            if echo {
+                print!("{}", buffer[0] as char);
+            }
+            buffer[0] as i32
+        }
+        Err(_) => -1,
+    }
+}
+
 // ============================================================================
 // File I/O (sys.io.File)
 // ============================================================================

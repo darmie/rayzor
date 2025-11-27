@@ -754,6 +754,9 @@ impl StdlibMapping {
             map_method!(static "Sys", "systemName" => "haxe_sys_system_name", params: 0, returns: complex),
             map_method!(static "Sys", "programPath" => "haxe_sys_program_path", params: 0, returns: complex),
             map_method!(static "Sys", "executablePath" => "haxe_sys_program_path", params: 0, returns: complex),
+            // Command execution
+            map_method!(static "Sys", "command" => "haxe_sys_command", params: 1, returns: primitive),
+            map_method!(static "Sys", "getChar" => "haxe_sys_get_char", params: 1, returns: primitive),
         ];
 
         self.register_from_tuples(mappings);

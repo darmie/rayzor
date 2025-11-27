@@ -221,6 +221,10 @@ register_symbol!("haxe_sys_system_name", crate::haxe_sys::haxe_sys_system_name);
 register_symbol!("haxe_sys_cpu_time", crate::haxe_sys::haxe_sys_cpu_time);
 register_symbol!("haxe_sys_program_path", crate::haxe_sys::haxe_sys_program_path);
 
+// Command execution
+register_symbol!("haxe_sys_command", crate::haxe_sys::haxe_sys_command);
+register_symbol!("haxe_sys_get_char", crate::haxe_sys::haxe_sys_get_char);
+
 // ============================================================================
 // File I/O (sys.io.File)
 // ============================================================================
