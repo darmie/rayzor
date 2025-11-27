@@ -2067,7 +2067,7 @@ impl<'a> HirToMirContext<'a> {
                         }
                     }
 
-                    // Fallback: check if symbol table says it's a field
+                    // Fallback: check if symbol table says it's a field or enum variant
                     if let Some(sym) = self.symbol_table.get_symbol(*symbol) {
                         use crate::tast::SymbolKind;
                         if sym.kind == SymbolKind::Field {
@@ -2076,6 +2076,22 @@ impl<'a> HirToMirContext<'a> {
                                     return self.lower_field_access(this_reg, *symbol, owner_type, expr.ty);
                                 }
                             }
+                        } else if sym.kind == SymbolKind::EnumVariant {
+                            // Enum variant without parameters - return its discriminant value
+                            // Find the parent enum and get the variant index
+                            if let Some(parent_enum_id) = self.symbol_table.find_parent_enum_for_constructor(*symbol) {
+                                if let Some(variants) = self.symbol_table.get_enum_variants(parent_enum_id) {
+                                    // Find the index of this variant
+                                    for (idx, variant_id) in variants.iter().enumerate() {
+                                        if *variant_id == *symbol {
+                                            // Return the discriminant as an i64 constant (matches Haxe Int convention)
+                                            return self.builder.build_const(IrValue::I64(idx as i64));
+                                        }
+                                    }
+                                }
+                            }
+                            // If we can't find the variant info, try to get the discriminant from the type
+                            eprintln!("DEBUG: EnumVariant {:?} - could not find discriminant", symbol);
                         }
                     }
 
@@ -2086,10 +2102,34 @@ impl<'a> HirToMirContext<'a> {
             }
 
             HirExprKind::Field { object, field } => {
-                // eprintln!(
-                //     "DEBUG: Field access - object_type={:?}, field={:?}, expr.ty={:?}",
-                //     object.ty, field, expr.ty
-                // );
+                // Check if this is an enum variant access (e.g., Color.Red)
+                // In that case, the object is an Enum type symbol, not a value
+                if let HirExprKind::Variable { symbol, .. } = &object.kind {
+                    if let Some(sym) = self.symbol_table.get_symbol(*symbol) {
+                        use crate::tast::SymbolKind;
+                        if sym.kind == SymbolKind::Enum {
+                            // This is an enum variant access - get the variant discriminant
+                            let enum_name = self.string_interner.get(sym.name).unwrap_or("<unknown>");
+                            let field_sym = self.symbol_table.get_symbol(*field);
+                            let field_name = field_sym.and_then(|s| self.string_interner.get(s.name)).unwrap_or("<unknown>");
+
+                            if let Some(variants) = self.symbol_table.get_enum_variants(*symbol) {
+                                for (idx, variant_id) in variants.iter().enumerate() {
+                                    let variant_sym = self.symbol_table.get_symbol(*variant_id);
+                                    let variant_name = variant_sym.and_then(|s| self.string_interner.get(s.name)).unwrap_or("<unknown>");
+                                    // Compare by name since the field symbol might be different from the variant symbol
+                                    if *variant_id == *field || variant_name == field_name {
+                                        // Return the discriminant as an i64 constant (matches Haxe Int convention)
+                                        return self.builder.build_const(IrValue::I64(idx as i64));
+                                    }
+                                }
+                            }
+                            // If field is not a variant, fall through to regular field access
+                        }
+                    }
+                }
+
+                // Regular field access
                 let obj_reg = self.lower_expression(object)?;
                 let receiver_ty = object.ty; // The type of the object being accessed
                 self.lower_field_access(obj_reg, *field, receiver_ty, expr.ty)
@@ -2382,22 +2422,31 @@ impl<'a> HirToMirContext<'a> {
                     if symbol_name == "trace" && args.len() == 1 {
                         let arg = &args[0];
 
-                        // Check if arg is a class type - if so, we'll try to call toString() on it
-                        // The toString method name follows the pattern: {ClassName}_toString
+                        // Check if arg is a class or enum type
+                        // For classes: try to call toString() method
+                        // For enums: for now, fall through to traceAny (enum toString not yet implemented)
                         let type_table = self.type_table.borrow();
-                        let class_info = if let Some(type_info) = type_table.get(arg.ty) {
-                            if let crate::tast::core::TypeKind::Class { symbol_id, .. } = &type_info.kind {
-                                // Get class name
-                                self.symbol_table.get_symbol(*symbol_id)
-                                    .and_then(|s| self.string_interner.get(s.name))
-                                    .map(|name| name.to_string())
-                            } else {
-                                None
-                            }
+                        let type_kind = type_table.get(arg.ty).map(|ti| ti.kind.clone());
+                        drop(type_table);
+
+                        let class_info = if let Some(crate::tast::core::TypeKind::Class { symbol_id, .. }) = &type_kind {
+                            // Get class name
+                            self.symbol_table.get_symbol(*symbol_id)
+                                .and_then(|s| self.string_interner.get(s.name))
+                                .map(|name| name.to_string())
                         } else {
                             None
                         };
-                        drop(type_table);
+
+                        // Check if it's an enum - for now just log it
+                        if let Some(crate::tast::core::TypeKind::Enum { symbol_id, .. }) = &type_kind {
+                            let enum_name = self.symbol_table.get_symbol(*symbol_id)
+                                .and_then(|s| self.string_interner.get(s.name))
+                                .unwrap_or("<unknown>");
+                            eprintln!("DEBUG: [TRACE] Enum '{}' detected - enum tracing not fully implemented yet", enum_name);
+                            // TODO: For enums, we need to get the variant name and any parameters
+                            // For now, we'll fall through to traceAny which will print the discriminant
+                        }
 
                         // If this is a class type, try to call toString() on it
                         if let Some(class_name) = class_info {
@@ -2449,6 +2498,12 @@ impl<'a> HirToMirContext<'a> {
                         // Lower the argument first to get the actual MIR register
                         let arg_reg = self.lower_expression(arg)?;
 
+                        // Check if the HIR type is an enum - if so, treat as Int
+                        let type_table = self.type_table.borrow();
+                        let hir_type_kind = type_table.get(arg.ty).map(|ti| ti.kind.clone());
+                        drop(type_table);
+                        let is_enum = matches!(&hir_type_kind, Some(crate::tast::core::TypeKind::Enum { .. }));
+
                         // Get the actual MIR type from the register (not the HIR type)
                         // This is important because HIR types may be vague (Ptr(Void)) but
                         // MIR registers have the actual type (String, etc.)
@@ -2456,17 +2511,21 @@ impl<'a> HirToMirContext<'a> {
                             .unwrap_or_else(|| self.convert_type(arg.ty));
 
                         // Determine which trace function to call based on type
-                        let trace_method = match &arg_type {
-                            IrType::I32 | IrType::I64 => "traceInt",
-                            IrType::F32 | IrType::F64 => "traceFloat",
-                            IrType::Bool => "traceBool",
-                            IrType::String => "traceString", // String is ptr+len struct
-                            // Also handle Ptr(String) - returned by String methods like toUpperCase()
-                            IrType::Ptr(inner) if matches!(inner.as_ref(), IrType::String) => "traceString",
-                            _ => "traceAny", // Fallback for Dynamic or unknown types
+                        let trace_method = if is_enum {
+                            "traceInt" // Enums are represented as discriminant values
+                        } else {
+                            match &arg_type {
+                                IrType::I32 | IrType::I64 => "traceInt",
+                                IrType::F32 | IrType::F64 => "traceFloat",
+                                IrType::Bool => "traceBool",
+                                IrType::String => "traceString", // String is ptr+len struct
+                                // Also handle Ptr(String) - returned by String methods like toUpperCase()
+                                IrType::Ptr(inner) if matches!(inner.as_ref(), IrType::String) => "traceString",
+                                _ => "traceAny", // Fallback for Dynamic or unknown types
+                            }
                         };
 
-                        eprintln!("DEBUG: [TRACE] Routing trace() call to rayzor.Trace.{} for type {:?}", trace_method, arg_type);
+                        // Debug tracing removed to reduce output
 
                         // Build the qualified name for the trace function
                         let trace_func_name = format!("rayzor.Trace.{}", trace_method);

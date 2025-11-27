@@ -144,6 +144,23 @@ impl IrBuilder {
     /// Build a constant instruction
     pub fn build_const(&mut self, value: IrValue) -> Option<IrId> {
         let dest = self.alloc_reg()?;
+        // Infer type from value and store in register types
+        let ty = match &value {
+            IrValue::I8(_) => IrType::I8,
+            IrValue::I16(_) => IrType::I16,
+            IrValue::I32(_) => IrType::I32,
+            IrValue::I64(_) => IrType::I64,
+            IrValue::U8(_) => IrType::U8,
+            IrValue::U16(_) => IrType::U16,
+            IrValue::U32(_) => IrType::U32,
+            IrValue::U64(_) => IrType::U64,
+            IrValue::F32(_) => IrType::F32,
+            IrValue::F64(_) => IrType::F64,
+            IrValue::Bool(_) => IrType::Bool,
+            IrValue::String(_) => IrType::String,
+            _ => IrType::Any,
+        };
+        self.set_register_type(dest, ty);
         self.add_instruction(IrInstruction::Const { dest, value })?;
         Some(dest)
     }
