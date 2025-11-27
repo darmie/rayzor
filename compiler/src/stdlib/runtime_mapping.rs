@@ -810,6 +810,8 @@ impl StdlibMapping {
             map_method!(static "FileSystem", "exists" => "haxe_filesystem_exists", params: 1, returns: primitive),
             // FileSystem.isDirectory(path: String) -> Bool
             map_method!(static "FileSystem", "isDirectory" => "haxe_filesystem_is_directory", params: 1, returns: primitive),
+            // FileSystem.isFile(path: String) -> Bool (extension - not in standard Haxe)
+            map_method!(static "FileSystem", "isFile" => "haxe_filesystem_is_file", params: 1, returns: primitive),
             // FileSystem.createDirectory(path: String) -> Void
             map_method!(static "FileSystem", "createDirectory" => "haxe_filesystem_create_directory", params: 1, returns: void),
             // FileSystem.deleteFile(path: String) -> Void
@@ -818,10 +820,14 @@ impl StdlibMapping {
             map_method!(static "FileSystem", "deleteDirectory" => "haxe_filesystem_delete_directory", params: 1, returns: void),
             // FileSystem.rename(path: String, newPath: String) -> Void
             map_method!(static "FileSystem", "rename" => "haxe_filesystem_rename", params: 2, returns: void),
-            // FileSystem.fullPath(relPath: String) -> String
-            map_method!(static "FileSystem", "fullPath" => "haxe_filesystem_full_path", params: 1, returns: complex),
-            // FileSystem.absolutePath(relPath: String) -> String
-            map_method!(static "FileSystem", "absolutePath" => "haxe_filesystem_absolute_path", params: 1, returns: complex),
+            // FileSystem.fullPath(relPath: String) -> String (returns pointer directly)
+            map_method!(static "FileSystem", "fullPath" => "haxe_filesystem_full_path", params: 1, returns: primitive),
+            // FileSystem.absolutePath(relPath: String) -> String (returns pointer directly)
+            map_method!(static "FileSystem", "absolutePath" => "haxe_filesystem_absolute_path", params: 1, returns: primitive),
+            // FileSystem.stat(path: String) -> FileStat (returns pointer directly)
+            map_method!(static "FileSystem", "stat" => "haxe_filesystem_stat", params: 1, returns: primitive),
+            // FileSystem.readDirectory(path: String) -> Array<String> (returns pointer directly)
+            map_method!(static "FileSystem", "readDirectory" => "haxe_filesystem_read_directory", params: 1, returns: primitive),
         ];
 
         self.register_from_tuples(mappings);

@@ -73,6 +73,11 @@ pub struct HirToMirContext<'a> {
     /// This allows us to find the index of a field within its class
     field_index_map: HashMap<SymbolId, (TypeId, u32)>,
 
+    /// Mapping from (typedef_type_id, field_name) to field_index for anonymous struct fields
+    /// This allows field access on typedef'd anonymous structs like FileStat
+    /// where field symbols may be created at access sites rather than typedef declaration
+    typedef_field_map: HashMap<(TypeId, InternedString), u32>,
+
     /// Mapping from field SymbolId to PropertyAccessInfo (for properties with custom getters/setters)
     /// This allows us to route property access through the appropriate getter/setter methods
     property_access_map: HashMap<SymbolId, crate::tast::PropertyAccessInfo>,
@@ -185,6 +190,7 @@ impl<'a> HirToMirContext<'a> {
             type_table,
             closure_environments: HashMap::new(),
             field_index_map: HashMap::new(),
+            typedef_field_map: HashMap::new(),
             property_access_map: HashMap::new(),
             constructor_map: HashMap::new(),
             current_hir_types: hir_types,
@@ -316,8 +322,34 @@ impl<'a> HirToMirContext<'a> {
             // eprintln!("DEBUG Pass2a: Processing type - TypeId={:?}, name={:?}", type_id, name_str);
             match type_decl {
                 HirTypeDecl::Class(class) => {
+                    // Get class name for runtime mapping checks
+                    let class_name = self.string_interner.get(class.name);
+
                     // Lower each method body
                     for method in &class.methods {
+                        // SPECIAL CASE: Skip lowering method if this is an extern class
+                        // with a runtime mapping for this method. For extern classes like FileSystem,
+                        // methods are handled by the runtime mapping system, not by MIR stubs.
+                        let should_skip_method = if method.function.body.is_none() {
+                            // Method has no body - check if it has a runtime mapping
+                            if let Some(class_name_str) = class_name {
+                                if let Some(method_name) = self.string_interner.get(method.function.name) {
+                                    // Use has_mapping helper instead of creating MethodSignature directly
+                                    self.stdlib_mapping.has_mapping(class_name_str, method_name, method.is_static)
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+
+                        if should_skip_method {
+                            continue;
+                        }
+
                         if method.is_static {
                             self.lower_function_body(
                                 method.function.symbol_id,
@@ -6672,38 +6704,91 @@ impl<'a> HirToMirContext<'a> {
                 }
 
                 match found_mapping {
-                    Some(mapping) => {
-                        // eprintln!(
-                        //     "✅ Resolved field '{}' ({:?}) via name lookup to class={:?}, index={}",
-                        //     field_name, field, mapping.0, mapping.1
-                        // );
-                        mapping
-                    }
+                    Some(mapping) => mapping,
                     None => {
-                        // eprintln!(
-                        //     "WARNING: Field '{}' ({:?}) not found by SymbolId or name",
-                        //     field_name, field
-                        // );
-                        // eprintln!("  Available field mappings in field_index_map:");
-                        // for (sym, (class_ty, idx)) in &self.field_index_map {
-                        //     let name = self
-                        //         .symbol_table
-                        //         .get_symbol(*sym)
-                        //         .map(|s| format!("{}", s.name))
-                        //         .unwrap_or_else(|| String::from("<unknown>"));
-                        //     eprintln!(
-                        //         "    - {:?} ({}) -> class={:?}, index={}",
-                        //         sym, name, class_ty, idx
-                        //     );
-                        // }
-                        self.add_error(
-                            &format!(
-                                "Field '{}' ({:?}) index not found - class may not be registered",
-                                field_name, field
-                            ),
-                            SourceLocation::unknown(),
-                        );
-                        return None;
+                        // Try typedef_field_map for anonymous struct fields (like FileStat)
+                        // This handles cases where the typedef's anonymous struct fields
+                        // are accessed with newly created symbols at the access site
+                        //
+                        // receiver_ty might be the typedef's TypeId OR the aliased anonymous struct TypeId
+                        // Try both and also search all registered typedefs for this field name
+                        let mut typedef_lookup = self.typedef_field_map.get(&(receiver_ty, field_name)).copied();
+
+                        // If not found with receiver_ty, search all typedefs for this field
+                        if typedef_lookup.is_none() {
+                            for ((typedef_ty, fname), &idx) in &self.typedef_field_map {
+                                if *fname == field_name {
+                                    typedef_lookup = Some(idx);
+                                    // Use the typedef's type id for the result
+                                    return Some(self.lower_typedef_field_access(obj, *typedef_ty, idx, field_ty)?);
+                                }
+                            }
+                        }
+
+                        if let Some(typedef_field_idx) = typedef_lookup {
+                            // Found in typedef_field_map - return (receiver_type, field_index)
+                            (receiver_ty, typedef_field_idx)
+                        } else {
+                            // Last resort: look up the field by name in the type_table for anonymous structs
+                            // This handles cross-module typedef field access where the typedef was
+                            // registered in a different HIR->MIR pass
+                            let type_table = self.type_table.borrow();
+
+                            // Get the field name string for lookup
+                            let field_name_str = self.string_interner.get(field_name)
+                                .map(|s| s.to_string())
+                                .unwrap_or_default();
+
+                            // Search all types for an anonymous struct with this field name
+                            let mut found_field = None;
+                            for (type_id, type_info) in type_table.iter() {
+                                if let TypeKind::Anonymous { fields } = &type_info.kind {
+                                    for (idx, anon_field) in fields.iter().enumerate() {
+                                        let anon_field_name = self.string_interner.get(anon_field.name)
+                                            .map(|s| s.to_string())
+                                            .unwrap_or_default();
+                                        if anon_field_name == field_name_str {
+                                            found_field = Some((type_id, idx as u32));
+                                            break;
+                                        }
+                                    }
+                                    if found_field.is_some() {
+                                        break;
+                                    }
+                                }
+                            }
+                            drop(type_table);
+
+                            if let Some((found_type_id, field_idx)) = found_field {
+                                // Get the actual field type from the type_table
+                                let actual_field_ty = {
+                                    let type_table = self.type_table.borrow();
+                                    if let Some(type_info) = type_table.get(found_type_id) {
+                                        if let TypeKind::Anonymous { fields } = &type_info.kind {
+                                            if let Some(field) = fields.get(field_idx as usize) {
+                                                field.type_id
+                                            } else {
+                                                field_ty
+                                            }
+                                        } else {
+                                            field_ty
+                                        }
+                                    } else {
+                                        field_ty
+                                    }
+                                };
+                                return Some(self.lower_typedef_field_access(obj, receiver_ty, field_idx, actual_field_ty)?);
+                            }
+
+                            self.add_error(
+                                &format!(
+                                    "Field '{}' ({:?}) index not found - class may not be registered",
+                                    field_name, field
+                                ),
+                                SourceLocation::unknown(),
+                            );
+                            return None;
+                        }
                     }
                 }
             }
@@ -6733,6 +6818,30 @@ impl<'a> HirToMirContext<'a> {
         self.builder.set_register_type(field_value, field_ir_ty);
 
         // eprintln!("DEBUG: Field access successful - value={:?}", field_value);
+        Some(field_value)
+    }
+
+    /// Direct field access for typedef'd anonymous structs (like FileStat)
+    /// All fields are 8 bytes for consistent boxing/sizing
+    fn lower_typedef_field_access(&mut self, obj: IrId, _typedef_ty: TypeId, field_index: u32, field_ty: TypeId) -> Option<IrId> {
+        // Create constant for field index
+        let index_const = self.builder.build_const(IrValue::I32(field_index as i32))?;
+
+        // Get the type of the field
+        let field_ir_ty = self.convert_type(field_ty);
+
+        // Use GetElementPtr to get pointer to the field
+        // All typedef anonymous struct fields are 8 bytes
+        let field_ptr = self
+            .builder
+            .build_gep(obj, vec![index_const], field_ir_ty.clone())?;
+
+        // Load the value from the field pointer
+        let field_value = self.builder.build_load(field_ptr, field_ir_ty.clone())?;
+
+        // Register the type of the loaded value
+        self.builder.set_register_type(field_value, field_ir_ty);
+
         Some(field_value)
     }
 
@@ -8965,7 +9074,66 @@ impl<'a> HirToMirContext<'a> {
     }
 
     fn register_alias_metadata(&mut self, type_id: TypeId, alias: &HirTypeAlias) {
-        // Type aliases
+        // Type aliases - check if it's an alias to an anonymous struct
+        // If so, register the anonymous struct fields in typedef_field_map
+        // This allows field access on typedef'd anonymous structs like FileStat
+
+        let type_table = self.type_table.borrow();
+        if let Some(aliased_info) = type_table.get(alias.aliased_type) {
+            if let TypeKind::Anonymous { fields } = &aliased_info.kind {
+                // Register each field of the anonymous struct by name
+                // All fields are 8 bytes for consistent boxing/sizing
+                for (index, field) in fields.iter().enumerate() {
+                    // Register in typedef_field_map by (typedef_type_id, field_name) -> index
+                    // This allows lookup when field access creates new symbols
+                    self.typedef_field_map.insert((type_id, field.name), index as u32);
+
+                    // Also try to register any existing symbols with this name
+                    let field_symbol = self.symbol_table
+                        .symbols_of_kind(crate::tast::symbols::SymbolKind::Field)
+                        .into_iter()
+                        .find(|s| s.name == field.name)
+                        .map(|s| s.id);
+
+                    if let Some(field_sym_id) = field_symbol {
+                        // Register in field_index_map: (TypeId of typedef, field index)
+                        self.field_index_map.insert(field_sym_id, (type_id, index as u32));
+                    }
+                }
+
+                // Also create an IrTypeDef with struct fields for proper layout info
+                let typedef_id = self.builder.module.alloc_typedef_id();
+
+                let ir_fields: Vec<IrField> = fields.iter().enumerate().map(|(idx, f)| {
+                    let field_name = self.string_interner.get(f.name)
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| format!("field_{}", idx));
+                    IrField {
+                        name: field_name,
+                        ty: self.convert_type(f.type_id),
+                        offset: Some((idx * 8) as u32), // 8 bytes per field
+                    }
+                }).collect();
+
+                let typedef = IrTypeDef {
+                    id: typedef_id,
+                    name: alias.name.to_string(),
+                    type_id,
+                    definition: IrTypeDefinition::Struct {
+                        fields: ir_fields,
+                        packed: false,
+                    },
+                    source_location: IrSourceLocation::unknown(),
+                };
+
+                self.builder.module.add_type(typedef);
+                drop(type_table);
+                return;
+            }
+        }
+        drop(type_table);
+
+        // Not an anonymous struct - just register as simple alias
         let typedef_id = self.builder.module.alloc_typedef_id();
 
         let typedef = IrTypeDef {
