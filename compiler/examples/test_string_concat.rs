@@ -1,0 +1,107 @@
+//! Test string concatenation
+
+use compiler::codegen::CraneliftBackend;
+use compiler::compilation::{CompilationConfig, CompilationUnit};
+use compiler::ir::IrModule;
+use rayzor_runtime;
+use std::sync::Arc;
+
+fn main() {
+    println!("=== String Concatenation Test ===\n");
+
+    // Test 1: Simple string concat (no trace)
+    println!("Test 1: Simple string concat (no trace)");
+    let source1 = r#"
+class Main {
+    static function main() {
+        var s = "Hello" + " World";
+        // Just assign, don't trace
+        return;
+    }
+}
+"#;
+    run_test(source1, "simple_concat");
+
+    // Test 2: String + Int
+    println!("\nTest 2: String + Int");
+    let source2 = r#"
+class Main {
+    static function main() {
+        var x = 42;
+        var s = "Value: " + x;
+        trace(s);
+    }
+}
+"#;
+    run_test(source2, "string_int_concat");
+
+    // Test 3: String + method result
+    println!("\nTest 3: String + method result");
+    let source3 = r#"
+class Main {
+    static function getNum(): Int {
+        return 123;
+    }
+
+    static function main() {
+        var s = "Result: " + getNum();
+        trace(s);
+    }
+}
+"#;
+    run_test(source3, "string_method_concat");
+}
+
+fn run_test(source: &str, name: &str) {
+    match compile_and_run(source, name) {
+        Ok(()) => {
+            println!("✅ {} PASSED", name);
+        }
+        Err(e) => {
+            println!("❌ {} FAILED: {}", name, e);
+        }
+    }
+}
+
+fn compile_and_run(source: &str, name: &str) -> Result<(), String> {
+    let mut unit = CompilationUnit::new(CompilationConfig::default());
+    unit.load_stdlib()?;
+    unit.add_file(source, &format!("{}.hx", name))?;
+
+    let _typed_files = unit.lower_to_tast().map_err(|errors| {
+        format!("TAST lowering failed: {:?}", errors)
+    })?;
+
+    let mir_modules = unit.get_mir_modules();
+    if mir_modules.is_empty() {
+        return Err("No MIR modules generated".to_string());
+    }
+
+    let mut backend = compile_to_native(&mir_modules)?;
+    execute_main(&mut backend, &mir_modules)?;
+
+    Ok(())
+}
+
+fn compile_to_native(modules: &[Arc<IrModule>]) -> Result<CraneliftBackend, String> {
+    let plugin = rayzor_runtime::plugin_impl::get_plugin();
+    let symbols = plugin.runtime_symbols();
+    let symbols_ref: Vec<(&str, *const u8)> = symbols.iter().map(|(n, p)| (*n, *p)).collect();
+
+    let mut backend = CraneliftBackend::with_symbols(&symbols_ref)?;
+
+    for module in modules {
+        backend.compile_module(module)?;
+    }
+
+    Ok(backend)
+}
+
+fn execute_main(backend: &mut CraneliftBackend, modules: &[Arc<IrModule>]) -> Result<(), String> {
+    for module in modules.iter().rev() {
+        if backend.call_main(module).is_ok() {
+            return Ok(());
+        }
+    }
+    Err("Failed to execute main".to_string())
+}

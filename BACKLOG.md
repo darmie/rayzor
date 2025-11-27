@@ -1426,6 +1426,42 @@ trace(v.length());  // Works fine
 
 ---
 
+## Known Issues (Technical Debt)
+
+### String ABI Inconsistency ⏸️
+
+**Problem:** Multiple incompatible `HaxeString` struct definitions exist in the runtime:
+- `haxe_sys.rs`: `{ptr: *const u8, len: usize}` = 16 bytes
+- `string.rs`: `{ptr: *mut u8, len: usize, cap: usize}` = 24 bytes
+- `haxe_string.rs`: possibly different definition
+
+**Impact:**
+- String concatenation crashes due to ABI mismatch
+- Functions returning `HaxeString` by value have struct return ABI issues on ARM64
+- Cannot safely pass strings between different runtime modules
+
+**Fix Required:**
+1. Consolidate to single `HaxeString` definition
+2. All string functions should return `*mut HaxeString` (pointer) to avoid struct return ABI issues
+3. Update stdlib and HIR-to-MIR lowering to use pointer-based string handling consistently
+
+**Workaround:** Use `haxe_string_literal` which returns a pointer, avoid string concatenation for now.
+
+### Deref Coercion for Wrapper Types ⏸️
+
+**Problem:** Arc, MutexGuard, and similar wrapper types were initially expected to implicitly inherit methods/fields of their inner type (like Rust's Deref coercion), but this is not implemented.
+
+**Current Workaround:** Explicitly call `.get()` on Arc/MutexGuard to access the inner value.
+
+**Example:**
+```haxe
+var arc = new Arc<Int>(42);
+// arc.someMethod();  // Would need Deref coercion
+arc.get().someMethod();  // Works with explicit .get()
+```
+
+---
+
 ## Recent Progress (Session 2025-11-16)
 
 **Completed:**
