@@ -235,6 +235,8 @@ register_symbol!("haxe_file_read", crate::haxe_sys::haxe_file_read);
 register_symbol!("haxe_file_write", crate::haxe_sys::haxe_file_write);
 register_symbol!("haxe_file_append", crate::haxe_sys::haxe_file_append);
 register_symbol!("haxe_file_update", crate::haxe_sys::haxe_file_update);
+register_symbol!("haxe_file_get_bytes", crate::haxe_sys::haxe_file_get_bytes);
+register_symbol!("haxe_file_save_bytes", crate::haxe_sys::haxe_file_save_bytes);
 
 // ============================================================================
 // FileInput (sys.io.FileInput)

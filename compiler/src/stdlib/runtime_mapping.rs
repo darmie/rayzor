@@ -807,6 +807,10 @@ impl StdlibMapping {
             map_method!(static "File", "append" => "haxe_file_append", params: 2, returns: primitive),
             // File.update(path: String, binary: Bool) -> FileOutput
             map_method!(static "File", "update" => "haxe_file_update", params: 2, returns: primitive),
+            // File.getBytes(path: String) -> haxe.io.Bytes
+            map_method!(static "File", "getBytes" => "haxe_file_get_bytes", params: 1, returns: primitive),
+            // File.saveBytes(path: String, bytes: haxe.io.Bytes) -> Void
+            map_method!(static "File", "saveBytes" => "haxe_file_save_bytes", params: 2, returns: void),
         ];
 
         self.register_from_tuples(mappings);

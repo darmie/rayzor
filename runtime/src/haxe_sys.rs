@@ -990,6 +990,59 @@ pub extern "C" fn haxe_file_copy(src: *const HaxeString, dst: *const HaxeString)
     }
 }
 
+/// Read entire file content as binary bytes
+/// File.getBytes(path: String): haxe.io.Bytes
+#[no_mangle]
+pub extern "C" fn haxe_file_get_bytes(path: *const HaxeString) -> *mut HaxeBytes {
+    unsafe {
+        match haxe_string_to_rust(path) {
+            Some(path_str) => {
+                match std::fs::read(&path_str) {
+                    Ok(content) => {
+                        // Create HaxeBytes from the file content
+                        let len = content.len();
+                        let cap = content.capacity();
+                        let ptr = content.as_ptr() as *mut u8;
+                        std::mem::forget(content); // Don't drop - HaxeBytes now owns the memory
+
+                        let bytes = Box::new(HaxeBytes { ptr, len, cap });
+                        Box::into_raw(bytes)
+                    }
+                    Err(e) => {
+                        eprintln!("File.getBytes error: {} - {}", path_str, e);
+                        std::ptr::null_mut()
+                    }
+                }
+            }
+            None => std::ptr::null_mut(),
+        }
+    }
+}
+
+/// Write binary bytes to file
+/// File.saveBytes(path: String, bytes: haxe.io.Bytes): Void
+#[no_mangle]
+pub extern "C" fn haxe_file_save_bytes(path: *const HaxeString, bytes: *const HaxeBytes) {
+    unsafe {
+        let path_str = match haxe_string_to_rust(path) {
+            Some(s) => s,
+            None => return,
+        };
+
+        if bytes.is_null() {
+            eprintln!("File.saveBytes error: bytes is null");
+            return;
+        }
+
+        let b = &*bytes;
+        let slice = std::slice::from_raw_parts(b.ptr, b.len);
+
+        if let Err(e) = std::fs::write(&path_str, slice) {
+            eprintln!("File.saveBytes error: {} - {}", path_str, e);
+        }
+    }
+}
+
 // ============================================================================
 // FileSystem (sys.FileSystem)
 // ============================================================================
