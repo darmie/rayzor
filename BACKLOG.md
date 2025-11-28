@@ -667,11 +667,11 @@ map.set(new Key(1, "foo"), "value");
 | Concurrency (Thread, Arc, Mutex, Channel) | 5 | 32 | ✅ 100% |
 | System I/O (Sys) | 1 | 10/20 | 🟡 50% |
 | Standard Utilities (Std, Type, Reflect) | 3 | 5/15 | 🟡 33% |
-| File System (File, FileSystem, etc.) | 6 | 15/20 | 🟡 75% |
+| File System (File, FileSystem, etc.) | 6 | 22/25 | 🟡 88% |
+| Date | 6 | 17/17 | ✅ 100% |
 | Networking (Socket, Host, SSL) | 6 | 0 | 🔴 0% |
-| Data Structures (Maps, List) | 4 | 0 | 🔴 0% |
-| Date/Time | 1 | 0 | 🔴 0% |
-| **Total** | **37** | **117** | **~58%** |
+| Data Structures (Maps, List) | 4 | 18/30 | 🟡 60% |
+| **Total** | **37** | **159** | **~65%** |
 
 ### 6.2 Core Types Status
 
@@ -832,29 +832,24 @@ extern class Reflect {
 
 ### 6.5 Not Implemented - MEDIUM PRIORITY 🔴
 
-**Date Class**
-```haxe
-extern class Date {
-    function new(year:Int, month:Int, day:Int, hour:Int, min:Int, sec:Int);
-    function getTime():Float;
-    function getFullYear():Int;
-    function getMonth():Int;
-    function getDate():Int;
-    function getHours():Int;
-    function getMinutes():Int;
-    function getSeconds():Int;
-    function getDay():Int;
-    static function now():Date;
-    static function fromTime(t:Float):Date;
-    function toString():String;
-}
-```
+**Date Class:** ✅ Complete (2025-11-28)
+- [x] new(year, month, day, hour, min, sec) - constructor
+- [x] now() - get current date/time
+- [x] fromTime(t) - create from timestamp (milliseconds)
+- [x] fromString(s) - parse from string
+- [x] getTime() - get timestamp in milliseconds
+- [x] getHours/Minutes/Seconds() - local timezone
+- [x] getFullYear/Month/Date/Day() - local timezone
+- [x] getUTCHours/Minutes/Seconds() - UTC
+- [x] getUTCFullYear/Month/Date/Day() - UTC
+- [x] getTimezoneOffset() - timezone offset in minutes
+- [x] toString() - format as "YYYY-MM-DD HH:MM:SS"
 
-**Data Structure Classes**
-- IntMap<T> - Integer key hash map
-- StringMap<T> - String key hash map
-- ObjectMap<K,V> - Object key hash map
-- List<T> - Linked list
+**Data Structure Classes** 🟡 Partial
+- [x] IntMap<T> - Integer key hash map (runtime impl done)
+- [x] StringMap<T> - String key hash map (runtime impl done)
+- [ ] ObjectMap<K,V> - Object key hash map (needs RTTI)
+- [ ] List<T> - Linked list
 
 **Exception/Stack Trace**
 - Exception class with stack trace
