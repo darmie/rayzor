@@ -1278,6 +1278,353 @@ pub extern "C" fn haxe_filesystem_read_directory(path: *const HaxeString) -> *mu
 }
 
 // ============================================================================
+// FileInput (sys.io.FileInput) - File reading handle
+// ============================================================================
+//
+// FileInput wraps a Rust File handle for reading operations.
+// Extends haxe.io.Input which provides readByte() as the core method.
+
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, BufReader, BufWriter};
+
+/// File input handle for reading
+#[repr(C)]
+pub struct HaxeFileInput {
+    reader: BufReader<File>,
+    eof_reached: bool,
+}
+
+/// File output handle for writing
+#[repr(C)]
+pub struct HaxeFileOutput {
+    writer: BufWriter<File>,
+}
+
+/// FileSeek enum values (matching sys.io.FileSeek)
+/// SeekBegin = 0, SeekCur = 1, SeekEnd = 2
+const SEEK_BEGIN: i32 = 0;
+const SEEK_CUR: i32 = 1;
+const SEEK_END: i32 = 2;
+
+/// Open file for reading
+/// File.read(path: String, binary: Bool): FileInput
+#[no_mangle]
+pub extern "C" fn haxe_file_read(path: *const HaxeString, _binary: bool) -> *mut HaxeFileInput {
+    unsafe {
+        match haxe_string_to_rust(path) {
+            Some(path_str) => {
+                match File::open(&path_str) {
+                    Ok(file) => {
+                        Box::into_raw(Box::new(HaxeFileInput {
+                            reader: BufReader::new(file),
+                            eof_reached: false,
+                        }))
+                    }
+                    Err(e) => {
+                        eprintln!("File.read error: {} - {}", path_str, e);
+                        std::ptr::null_mut()
+                    }
+                }
+            }
+            None => std::ptr::null_mut(),
+        }
+    }
+}
+
+/// Open file for writing (creates or truncates)
+/// File.write(path: String, binary: Bool): FileOutput
+#[no_mangle]
+pub extern "C" fn haxe_file_write(path: *const HaxeString, _binary: bool) -> *mut HaxeFileOutput {
+    unsafe {
+        match haxe_string_to_rust(path) {
+            Some(path_str) => {
+                match File::create(&path_str) {
+                    Ok(file) => {
+                        Box::into_raw(Box::new(HaxeFileOutput {
+                            writer: BufWriter::new(file),
+                        }))
+                    }
+                    Err(e) => {
+                        eprintln!("File.write error: {} - {}", path_str, e);
+                        std::ptr::null_mut()
+                    }
+                }
+            }
+            None => std::ptr::null_mut(),
+        }
+    }
+}
+
+/// Open file for appending
+/// File.append(path: String, binary: Bool): FileOutput
+#[no_mangle]
+pub extern "C" fn haxe_file_append(path: *const HaxeString, _binary: bool) -> *mut HaxeFileOutput {
+    unsafe {
+        match haxe_string_to_rust(path) {
+            Some(path_str) => {
+                match std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path_str)
+                {
+                    Ok(file) => {
+                        Box::into_raw(Box::new(HaxeFileOutput {
+                            writer: BufWriter::new(file),
+                        }))
+                    }
+                    Err(e) => {
+                        eprintln!("File.append error: {} - {}", path_str, e);
+                        std::ptr::null_mut()
+                    }
+                }
+            }
+            None => std::ptr::null_mut(),
+        }
+    }
+}
+
+/// Open file for updating (read/write, seek anywhere)
+/// File.update(path: String, binary: Bool): FileOutput
+#[no_mangle]
+pub extern "C" fn haxe_file_update(path: *const HaxeString, _binary: bool) -> *mut HaxeFileOutput {
+    unsafe {
+        match haxe_string_to_rust(path) {
+            Some(path_str) => {
+                match std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(&path_str)
+                {
+                    Ok(file) => {
+                        Box::into_raw(Box::new(HaxeFileOutput {
+                            writer: BufWriter::new(file),
+                        }))
+                    }
+                    Err(e) => {
+                        eprintln!("File.update error: {} - {}", path_str, e);
+                        std::ptr::null_mut()
+                    }
+                }
+            }
+            None => std::ptr::null_mut(),
+        }
+    }
+}
+
+// ============================================================================
+// FileInput methods (reading)
+// ============================================================================
+
+/// Read one byte from FileInput
+/// FileInput.readByte(): Int
+#[no_mangle]
+pub extern "C" fn haxe_fileinput_read_byte(handle: *mut HaxeFileInput) -> i32 {
+    if handle.is_null() {
+        return -1;
+    }
+    unsafe {
+        let input = &mut *handle;
+        let mut buf = [0u8; 1];
+        match input.reader.read(&mut buf) {
+            Ok(0) => {
+                input.eof_reached = true;
+                -1 // EOF
+            }
+            Ok(_) => buf[0] as i32,
+            Err(_) => {
+                input.eof_reached = true;
+                -1
+            }
+        }
+    }
+}
+
+/// Read multiple bytes into buffer
+/// Returns actual bytes read
+#[no_mangle]
+pub extern "C" fn haxe_fileinput_read_bytes(handle: *mut HaxeFileInput, buf: *mut u8, len: i32) -> i32 {
+    if handle.is_null() || buf.is_null() || len <= 0 {
+        return 0;
+    }
+    unsafe {
+        let input = &mut *handle;
+        let slice = std::slice::from_raw_parts_mut(buf, len as usize);
+        match input.reader.read(slice) {
+            Ok(0) => {
+                input.eof_reached = true;
+                0
+            }
+            Ok(n) => n as i32,
+            Err(_) => {
+                input.eof_reached = true;
+                0
+            }
+        }
+    }
+}
+
+/// Seek to position in FileInput
+/// FileInput.seek(p: Int, pos: FileSeek): Void
+#[no_mangle]
+pub extern "C" fn haxe_fileinput_seek(handle: *mut HaxeFileInput, p: i32, pos: i32) {
+    if handle.is_null() {
+        return;
+    }
+    unsafe {
+        let input = &mut *handle;
+        let seek_pos = match pos {
+            SEEK_BEGIN => SeekFrom::Start(p as u64),
+            SEEK_CUR => SeekFrom::Current(p as i64),
+            SEEK_END => SeekFrom::End(p as i64),
+            _ => return,
+        };
+        let _ = input.reader.seek(seek_pos);
+        input.eof_reached = false; // Reset EOF on seek
+    }
+}
+
+/// Get current position in FileInput
+/// FileInput.tell(): Int
+#[no_mangle]
+pub extern "C" fn haxe_fileinput_tell(handle: *mut HaxeFileInput) -> i32 {
+    if handle.is_null() {
+        return 0;
+    }
+    unsafe {
+        let input = &mut *handle;
+        match input.reader.stream_position() {
+            Ok(pos) => pos as i32,
+            Err(_) => 0,
+        }
+    }
+}
+
+/// Check if EOF reached
+/// FileInput.eof(): Bool
+#[no_mangle]
+pub extern "C" fn haxe_fileinput_eof(handle: *mut HaxeFileInput) -> bool {
+    if handle.is_null() {
+        return true;
+    }
+    unsafe {
+        (*handle).eof_reached
+    }
+}
+
+/// Close FileInput
+/// FileInput.close(): Void
+#[no_mangle]
+pub extern "C" fn haxe_fileinput_close(handle: *mut HaxeFileInput) {
+    if handle.is_null() {
+        return;
+    }
+    unsafe {
+        // Drop the Box, which closes the file
+        let _ = Box::from_raw(handle);
+    }
+}
+
+// ============================================================================
+// FileOutput methods (writing)
+// ============================================================================
+
+/// Write one byte to FileOutput
+/// FileOutput.writeByte(c: Int): Void
+#[no_mangle]
+pub extern "C" fn haxe_fileoutput_write_byte(handle: *mut HaxeFileOutput, c: i32) {
+    if handle.is_null() {
+        return;
+    }
+    unsafe {
+        let output = &mut *handle;
+        let _ = output.writer.write(&[c as u8]);
+    }
+}
+
+/// Write multiple bytes from buffer
+/// Returns actual bytes written
+#[no_mangle]
+pub extern "C" fn haxe_fileoutput_write_bytes(handle: *mut HaxeFileOutput, buf: *const u8, len: i32) -> i32 {
+    if handle.is_null() || buf.is_null() || len <= 0 {
+        return 0;
+    }
+    unsafe {
+        let output = &mut *handle;
+        let slice = std::slice::from_raw_parts(buf, len as usize);
+        match output.writer.write(slice) {
+            Ok(n) => n as i32,
+            Err(_) => 0,
+        }
+    }
+}
+
+/// Seek to position in FileOutput
+/// FileOutput.seek(p: Int, pos: FileSeek): Void
+#[no_mangle]
+pub extern "C" fn haxe_fileoutput_seek(handle: *mut HaxeFileOutput, p: i32, pos: i32) {
+    if handle.is_null() {
+        return;
+    }
+    unsafe {
+        let output = &mut *handle;
+        // Flush before seeking
+        let _ = output.writer.flush();
+        let seek_pos = match pos {
+            SEEK_BEGIN => SeekFrom::Start(p as u64),
+            SEEK_CUR => SeekFrom::Current(p as i64),
+            SEEK_END => SeekFrom::End(p as i64),
+            _ => return,
+        };
+        let _ = output.writer.seek(seek_pos);
+    }
+}
+
+/// Get current position in FileOutput
+/// FileOutput.tell(): Int
+#[no_mangle]
+pub extern "C" fn haxe_fileoutput_tell(handle: *mut HaxeFileOutput) -> i32 {
+    if handle.is_null() {
+        return 0;
+    }
+    unsafe {
+        let output = &mut *handle;
+        match output.writer.stream_position() {
+            Ok(pos) => pos as i32,
+            Err(_) => 0,
+        }
+    }
+}
+
+/// Flush FileOutput buffer
+/// FileOutput.flush(): Void
+#[no_mangle]
+pub extern "C" fn haxe_fileoutput_flush(handle: *mut HaxeFileOutput) {
+    if handle.is_null() {
+        return;
+    }
+    unsafe {
+        let output = &mut *handle;
+        let _ = output.writer.flush();
+    }
+}
+
+/// Close FileOutput
+/// FileOutput.close(): Void
+#[no_mangle]
+pub extern "C" fn haxe_fileoutput_close(handle: *mut HaxeFileOutput) {
+    if handle.is_null() {
+        return;
+    }
+    unsafe {
+        // Flush and drop
+        let mut output = Box::from_raw(handle);
+        let _ = output.writer.flush();
+        // Box drops here, closing the file
+    }
+}
+
+// ============================================================================
 // StringMap<T> (haxe.ds.StringMap)
 // ============================================================================
 //

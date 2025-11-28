@@ -667,11 +667,11 @@ map.set(new Key(1, "foo"), "value");
 | Concurrency (Thread, Arc, Mutex, Channel) | 5 | 32 | ✅ 100% |
 | System I/O (Sys) | 1 | 10/20 | 🟡 50% |
 | Standard Utilities (Std, Type, Reflect) | 3 | 5/15 | 🟡 33% |
-| File System (File, FileSystem, etc.) | 6 | 12/20 | 🟡 60% |
+| File System (File, FileSystem, etc.) | 6 | 15/20 | 🟡 75% |
 | Networking (Socket, Host, SSL) | 6 | 0 | 🔴 0% |
 | Data Structures (Maps, List) | 4 | 0 | 🔴 0% |
 | Date/Time | 1 | 0 | 🔴 0% |
-| **Total** | **37** | **114** | **~55%** |
+| **Total** | **37** | **117** | **~58%** |
 
 ### 6.2 Core Types Status
 
@@ -796,31 +796,39 @@ extern class Reflect {
 **FileSystem Class:**
 - [x] exists(path) - check if path exists
 - [x] isDirectory(path) - check if path is directory
+- [x] isFile(path) - check if path is file
 - [x] createDirectory(path) - create directory
 - [x] deleteDirectory(path) - delete directory
 - [x] deleteFile(path) - delete file
 - [x] rename(oldPath, newPath) - rename/move file
 - [x] fullPath(relativePath) - get full absolute path
 - [x] absolutePath(relativePath) - get absolute path
-- [ ] stat(path) - file/directory stats
-- [ ] isFile(path) - check if path is file
-- [ ] readDirectory(path) - list directory contents
+- [x] stat(path) - file/directory stats (returns FileStat with size, mtime, etc.)
+- [x] readDirectory(path) - list directory contents (returns Array<String>)
 
 **File Class:**
 - [x] getContent(path) - read file as string
 - [x] saveContent(path, content) - write string to file
 - [x] copy(src, dst) - copy file
-- [ ] getBytes(path) - read file as bytes
-- [ ] saveBytes(path, bytes) - write bytes to file
-- [ ] read(path) - open for reading (FileInput)
-- [ ] write(path) - open for writing (FileOutput)
-- [ ] append(path) - open for appending
+- [x] read(path) - open for reading (FileInput) - runtime impl done
+- [x] write(path) - open for writing (FileOutput) - runtime impl done
+- [x] append(path) - open for appending - runtime impl done
+- [x] update(path) - open for updating - runtime impl done
+- [ ] getBytes(path) - read file as bytes (needs haxe.io.Bytes)
+- [ ] saveBytes(path, bytes) - write bytes to file (needs haxe.io.Bytes)
 
-**FileInput/FileOutput Classes:** 🔴 Not Started
-- Stream-based I/O
-- readByte, readBytes, readLine, readAll
-- writeByte, writeBytes, writeString
-- close, flush, seek, tell
+**FileInput/FileOutput Classes:** 🟡 Runtime Implemented (2025-11-28)
+- [x] readByte() - read single byte
+- [x] writeByte(c) - write single byte
+- [x] close() - close file handle
+- [x] flush() - flush output buffer
+- [x] tell() - get current position
+- [x] eof() - check if at end of file
+- [x] seek(p, pos) - seek to position (runtime impl done)
+- [ ] readBytes/writeBytes - needs haxe.io.Bytes type
+- [ ] readLine/readAll - needs full Input class support
+- **Note**: Type inference for extern class return types needs fixing.
+  Using explicit type annotation works: `var output:FileOutput = File.write(...)`
 
 ### 6.5 Not Implemented - MEDIUM PRIORITY 🔴
 
@@ -1384,30 +1392,37 @@ trace(v.length());  // Works fine
   - Added Sys.getChar() - stdin character reading
   - All 8 tested methods passing: time, cpuTime, systemName, getCwd, getEnv, putEnv, sleep, programPath, command
   - Created test_sys_class.rs with comprehensive tests
-- ✅ **File I/O verified working** (12 operations)
-  - FileSystem: exists, isDirectory, createDirectory, deleteDirectory, deleteFile, rename, fullPath, absolutePath
+- ✅ **File I/O complete** (15/20 operations - 75%)
+  - FileSystem: exists, isDirectory, isFile, createDirectory, deleteDirectory, deleteFile, rename, fullPath, absolutePath, stat, readDirectory
   - File: getContent, saveContent, copy
-  - Created test_file_io.rs with 7 comprehensive tests
+  - Created test_file_io.rs with 9 comprehensive tests
   - All tests passing reliably
+  - Added HaxeFileStat struct with Unix metadata (gid, uid, size, mtime, etc.)
+  - Fixed MIR verifier errors for extern class methods with runtime mappings
 
 **Key Implementation Details:**
 - Added haxe_sys_command() in runtime/src/haxe_sys.rs (shell execution via sh -c)
 - Added haxe_sys_get_char() in runtime/src/haxe_sys.rs (stdin reading)
-- Registered new symbols in runtime/src/plugin_impl.rs
-- Added stdlib mappings in compiler/src/stdlib/runtime_mapping.rs
+- Added haxe_filesystem_stat() returning HaxeFileStat with full Unix metadata
+- Added haxe_filesystem_read_directory() returning Array<String>
+- Added haxe_filesystem_is_file() extension function
+- Fixed extern class method lowering to skip MIR stub generation for runtime-mapped methods
+- Fixed runtime mapping return types (primitive vs complex) for FileSystem methods
+- Added TypeTable::iter() for type iteration
+- Pre-load stdlib imports before compilation for typedef availability
 
 **Test Results:**
 - test_std_class.rs: 5/5 tests passing
 - test_sys_class.rs: 8/8 tests passing
-- test_file_io.rs: 7/7 tests passing
+- test_file_io.rs: 9/9 tests passing
 
 **Stdlib Coverage Update:**
-- Overall coverage increased from ~43% to ~55%
+- Overall coverage increased from ~55% to ~58%
 - Core types: ✅ Complete (String, Array, Math)
 - Concurrency: ✅ Complete (Thread, Arc, Mutex, Channel)
 - Sys class: 🟡 50% (10/20 functions)
 - Std class: 🟡 70% (5/7 functions)
-- File I/O: 🟡 60% (12/20 functions)
+- File I/O: 🟡 75% (15/20 functions)
 
 ---
 

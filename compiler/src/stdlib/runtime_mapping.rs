@@ -95,6 +95,8 @@ impl StdlibMapping {
         mapping.register_sys_methods();
         mapping.register_std_methods();
         mapping.register_file_methods();
+        mapping.register_fileinput_methods();
+        mapping.register_fileoutput_methods();
         mapping.register_filesystem_methods();
         mapping.register_thread_methods();
         mapping.register_channel_methods();
@@ -795,6 +797,56 @@ impl StdlibMapping {
             map_method!(static "File", "saveContent" => "haxe_file_save_content", params: 2, returns: void),
             // File.copy(srcPath: String, dstPath: String) -> Void
             map_method!(static "File", "copy" => "haxe_file_copy", params: 2, returns: void),
+            // File.read(path: String, binary: Bool) -> FileInput
+            map_method!(static "File", "read" => "haxe_file_read", params: 2, returns: primitive),
+            // File.write(path: String, binary: Bool) -> FileOutput
+            map_method!(static "File", "write" => "haxe_file_write", params: 2, returns: primitive),
+            // File.append(path: String, binary: Bool) -> FileOutput
+            map_method!(static "File", "append" => "haxe_file_append", params: 2, returns: primitive),
+            // File.update(path: String, binary: Bool) -> FileOutput
+            map_method!(static "File", "update" => "haxe_file_update", params: 2, returns: primitive),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // FileInput Methods (sys.io.FileInput)
+    // ============================================================================
+
+    fn register_fileinput_methods(&mut self) {
+        let mappings = vec![
+            // FileInput.readByte() -> Int
+            map_method!(instance "FileInput", "readByte" => "haxe_fileinput_read_byte", params: 0, returns: primitive),
+            // FileInput.seek(p: Int, pos: FileSeek) -> Void
+            map_method!(instance "FileInput", "seek" => "haxe_fileinput_seek", params: 2, returns: void),
+            // FileInput.tell() -> Int
+            map_method!(instance "FileInput", "tell" => "haxe_fileinput_tell", params: 0, returns: primitive),
+            // FileInput.eof() -> Bool
+            map_method!(instance "FileInput", "eof" => "haxe_fileinput_eof", params: 0, returns: primitive),
+            // FileInput.close() -> Void
+            map_method!(instance "FileInput", "close" => "haxe_fileinput_close", params: 0, returns: void),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // FileOutput Methods (sys.io.FileOutput)
+    // ============================================================================
+
+    fn register_fileoutput_methods(&mut self) {
+        let mappings = vec![
+            // FileOutput.writeByte(c: Int) -> Void
+            map_method!(instance "FileOutput", "writeByte" => "haxe_fileoutput_write_byte", params: 1, returns: void),
+            // FileOutput.seek(p: Int, pos: FileSeek) -> Void
+            map_method!(instance "FileOutput", "seek" => "haxe_fileoutput_seek", params: 2, returns: void),
+            // FileOutput.tell() -> Int
+            map_method!(instance "FileOutput", "tell" => "haxe_fileoutput_tell", params: 0, returns: primitive),
+            // FileOutput.flush() -> Void
+            map_method!(instance "FileOutput", "flush" => "haxe_fileoutput_flush", params: 0, returns: void),
+            // FileOutput.close() -> Void
+            map_method!(instance "FileOutput", "close" => "haxe_fileoutput_close", params: 0, returns: void),
         ];
 
         self.register_from_tuples(mappings);

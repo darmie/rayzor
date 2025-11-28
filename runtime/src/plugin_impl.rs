@@ -231,6 +231,30 @@ register_symbol!("haxe_sys_get_char", crate::haxe_sys::haxe_sys_get_char);
 register_symbol!("haxe_file_get_content", crate::haxe_sys::haxe_file_get_content);
 register_symbol!("haxe_file_save_content", crate::haxe_sys::haxe_file_save_content);
 register_symbol!("haxe_file_copy", crate::haxe_sys::haxe_file_copy);
+register_symbol!("haxe_file_read", crate::haxe_sys::haxe_file_read);
+register_symbol!("haxe_file_write", crate::haxe_sys::haxe_file_write);
+register_symbol!("haxe_file_append", crate::haxe_sys::haxe_file_append);
+register_symbol!("haxe_file_update", crate::haxe_sys::haxe_file_update);
+
+// ============================================================================
+// FileInput (sys.io.FileInput)
+// ============================================================================
+register_symbol!("haxe_fileinput_read_byte", crate::haxe_sys::haxe_fileinput_read_byte);
+register_symbol!("haxe_fileinput_read_bytes", crate::haxe_sys::haxe_fileinput_read_bytes);
+register_symbol!("haxe_fileinput_seek", crate::haxe_sys::haxe_fileinput_seek);
+register_symbol!("haxe_fileinput_tell", crate::haxe_sys::haxe_fileinput_tell);
+register_symbol!("haxe_fileinput_eof", crate::haxe_sys::haxe_fileinput_eof);
+register_symbol!("haxe_fileinput_close", crate::haxe_sys::haxe_fileinput_close);
+
+// ============================================================================
+// FileOutput (sys.io.FileOutput)
+// ============================================================================
+register_symbol!("haxe_fileoutput_write_byte", crate::haxe_sys::haxe_fileoutput_write_byte);
+register_symbol!("haxe_fileoutput_write_bytes", crate::haxe_sys::haxe_fileoutput_write_bytes);
+register_symbol!("haxe_fileoutput_seek", crate::haxe_sys::haxe_fileoutput_seek);
+register_symbol!("haxe_fileoutput_tell", crate::haxe_sys::haxe_fileoutput_tell);
+register_symbol!("haxe_fileoutput_flush", crate::haxe_sys::haxe_fileoutput_flush);
+register_symbol!("haxe_fileoutput_close", crate::haxe_sys::haxe_fileoutput_close);
 
 // ============================================================================
 // FileSystem (sys.FileSystem)
