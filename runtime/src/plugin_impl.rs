@@ -297,6 +297,31 @@ register_symbol!("haxe_date_get_timezone_offset", crate::haxe_sys::haxe_date_get
 register_symbol!("haxe_date_to_string", crate::haxe_sys::haxe_date_to_string);
 
 // ============================================================================
+// Bytes (rayzor.Bytes / haxe.io.Bytes)
+// ============================================================================
+register_symbol!("haxe_bytes_alloc", crate::haxe_sys::haxe_bytes_alloc);
+register_symbol!("haxe_bytes_of_string", crate::haxe_sys::haxe_bytes_of_string);
+register_symbol!("haxe_bytes_length", crate::haxe_sys::haxe_bytes_length);
+register_symbol!("haxe_bytes_get", crate::haxe_sys::haxe_bytes_get);
+register_symbol!("haxe_bytes_set", crate::haxe_sys::haxe_bytes_set);
+register_symbol!("haxe_bytes_sub", crate::haxe_sys::haxe_bytes_sub);
+register_symbol!("haxe_bytes_blit", crate::haxe_sys::haxe_bytes_blit);
+register_symbol!("haxe_bytes_fill", crate::haxe_sys::haxe_bytes_fill);
+register_symbol!("haxe_bytes_compare", crate::haxe_sys::haxe_bytes_compare);
+register_symbol!("haxe_bytes_to_string", crate::haxe_sys::haxe_bytes_to_string);
+register_symbol!("haxe_bytes_get_int16", crate::haxe_sys::haxe_bytes_get_int16);
+register_symbol!("haxe_bytes_get_int32", crate::haxe_sys::haxe_bytes_get_int32);
+register_symbol!("haxe_bytes_get_int64", crate::haxe_sys::haxe_bytes_get_int64);
+register_symbol!("haxe_bytes_get_float", crate::haxe_sys::haxe_bytes_get_float);
+register_symbol!("haxe_bytes_get_double", crate::haxe_sys::haxe_bytes_get_double);
+register_symbol!("haxe_bytes_set_int16", crate::haxe_sys::haxe_bytes_set_int16);
+register_symbol!("haxe_bytes_set_int32", crate::haxe_sys::haxe_bytes_set_int32);
+register_symbol!("haxe_bytes_set_int64", crate::haxe_sys::haxe_bytes_set_int64);
+register_symbol!("haxe_bytes_set_float", crate::haxe_sys::haxe_bytes_set_float);
+register_symbol!("haxe_bytes_set_double", crate::haxe_sys::haxe_bytes_set_double);
+register_symbol!("haxe_bytes_free", crate::haxe_sys::haxe_bytes_free);
+
+// ============================================================================
 // StringMap<T> (haxe.ds.StringMap)
 // ============================================================================
 register_symbol!("haxe_stringmap_new", crate::haxe_sys::haxe_stringmap_new);

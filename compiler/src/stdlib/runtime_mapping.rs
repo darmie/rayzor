@@ -106,6 +106,7 @@ impl StdlibMapping {
         mapping.register_stringmap_methods();
         mapping.register_intmap_methods();
         mapping.register_date_methods();
+        mapping.register_bytes_methods();
 
         mapping
     }
@@ -1228,6 +1229,70 @@ impl StdlibMapping {
             // String conversion
             // date.toString(): String
             map_method!(instance "Date", "toString" => "haxe_date_to_string", params: 0, returns: primitive),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // Bytes Methods (rayzor.Bytes)
+    // ============================================================================
+
+    fn register_bytes_methods(&mut self) {
+        let mappings = vec![
+            // Static methods
+            // Bytes.alloc(size: Int): Bytes
+            map_method!(static "Bytes", "alloc" => "haxe_bytes_alloc", params: 1, returns: primitive),
+            // Bytes.ofString(s: String): Bytes
+            map_method!(static "Bytes", "ofString" => "haxe_bytes_of_string", params: 1, returns: primitive),
+
+            // Property accessor
+            // bytes.length: Int
+            map_method!(instance "Bytes", "length" => "haxe_bytes_length", params: 0, returns: primitive),
+
+            // Instance methods
+            // bytes.get(pos: Int): Int
+            map_method!(instance "Bytes", "get" => "haxe_bytes_get", params: 1, returns: primitive),
+            // bytes.set(pos: Int, value: Int): Void
+            map_method!(instance "Bytes", "set" => "haxe_bytes_set", params: 2, returns: void),
+            // bytes.sub(pos: Int, len: Int): Bytes
+            map_method!(instance "Bytes", "sub" => "haxe_bytes_sub", params: 2, returns: primitive),
+            // bytes.blit(srcPos: Int, dest: Bytes, destPos: Int, len: Int): Void
+            map_method!(instance "Bytes", "blit" => "haxe_bytes_blit", params: 4, returns: void),
+            // bytes.fill(pos: Int, len: Int, value: Int): Void
+            map_method!(instance "Bytes", "fill" => "haxe_bytes_fill", params: 3, returns: void),
+            // bytes.compare(other: Bytes): Int
+            map_method!(instance "Bytes", "compare" => "haxe_bytes_compare", params: 1, returns: primitive),
+            // bytes.toString(): String
+            map_method!(instance "Bytes", "toString" => "haxe_bytes_to_string", params: 0, returns: primitive),
+
+            // Integer getters (little-endian)
+            // bytes.getInt16(pos: Int): Int
+            map_method!(instance "Bytes", "getInt16" => "haxe_bytes_get_int16", params: 1, returns: primitive),
+            // bytes.getInt32(pos: Int): Int
+            map_method!(instance "Bytes", "getInt32" => "haxe_bytes_get_int32", params: 1, returns: primitive),
+            // bytes.getInt64(pos: Int): Int64
+            map_method!(instance "Bytes", "getInt64" => "haxe_bytes_get_int64", params: 1, returns: primitive),
+
+            // Float getters (little-endian)
+            // bytes.getFloat(pos: Int): Float
+            map_method!(instance "Bytes", "getFloat" => "haxe_bytes_get_float", params: 1, returns: primitive),
+            // bytes.getDouble(pos: Int): Float
+            map_method!(instance "Bytes", "getDouble" => "haxe_bytes_get_double", params: 1, returns: primitive),
+
+            // Integer setters (little-endian)
+            // bytes.setInt16(pos: Int, value: Int): Void
+            map_method!(instance "Bytes", "setInt16" => "haxe_bytes_set_int16", params: 2, returns: void),
+            // bytes.setInt32(pos: Int, value: Int): Void
+            map_method!(instance "Bytes", "setInt32" => "haxe_bytes_set_int32", params: 2, returns: void),
+            // bytes.setInt64(pos: Int, value: Int64): Void
+            map_method!(instance "Bytes", "setInt64" => "haxe_bytes_set_int64", params: 2, returns: void),
+
+            // Float setters (little-endian)
+            // bytes.setFloat(pos: Int, value: Float): Void
+            map_method!(instance "Bytes", "setFloat" => "haxe_bytes_set_float", params: 2, returns: void),
+            // bytes.setDouble(pos: Int, value: Float): Void
+            map_method!(instance "Bytes", "setDouble" => "haxe_bytes_set_double", params: 2, returns: void),
         ];
 
         self.register_from_tuples(mappings);

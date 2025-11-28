@@ -1865,6 +1865,406 @@ pub extern "C" fn haxe_date_to_string(date: *const HaxeDate) -> *mut HaxeString 
 }
 
 // ============================================================================
+// Bytes (rayzor.Bytes / haxe.io.Bytes)
+// ============================================================================
+//
+// Native byte buffer implementation.
+// Memory layout matches vec_u8: { ptr: *u8, len: u64, cap: u64 }
+
+/// Haxe Bytes - raw byte buffer
+#[repr(C)]
+pub struct HaxeBytes {
+    pub ptr: *mut u8,
+    pub len: usize,
+    pub cap: usize,
+}
+
+/// Allocate a new Bytes of given size (zero-initialized)
+/// Bytes.alloc(size: Int): Bytes
+#[no_mangle]
+pub extern "C" fn haxe_bytes_alloc(size: i32) -> *mut HaxeBytes {
+    let size = size.max(0) as usize;
+    let cap = size.max(16); // Minimum capacity of 16
+
+    unsafe {
+        let layout = std::alloc::Layout::from_size_align(cap, 1).unwrap();
+        let ptr = std::alloc::alloc_zeroed(layout);
+        if ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        Box::into_raw(Box::new(HaxeBytes { ptr, len: size, cap }))
+    }
+}
+
+/// Create Bytes from String (UTF-8)
+/// Bytes.ofString(s: String): Bytes
+#[no_mangle]
+pub extern "C" fn haxe_bytes_of_string(s: *const HaxeString) -> *mut HaxeBytes {
+    unsafe {
+        let s_str = match haxe_string_to_rust(s) {
+            Some(s) => s,
+            None => return haxe_bytes_alloc(0),
+        };
+
+        let bytes = s_str.into_bytes();
+        let len = bytes.len();
+        let cap = bytes.capacity();
+        let ptr = bytes.as_ptr() as *mut u8;
+        std::mem::forget(bytes);
+
+        Box::into_raw(Box::new(HaxeBytes { ptr, len, cap }))
+    }
+}
+
+/// Get the length of Bytes
+/// bytes.length: Int
+#[no_mangle]
+pub extern "C" fn haxe_bytes_length(bytes: *const HaxeBytes) -> i32 {
+    if bytes.is_null() {
+        return 0;
+    }
+    unsafe { (*bytes).len as i32 }
+}
+
+/// Get a single byte
+/// bytes.get(pos: Int): Int
+#[no_mangle]
+pub extern "C" fn haxe_bytes_get(bytes: *const HaxeBytes, pos: i32) -> i32 {
+    if bytes.is_null() || pos < 0 {
+        return 0;
+    }
+    unsafe {
+        let b = &*bytes;
+        if (pos as usize) >= b.len {
+            return 0;
+        }
+        *b.ptr.add(pos as usize) as i32
+    }
+}
+
+/// Set a single byte
+/// bytes.set(pos: Int, value: Int): Void
+#[no_mangle]
+pub extern "C" fn haxe_bytes_set(bytes: *mut HaxeBytes, pos: i32, value: i32) {
+    if bytes.is_null() || pos < 0 {
+        return;
+    }
+    unsafe {
+        let b = &mut *bytes;
+        if (pos as usize) >= b.len {
+            return;
+        }
+        *b.ptr.add(pos as usize) = value as u8;
+    }
+}
+
+/// Get a sub-range as new Bytes
+/// bytes.sub(pos: Int, len: Int): Bytes
+#[no_mangle]
+pub extern "C" fn haxe_bytes_sub(bytes: *const HaxeBytes, pos: i32, len: i32) -> *mut HaxeBytes {
+    if bytes.is_null() || pos < 0 || len < 0 {
+        return haxe_bytes_alloc(0);
+    }
+    unsafe {
+        let b = &*bytes;
+        let pos = pos as usize;
+        let len = len as usize;
+        if pos >= b.len || pos + len > b.len {
+            return haxe_bytes_alloc(0);
+        }
+
+        let new_bytes = haxe_bytes_alloc(len as i32);
+        if !new_bytes.is_null() {
+            std::ptr::copy_nonoverlapping(b.ptr.add(pos), (*new_bytes).ptr, len);
+        }
+        new_bytes
+    }
+}
+
+/// Copy bytes from source to destination
+/// bytes.blit(srcPos: Int, dest: Bytes, destPos: Int, len: Int): Void
+#[no_mangle]
+pub extern "C" fn haxe_bytes_blit(
+    src: *const HaxeBytes,
+    src_pos: i32,
+    dest: *mut HaxeBytes,
+    dest_pos: i32,
+    len: i32,
+) {
+    if src.is_null() || dest.is_null() || src_pos < 0 || dest_pos < 0 || len <= 0 {
+        return;
+    }
+    unsafe {
+        let s = &*src;
+        let d = &mut *dest;
+        let src_pos = src_pos as usize;
+        let dest_pos = dest_pos as usize;
+        let len = len as usize;
+
+        if src_pos + len > s.len || dest_pos + len > d.len {
+            return;
+        }
+
+        // Use memmove for potentially overlapping regions
+        std::ptr::copy(s.ptr.add(src_pos), d.ptr.add(dest_pos), len);
+    }
+}
+
+/// Fill a range with a byte value
+/// bytes.fill(pos: Int, len: Int, value: Int): Void
+#[no_mangle]
+pub extern "C" fn haxe_bytes_fill(bytes: *mut HaxeBytes, pos: i32, len: i32, value: i32) {
+    if bytes.is_null() || pos < 0 || len <= 0 {
+        return;
+    }
+    unsafe {
+        let b = &mut *bytes;
+        let pos = pos as usize;
+        let len = len as usize;
+        if pos + len > b.len {
+            return;
+        }
+        std::ptr::write_bytes(b.ptr.add(pos), value as u8, len);
+    }
+}
+
+/// Compare two Bytes
+/// bytes.compare(other: Bytes): Int
+#[no_mangle]
+pub extern "C" fn haxe_bytes_compare(a: *const HaxeBytes, b: *const HaxeBytes) -> i32 {
+    if a.is_null() && b.is_null() {
+        return 0;
+    }
+    if a.is_null() {
+        return -1;
+    }
+    if b.is_null() {
+        return 1;
+    }
+    unsafe {
+        let a = &*a;
+        let b = &*b;
+        let min_len = a.len.min(b.len);
+        let cmp = libc::memcmp(a.ptr as *const _, b.ptr as *const _, min_len);
+        if cmp != 0 {
+            return cmp;
+        }
+        (a.len as i32) - (b.len as i32)
+    }
+}
+
+/// Convert Bytes to String (UTF-8)
+/// bytes.toString(): String
+#[no_mangle]
+pub extern "C" fn haxe_bytes_to_string(bytes: *const HaxeBytes) -> *mut HaxeString {
+    if bytes.is_null() {
+        return rust_string_to_haxe(String::new());
+    }
+    unsafe {
+        let b = &*bytes;
+        let slice = std::slice::from_raw_parts(b.ptr, b.len);
+        let s = String::from_utf8_lossy(slice).into_owned();
+        rust_string_to_haxe(s)
+    }
+}
+
+/// Get 16-bit integer (little-endian)
+/// bytes.getInt16(pos: Int): Int
+#[no_mangle]
+pub extern "C" fn haxe_bytes_get_int16(bytes: *const HaxeBytes, pos: i32) -> i32 {
+    if bytes.is_null() || pos < 0 {
+        return 0;
+    }
+    unsafe {
+        let b = &*bytes;
+        let pos = pos as usize;
+        if pos + 2 > b.len {
+            return 0;
+        }
+        let ptr = b.ptr.add(pos) as *const i16;
+        i16::from_le(std::ptr::read_unaligned(ptr)) as i32
+    }
+}
+
+/// Get 32-bit integer (little-endian)
+/// bytes.getInt32(pos: Int): Int
+#[no_mangle]
+pub extern "C" fn haxe_bytes_get_int32(bytes: *const HaxeBytes, pos: i32) -> i32 {
+    if bytes.is_null() || pos < 0 {
+        return 0;
+    }
+    unsafe {
+        let b = &*bytes;
+        let pos = pos as usize;
+        if pos + 4 > b.len {
+            return 0;
+        }
+        let ptr = b.ptr.add(pos) as *const i32;
+        i32::from_le(std::ptr::read_unaligned(ptr))
+    }
+}
+
+/// Get 64-bit integer (little-endian)
+/// bytes.getInt64(pos: Int): Int64
+#[no_mangle]
+pub extern "C" fn haxe_bytes_get_int64(bytes: *const HaxeBytes, pos: i32) -> i64 {
+    if bytes.is_null() || pos < 0 {
+        return 0;
+    }
+    unsafe {
+        let b = &*bytes;
+        let pos = pos as usize;
+        if pos + 8 > b.len {
+            return 0;
+        }
+        let ptr = b.ptr.add(pos) as *const i64;
+        i64::from_le(std::ptr::read_unaligned(ptr))
+    }
+}
+
+/// Get 32-bit float (little-endian)
+/// bytes.getFloat(pos: Int): Float
+#[no_mangle]
+pub extern "C" fn haxe_bytes_get_float(bytes: *const HaxeBytes, pos: i32) -> f32 {
+    if bytes.is_null() || pos < 0 {
+        return 0.0;
+    }
+    unsafe {
+        let b = &*bytes;
+        let pos = pos as usize;
+        if pos + 4 > b.len {
+            return 0.0;
+        }
+        let ptr = b.ptr.add(pos) as *const u32;
+        f32::from_bits(u32::from_le(std::ptr::read_unaligned(ptr)))
+    }
+}
+
+/// Get 64-bit double (little-endian)
+/// bytes.getDouble(pos: Int): Float
+#[no_mangle]
+pub extern "C" fn haxe_bytes_get_double(bytes: *const HaxeBytes, pos: i32) -> f64 {
+    if bytes.is_null() || pos < 0 {
+        return 0.0;
+    }
+    unsafe {
+        let b = &*bytes;
+        let pos = pos as usize;
+        if pos + 8 > b.len {
+            return 0.0;
+        }
+        let ptr = b.ptr.add(pos) as *const u64;
+        f64::from_bits(u64::from_le(std::ptr::read_unaligned(ptr)))
+    }
+}
+
+/// Set 16-bit integer (little-endian)
+/// bytes.setInt16(pos: Int, value: Int): Void
+#[no_mangle]
+pub extern "C" fn haxe_bytes_set_int16(bytes: *mut HaxeBytes, pos: i32, value: i32) {
+    if bytes.is_null() || pos < 0 {
+        return;
+    }
+    unsafe {
+        let b = &mut *bytes;
+        let pos = pos as usize;
+        if pos + 2 > b.len {
+            return;
+        }
+        let ptr = b.ptr.add(pos) as *mut i16;
+        std::ptr::write_unaligned(ptr, (value as i16).to_le());
+    }
+}
+
+/// Set 32-bit integer (little-endian)
+/// bytes.setInt32(pos: Int, value: Int): Void
+#[no_mangle]
+pub extern "C" fn haxe_bytes_set_int32(bytes: *mut HaxeBytes, pos: i32, value: i32) {
+    if bytes.is_null() || pos < 0 {
+        return;
+    }
+    unsafe {
+        let b = &mut *bytes;
+        let pos = pos as usize;
+        if pos + 4 > b.len {
+            return;
+        }
+        let ptr = b.ptr.add(pos) as *mut i32;
+        std::ptr::write_unaligned(ptr, value.to_le());
+    }
+}
+
+/// Set 64-bit integer (little-endian)
+/// bytes.setInt64(pos: Int, value: Int64): Void
+#[no_mangle]
+pub extern "C" fn haxe_bytes_set_int64(bytes: *mut HaxeBytes, pos: i32, value: i64) {
+    if bytes.is_null() || pos < 0 {
+        return;
+    }
+    unsafe {
+        let b = &mut *bytes;
+        let pos = pos as usize;
+        if pos + 8 > b.len {
+            return;
+        }
+        let ptr = b.ptr.add(pos) as *mut i64;
+        std::ptr::write_unaligned(ptr, value.to_le());
+    }
+}
+
+/// Set 32-bit float (little-endian)
+/// bytes.setFloat(pos: Int, value: Float): Void
+#[no_mangle]
+pub extern "C" fn haxe_bytes_set_float(bytes: *mut HaxeBytes, pos: i32, value: f32) {
+    if bytes.is_null() || pos < 0 {
+        return;
+    }
+    unsafe {
+        let b = &mut *bytes;
+        let pos = pos as usize;
+        if pos + 4 > b.len {
+            return;
+        }
+        let ptr = b.ptr.add(pos) as *mut u32;
+        std::ptr::write_unaligned(ptr, value.to_bits().to_le());
+    }
+}
+
+/// Set 64-bit double (little-endian)
+/// bytes.setDouble(pos: Int, value: Float): Void
+#[no_mangle]
+pub extern "C" fn haxe_bytes_set_double(bytes: *mut HaxeBytes, pos: i32, value: f64) {
+    if bytes.is_null() || pos < 0 {
+        return;
+    }
+    unsafe {
+        let b = &mut *bytes;
+        let pos = pos as usize;
+        if pos + 8 > b.len {
+            return;
+        }
+        let ptr = b.ptr.add(pos) as *mut u64;
+        std::ptr::write_unaligned(ptr, value.to_bits().to_le());
+    }
+}
+
+/// Free Bytes memory
+#[no_mangle]
+pub extern "C" fn haxe_bytes_free(bytes: *mut HaxeBytes) {
+    if bytes.is_null() {
+        return;
+    }
+    unsafe {
+        let b = Box::from_raw(bytes);
+        if !b.ptr.is_null() && b.cap > 0 {
+            let layout = std::alloc::Layout::from_size_align(b.cap, 1).unwrap();
+            std::alloc::dealloc(b.ptr, layout);
+        }
+    }
+}
+
+// ============================================================================
 // StringMap<T> (haxe.ds.StringMap)
 // ============================================================================
 //
