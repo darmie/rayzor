@@ -272,6 +272,31 @@ register_symbol!("haxe_filesystem_stat", crate::haxe_sys::haxe_filesystem_stat);
 register_symbol!("haxe_filesystem_read_directory", crate::haxe_sys::haxe_filesystem_read_directory);
 
 // ============================================================================
+// Date Class
+// ============================================================================
+register_symbol!("haxe_date_new", crate::haxe_sys::haxe_date_new);
+register_symbol!("haxe_date_now", crate::haxe_sys::haxe_date_now);
+register_symbol!("haxe_date_from_time", crate::haxe_sys::haxe_date_from_time);
+register_symbol!("haxe_date_from_string", crate::haxe_sys::haxe_date_from_string);
+register_symbol!("haxe_date_get_time", crate::haxe_sys::haxe_date_get_time);
+register_symbol!("haxe_date_get_hours", crate::haxe_sys::haxe_date_get_hours);
+register_symbol!("haxe_date_get_minutes", crate::haxe_sys::haxe_date_get_minutes);
+register_symbol!("haxe_date_get_seconds", crate::haxe_sys::haxe_date_get_seconds);
+register_symbol!("haxe_date_get_full_year", crate::haxe_sys::haxe_date_get_full_year);
+register_symbol!("haxe_date_get_month", crate::haxe_sys::haxe_date_get_month);
+register_symbol!("haxe_date_get_date", crate::haxe_sys::haxe_date_get_date);
+register_symbol!("haxe_date_get_day", crate::haxe_sys::haxe_date_get_day);
+register_symbol!("haxe_date_get_utc_hours", crate::haxe_sys::haxe_date_get_utc_hours);
+register_symbol!("haxe_date_get_utc_minutes", crate::haxe_sys::haxe_date_get_utc_minutes);
+register_symbol!("haxe_date_get_utc_seconds", crate::haxe_sys::haxe_date_get_utc_seconds);
+register_symbol!("haxe_date_get_utc_full_year", crate::haxe_sys::haxe_date_get_utc_full_year);
+register_symbol!("haxe_date_get_utc_month", crate::haxe_sys::haxe_date_get_utc_month);
+register_symbol!("haxe_date_get_utc_date", crate::haxe_sys::haxe_date_get_utc_date);
+register_symbol!("haxe_date_get_utc_day", crate::haxe_sys::haxe_date_get_utc_day);
+register_symbol!("haxe_date_get_timezone_offset", crate::haxe_sys::haxe_date_get_timezone_offset);
+register_symbol!("haxe_date_to_string", crate::haxe_sys::haxe_date_to_string);
+
+// ============================================================================
 // StringMap<T> (haxe.ds.StringMap)
 // ============================================================================
 register_symbol!("haxe_stringmap_new", crate::haxe_sys::haxe_stringmap_new);

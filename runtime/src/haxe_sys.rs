@@ -1625,6 +1625,246 @@ pub extern "C" fn haxe_fileoutput_close(handle: *mut HaxeFileOutput) {
 }
 
 // ============================================================================
+// Date Class
+// ============================================================================
+//
+// The Date class stores a timestamp in milliseconds since Unix epoch (1970-01-01).
+// All getters compute values from this timestamp.
+
+use chrono::{DateTime, Local, NaiveDateTime, TimeZone, Utc, Datelike, Timelike};
+
+/// Haxe Date - stores milliseconds since Unix epoch
+#[repr(C)]
+pub struct HaxeDate {
+    /// Milliseconds since 1970-01-01 00:00:00 UTC
+    timestamp_ms: f64,
+}
+
+/// Create a new Date from components (local timezone)
+/// Date.new(year, month, day, hour, min, sec)
+#[no_mangle]
+pub extern "C" fn haxe_date_new(year: i32, month: i32, day: i32, hour: i32, min: i32, sec: i32) -> *mut HaxeDate {
+    // month is 0-based in Haxe, chrono expects 1-based
+    let naive = NaiveDateTime::new(
+        chrono::NaiveDate::from_ymd_opt(year, (month + 1) as u32, day as u32)
+            .unwrap_or_else(|| chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap()),
+        chrono::NaiveTime::from_hms_opt(hour as u32, min as u32, sec as u32)
+            .unwrap_or_else(|| chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap()),
+    );
+
+    // Convert to local timezone then to timestamp
+    let local: DateTime<Local> = Local.from_local_datetime(&naive)
+        .single()
+        .unwrap_or_else(|| Local::now());
+
+    let timestamp_ms = local.timestamp_millis() as f64;
+
+    Box::into_raw(Box::new(HaxeDate { timestamp_ms }))
+}
+
+/// Get current date/time
+/// Date.now(): Date
+#[no_mangle]
+pub extern "C" fn haxe_date_now() -> *mut HaxeDate {
+    let timestamp_ms = Local::now().timestamp_millis() as f64;
+    Box::into_raw(Box::new(HaxeDate { timestamp_ms }))
+}
+
+/// Create Date from timestamp (milliseconds)
+/// Date.fromTime(t: Float): Date
+#[no_mangle]
+pub extern "C" fn haxe_date_from_time(t: f64) -> *mut HaxeDate {
+    Box::into_raw(Box::new(HaxeDate { timestamp_ms: t }))
+}
+
+/// Create Date from string
+/// Date.fromString(s: String): Date
+#[no_mangle]
+pub extern "C" fn haxe_date_from_string(s: *const HaxeString) -> *mut HaxeDate {
+    unsafe {
+        let s_str = match haxe_string_to_rust(s) {
+            Some(s) => s,
+            None => return haxe_date_now(), // fallback to now
+        };
+
+        // Try parsing "YYYY-MM-DD hh:mm:ss"
+        if let Ok(dt) = NaiveDateTime::parse_from_str(&s_str, "%Y-%m-%d %H:%M:%S") {
+            let local = Local.from_local_datetime(&dt).single().unwrap_or_else(|| Local::now());
+            return Box::into_raw(Box::new(HaxeDate { timestamp_ms: local.timestamp_millis() as f64 }));
+        }
+
+        // Try parsing "YYYY-MM-DD"
+        if let Ok(d) = chrono::NaiveDate::parse_from_str(&s_str, "%Y-%m-%d") {
+            let dt = d.and_hms_opt(0, 0, 0).unwrap();
+            let local = Local.from_local_datetime(&dt).single().unwrap_or_else(|| Local::now());
+            return Box::into_raw(Box::new(HaxeDate { timestamp_ms: local.timestamp_millis() as f64 }));
+        }
+
+        // Try parsing "hh:mm:ss" (relative to epoch)
+        if let Ok(t) = chrono::NaiveTime::parse_from_str(&s_str, "%H:%M:%S") {
+            let epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+            let dt = epoch.and_time(t);
+            return Box::into_raw(Box::new(HaxeDate { timestamp_ms: dt.and_utc().timestamp_millis() as f64 }));
+        }
+
+        haxe_date_now() // fallback
+    }
+}
+
+/// Helper to get DateTime<Local> from HaxeDate
+fn get_local_datetime(date: *const HaxeDate) -> Option<DateTime<Local>> {
+    if date.is_null() {
+        return None;
+    }
+    unsafe {
+        let timestamp_ms = (*date).timestamp_ms as i64;
+        let secs = timestamp_ms / 1000;
+        let nsecs = ((timestamp_ms % 1000) * 1_000_000) as u32;
+        DateTime::from_timestamp(secs, nsecs).map(|utc| utc.with_timezone(&Local))
+    }
+}
+
+/// Helper to get DateTime<Utc> from HaxeDate
+fn get_utc_datetime(date: *const HaxeDate) -> Option<DateTime<Utc>> {
+    if date.is_null() {
+        return None;
+    }
+    unsafe {
+        let timestamp_ms = (*date).timestamp_ms as i64;
+        let secs = timestamp_ms / 1000;
+        let nsecs = ((timestamp_ms % 1000) * 1_000_000) as u32;
+        DateTime::from_timestamp(secs, nsecs)
+    }
+}
+
+/// Get timestamp in milliseconds
+/// date.getTime(): Float
+#[no_mangle]
+pub extern "C" fn haxe_date_get_time(date: *const HaxeDate) -> f64 {
+    if date.is_null() {
+        return 0.0;
+    }
+    unsafe { (*date).timestamp_ms }
+}
+
+/// Get hours (0-23) in local timezone
+/// date.getHours(): Int
+#[no_mangle]
+pub extern "C" fn haxe_date_get_hours(date: *const HaxeDate) -> i32 {
+    get_local_datetime(date).map(|dt| dt.hour() as i32).unwrap_or(0)
+}
+
+/// Get minutes (0-59) in local timezone
+/// date.getMinutes(): Int
+#[no_mangle]
+pub extern "C" fn haxe_date_get_minutes(date: *const HaxeDate) -> i32 {
+    get_local_datetime(date).map(|dt| dt.minute() as i32).unwrap_or(0)
+}
+
+/// Get seconds (0-59) in local timezone
+/// date.getSeconds(): Int
+#[no_mangle]
+pub extern "C" fn haxe_date_get_seconds(date: *const HaxeDate) -> i32 {
+    get_local_datetime(date).map(|dt| dt.second() as i32).unwrap_or(0)
+}
+
+/// Get full year (4 digits) in local timezone
+/// date.getFullYear(): Int
+#[no_mangle]
+pub extern "C" fn haxe_date_get_full_year(date: *const HaxeDate) -> i32 {
+    get_local_datetime(date).map(|dt| dt.year()).unwrap_or(1970)
+}
+
+/// Get month (0-11) in local timezone
+/// date.getMonth(): Int
+#[no_mangle]
+pub extern "C" fn haxe_date_get_month(date: *const HaxeDate) -> i32 {
+    get_local_datetime(date).map(|dt| (dt.month() - 1) as i32).unwrap_or(0)
+}
+
+/// Get day of month (1-31) in local timezone
+/// date.getDate(): Int
+#[no_mangle]
+pub extern "C" fn haxe_date_get_date(date: *const HaxeDate) -> i32 {
+    get_local_datetime(date).map(|dt| dt.day() as i32).unwrap_or(1)
+}
+
+/// Get day of week (0-6, Sunday=0) in local timezone
+/// date.getDay(): Int
+#[no_mangle]
+pub extern "C" fn haxe_date_get_day(date: *const HaxeDate) -> i32 {
+    get_local_datetime(date).map(|dt| dt.weekday().num_days_from_sunday() as i32).unwrap_or(0)
+}
+
+/// Get hours (0-23) in UTC
+/// date.getUTCHours(): Int
+#[no_mangle]
+pub extern "C" fn haxe_date_get_utc_hours(date: *const HaxeDate) -> i32 {
+    get_utc_datetime(date).map(|dt| dt.hour() as i32).unwrap_or(0)
+}
+
+/// Get minutes (0-59) in UTC
+/// date.getUTCMinutes(): Int
+#[no_mangle]
+pub extern "C" fn haxe_date_get_utc_minutes(date: *const HaxeDate) -> i32 {
+    get_utc_datetime(date).map(|dt| dt.minute() as i32).unwrap_or(0)
+}
+
+/// Get seconds (0-59) in UTC
+/// date.getUTCSeconds(): Int
+#[no_mangle]
+pub extern "C" fn haxe_date_get_utc_seconds(date: *const HaxeDate) -> i32 {
+    get_utc_datetime(date).map(|dt| dt.second() as i32).unwrap_or(0)
+}
+
+/// Get full year (4 digits) in UTC
+/// date.getUTCFullYear(): Int
+#[no_mangle]
+pub extern "C" fn haxe_date_get_utc_full_year(date: *const HaxeDate) -> i32 {
+    get_utc_datetime(date).map(|dt| dt.year()).unwrap_or(1970)
+}
+
+/// Get month (0-11) in UTC
+/// date.getUTCMonth(): Int
+#[no_mangle]
+pub extern "C" fn haxe_date_get_utc_month(date: *const HaxeDate) -> i32 {
+    get_utc_datetime(date).map(|dt| (dt.month() - 1) as i32).unwrap_or(0)
+}
+
+/// Get day of month (1-31) in UTC
+/// date.getUTCDate(): Int
+#[no_mangle]
+pub extern "C" fn haxe_date_get_utc_date(date: *const HaxeDate) -> i32 {
+    get_utc_datetime(date).map(|dt| dt.day() as i32).unwrap_or(1)
+}
+
+/// Get day of week (0-6, Sunday=0) in UTC
+/// date.getUTCDay(): Int
+#[no_mangle]
+pub extern "C" fn haxe_date_get_utc_day(date: *const HaxeDate) -> i32 {
+    get_utc_datetime(date).map(|dt| dt.weekday().num_days_from_sunday() as i32).unwrap_or(0)
+}
+
+/// Get timezone offset in minutes (local - UTC)
+/// date.getTimezoneOffset(): Int
+#[no_mangle]
+pub extern "C" fn haxe_date_get_timezone_offset(date: *const HaxeDate) -> i32 {
+    get_local_datetime(date)
+        .map(|dt| -(dt.offset().local_minus_utc() / 60))
+        .unwrap_or(0)
+}
+
+/// Convert date to string "YYYY-MM-DD HH:MM:SS"
+/// date.toString(): String
+#[no_mangle]
+pub extern "C" fn haxe_date_to_string(date: *const HaxeDate) -> *mut HaxeString {
+    let s = get_local_datetime(date)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_else(|| "1970-01-01 00:00:00".to_string());
+    rust_string_to_haxe(s)
+}
+
+// ============================================================================
 // StringMap<T> (haxe.ds.StringMap)
 // ============================================================================
 //

@@ -105,6 +105,7 @@ impl StdlibMapping {
         mapping.register_vec_methods();
         mapping.register_stringmap_methods();
         mapping.register_intmap_methods();
+        mapping.register_date_methods();
 
         mapping
     }
@@ -1166,6 +1167,67 @@ impl StdlibMapping {
             // IntMap<T>::toString() -> String
             // Returns pointer directly
             map_method!(instance "IntMap", "toString" => "haxe_intmap_to_string", params: 0, returns: primitive),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // Date Methods
+    // ============================================================================
+
+    fn register_date_methods(&mut self) {
+        let mappings = vec![
+            // Date.new(year, month, day, hour, min, sec): Date (constructor)
+            map_method!(static "Date", "new" => "haxe_date_new", params: 6, returns: primitive),
+            // Date.now(): Date
+            map_method!(static "Date", "now" => "haxe_date_now", params: 0, returns: primitive),
+            // Date.fromTime(t: Float): Date
+            map_method!(static "Date", "fromTime" => "haxe_date_from_time", params: 1, returns: primitive),
+            // Date.fromString(s: String): Date
+            map_method!(static "Date", "fromString" => "haxe_date_from_string", params: 1, returns: primitive),
+
+            // Instance methods - local timezone
+            // date.getTime(): Float
+            map_method!(instance "Date", "getTime" => "haxe_date_get_time", params: 0, returns: primitive),
+            // date.getHours(): Int
+            map_method!(instance "Date", "getHours" => "haxe_date_get_hours", params: 0, returns: primitive),
+            // date.getMinutes(): Int
+            map_method!(instance "Date", "getMinutes" => "haxe_date_get_minutes", params: 0, returns: primitive),
+            // date.getSeconds(): Int
+            map_method!(instance "Date", "getSeconds" => "haxe_date_get_seconds", params: 0, returns: primitive),
+            // date.getFullYear(): Int
+            map_method!(instance "Date", "getFullYear" => "haxe_date_get_full_year", params: 0, returns: primitive),
+            // date.getMonth(): Int
+            map_method!(instance "Date", "getMonth" => "haxe_date_get_month", params: 0, returns: primitive),
+            // date.getDate(): Int
+            map_method!(instance "Date", "getDate" => "haxe_date_get_date", params: 0, returns: primitive),
+            // date.getDay(): Int
+            map_method!(instance "Date", "getDay" => "haxe_date_get_day", params: 0, returns: primitive),
+
+            // Instance methods - UTC
+            // date.getUTCHours(): Int
+            map_method!(instance "Date", "getUTCHours" => "haxe_date_get_utc_hours", params: 0, returns: primitive),
+            // date.getUTCMinutes(): Int
+            map_method!(instance "Date", "getUTCMinutes" => "haxe_date_get_utc_minutes", params: 0, returns: primitive),
+            // date.getUTCSeconds(): Int
+            map_method!(instance "Date", "getUTCSeconds" => "haxe_date_get_utc_seconds", params: 0, returns: primitive),
+            // date.getUTCFullYear(): Int
+            map_method!(instance "Date", "getUTCFullYear" => "haxe_date_get_utc_full_year", params: 0, returns: primitive),
+            // date.getUTCMonth(): Int
+            map_method!(instance "Date", "getUTCMonth" => "haxe_date_get_utc_month", params: 0, returns: primitive),
+            // date.getUTCDate(): Int
+            map_method!(instance "Date", "getUTCDate" => "haxe_date_get_utc_date", params: 0, returns: primitive),
+            // date.getUTCDay(): Int
+            map_method!(instance "Date", "getUTCDay" => "haxe_date_get_utc_day", params: 0, returns: primitive),
+
+            // Timezone
+            // date.getTimezoneOffset(): Int
+            map_method!(instance "Date", "getTimezoneOffset" => "haxe_date_get_timezone_offset", params: 0, returns: primitive),
+
+            // String conversion
+            // date.toString(): String
+            map_method!(instance "Date", "toString" => "haxe_date_to_string", params: 0, returns: primitive),
         ];
 
         self.register_from_tuples(mappings);
