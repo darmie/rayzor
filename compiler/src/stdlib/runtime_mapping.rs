@@ -1243,6 +1243,9 @@ impl StdlibMapping {
     // ============================================================================
 
     fn register_bytes_methods(&mut self) {
+        // NOTE: These mappings are for rayzor.Bytes extern class.
+        // The class name "Bytes" matches the simple class name used by the compiler.
+        // haxe.io.Bytes should delegate to rayzor.Bytes through Haxe code (not runtime mapping).
         let mappings = vec![
             // Static methods
             // Bytes.alloc(size: Int): Bytes
