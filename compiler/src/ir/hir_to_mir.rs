@@ -322,7 +322,16 @@ impl<'a> HirToMirContext<'a> {
             // eprintln!("DEBUG Pass2a: Processing type - TypeId={:?}, name={:?}", type_id, name_str);
             match type_decl {
                 HirTypeDecl::Class(class) => {
-                    // Get class name for runtime mapping checks
+                    // Get qualified class name for runtime mapping checks
+                    // Use qualified_name with underscores (e.g., "rayzor_Bytes") for precise matching
+                    // This prevents "Bytes" from matching both rayzor.Bytes and haxe.io.Bytes
+                    let qualified_class_name = self.symbol_table
+                        .get_symbol(class.symbol_id)
+                        .and_then(|sym| sym.qualified_name)
+                        .and_then(|qn| self.string_interner.get(qn))
+                        .map(|qn| qn.replace(".", "_"));
+
+                    // Fallback to simple class name if no qualified name
                     let class_name = self.string_interner.get(class.name);
 
                     // Lower each method body
@@ -332,16 +341,23 @@ impl<'a> HirToMirContext<'a> {
                         // methods are handled by the runtime mapping system, not by MIR stubs.
                         let should_skip_method = if method.function.body.is_none() {
                             // Method has no body - check if it has a runtime mapping
-                            if let Some(class_name_str) = class_name {
+                            // First try qualified name (e.g., "rayzor_Bytes"), then fall back to simple name
+                            let has_mapping = if let Some(ref qn) = qualified_class_name {
                                 if let Some(method_name) = self.string_interner.get(method.function.name) {
-                                    // Use has_mapping helper instead of creating MethodSignature directly
+                                    self.stdlib_mapping.has_mapping(qn, method_name, method.is_static)
+                                } else {
+                                    false
+                                }
+                            } else if let Some(class_name_str) = class_name {
+                                if let Some(method_name) = self.string_interner.get(method.function.name) {
                                     self.stdlib_mapping.has_mapping(class_name_str, method_name, method.is_static)
                                 } else {
                                     false
                                 }
                             } else {
                                 false
-                            }
+                            };
+                            has_mapping
                         } else {
                             false
                         };
@@ -371,9 +387,26 @@ impl<'a> HirToMirContext<'a> {
                         // with a runtime mapping for "new". For extern classes like Channel, Thread, etc.,
                         // the "new" constructor is handled by the runtime mapping system, not by
                         // generating a MIR constructor function.
-                        let class_name = self.string_interner.get(class.name);
-                        let should_skip_constructor = if let Some(class_name_str) = class_name {
+                        // Use qualified class name first (e.g., "rayzor_Bytes"), then fall back to simple name
+                        let should_skip_constructor = if let Some(ref qn) = qualified_class_name {
                             // Check if this class has a "new" constructor in the runtime mapping
+                            if let Some(class_name_static) = self.stdlib_mapping.get_class_static_str(qn) {
+                                let method_sig = crate::stdlib::runtime_mapping::MethodSignature {
+                                    class: class_name_static,
+                                    method: "new",
+                                    is_static: true,
+                                    is_constructor: true,
+                                };
+                                let has_runtime_constructor = self.stdlib_mapping.get(&method_sig).is_some();
+                                if has_runtime_constructor {
+                                    eprintln!("DEBUG: Skipping constructor lowering for extern class '{}' - using runtime mapping", qn);
+                                }
+                                has_runtime_constructor
+                            } else {
+                                false
+                            }
+                        } else if let Some(class_name_str) = class_name {
+                            // Fallback to simple class name
                             if let Some(class_name_static) = self.stdlib_mapping.get_class_static_str(class_name_str) {
                                 let method_sig = crate::stdlib::runtime_mapping::MethodSignature {
                                     class: class_name_static,
@@ -1502,19 +1535,62 @@ impl<'a> HirToMirContext<'a> {
 
         let type_info = type_info.unwrap();
 
-        let (base_class_name, type_args) = match &type_info.kind {
-            TypeKind::String => (Some("String"), Vec::new()),
-            TypeKind::Array { .. } => (Some("Array"), Vec::new()),
+        // Extract class info from the type, following TypeAlias if needed
+        let (base_class_name, qualified_class_name, type_args) = match &type_info.kind {
+            TypeKind::String => (Some("String"), None, Vec::new()),
+            TypeKind::Array { .. } => (Some("Array"), None, Vec::new()),
             TypeKind::Class { symbol_id, type_args, .. } => {
-                // Get class name from symbol
-                let name = if let Some(class_info) = self.symbol_table.get_symbol(*symbol_id) {
-                    self.string_interner.get(class_info.name)
+                // Get class name and qualified name from symbol
+                let (name, qname) = if let Some(class_info) = self.symbol_table.get_symbol(*symbol_id) {
+                    let n = self.string_interner.get(class_info.name);
+                    // Get qualified name with underscore format (e.g., "rayzor_Bytes")
+                    let qn = class_info.qualified_name
+                        .and_then(|qn| self.string_interner.get(qn))
+                        .map(|qn| qn.replace(".", "_"));
+                    (n, qn)
                 } else {
-                    None
+                    (None, None)
                 };
-                (name, type_args.clone())
+                (name, qname, type_args.clone())
             }
-            _ => (None, Vec::new()),
+            TypeKind::TypeAlias { target_type, .. } => {
+                // For type aliases like `typedef Bytes = rayzor.Bytes`, follow the target type
+                if let Some(target_info) = type_table.get(*target_type) {
+                    match &target_info.kind {
+                        TypeKind::Class { symbol_id, type_args, .. } => {
+                            let (name, qname) = if let Some(class_info) = self.symbol_table.get_symbol(*symbol_id) {
+                                let n = self.string_interner.get(class_info.name);
+                                let qn = class_info.qualified_name
+                                    .and_then(|qn| self.string_interner.get(qn))
+                                    .map(|qn| qn.replace(".", "_"));
+                                (n, qn)
+                            } else {
+                                (None, None)
+                            };
+                            (name, qname, type_args.clone())
+                        }
+                        TypeKind::Placeholder { name: placeholder_name } => {
+                            // The typedef target wasn't resolved at compile time - try to look it up by name
+                            // This handles cases like `typedef Bytes = rayzor.Bytes` where the target was loaded
+                            // after the typedef was initially compiled
+                            if let Some(target_name) = self.string_interner.get(*placeholder_name) {
+                                // Convert "rayzor.Bytes" to "rayzor_Bytes" for stdlib mapping lookup
+                                let qualified_name = target_name.replace(".", "_");
+                                if let Some((_sig, mapping)) = self.stdlib_mapping.find_by_name(&qualified_name, method_name) {
+                                    // Early return with the mapping
+                                    drop(type_table);
+                                    return Some((_sig.class, _sig.method, mapping));
+                                }
+                            }
+                            (None, None, Vec::new())
+                        }
+                        _ => (None, None, Vec::new()),
+                    }
+                } else {
+                    (None, None, Vec::new())
+                }
+            }
+            _ => (None, None, Vec::new()),
         };
 
         let base_class_name = base_class_name?;
@@ -1561,8 +1637,16 @@ impl<'a> HirToMirContext<'a> {
         let class_name = monomorphized_class_name.as_deref().unwrap_or(base_class_name);
 
         // Try to find this method in the stdlib mapping
+        // First try qualified name (e.g., "rayzor_Bytes"), then fall back to simple name
         // This avoids hardcoding class names and lets the StdlibMapping be the single source of truth
+        if let Some(ref qn) = qualified_class_name {
+            if let Some((sig, mapping)) = self.stdlib_mapping.find_by_name(qn, method_name) {
+                eprintln!("DEBUG: [get_stdlib_runtime_info] Found {}.{} via qualified name -> {}", qn, method_name, mapping.runtime_name);
+                return Some((sig.class, sig.method, mapping));
+            }
+        }
         if let Some((sig, mapping)) = self.stdlib_mapping.find_by_name(class_name, method_name) {
+            eprintln!("DEBUG: [get_stdlib_runtime_info] Found {}.{} via simple name -> {}", class_name, method_name, mapping.runtime_name);
             Some((sig.class, sig.method, mapping))
         } else {
             None
@@ -2300,9 +2384,90 @@ impl<'a> HirToMirContext<'a> {
                 if let HirExprKind::Field { object, field } = &callee.kind {
                     // This is a method call: object.method(args)
                     // The method symbol should be in our function_map
+                    let method_name = self.symbol_table.get_symbol(*field).and_then(|s| self.string_interner.get(s.name));
+                    eprintln!("DEBUG: [Method call] method={:?}, field={:?}, in function_map={}", method_name, field, self.function_map.contains_key(field));
                     if let Some(&func_id) = self.function_map.get(field) {
                         // eprintln!("DEBUG: Found method in function_map - func_id={:?}", func_id);
 
+                        // FIRST: Try to route through runtime mapping for extern class methods
+                        // Check if there's a runtime mapping using the standard approach
+                        if let Some((class_name, method_name, runtime_call)) =
+                            self.get_stdlib_runtime_info(*field, object.ty)
+                        {
+                            let runtime_func = runtime_call.runtime_name;
+                            eprintln!("DEBUG: [Extern method redirect] {}.{} -> {}", class_name, method_name, runtime_func);
+
+                            // Lower the object (this will be the first parameter)
+                            let obj_reg = self.lower_expression(object)?;
+
+                            // Lower the arguments
+                            let arg_regs: Vec<_> = std::iter::once(obj_reg)  // Add 'this' as first arg
+                                .chain(args.iter().filter_map(|a| self.lower_expression(a)))
+                                .collect();
+
+                            // Determine parameter types from arguments
+                            let mut param_types = vec![IrType::Ptr(Box::new(IrType::U8))]; // 'this' is always a pointer
+                            for arg in args {
+                                param_types.push(self.convert_type(arg.ty));
+                            }
+
+                            // Register the extern function
+                            let extern_func_id = self.get_or_register_extern_function(
+                                runtime_func,
+                                param_types,
+                                result_type.clone(),
+                            );
+
+                            return self.builder.build_call_direct(extern_func_id, arg_regs, result_type.clone());
+                        }
+
+                        // FALLBACK: For extern classes not in type_table (like rayzor.Bytes),
+                        // try to extract class name from the MIR function's qualified_name
+                        eprintln!("DEBUG: [FALLBACK check] func_id={:?}, in module={}", func_id, self.builder.module.functions.contains_key(&func_id));
+                        if let Some(func) = self.builder.module.functions.get(&func_id) {
+                            eprintln!("DEBUG: [FALLBACK] MIR function '{}' has qualified_name: {:?}", func.name, func.qualified_name);
+                            if let Some(ref qn) = func.qualified_name {
+                                // Pattern: "rayzor.Bytes.set" -> class="rayzor_Bytes", method="set"
+                                let parts: Vec<&str> = qn.split('.').collect();
+                                if parts.len() >= 2 {
+                                    // Get method name (last part) and class name (all but last, joined with underscore)
+                                    let mir_method_name = *parts.last().unwrap();
+                                    let class_parts = &parts[..parts.len()-1];
+                                    let qualified_class = class_parts.join("_");
+
+                                    // Try to find in stdlib mapping
+                                    if let Some((_sig, mapping)) = self.stdlib_mapping.find_by_name(&qualified_class, mir_method_name) {
+                                        let runtime_func = mapping.runtime_name;
+                                        eprintln!("DEBUG: [Extern method redirect via qualified_name] {}.{} -> {}", qualified_class, mir_method_name, runtime_func);
+
+                                        // Lower the object (this will be the first parameter)
+                                        let obj_reg = self.lower_expression(object)?;
+
+                                        // Lower the arguments
+                                        let arg_regs: Vec<_> = std::iter::once(obj_reg)
+                                            .chain(args.iter().filter_map(|a| self.lower_expression(a)))
+                                            .collect();
+
+                                        // Determine parameter types from arguments
+                                        let mut param_types = vec![IrType::Ptr(Box::new(IrType::U8))];
+                                        for arg in args {
+                                            param_types.push(self.convert_type(arg.ty));
+                                        }
+
+                                        // Register the extern function
+                                        let extern_func_id = self.get_or_register_extern_function(
+                                            runtime_func,
+                                            param_types,
+                                            result_type.clone(),
+                                        );
+
+                                        return self.builder.build_call_direct(extern_func_id, arg_regs, result_type.clone());
+                                    }
+                                }
+                            }
+                        }
+
+                        // Regular method call (not extern or no runtime mapping)
                         // Lower the object (this will be the first parameter)
                         let obj_reg = self.lower_expression(object)?;
 

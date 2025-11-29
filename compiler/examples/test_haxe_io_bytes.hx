@@ -53,10 +53,10 @@ class Main {
 
         // Test 7: length property - skip for now, needs type comparison fix
         trace("--- Test 7: length (skipped) ---");
-        // var lenBytes:Bytes = Bytes.ofString("Test");
-        // if (lenBytes.length == 4) {
-        //     trace("Length test passed (length == 4)");
-        // }
+        var lenBytes:Bytes = Bytes.ofString("Test");
+        if (lenBytes.length == 4) {
+            trace("Length test passed (length == 4)");
+        }
 
         trace("=== All haxe.io.Bytes tests completed! ===");
     }

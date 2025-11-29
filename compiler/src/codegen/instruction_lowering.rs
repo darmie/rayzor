@@ -412,6 +412,36 @@ impl CraneliftBackend {
             // Bool is represented as i8 in the type system
             Ok(cmp)
         } else {
+            // Get the types of both operands
+            let lhs_ty = builder.func.dfg.value_type(lhs);
+            let rhs_ty = builder.func.dfg.value_type(rhs);
+
+            // If types don't match, extend the smaller one to match the larger
+            let (final_lhs, final_rhs) = if lhs_ty != rhs_ty && lhs_ty.is_int() && rhs_ty.is_int() {
+                let lhs_bits = lhs_ty.bits();
+                let rhs_bits = rhs_ty.bits();
+
+                if lhs_bits > rhs_bits {
+                    // Extend rhs to match lhs
+                    let extended_rhs = if ty.is_signed() {
+                        builder.ins().sextend(lhs_ty, rhs)
+                    } else {
+                        builder.ins().uextend(lhs_ty, rhs)
+                    };
+                    (lhs, extended_rhs)
+                } else {
+                    // Extend lhs to match rhs
+                    let extended_lhs = if ty.is_signed() {
+                        builder.ins().sextend(rhs_ty, lhs)
+                    } else {
+                        builder.ins().uextend(rhs_ty, lhs)
+                    };
+                    (extended_lhs, rhs)
+                }
+            } else {
+                (lhs, rhs)
+            };
+
             let cc = match op {
                 CompareOp::Eq => IntCC::Equal,
                 CompareOp::Ne => IntCC::NotEqual,
@@ -425,7 +455,7 @@ impl CraneliftBackend {
                 CompareOp::UGe => IntCC::UnsignedGreaterThanOrEqual,
                 _ => return Err(format!("Invalid int comparison: {:?}", op)),
             };
-            let cmp = builder.ins().icmp(cc, lhs, rhs);
+            let cmp = builder.ins().icmp(cc, final_lhs, final_rhs);
             // Return the i8 boolean result directly - don't extend to i32
             // Bool is represented as i8 in the type system
             Ok(cmp)

@@ -415,6 +415,49 @@ impl CompilationUnit {
                 if !typed_file.type_aliases.is_empty() {
                     eprintln!("    (contains {} type aliases)", typed_file.type_aliases.len());
                 }
+
+                // Check if any type aliases have Placeholder targets that need to be loaded
+                // This handles cases like `typedef Bytes = rayzor.Bytes` where rayzor.Bytes hasn't been loaded yet
+                let mut placeholder_targets = Vec::new();
+                {
+                    let type_table = self.type_table.borrow();
+                    for alias in &typed_file.type_aliases {
+                        if let Some(target_info) = type_table.get(alias.target_type) {
+                            if let crate::tast::TypeKind::Placeholder { name } = &target_info.kind {
+                                if let Some(placeholder_name) = self.string_interner.get(*name) {
+                                    eprintln!("    Found typedef with Placeholder target: {}", placeholder_name);
+                                    placeholder_targets.push(placeholder_name.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // If we found Placeholder targets, try to load them and retry
+                if !placeholder_targets.is_empty() {
+                    let mut any_loaded = false;
+                    for target in &placeholder_targets {
+                        if let Ok(_) = self.load_import_file_recursive(target, depth + 1) {
+                            eprintln!("    ✓ Loaded typedef target: {}", target);
+                            any_loaded = true;
+                        }
+                    }
+
+                    if any_loaded {
+                        // Retry compilation after loading typedef targets
+                        eprintln!("  Retrying compilation of {} after loading typedef targets...", qualified_path);
+                        match self.compile_file_with_shared_state(&filename, &source) {
+                            Ok(recompiled_file) => {
+                                self.loaded_stdlib_typed_files.push(recompiled_file);
+                                return Ok(());
+                            }
+                            Err(_) => {
+                                // Fall through and push the original typed_file
+                            }
+                        }
+                    }
+                }
+
                 self.loaded_stdlib_typed_files.push(typed_file);
                 Ok(())
             },
@@ -475,10 +518,90 @@ impl CompilationUnit {
                                 if !typed_file.type_aliases.is_empty() {
                                     eprintln!("    (contains {} type aliases after retry)", typed_file.type_aliases.len());
                                 }
+
+                                // Check if any type aliases have Placeholder targets that need to be loaded
+                                // This handles cases like `typedef Bytes = rayzor.Bytes` where rayzor.Bytes hasn't been loaded yet
+                                let mut placeholder_targets = Vec::new();
+                                {
+                                    let type_table = self.type_table.borrow();
+                                    for alias in &typed_file.type_aliases {
+                                        if let Some(target_info) = type_table.get(alias.target_type) {
+                                            if let crate::tast::TypeKind::Placeholder { name } = &target_info.kind {
+                                                if let Some(placeholder_name) = self.string_interner.get(*name) {
+                                                    eprintln!("    Found typedef with Placeholder target (after deps): {}", placeholder_name);
+                                                    placeholder_targets.push(placeholder_name.to_string());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // If we found Placeholder targets, try to load them and retry again
+                                if !placeholder_targets.is_empty() {
+                                    let mut any_loaded = false;
+                                    for target in &placeholder_targets {
+                                        if let Ok(_) = self.load_import_file_recursive(target, depth + 1) {
+                                            eprintln!("    ✓ Loaded typedef target (after deps): {}", target);
+                                            any_loaded = true;
+                                        }
+                                    }
+
+                                    if any_loaded {
+                                        // Retry compilation after loading typedef targets
+                                        eprintln!("  Retrying compilation of {} after loading typedef targets...", qualified_path);
+                                        match self.compile_file_with_shared_state(&filename, &source) {
+                                            Ok(recompiled_file) => {
+                                                self.loaded_stdlib_typed_files.push(recompiled_file);
+                                                return Ok(());
+                                            }
+                                            Err(_) => {
+                                                // Fall through and push the original typed_file
+                                            }
+                                        }
+                                    }
+                                }
+
                                 self.loaded_stdlib_typed_files.push(typed_file);
                                 return Ok(());
                             }
                             Err(errors) => {
+                                // Check if any errors are UnresolvedType that we can try to load
+                                let mut additional_missing = Vec::new();
+                                for error in &errors {
+                                    if let Some(type_name) = Self::extract_unresolved_type_from_error(&error.message) {
+                                        if !Self::is_generic_type_parameter(&type_name) && !self.failed_type_loads.contains(&type_name) {
+                                            additional_missing.push(type_name);
+                                        }
+                                    }
+                                }
+
+                                if !additional_missing.is_empty() {
+                                    let mut loaded_any = false;
+                                    for missing in &additional_missing {
+                                        if let Ok(_) = self.load_import_file_recursive(missing, depth + 1) {
+                                            eprintln!("    ✓ Loaded additional dependency: {}", missing);
+                                            loaded_any = true;
+                                        }
+                                    }
+
+                                    if loaded_any {
+                                        // Try one more time
+                                        eprintln!("  Retrying compilation of {} after loading additional dependencies...", qualified_path);
+                                        match self.compile_file_with_shared_state(&filename, &source) {
+                                            Ok(final_file) => {
+                                                self.loaded_stdlib_typed_files.push(final_file);
+                                                return Ok(());
+                                            }
+                                            Err(final_errors) => {
+                                                let error_msgs: Vec<String> = final_errors.iter()
+                                                    .map(|e| e.message.clone())
+                                                    .collect();
+                                                return Err(format!("Errors compiling {} (after loading additional dependencies): {}", filename, error_msgs.join(", ")));
+                                            }
+                                        }
+                                    }
+                                }
+
                                 let error_msgs: Vec<String> = errors.iter()
                                     .map(|e| e.message.clone())
                                     .collect();

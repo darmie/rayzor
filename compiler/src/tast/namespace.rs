@@ -404,7 +404,7 @@ impl ImportResolver {
         if let Some(alias) = import.alias {
             self.aliases.insert((scope, alias), import.package_path.clone());
         }
-        
+
         self.imports_by_scope
             .entry(scope)
             .or_insert_with(Vec::new)
@@ -415,9 +415,15 @@ impl ImportResolver {
     pub fn resolve_type(&self, name: InternedString, scope: ScopeId) -> Vec<QualifiedPath> {
         let mut candidates = Vec::new();
 
-        // Check aliases first
+        // Check aliases first (check current scope and root scope)
         if let Some(path) = self.aliases.get(&(scope, name)) {
             candidates.push(path.clone());
+        }
+        // Also check root scope for aliases
+        if scope != ScopeId::first() {
+            if let Some(path) = self.aliases.get(&(ScopeId::first(), name)) {
+                candidates.push(path.clone());
+            }
         }
 
         // Check current package (types in same package are automatically visible)
@@ -432,7 +438,7 @@ impl ImportResolver {
             }
         }
 
-        // Check explicit imports
+        // Check explicit imports in current scope
         if let Some(imports) = self.imports_by_scope.get(&scope) {
             for import in imports {
                 if !import.is_wildcard && import.package_path.name == name {
@@ -440,8 +446,29 @@ impl ImportResolver {
                     candidates.push(import.package_path.clone());
                 } else if import.is_wildcard && !import.exclusions.contains(&name) {
                     // Wildcard import - construct full path
-                    let mut wildcard_path = import.package_path.package.clone();
+                    let wildcard_path = import.package_path.package.clone();
                     candidates.push(QualifiedPath::new(wildcard_path, name));
+                }
+            }
+        }
+
+        // Also check root scope imports (imports are typically at module level)
+        if scope != ScopeId::first() {
+            if let Some(imports) = self.imports_by_scope.get(&ScopeId::first()) {
+                for import in imports {
+                    if !import.is_wildcard && import.package_path.name == name {
+                        // Direct import match
+                        if !candidates.iter().any(|c| c == &import.package_path) {
+                            candidates.push(import.package_path.clone());
+                        }
+                    } else if import.is_wildcard && !import.exclusions.contains(&name) {
+                        // Wildcard import - construct full path
+                        let wildcard_path = import.package_path.package.clone();
+                        let path = QualifiedPath::new(wildcard_path, name);
+                        if !candidates.iter().any(|c| c == &path) {
+                            candidates.push(path);
+                        }
+                    }
                 }
             }
         }

@@ -1365,9 +1365,16 @@ impl CraneliftBackend {
                 if let Some(extern_func) = mir_module.extern_functions.get(func_id) {
                     // This is an external runtime function call
                     eprintln!("INFO: Calling external function: {}", extern_func.name);
+                    eprintln!("DEBUG: [extern_func] calling_convention={:?}, param_count={}",
+                             extern_func.signature.calling_convention,
+                             extern_func.signature.parameters.len());
+                    for (i, p) in extern_func.signature.parameters.iter().enumerate() {
+                        eprintln!("DEBUG: [extern_func]   param[{}] '{}': {:?}", i, p.name, p.ty);
+                    }
 
                     // Declare the external function if not already declared
                     let cl_func_id = if let Some(&id) = runtime_functions.get(&extern_func.name) {
+                        eprintln!("DEBUG: [extern_func] Already declared as {:?}", id);
                         id
                     } else {
                         // Declare the external runtime function dynamically
@@ -1553,51 +1560,49 @@ impl CraneliftBackend {
                             format!("Argument {:?} not found in value_map", arg_id)
                         })?;
 
-                        // Get the expected Cranelift type for this parameter
-                        let expected_cl_ty =
-                            if let Some(param) = called_func.signature.parameters.get(i) {
-                                Self::mir_type_to_cranelift_static(&param.ty)?
-                            } else {
-                                types::I64 // Default fallback
-                            };
-
                         // Get the actual Cranelift type of the argument
                         let actual_cl_ty = builder.func.dfg.value_type(arg_val);
 
-                        // Insert type conversion if needed (i32 -> i64 or i64 -> i32)
-                        if actual_cl_ty != expected_cl_ty {
-                            if actual_cl_ty == types::I32 && expected_cl_ty == types::I64 {
-                                // Sign-extend i32 to i64
-                                eprintln!("DEBUG: [CallDirect arg extension] {} param {} extending i32 to i64", called_func.name, i);
-                                arg_val = builder.ins().sextend(types::I64, arg_val);
-                            } else if actual_cl_ty == types::I64 && expected_cl_ty == types::I32 {
-                                // Reduce i64 to i32
-                                eprintln!("DEBUG: [CallDirect arg reduction] {} param {} reducing i64 to i32", called_func.name, i);
-                                arg_val = builder.ins().ireduce(types::I32, arg_val);
-                            }
-                            // Other type mismatches are not handled here
-                        }
-
-                        // For C extern functions, also apply integer promotion rules
+                        // For C extern functions on non-Windows, apply integer promotion FIRST
+                        // This must happen before the MIR type comparison because Cranelift signature
+                        // was declared with i64 params (C ABI promotion) but MIR still has I32 types.
                         if is_c_extern {
                             if let Some(param) = called_func.signature.parameters.get(i) {
                                 match &param.ty {
                                     crate::ir::IrType::I32 => {
                                         // C ABI: promote i32 to i64 on non-Windows
-                                        if builder.func.dfg.value_type(arg_val) == types::I32 {
-                                            eprintln!("!!! [C ABI] Extending arg {} for {} from i32 to i64", i, called_func.name);
+                                        if actual_cl_ty == types::I32 {
                                             arg_val = builder.ins().sextend(types::I64, arg_val);
                                         }
                                     }
                                     crate::ir::IrType::U32 => {
                                         // C ABI: promote u32 to i64 on non-Windows
-                                        if builder.func.dfg.value_type(arg_val) == types::I32 {
-                                            eprintln!("!!! [C ABI] Extending arg {} for {} from u32 to i64", i, called_func.name);
+                                        if actual_cl_ty == types::I32 {
                                             arg_val = builder.ins().uextend(types::I64, arg_val);
                                         }
                                     }
                                     _ => {}
                                 }
+                            }
+                        } else {
+                            // For non-C-extern functions, compare against MIR types and convert if needed
+                            let expected_cl_ty =
+                                if let Some(param) = called_func.signature.parameters.get(i) {
+                                    Self::mir_type_to_cranelift_static(&param.ty)?
+                                } else {
+                                    types::I64 // Default fallback
+                                };
+
+                            // Insert type conversion if needed (i32 -> i64 or i64 -> i32)
+                            if actual_cl_ty != expected_cl_ty {
+                                if actual_cl_ty == types::I32 && expected_cl_ty == types::I64 {
+                                    // Sign-extend i32 to i64
+                                    arg_val = builder.ins().sextend(types::I64, arg_val);
+                                } else if actual_cl_ty == types::I64 && expected_cl_ty == types::I32 {
+                                    // Reduce i64 to i32
+                                    arg_val = builder.ins().ireduce(types::I32, arg_val);
+                                }
+                                // Other type mismatches are not handled here
                             }
                         }
                         call_args.push(arg_val);

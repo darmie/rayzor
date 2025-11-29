@@ -22,6 +22,11 @@
 
 package haxe.io;
 
+#if rayzor
+// For Rayzor target, delegate to the native rayzor.Bytes implementation
+typedef Bytes = rayzor.Bytes;
+#else
+
 #if cpp
 using cpp.NativeArray;
 #end
@@ -705,3 +710,5 @@ class Bytes {
 		#end
 	}
 }
+
+#end // #if !rayzor

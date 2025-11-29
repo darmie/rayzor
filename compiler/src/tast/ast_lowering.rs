@@ -1715,13 +1715,28 @@ impl<'a> AstLowering<'a> {
                     } else {
                         // Symbol ID exists but can't get symbol data - create new
                         let new_sym = self.context.symbol_table.create_class_in_scope(symbol_name, ScopeId::first());
-                        self.context.update_symbol_qualified_name(new_sym);
+                        // Use the full import path as the qualified name
+                        let full_qualified_name = import.path.join(".");
+                        if let Some(sym) = self.context.symbol_table.get_symbol_mut(new_sym) {
+                            sym.qualified_name = Some(self.context.string_interner.intern(&full_qualified_name));
+                        }
                         new_sym
                     }
                 } else {
                     // Create a placeholder symbol for the imported type
                     let new_sym = self.context.symbol_table.create_class_in_scope(symbol_name, ScopeId::first());
-                    self.context.update_symbol_qualified_name(new_sym);
+
+                    // CRITICAL FIX: Set the qualified name to the FULL import path, not just the class name.
+                    // When importing "rayzor.Bytes", the qualified name should be "rayzor.Bytes", not just "Bytes".
+                    // This is needed for runtime mapping to work correctly (e.g., "rayzor_Bytes" pattern matching).
+                    let full_qualified_name = import.path.join(".");
+                    let symbol_name_str = self.context.string_interner.get(symbol_name).unwrap_or("?");
+                    if symbol_name_str == "Bytes" {
+                        eprintln!("DEBUG: [import] Creating NEW symbol for Bytes: symbol_id={:?}, qualified_name={}", new_sym, full_qualified_name);
+                    }
+                    if let Some(sym) = self.context.symbol_table.get_symbol_mut(new_sym) {
+                        sym.qualified_name = Some(self.context.string_interner.intern(&full_qualified_name));
+                    }
 
                     // CRITICAL: For imported classes (especially extern classes like StringMap),
                     // we must create a class type and link it to the symbol. Without this,
@@ -2301,7 +2316,28 @@ impl<'a> AstLowering<'a> {
     ) -> LoweringResult<TypedDeclaration> {
         let typedef_name = self.context.intern_string(&typedef_decl.name);
 
-        let typedef_symbol = self.context.symbol_table.create_class(typedef_name); // Reuse class creation
+        // Look up existing symbol or create a new one
+        let typedef_symbol = if let Some(existing_symbol) = self
+            .context
+            .symbol_table
+            .lookup_symbol(ScopeId::first(), typedef_name)
+        {
+            existing_symbol.id
+        } else {
+            let new_symbol = self
+                .context
+                .symbol_table
+                .create_type_alias_in_scope(typedef_name, ScopeId::first());
+            // Update qualified name (full path including package/module)
+            self.context.update_symbol_qualified_name(new_symbol);
+            // Add typedef to the root scope so it can be resolved
+            self.context
+                .scope_tree
+                .get_scope_mut(ScopeId::first())
+                .expect("Root scope should exist")
+                .add_symbol(new_symbol, typedef_name);
+            new_symbol
+        };
 
         // Process type parameters FIRST and push them onto the stack
         let type_params = self.lower_type_parameters(&typedef_decl.type_params)?;
@@ -2332,6 +2368,26 @@ impl<'a> AstLowering<'a> {
 
         // Pop type parameters from stack
         self.context.pop_type_parameters();
+
+        // Create the TypeAlias type in the type table and set it on the symbol
+        let type_arg_ids: Vec<TypeId> = type_params.iter().map(|tp| {
+            self.context.type_table.borrow_mut().create_type_parameter(
+                tp.symbol_id,
+                tp.constraints.clone(),
+                tp.variance.into(),
+            )
+        }).collect();
+
+        let typedef_type = self.context.type_table.borrow_mut().create_type(
+            crate::tast::core::TypeKind::TypeAlias {
+                symbol_id: typedef_symbol,
+                target_type,
+                type_args: type_arg_ids,
+            },
+        );
+
+        // Set the type on the symbol so it can be resolved later
+        self.context.symbol_table.update_symbol_type(typedef_symbol, typedef_type);
 
         let typed_typedef = TypedTypeAlias {
             symbol_id: typedef_symbol,
@@ -3288,20 +3344,35 @@ impl<'a> AstLowering<'a> {
                 // 4. Imported types (already registered during import processing)
                 // 5. Top-level and standard library types (already in root scope)
 
-                // Try to resolve following Haxe's priority:
-                // - First check current scope (module-level types)
-                // - Then check root scope (imported types, top-level types, std lib)
-                let symbol_info = self
+                // IMPORTANT: First try to resolve through the import system.
+                // This ensures we get the symbol with the correct qualified_name (e.g., "rayzor.Bytes")
+                // rather than a duplicate symbol that may have been created without package context.
+                let import_candidates = self
                     .context
-                    .symbol_table
-                    .lookup_symbol(self.context.current_scope, interned_name)
-                    .or_else(|| {
-                        self.context.symbol_table.lookup_symbol(
-                            ScopeId::first(), // Root scope contains imports and top-level types
-                            interned_name,
-                        )
+                    .import_resolver
+                    .resolve_type(interned_name, self.context.current_scope);
+
+                let import_resolved_symbol = import_candidates
+                    .first()
+                    .and_then(|qualified_path| {
+                        self.context.namespace_resolver.lookup_symbol(qualified_path)
                     })
+                    .and_then(|sym_id| self.context.symbol_table.get_symbol(sym_id))
                     .map(|s| (s.id, s.kind.clone()));
+
+                // If import resolution found a symbol, use it. Otherwise fall back to scope lookup.
+                let symbol_info = import_resolved_symbol.or_else(|| {
+                    self.context
+                        .symbol_table
+                        .lookup_symbol(self.context.current_scope, interned_name)
+                        .or_else(|| {
+                            self.context.symbol_table.lookup_symbol(
+                                ScopeId::first(), // Root scope contains imports and top-level types
+                                interned_name,
+                            )
+                        })
+                        .map(|s| (s.id, s.kind.clone()))
+                });
 
                 if let Some((symbol_id, symbol_kind)) = symbol_info {
                     // Process type arguments if present (now the symbol borrow is dropped)
@@ -3869,17 +3940,25 @@ impl<'a> AstLowering<'a> {
     /// Resolve a TypeId to the underlying class symbol if it's a class type
     fn resolve_type_to_class_symbol(&self, type_id: TypeId) -> Option<SymbolId> {
         let type_table = self.context.type_table.borrow();
+        self.resolve_type_to_class_symbol_inner(&type_table, type_id)
+    }
+
+    /// Inner helper that takes a borrowed type table to allow recursive calls
+    fn resolve_type_to_class_symbol_inner(
+        &self,
+        type_table: &std::cell::Ref<'_, crate::tast::TypeTable>,
+        type_id: TypeId,
+    ) -> Option<SymbolId> {
         if let Some(type_info) = type_table.get(type_id) {
             match &type_info.kind {
                 crate::tast::core::TypeKind::Class { symbol_id, .. } => Some(*symbol_id),
                 crate::tast::core::TypeKind::GenericInstance { base_type, .. } => {
                     // For generic instances like Thread<Int>, resolve the base type
-                    if let Some(base_info) = type_table.get(*base_type) {
-                        if let crate::tast::core::TypeKind::Class { symbol_id, .. } = &base_info.kind {
-                            return Some(*symbol_id);
-                        }
-                    }
-                    None
+                    self.resolve_type_to_class_symbol_inner(type_table, *base_type)
+                }
+                crate::tast::core::TypeKind::TypeAlias { target_type, .. } => {
+                    // For type aliases like `typedef Bytes = rayzor.Bytes`, follow the target type
+                    self.resolve_type_to_class_symbol_inner(type_table, *target_type)
                 }
                 _ => None,
             }

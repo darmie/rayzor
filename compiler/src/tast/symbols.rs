@@ -870,6 +870,37 @@ impl SymbolTable {
         symbol_id
     }
 
+    /// Create a type alias (typedef) symbol
+    pub fn create_type_alias(&mut self, name: InternedString) -> SymbolId {
+        self.create_type_alias_in_scope(name, ScopeId::invalid())
+    }
+
+    /// Create a type alias (typedef) symbol in a specific scope
+    pub fn create_type_alias_in_scope(&mut self, name: InternedString, scope_id: ScopeId) -> SymbolId {
+        let symbol_id = SymbolId::from_raw(self.total_symbols as u32);
+
+        let symbol = Symbol {
+            id: symbol_id,
+            name,
+            kind: SymbolKind::TypeAlias,
+            type_id: TypeId::invalid(),
+            scope_id,
+            lifetime_id: LifetimeId::invalid(),
+            visibility: Visibility::Public,
+            mutability: Mutability::Immutable,
+            definition_location: SourceLocation::unknown(),
+            is_used: false,
+            is_exported: false,
+            documentation: None,
+            flags: SymbolFlags::NONE,
+            package_id: None,
+            qualified_name: None,
+        };
+
+        self.add_symbol(symbol);
+        symbol_id
+    }
+
     /// Create a function symbol
     pub fn create_function(&mut self, name: InternedString) -> SymbolId {
         self.create_function_in_scope(name, ScopeId::invalid())
