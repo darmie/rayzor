@@ -1299,6 +1299,30 @@ impl StdlibMapping {
             map_method!(instance "rayzor_Bytes", "setFloat" => "haxe_bytes_set_float", params: 2, returns: void),
             // bytes.setDouble(pos: Int, value: Float): Void
             map_method!(instance "rayzor_Bytes", "setDouble" => "haxe_bytes_set_double", params: 2, returns: void),
+
+            // ==== haxe.io.Bytes (typedef to rayzor.Bytes) ====
+            // When haxe.io.Bytes is used as a typedef, the type resolves to "haxe_io_Bytes"
+            // so we need to map those as well. All point to the same runtime functions.
+            map_method!(static "haxe_io_Bytes", "alloc" => "haxe_bytes_alloc", params: 1, returns: primitive),
+            map_method!(static "haxe_io_Bytes", "ofString" => "haxe_bytes_of_string", params: 1, returns: primitive),
+            map_method!(instance "haxe_io_Bytes", "length" => "haxe_bytes_length", params: 0, returns: primitive),
+            map_method!(instance "haxe_io_Bytes", "get" => "haxe_bytes_get", params: 1, returns: primitive),
+            map_method!(instance "haxe_io_Bytes", "set" => "haxe_bytes_set", params: 2, returns: void),
+            map_method!(instance "haxe_io_Bytes", "sub" => "haxe_bytes_sub", params: 2, returns: primitive),
+            map_method!(instance "haxe_io_Bytes", "blit" => "haxe_bytes_blit", params: 4, returns: void),
+            map_method!(instance "haxe_io_Bytes", "fill" => "haxe_bytes_fill", params: 3, returns: void),
+            map_method!(instance "haxe_io_Bytes", "compare" => "haxe_bytes_compare", params: 1, returns: primitive),
+            map_method!(instance "haxe_io_Bytes", "toString" => "haxe_bytes_to_string", params: 0, returns: primitive),
+            map_method!(instance "haxe_io_Bytes", "getInt16" => "haxe_bytes_get_int16", params: 1, returns: primitive),
+            map_method!(instance "haxe_io_Bytes", "getInt32" => "haxe_bytes_get_int32", params: 1, returns: primitive),
+            map_method!(instance "haxe_io_Bytes", "getInt64" => "haxe_bytes_get_int64", params: 1, returns: primitive),
+            map_method!(instance "haxe_io_Bytes", "getFloat" => "haxe_bytes_get_float", params: 1, returns: primitive),
+            map_method!(instance "haxe_io_Bytes", "getDouble" => "haxe_bytes_get_double", params: 1, returns: primitive),
+            map_method!(instance "haxe_io_Bytes", "setInt16" => "haxe_bytes_set_int16", params: 2, returns: void),
+            map_method!(instance "haxe_io_Bytes", "setInt32" => "haxe_bytes_set_int32", params: 2, returns: void),
+            map_method!(instance "haxe_io_Bytes", "setInt64" => "haxe_bytes_set_int64", params: 2, returns: void),
+            map_method!(instance "haxe_io_Bytes", "setFloat" => "haxe_bytes_set_float", params: 2, returns: void),
+            map_method!(instance "haxe_io_Bytes", "setDouble" => "haxe_bytes_set_double", params: 2, returns: void),
         ];
 
         self.register_from_tuples(mappings);
