@@ -37,6 +37,10 @@ pub struct HirToMirContext<'a> {
     /// Mapping from HIR function symbols to MIR function IDs
     function_map: HashMap<SymbolId, crate::ir::IrFunctionId>,
 
+    /// External function map from previously compiled modules (e.g., stdlib)
+    /// These are functions defined in other modules that can be called from this module
+    external_function_map: HashMap<SymbolId, crate::ir::IrFunctionId>,
+
     /// Mapping from HIR blocks to MIR blocks
     block_map: HashMap<usize, IrBlockId>,
 
@@ -179,6 +183,7 @@ impl<'a> HirToMirContext<'a> {
             builder: IrBuilder::new(module_name.clone(), source_file),
             symbol_map: HashMap::new(),
             function_map: HashMap::new(),
+            external_function_map: HashMap::new(),
             block_map: HashMap::new(),
             loop_stack: Vec::new(),
             current_module: Some(module_name),
@@ -201,6 +206,13 @@ impl<'a> HirToMirContext<'a> {
             monomorphized_var_types: HashMap::new(),
             enums_for_registration: HashMap::new(),
         }
+    }
+
+    /// Look up a function ID by symbol, checking both local and external function maps
+    fn get_function_id(&self, symbol: &SymbolId) -> Option<IrFunctionId> {
+        self.function_map.get(symbol)
+            .copied()
+            .or_else(|| self.external_function_map.get(symbol).copied())
     }
 
     /// Extract SSA optimization hints from HIR module metadata
@@ -2220,8 +2232,8 @@ impl<'a> HirToMirContext<'a> {
             HirExprKind::Literal(lit) => self.lower_literal(lit, expr.ty),
 
             HirExprKind::Variable { symbol, .. } => {
-                // Check if this symbol is a function reference
-                if let Some(&func_id) = self.function_map.get(symbol) {
+                // Check if this symbol is a function reference (local or external)
+                if let Some(func_id) = self.get_function_id(symbol) {
                     // Create a function pointer constant for static methods
                     return self.builder.build_function_ptr(func_id);
                 }
@@ -2383,10 +2395,12 @@ impl<'a> HirToMirContext<'a> {
                 // Check if this is a method call (callee is a field access)
                 if let HirExprKind::Field { object, field } = &callee.kind {
                     // This is a method call: object.method(args)
-                    // The method symbol should be in our function_map
+                    // The method symbol should be in our function_map (local or external)
                     let method_name = self.symbol_table.get_symbol(*field).and_then(|s| self.string_interner.get(s.name));
-                    eprintln!("DEBUG: [Method call] method={:?}, field={:?}, in function_map={}", method_name, field, self.function_map.contains_key(field));
-                    if let Some(&func_id) = self.function_map.get(field) {
+                    let in_local = self.function_map.contains_key(field);
+                    let in_external = self.external_function_map.contains_key(field);
+                    eprintln!("DEBUG: [Method call] method={:?}, field={:?}, in_local={}, in_external={}", method_name, field, in_local, in_external);
+                    if let Some(func_id) = self.get_function_id(field) {
                         // eprintln!("DEBUG: Found method in function_map - func_id={:?}", func_id);
 
                         // FIRST: Try to route through runtime mapping for extern class methods
@@ -3181,8 +3195,8 @@ impl<'a> HirToMirContext<'a> {
                                                     .chain(args[1..].iter().filter_map(|a| self.lower_expression(a)))
                                                     .collect();
 
-                                                // Get the method function ID
-                                                if let Some(&func_id) = self.function_map.get(symbol) {
+                                                // Get the method function ID (local or external)
+                                                if let Some(func_id) = self.get_function_id(symbol) {
                                                     let actual_return_type = if let Some(func) = self.builder.module.functions.get(&func_id) {
                                                         func.signature.return_type.clone()
                                                     } else {
@@ -4275,8 +4289,8 @@ impl<'a> HirToMirContext<'a> {
                         }
                     }
 
-                    // Check if this symbol is a function
-                    if let Some(&func_id) = self.function_map.get(symbol) {
+                    // Check if this symbol is a function (local or external)
+                    if let Some(func_id) = self.get_function_id(symbol) {
                         let sym_name = self.symbol_table.get_symbol(*symbol)
                             .and_then(|s| self.string_interner.get(s.name))
                             .unwrap_or("<unknown>");
@@ -4284,9 +4298,10 @@ impl<'a> HirToMirContext<'a> {
                             .and_then(|s| s.qualified_name)
                             .and_then(|qn| self.string_interner.get(qn))
                             .unwrap_or("<none>");
+                        let is_external = self.external_function_map.contains_key(symbol);
 
-                        eprintln!("DEBUG: [FUNCTION_MAP LOOKUP] Found symbol {:?} '{}' (qual: '{}') -> func_id={:?}, is_method={}",
-                            symbol, sym_name, qual_name, func_id, is_method);
+                        eprintln!("DEBUG: [FUNCTION_MAP LOOKUP] Found symbol {:?} '{}' (qual: '{}') -> func_id={:?}, is_method={}, external={}",
+                            symbol, sym_name, qual_name, func_id, is_method, is_external);
 
                         // IMPORTANT: Use the function's actual return type, not expr.ty
                         let actual_return_type = if let Some(func) = self.builder.module.functions.get(&func_id) {
@@ -9380,6 +9395,26 @@ pub fn lower_hir_to_mir(
     type_table: &Rc<RefCell<TypeTable>>,
     symbol_table: &SymbolTable,
 ) -> Result<IrModule, Vec<LoweringError>> {
+    lower_hir_to_mir_with_externals(
+        hir_module,
+        string_interner,
+        type_table,
+        symbol_table,
+        HashMap::new(),
+    )
+}
+
+/// Public API for HIR to MIR lowering with external function references
+///
+/// The `external_functions` map contains SymbolId -> IrFunctionId mappings for functions
+/// defined in other modules (e.g., stdlib) that can be called from this module.
+pub fn lower_hir_to_mir_with_externals(
+    hir_module: &HirModule,
+    string_interner: &StringInterner,
+    type_table: &Rc<RefCell<TypeTable>>,
+    symbol_table: &SymbolTable,
+    external_functions: HashMap<SymbolId, IrFunctionId>,
+) -> Result<IrModule, Vec<LoweringError>> {
     let mut context = HirToMirContext::new(
         hir_module.name.clone(),
         hir_module.metadata.source_file.clone(),
@@ -9389,5 +9424,48 @@ pub fn lower_hir_to_mir(
         symbol_table,
     );
 
+    // Set the external function map
+    context.external_function_map = external_functions;
+
     context.lower_module(hir_module)
+}
+
+/// Result of MIR lowering that includes both the module and the function mappings
+pub struct MirLoweringResult {
+    /// The compiled MIR module
+    pub module: IrModule,
+    /// Mapping from HIR function symbols to MIR function IDs
+    /// This can be used to build the external_functions map for other modules
+    pub function_map: HashMap<SymbolId, IrFunctionId>,
+}
+
+/// Lower HIR to MIR and return both the module and function mappings
+///
+/// This is useful when you need to compile multiple modules and have later modules
+/// call functions from earlier modules (e.g., user code calling stdlib functions).
+pub fn lower_hir_to_mir_with_function_map(
+    hir_module: &HirModule,
+    string_interner: &StringInterner,
+    type_table: &Rc<RefCell<TypeTable>>,
+    symbol_table: &SymbolTable,
+    external_functions: HashMap<SymbolId, IrFunctionId>,
+) -> Result<MirLoweringResult, Vec<LoweringError>> {
+    let mut context = HirToMirContext::new(
+        hir_module.name.clone(),
+        hir_module.metadata.source_file.clone(),
+        string_interner,
+        type_table,
+        &hir_module.types,
+        symbol_table,
+    );
+
+    // Set the external function map
+    context.external_function_map = external_functions;
+
+    let module = context.lower_module(hir_module)?;
+
+    Ok(MirLoweringResult {
+        module,
+        function_map: context.function_map,
+    })
 }

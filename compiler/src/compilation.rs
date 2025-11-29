@@ -65,6 +65,10 @@ pub struct CompilationUnit {
 
     /// Stdlib typed files loaded on-demand (typedefs, etc. that need to be in HIR)
     loaded_stdlib_typed_files: Vec<TypedFile>,
+
+    /// Mapping from HIR function symbols to MIR function IDs for stdlib functions
+    /// This allows user code to call pure Haxe stdlib functions (like StringTools)
+    stdlib_function_map: HashMap<crate::tast::SymbolId, crate::ir::IrFunctionId>,
 }
 
 /// Configuration for compilation
@@ -329,6 +333,7 @@ impl CompilationUnit {
             pipeline,
             mir_modules: Vec::new(),
             loaded_stdlib_typed_files: Vec::new(),
+            stdlib_function_map: HashMap::new(),
         }
     }
 
@@ -909,12 +914,33 @@ impl CompilationUnit {
         })?;
 
         // Lower to MIR
-        use crate::ir::hir_to_mir::lower_hir_to_mir;
-        let mut mir_module = lower_hir_to_mir(
+        // Use lower_hir_to_mir_with_function_map to:
+        // 1. Pass external function references from previously compiled stdlib files
+        // 2. Collect function mappings for stdlib files so user code can call them
+        use crate::ir::hir_to_mir::lower_hir_to_mir_with_function_map;
+
+        // Check if this is a stdlib file BEFORE lowering so we can decide whether
+        // to collect function mappings
+        let is_stdlib_file = filename.contains("haxe-std") ||
+                              filename.contains("/haxe-std/") ||
+                              filename.contains("\\haxe-std\\");
+
+        // For user files, pass the stdlib function map so they can call stdlib functions
+        // For stdlib files, pass an empty map (they can call each other once we accumulate the map)
+        let external_functions = if is_stdlib_file {
+            // Stdlib files can call previously compiled stdlib functions
+            self.stdlib_function_map.clone()
+        } else {
+            // User files can call all compiled stdlib functions
+            self.stdlib_function_map.clone()
+        };
+
+        let mir_result = lower_hir_to_mir_with_function_map(
             &hir_module,
             &self.string_interner,
             &self.type_table,
             &self.symbol_table,
+            external_functions,
         ).map_err(|errors| {
             errors.into_iter().map(|e| CompilationError {
                 message: format!("MIR lowering error: {:?}", e),
@@ -924,6 +950,17 @@ impl CompilationUnit {
                 related_errors: Vec::new(),
             }).collect::<Vec<_>>()
         })?;
+
+        let mut mir_module = mir_result.module;
+
+        // If this is a stdlib file, collect its function mappings
+        if is_stdlib_file {
+            eprintln!("DEBUG: Collecting {} function mappings from stdlib file: {}",
+                      mir_result.function_map.len(), filename);
+            for (symbol_id, func_id) in mir_result.function_map {
+                self.stdlib_function_map.insert(symbol_id, func_id);
+            }
+        }
 
         // Only skip EXTERN stdlib files (those with Rust implementations in build_stdlib).
         // Pure Haxe stdlib files (like ArrayIterator) must compile when imported.
@@ -944,10 +981,6 @@ impl CompilationUnit {
             // The Haxe files are just type declarations.
             return Ok(typed_file);
         }
-
-        let is_stdlib_file = filename.contains("haxe-std") ||
-                              filename.contains("/haxe-std/") ||
-                              filename.contains("\\haxe-std\\");
 
         // Merge stdlib MIR (extern functions for Thread, Channel, Mutex, Arc, etc.)
         // This ensures extern runtime functions are available
@@ -1188,13 +1221,14 @@ impl CompilationUnit {
 
         // Step 2: Pre-load stdlib files for explicit imports in user files
         // This ensures typedefs like sys.FileStat are available before compilation
+        // Also handles root-level imports like "import StringTools;"
         let imports_to_load: Vec<String> = self.user_files.iter()
             .filter_map(|file| file.input.as_ref().map(|source| (file.filename.clone(), source.clone())))
             .flat_map(|(filename, source)| {
                 parser::parse_haxe_file(&filename, &source, false)
                     .map(|ast| {
                         ast.imports.iter()
-                            .filter(|import| import.path.len() >= 2)
+                            .filter(|import| !import.path.is_empty())
                             .map(|import| import.path.join("."))
                             .collect::<Vec<_>>()
                     })

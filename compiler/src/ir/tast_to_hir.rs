@@ -208,11 +208,12 @@ impl<'a> TastToHirContext<'a> {
     pub fn lower_file(&mut self, file: &'a TypedFile) -> Result<HirModule, Vec<LoweringError>> {
         // Set current file for validation
         self.current_file = Some(file);
+
         // Lower imports
         for import in &file.imports {
             self.lower_import(import);
         }
-        
+
         // Lower type declarations (classes, interfaces, enums, etc.)
         for class in &file.classes {
             self.lower_class(class);
