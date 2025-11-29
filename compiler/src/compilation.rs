@@ -485,18 +485,32 @@ impl CompilationUnit {
 
                     let mut load_success = false;
                     for missing_type in &missing_types {
-                        // Try loading with the exact name first
-                        let loaded = if let Ok(_) = self.load_import_file_recursive(missing_type, depth + 1) {
-                            eprintln!("    ✓ Loaded dependency: {}", missing_type);
+                        // Check if this looks like a field reference (e.g., "haxe.SysTools.winMetaCharacters")
+                        // If so, extract just the class part (e.g., "haxe.SysTools")
+                        let type_to_load = if let Some(last_dot) = missing_type.rfind('.') {
+                            let after_dot = &missing_type[last_dot + 1..];
+                            // If the part after the last dot starts with lowercase, it's likely a field
+                            if after_dot.chars().next().map(|c| c.is_lowercase()).unwrap_or(false) {
+                                &missing_type[..last_dot]
+                            } else {
+                                missing_type.as_str()
+                            }
+                        } else {
+                            missing_type.as_str()
+                        };
+
+                        // Try loading with the (possibly adjusted) name first
+                        let loaded = if let Ok(_) = self.load_import_file_recursive(type_to_load, depth + 1) {
+                            eprintln!("    ✓ Loaded dependency: {}", type_to_load);
                             true
-                        } else if !missing_type.contains('.') {
+                        } else if !type_to_load.contains('.') {
                             // If unqualified name failed, try with common stdlib packages
                             let prefixes = vec!["haxe.exceptions.", "haxe.io.", "haxe.ds."];
                             let mut prefix_loaded = false;
                             for prefix in prefixes {
-                                let qualified = format!("{}{}", prefix, missing_type);
+                                let qualified = format!("{}{}", prefix, type_to_load);
                                 if let Ok(_) = self.load_import_file_recursive(&qualified, depth + 1) {
-                                    eprintln!("    ✓ Loaded dependency: {} (as {})", missing_type, qualified);
+                                    eprintln!("    ✓ Loaded dependency: {} (as {})", type_to_load, qualified);
                                     prefix_loaded = true;
                                     break;
                                 }

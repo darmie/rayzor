@@ -583,6 +583,10 @@ class StringTools {
 		#end
 	}
 
+	// Note: Deprecated quoteUnixArg, quoteWinArg, and winMetaCharacters are not available in Rayzor
+	// because they depend on haxe.SysTools which uses regex (EReg) not yet supported.
+	// Use haxe.SysTools directly on platforms that support it.
+	#if !rayzor
 	/**
 		Returns a String that can be used as a single command line argument
 		on Unix.
@@ -619,6 +623,7 @@ class StringTools {
 	public static function quoteWinArg(argument:String, escapeMetaCharacters:Bool):String {
 		return inline haxe.SysTools.quoteWinArg(argument, escapeMetaCharacters);
 	}
+	#end
 
 	#if java
 	private static inline function _charAt(str:String, idx:Int):java.StdTypes.Char16

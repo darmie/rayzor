@@ -5914,6 +5914,12 @@ impl<'a> AstLowering<'a> {
                     arguments: vec![inner_expr],
                 }
             }
+            ExprKind::Inline(expr) => {
+                // Inline expression: inline expr
+                // The 'inline' modifier is a hint to the compiler to inline the call
+                // For now, just lower the inner expression (inlining would happen in a later pass)
+                self.lower_expression(expr)?.kind
+            }
             ExprKind::Reify(expr) => {
                 // Macro reification: $expr
                 // This is similar to DollarIdent but for expressions
