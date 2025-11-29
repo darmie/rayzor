@@ -3082,27 +3082,7 @@ impl<'a> AstLowering<'a> {
             parameters.push(self.lower_parameter(param)?);
         }
 
-        // Process return type
-        let return_type = if let Some(ret_type) = &func.return_type {
-            self.lower_type(ret_type)?
-        } else {
-            self.context.type_table.borrow().void_type()
-        };
-
-        // Create function type and update symbol
-        let param_types: Vec<TypeId> = parameters.iter().map(|p| p.param_type).collect();
-        let function_type = self
-            .context
-            .type_table
-            .borrow_mut()
-            .create_function_type(param_types, return_type);
-
-        // Update the symbol with its type
-        self.context
-            .symbol_table
-            .update_symbol_type(function_symbol, function_type);
-
-        // Process body
+        // Process body first (we need it to infer return type if not specified)
         let body = if let Some(body_expr) = &func.body {
             // Check if the body is a block expression with multiple statements
             // If so, extract the statements instead of wrapping the whole block
@@ -3123,6 +3103,27 @@ impl<'a> AstLowering<'a> {
         } else {
             Vec::new()
         };
+
+        // Process return type - if not specified, infer from body
+        let return_type = if let Some(ret_type) = &func.return_type {
+            self.lower_type(ret_type)?
+        } else {
+            // Try to infer return type from return statements in the body
+            self.infer_return_type_from_body(&body)
+        };
+
+        // Create function type and update symbol
+        let param_types: Vec<TypeId> = parameters.iter().map(|p| p.param_type).collect();
+        let function_type = self
+            .context
+            .type_table
+            .borrow_mut()
+            .create_function_type(param_types, return_type);
+
+        // Update the symbol with its type
+        self.context
+            .symbol_table
+            .update_symbol_type(function_symbol, function_type);
 
         // Process field modifiers and access
         let modifier_info = self.lower_modifiers(&field.modifiers)?;
@@ -8704,6 +8705,87 @@ impl<'a> AstLowering<'a> {
                     })
                 }
             }
+        }
+    }
+
+    /// Infer return type from function body by looking at return statements
+    fn infer_return_type_from_body(&self, body: &[TypedStatement]) -> TypeId {
+        // Look for return statements in the body
+        for stmt in body {
+            if let Some(return_type) = self.find_return_type_in_statement(stmt) {
+                return return_type;
+            }
+        }
+        // No return statements found, assume void
+        self.context.type_table.borrow().void_type()
+    }
+
+    /// Find return type from a statement (recursively search nested blocks)
+    fn find_return_type_in_statement(&self, stmt: &TypedStatement) -> Option<TypeId> {
+        match stmt {
+            TypedStatement::Return { value, .. } => {
+                if let Some(expr) = value {
+                    Some(expr.expr_type)
+                } else {
+                    Some(self.context.type_table.borrow().void_type())
+                }
+            }
+            TypedStatement::Block { statements, .. } => {
+                for s in statements {
+                    if let Some(ret_type) = self.find_return_type_in_statement(s) {
+                        return Some(ret_type);
+                    }
+                }
+                None
+            }
+            TypedStatement::If { then_branch, else_branch, .. } => {
+                // Check then branch
+                if let Some(ret_type) = self.find_return_type_in_statement(then_branch.as_ref()) {
+                    return Some(ret_type);
+                }
+                // Check else branch
+                if let Some(else_stmt) = else_branch {
+                    if let Some(ret_type) = self.find_return_type_in_statement(else_stmt.as_ref()) {
+                        return Some(ret_type);
+                    }
+                }
+                None
+            }
+            TypedStatement::While { body, .. } |
+            TypedStatement::For { body, .. } |
+            TypedStatement::ForIn { body, .. } => {
+                self.find_return_type_in_statement(body.as_ref())
+            }
+            TypedStatement::Switch { cases, default_case, .. } => {
+                for case in cases {
+                    if let Some(ret_type) = self.find_return_type_in_statement(&case.body) {
+                        return Some(ret_type);
+                    }
+                }
+                if let Some(default) = default_case {
+                    if let Some(ret_type) = self.find_return_type_in_statement(default.as_ref()) {
+                        return Some(ret_type);
+                    }
+                }
+                None
+            }
+            TypedStatement::Try { body, catch_clauses, finally_block, .. } => {
+                if let Some(ret_type) = self.find_return_type_in_statement(body.as_ref()) {
+                    return Some(ret_type);
+                }
+                for catch in catch_clauses {
+                    if let Some(ret_type) = self.find_return_type_in_statement(&catch.body) {
+                        return Some(ret_type);
+                    }
+                }
+                if let Some(finally_stmt) = finally_block {
+                    if let Some(ret_type) = self.find_return_type_in_statement(finally_stmt.as_ref()) {
+                        return Some(ret_type);
+                    }
+                }
+                None
+            }
+            _ => None
         }
     }
 

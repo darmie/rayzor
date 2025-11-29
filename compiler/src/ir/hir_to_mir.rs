@@ -4290,7 +4290,36 @@ impl<'a> HirToMirContext<'a> {
                     }
 
                     // Check if this symbol is a function (local or external)
-                    if let Some(func_id) = self.get_function_id(symbol) {
+                    // First try direct symbol ID lookup
+                    let mut func_id_opt = self.get_function_id(symbol);
+
+                    // If not found by symbol ID, try lookup by qualified name
+                    // This handles cross-module calls where symbol IDs differ between modules
+                    if func_id_opt.is_none() {
+                        if let Some(sym_info) = self.symbol_table.get_symbol(*symbol) {
+                            if let Some(qual_name) = sym_info.qualified_name {
+                                if let Some(qual_name_str) = self.string_interner.get(qual_name) {
+                                    // Search external_function_map by qualified name
+                                    for (ext_sym, &ext_func_id) in &self.external_function_map {
+                                        if let Some(ext_sym_info) = self.symbol_table.get_symbol(*ext_sym) {
+                                            if let Some(ext_qual) = ext_sym_info.qualified_name {
+                                                if let Some(ext_qual_str) = self.string_interner.get(ext_qual) {
+                                                    if ext_qual_str == qual_name_str {
+                                                        eprintln!("DEBUG: [CROSS-MODULE] Found function by qualified name '{}': symbol {:?} -> func_id={:?}",
+                                                            qual_name_str, ext_sym, ext_func_id);
+                                                        func_id_opt = Some(ext_func_id);
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(func_id) = func_id_opt {
                         let sym_name = self.symbol_table.get_symbol(*symbol)
                             .and_then(|s| self.string_interner.get(s.name))
                             .unwrap_or("<unknown>");
@@ -4485,6 +4514,46 @@ impl<'a> HirToMirContext<'a> {
                                         result_type,
                                     );
                                 }
+                            }
+                        }
+                    }
+                }
+
+                // Before falling through to indirect call, try to register a forward reference
+                // for unresolved static method calls (cross-module dependencies during stdlib compilation)
+                if let HirExprKind::Variable { symbol, .. } = &callee.kind {
+                    if let Some(sym_info) = self.symbol_table.get_symbol(*symbol) {
+                        if let Some(qual_name) = sym_info.qualified_name {
+                            if let Some(qual_name_str) = self.string_interner.get(qual_name) {
+                                let method_name = self.string_interner.get(sym_info.name).unwrap_or("<unknown>");
+                                eprintln!("DEBUG: [FORWARD REF] Registering forward reference for unresolved call to '{}'", qual_name_str);
+
+                                // Lower arguments and collect their types
+                                let mut arg_regs = Vec::new();
+                                let mut param_types = Vec::new();
+                                for arg in args {
+                                    if let Some(reg) = self.lower_expression(arg) {
+                                        arg_regs.push(reg);
+                                        param_types.push(self.convert_type(arg.ty));
+                                    }
+                                }
+
+                                // Register as a forward reference using qualified name
+                                // This will be resolved later during module linking
+                                let forward_func_id = self.register_stdlib_mir_forward_ref(
+                                    qual_name_str,
+                                    param_types,
+                                    result_type.clone(),
+                                );
+
+                                eprintln!("DEBUG: [FORWARD REF] Registered forward ref to '{}' with ID {:?}", qual_name_str, forward_func_id);
+
+                                // Generate the call to the forward reference
+                                return self.builder.build_call_direct(
+                                    forward_func_id,
+                                    arg_regs,
+                                    result_type,
+                                );
                             }
                         }
                     }
