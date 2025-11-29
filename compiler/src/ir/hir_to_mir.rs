@@ -1890,6 +1890,15 @@ impl<'a> HirToMirContext<'a> {
             "haxe_intmap_keys" => Some((vec![IrType::Ptr(Box::new(IrType::Void)), IrType::Ptr(Box::new(IrType::I64))], IrType::Ptr(Box::new(IrType::I64)))),
             "haxe_intmap_to_string" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::Ptr(Box::new(IrType::Void)))),
 
+            // Boxing/unboxing functions for Dynamic types
+            // These take i64 on ARM64 due to C ABI parameter extension
+            "haxe_box_int_ptr" => Some((vec![IrType::I64], IrType::Ptr(Box::new(IrType::U8)))),
+            "haxe_box_float_ptr" => Some((vec![IrType::F64], IrType::Ptr(Box::new(IrType::U8)))),
+            "haxe_box_bool_ptr" => Some((vec![IrType::I64], IrType::Ptr(Box::new(IrType::U8)))),  // Bool extended to i64 on ARM64
+            "haxe_unbox_int_ptr" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::I64)),
+            "haxe_unbox_float_ptr" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::F64)),
+            "haxe_unbox_bool_ptr" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::I64)),  // Bool extended to i64 on ARM64
+
             _ => None,
         }
     }
@@ -2001,8 +2010,6 @@ impl<'a> HirToMirContext<'a> {
             .map(|(id, _)| *id);
 
         if let Some(func_id) = existing_mir_wrapper {
-            eprintln!("DEBUG: [get_or_register_extern] '{}' exists as MIR wrapper, using IrFunctionId({:?}) instead of creating extern",
-                     name, func_id);
             return func_id;
         }
 
@@ -3521,11 +3528,12 @@ impl<'a> HirToMirContext<'a> {
 
                                         // Use proper Dynamic boxing based on the argument type
                                         // This creates a tagged Dynamic value that can be unboxed later
+                                        // Use the box_* wrapper functions which handle type conversion internally
                                         let boxed_reg = match &arg_type {
                                             IrType::I32 => {
-                                                // Box int using haxe_box_int_ptr
+                                                // Box int using box_int wrapper (which handles i32->i64 cast)
                                                 let box_func = self.get_or_register_extern_function(
-                                                    "haxe_box_int_ptr",
+                                                    "box_int",
                                                     vec![IrType::I32],
                                                     IrType::Ptr(Box::new(IrType::U8)),
                                                 );
@@ -3536,23 +3544,22 @@ impl<'a> HirToMirContext<'a> {
                                                 )
                                             }
                                             IrType::I64 => {
-                                                // Box int64 - use haxe_box_int_ptr after truncating
-                                                // Note: This may lose precision for large values
-                                                let truncated = self.builder.build_cast(arg_reg, IrType::I64, IrType::I32);
-                                                let truncated_reg = truncated.unwrap_or(arg_reg);
+                                                // Box int64 - truncate to i32 and use box_int wrapper
+                                                let truncated = self.builder.build_cast(arg_reg, IrType::I64, IrType::I32)
+                                                    .unwrap_or(arg_reg);
                                                 let box_func = self.get_or_register_extern_function(
-                                                    "haxe_box_int_ptr",
+                                                    "box_int",
                                                     vec![IrType::I32],
                                                     IrType::Ptr(Box::new(IrType::U8)),
                                                 );
                                                 self.builder.build_call_direct(
                                                     box_func,
-                                                    vec![truncated_reg],
+                                                    vec![truncated],
                                                     IrType::Ptr(Box::new(IrType::U8)),
                                                 )
                                             }
                                             IrType::F32 | IrType::F64 => {
-                                                // Box float using haxe_box_float_ptr
+                                                // Box float using box_float wrapper
                                                 let float_val = if arg_type == IrType::F32 {
                                                     self.builder.build_cast(arg_reg, IrType::F32, IrType::F64)
                                                         .unwrap_or(arg_reg)
@@ -3560,7 +3567,7 @@ impl<'a> HirToMirContext<'a> {
                                                     arg_reg
                                                 };
                                                 let box_func = self.get_or_register_extern_function(
-                                                    "haxe_box_float_ptr",
+                                                    "box_float",
                                                     vec![IrType::F64],
                                                     IrType::Ptr(Box::new(IrType::U8)),
                                                 );
@@ -3571,9 +3578,9 @@ impl<'a> HirToMirContext<'a> {
                                                 )
                                             }
                                             IrType::Bool => {
-                                                // Box bool using haxe_box_bool_ptr
+                                                // Box bool using box_bool wrapper
                                                 let box_func = self.get_or_register_extern_function(
-                                                    "haxe_box_bool_ptr",
+                                                    "box_bool",
                                                     vec![IrType::Bool],
                                                     IrType::Ptr(Box::new(IrType::U8)),
                                                 );

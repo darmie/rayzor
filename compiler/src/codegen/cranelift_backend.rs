@@ -68,6 +68,11 @@ pub struct CraneliftBackend {
 
     /// Counter for unique string data names
     string_counter: usize,
+
+    /// Map from qualified function names to Cranelift function IDs
+    /// Used to link forward references to actual implementations
+    /// Key is qualified name (e.g., "StringTools.unsafeCodeAt")
+    qualified_name_to_func: HashMap<String, FuncId>,
 }
 
 impl CraneliftBackend {
@@ -155,6 +160,7 @@ impl CraneliftBackend {
             current_env_param: None,
             string_data: HashMap::new(),
             string_counter: 0,
+            qualified_name_to_func: HashMap::new(),
         })
     }
 
@@ -477,6 +483,28 @@ impl CraneliftBackend {
             return Ok(());
         }
 
+        // CROSS-MODULE LINKING: Check if this function's qualified name matches a forward reference
+        // Forward references are created when compiling cross-module calls (e.g., StringIteratorUnicode
+        // calling StringTools.unsafeCodeAt before StringTools is fully compiled).
+        // Forward refs use qualified name as their function name (e.g., "StringTools.unsafeCodeAt")
+        if let Some(ref qualified_name) = function.qualified_name {
+            // Check if there's a forward reference with this qualified name
+            if let Some(&forward_ref_func_id) = self.runtime_functions.get(qualified_name) {
+                // Only link if this function has a body (non-extern)
+                // This allows the real implementation to use the forward ref's func_id
+                if !is_extern {
+                    eprintln!(
+                        "DEBUG: Linking function '{}' to forward reference '{}' - MIR {:?} -> Cranelift {:?}",
+                        function.name, qualified_name, mir_func_id, forward_ref_func_id
+                    );
+                    self.function_map.insert(mir_func_id, forward_ref_func_id);
+                    // Also track by qualified name for future lookups
+                    self.qualified_name_to_func.insert(qualified_name.clone(), forward_ref_func_id);
+                    return Ok(());
+                }
+            }
+        }
+
         // Build Cranelift signature
         let mut sig = self.module.make_signature();
 
@@ -510,10 +538,11 @@ impl CraneliftBackend {
             // For C calling convention extern functions on non-Windows platforms,
             // the ABI requires integer types smaller than 64 bits to be extended to i64.
             // On ARM64/AArch64 (Apple Silicon), i32 parameters are passed as i64.
+            // This includes Bool (i8) since C ABI promotes all small integers.
             let will_extend = is_extern
                 && function.signature.calling_convention == crate::ir::CallingConvention::C
                 && !cfg!(target_os = "windows")
-                && matches!(param.ty, crate::ir::IrType::I32 | crate::ir::IrType::U32);
+                && matches!(param.ty, crate::ir::IrType::I32 | crate::ir::IrType::U32 | crate::ir::IrType::Bool | crate::ir::IrType::I8);
 
             if will_extend {
                 eprintln!("!!! EXTENDING {} param '{}' from {:?} to i64 (is_extern={}, calling_conv={:?})",
@@ -553,7 +582,7 @@ impl CraneliftBackend {
                     && !cfg!(target_os = "windows")
                 {
                     match &param.ty {
-                        crate::ir::IrType::I32 | crate::ir::IrType::U32 => types::I64,
+                        crate::ir::IrType::I32 | crate::ir::IrType::U32 | crate::ir::IrType::Bool | crate::ir::IrType::I8 => types::I64,
                         _ => cranelift_ty,
                     }
                 } else {
@@ -1440,23 +1469,25 @@ impl CraneliftBackend {
                         })?;
 
                         // Check if this C extern function parameter needs extension
+                        // On ARM64/Apple Silicon, C ABI requires i32 values to be extended to i64
                         if !cfg!(target_os = "windows")
                             && extern_func.signature.calling_convention
                                 == crate::ir::CallingConvention::C
                         {
+                            // Get the actual Cranelift type of the value
+                            let cl_value_type = builder.func.dfg.value_type(cl_value);
+
                             if let Some(param) = extern_func.signature.parameters.get(i) {
-                                match param.ty {
-                                    crate::ir::IrType::I32 => {
-                                        eprintln!("!!! [EXTERN BRANCH] Extending arg {} for {} from i32 to i64", i, extern_func.name);
-                                        // Sign-extend i32 to i64
-                                        cl_value = builder.ins().sextend(types::I64, cl_value);
-                                    }
-                                    crate::ir::IrType::U32 => {
-                                        eprintln!("!!! [EXTERN BRANCH] Extending arg {} for {} from u32 to i64", i, extern_func.name);
-                                        // Zero-extend u32 to i64
-                                        cl_value = builder.ins().uextend(types::I64, cl_value);
-                                    }
-                                    _ => {}
+                                // Check if value is i32 but expected is i64
+                                if cl_value_type == types::I32 && matches!(param.ty,
+                                    crate::ir::IrType::I64 | crate::ir::IrType::I32) {
+                                    eprintln!("!!! [EXTERN BRANCH] Extending arg {} for {} from i32 to i64 (value_type={:?}, param_type={:?})",
+                                        i, extern_func.name, cl_value_type, param.ty);
+                                    cl_value = builder.ins().sextend(types::I64, cl_value);
+                                } else if cl_value_type == types::I8 && matches!(param.ty,
+                                    crate::ir::IrType::I64 | crate::ir::IrType::I32 | crate::ir::IrType::Bool) {
+                                    eprintln!("!!! [EXTERN BRANCH] Extending arg {} for {} from i8 to i64", i, extern_func.name);
+                                    cl_value = builder.ins().sextend(types::I64, cl_value);
                                 }
                             }
                         }
@@ -1566,22 +1597,29 @@ impl CraneliftBackend {
                         // For C extern functions on non-Windows, apply integer promotion FIRST
                         // This must happen before the MIR type comparison because Cranelift signature
                         // was declared with i64 params (C ABI promotion) but MIR still has I32 types.
+                        // The key check is: if the actual Cranelift value is i32/i8 and the parameter
+                        // expects i64, we need to extend.
                         if is_c_extern {
                             if let Some(param) = called_func.signature.parameters.get(i) {
-                                match &param.ty {
-                                    crate::ir::IrType::I32 => {
-                                        // C ABI: promote i32 to i64 on non-Windows
-                                        if actual_cl_ty == types::I32 {
+                                // C ABI: extend small integer values to i64
+                                // This covers cases where MIR declares I32 params (need extension)
+                                // OR where MIR declares I64 but value is still i32 (also needs extension)
+                                if actual_cl_ty == types::I32 || actual_cl_ty == types::I8 {
+                                    match &param.ty {
+                                        crate::ir::IrType::I32 | crate::ir::IrType::I64 => {
+                                            // Sign-extend to i64 for C ABI
                                             arg_val = builder.ins().sextend(types::I64, arg_val);
                                         }
-                                    }
-                                    crate::ir::IrType::U32 => {
-                                        // C ABI: promote u32 to i64 on non-Windows
-                                        if actual_cl_ty == types::I32 {
+                                        crate::ir::IrType::U32 | crate::ir::IrType::U64 => {
+                                            // Zero-extend to i64 for C ABI
                                             arg_val = builder.ins().uextend(types::I64, arg_val);
                                         }
+                                        crate::ir::IrType::Bool => {
+                                            // Bools are extended to i64 in C ABI
+                                            arg_val = builder.ins().sextend(types::I64, arg_val);
+                                        }
+                                        _ => {}
                                     }
-                                    _ => {}
                                 }
                             }
                         } else {
