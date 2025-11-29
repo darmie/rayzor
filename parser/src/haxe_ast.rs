@@ -734,7 +734,10 @@ pub enum ExprKind {
     
     /// Macro expression: `macro expr`
     Macro(Box<Expr>),
-    
+
+    /// Inline expression: `inline expr` - forces inlining at call site
+    Inline(Box<Expr>),
+
     /// Macro reification: `$expr`
     Reify(Box<Expr>),
     

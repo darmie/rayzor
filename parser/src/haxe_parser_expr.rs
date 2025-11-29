@@ -15,7 +15,7 @@ use nom::{
 use crate::haxe_ast::*;
 use crate::haxe_parser::{ws, symbol, keyword, identifier, PResult, position};
 use crate::custom_error::ContextualError;
-use crate::haxe_parser_expr2::{identifier_expr, this_expr, super_expr, null_expr, new_expr, cast_expr, untyped_expr, inline_preprocessor_expr, array_expr, object_expr, block_expr, if_expr, switch_expr, for_expr, while_expr, do_while_expr, macro_expr, reify_expr, compiler_specific_expr};
+use crate::haxe_parser_expr2::{identifier_expr, this_expr, super_expr, null_expr, new_expr, cast_expr, untyped_expr, inline_expr, inline_preprocessor_expr, array_expr, object_expr, block_expr, if_expr, switch_expr, for_expr, while_expr, do_while_expr, macro_expr, reify_expr, compiler_specific_expr};
 use crate::haxe_parser_expr3::{try_expr, function_expr, return_expr, break_expr, continue_expr, throw_expr, var_expr, paren_expr, metadata_expr, arrow_params};
 
 /// Parse any expression
@@ -82,6 +82,10 @@ pub fn assignment_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     // Check for assignment operators
     let assign_ops = [
         ("=", AssignOp::Assign),
+        // Longer operators must come first to avoid partial matches
+        (">>>=", AssignOp::UshrAssign),  // Must come before >>=
+        (">>=", AssignOp::ShrAssign),
+        ("<<=", AssignOp::ShlAssign),
         ("+=", AssignOp::AddAssign),
         ("-=", AssignOp::SubAssign),
         ("*=", AssignOp::MulAssign),
@@ -90,9 +94,6 @@ pub fn assignment_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
         ("&=", AssignOp::AndAssign),
         ("|=", AssignOp::OrAssign),
         ("^=", AssignOp::XorAssign),
-        ("<<=", AssignOp::ShlAssign),
-        (">>=", AssignOp::ShrAssign),
-        (">>>=", AssignOp::UshrAssign),
     ];
     
     // Try to parse assignment operator
@@ -186,18 +187,31 @@ fn relational_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
         }
         
         // Check for comparison operators
+        // Note: Must check longer operators first and avoid matching when part of >>>, >>=, >>>=
         let op = if let Ok((rest, _)) = symbol("<=").parse(current_input) {
+            // <= is safe, not part of any longer operator
             current_input = rest;
             Some(BinaryOp::Le)
         } else if let Ok((rest, _)) = symbol(">=").parse(current_input) {
+            // >= is safe, not part of any longer operator
             current_input = rest;
             Some(BinaryOp::Ge)
         } else if let Ok((rest, _)) = symbol("<").parse(current_input) {
-            current_input = rest;
-            Some(BinaryOp::Lt)
+            // < - check it's not <<= or <<
+            if !rest.starts_with('<') && !rest.starts_with('=') {
+                current_input = rest;
+                Some(BinaryOp::Lt)
+            } else {
+                None
+            }
         } else if let Ok((rest, _)) = symbol(">").parse(current_input) {
-            current_input = rest;
-            Some(BinaryOp::Gt)
+            // > - check it's not >>, >>>, >>=, >>>=
+            if !rest.starts_with('>') && !rest.starts_with('=') {
+                current_input = rest;
+                Some(BinaryOp::Gt)
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -292,6 +306,11 @@ fn ws_before_one_of_ops<'a>(ops: &'a [(&'a str, BinaryOp)]) -> impl FnMut(&'a st
         let (input, _) = ws.parse(input)?;
         for (op_str, _) in ops {
             if let Ok((rest, _)) = tag::<_, _, nom::error::Error<_>>(*op_str).parse(input) {
+                // Don't match if the operator is followed by '=' (compound assignment)
+                // e.g., don't match >>> if the input is >>>=
+                if rest.starts_with('=') {
+                    continue;
+                }
                 return Ok((rest, *op_str));
             }
         }
@@ -439,6 +458,7 @@ fn primary_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
             |i| new_expr(full, i),
             |i| cast_expr(full, i),
             |i| untyped_expr(full, i),
+            |i| inline_expr(full, i),
             |i| inline_preprocessor_expr(full, i),
             |i| array_expr(full, i),
         )).parse(i),
@@ -633,20 +653,20 @@ fn interpolated_string<'a>(full: &'a str, input: &'a str, quote: char) -> PResul
             }));
             remaining = rest;
         } else if remaining.starts_with('\\') && remaining.len() > 1 {
-            // Escape sequence
+            // Escape sequence - handle \' , \n, etc.
             current.push('\\');
             if let Some(ch) = remaining.chars().nth(1) {
                 current.push(ch);
+                // Skip 2 characters: the backslash and the escaped char
+                // For ASCII escapes, this is 2 bytes. For unicode, we use char_indices.
                 let mut char_indices = remaining.char_indices();
-                char_indices.next(); // Skip first char
-                if let Some((idx, _)) = char_indices.next() {
-                    char_indices.next(); // Skip second char  
-                    if let Some((next_idx, _)) = char_indices.next() {
-                        remaining = &remaining[next_idx..];
-                    } else {
-                        remaining = "";
-                    }
+                char_indices.next(); // Position 0: backslash
+                char_indices.next(); // Position 1: escaped char
+                // Now get position after the escaped char
+                if let Some((next_idx, _)) = char_indices.next() {
+                    remaining = &remaining[next_idx..];
                 } else {
+                    // No more chars after the escape sequence
                     remaining = "";
                 }
             } else {

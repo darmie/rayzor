@@ -282,6 +282,20 @@ pub fn untyped_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     }))
 }
 
+/// Parse inline expression: `inline expr` - forces inlining at call site
+pub fn inline_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
+    let start = position(full, input);
+    let (input, _) = keyword("inline").parse(input)?;
+    // Parse at unary expression level to get proper precedence
+    let (input, expr) = crate::haxe_parser_expr::unary_expr(full, input)?;
+    let end = position(full, input);
+
+    Ok((input, Expr {
+        kind: ExprKind::Inline(Box::new(expr)),
+        span: Span::new(start, end),
+    }))
+}
+
 /// Parse inline preprocessor conditional: `#if cond expr1 #else expr2 #end`
 /// For Rayzor, we skip the #if branch and return the #else branch expression
 pub fn inline_preprocessor_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
@@ -1021,9 +1035,21 @@ fn pattern<'a>(full: &'a str, input: &'a str) -> PResult<'a, Pattern> {
         },
         
         // Try literal expressions as constant patterns
+        // Use postfix_expr to allow .code on character literals (e.g., '&'.code)
         |input| {
-            if let Ok((rest, expr)) = crate::haxe_parser_expr::literal_expr(full, input) {
-                Ok((rest, Pattern::Const(expr)))
+            if let Ok((rest, expr)) = crate::haxe_parser_expr::postfix_expr(full, input) {
+                // Only accept expressions that start with a literal (string, int, float, etc.)
+                // This prevents consuming complex expressions like function calls
+                match &expr.kind {
+                    crate::haxe_ast::ExprKind::String(_) |
+                    crate::haxe_ast::ExprKind::Int(_) |
+                    crate::haxe_ast::ExprKind::Float(_) |
+                    crate::haxe_ast::ExprKind::Bool(_) |
+                    crate::haxe_ast::ExprKind::Field { .. } => {
+                        Ok((rest, Pattern::Const(expr)))
+                    }
+                    _ => Err(nom::Err::Error(ContextualError::new(input, nom::error::ErrorKind::Tag)))
+                }
             } else {
                 Err(nom::Err::Error(ContextualError::new(input, nom::error::ErrorKind::Tag)))
             }

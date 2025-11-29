@@ -14,9 +14,6 @@ diagnostics = { path = "../diagnostics" }
 name = "demo_enhanced_errors"
 path = "tests/demo_enhanced_errors.rs"
 
-[[bin]]
-name = "test_new_parse"
-path = "test_new_parse.rs"
 
 
 [[example]]
