@@ -1492,8 +1492,9 @@ trace(v.length());  // Works fine
 **Status:** Bug - Cranelift Verifier Error
 **Priority:** High
 **Discovered:** 2025-12-02
+**Investigation Status:** Active - Scope information lost during lowering
 
-**Problem:** When a variable is defined in only one branch of an if/else statement and then used after the merge point, the MIR-to-Cranelift IR conversion incorrectly generates block parameters for the merge block that reference the variable from both branches, even though it's only defined in one.
+**Problem:** When a variable is defined in only one branch of an if/else statement, the compiler incorrectly generates block parameters for the merge block that reference the variable from both branches, even though it's only defined in one.
 
 **Example:**
 ```haxe
@@ -1504,28 +1505,77 @@ if (acquired) {
 } else {
     trace("failed");
 }
-// acquiredvar acquired2 is NOT used here, but compiler generates bad phi nodes
+// acquired2 is NOT used here, but compiler generates bad phi nodes
 ```
 
-**Cranelift Error:**
+**Cranelift Verifier Error:**
 ```
-inst32 (jump block3(v12)): uses value v12 from non-dominating inst16
+inst32 (jump block2(v12)): uses value v12 from non-dominating inst16
 ```
 
-**Root Cause:** The codegen creates a join block (block3) that expects `v12` (acquired2) as a block parameter from both branches, but `v12` is only defined in block1 (true branch), not in block2 (false branch).
+**Cranelift IR Analysis:**
+```
+block3 (true branch):
+    v12 = call fn9(v4)  // acquired2 defined here
+    jump block1(v12)    // Correct - v12 exists
 
-**Location:** Likely in `compiler/src/codegen/cranelift_backend.rs` or `compiler/src/ir/hir_to_mir.rs` - phi node generation for merge points after if/else statements.
+block2 (false branch):
+    // v12 NOT defined in this branch
+    jump block1(v12)    // ❌ ERROR! v12 doesn't exist here
 
-**Fix Required:**
-1. Analyze variable liveness and scope before creating block parameters
-2. Only create block parameters for variables that are:
-   - Defined in all incoming branches, OR
-   - Actually used after the merge point
-3. For variables with limited scope, don't create block parameters
+block1(v23: i64):  // Merge block expects parameter
+    // Uses v23 (phi result from both branches)
+```
 
-**Test Case:** `/Users/amaterasu/Vibranium/rayzor/compiler/examples/test_deque_condition.rs` - `test_mutex_try_acquire()` function
+**Root Cause Hypothesis:** **Variable scope information is lost during TAST→HIR→MIR lowering**. When phi nodes/block parameters are created for merge points, the system has lost track of which variables are defined in which branches, so it tries to create phi nodes for ALL variables that appear in the symbol table, even those only defined in one branch.
 
-**Workaround:** Don't define variables in only one branch of an if/else if they might be used as block parameters.
+**Investigation Findings:**
+
+1. **Compilation Pipeline Confirmed:**
+   - TAST → HIR (via `tast_to_hir` in `lowering.rs`)
+   - HIR → MIR (via `hir_to_mir` in `hir_to_mir.rs`)
+   - MIR → Cranelift IR (via `cranelift_backend.rs`)
+
+2. **Attempted Fix in Wrong Location:**
+   - Modified `hir_to_mir.rs::lower_if_statement` to only collect phi values for pre-existing variables
+   - Debug output confirmed this function is **NOT called** for the test code
+   - The `hir_to_mir.rs::lower_if_statement` function may be dead code or used for different AST types
+
+3. **Actual Code Path:**
+   - `lowering.rs::lower_if_statement` (TAST→HIR) is called
+   - This function does **NOT** create phi nodes explicitly
+   - Phi nodes/block parameters appear in final IR but are not created in lowering code
+
+4. **Data Loss Theory:**
+   - During TAST→HIR lowering, variable scope information (which branch defines which variable) is discarded
+   - Later, when SSA form requires phi nodes, the system has no way to know `acquired2` only exists in one branch
+   - It sees `acquired2` in the symbol table and creates a phi node for it, assuming it exists in all branches
+
+**Next Investigation Steps:**
+
+1. Add debug output to `lowering.rs::lower_if_statement` to confirm it's the active code path
+2. Check if HIR representation preserves variable scope information
+3. Search for SSA conversion or phi insertion passes that run after lowering
+4. Examine MIR builder to see if it auto-creates phis on branch merges
+5. Dump MIR before Cranelift to see if phi nodes already exist
+6. Check Cranelift backend's `collect_phi_args_with_coercion` - why doesn't it error when value is missing?
+
+**Potential Fix Locations:**
+
+1. **lowering.rs**: Track variable scope during TAST→HIR and only create merge points for variables defined in all branches
+2. **SSA pass**: If there's an SSA conversion pass, it needs variable liveness analysis before creating phis
+3. **MIR builder**: If builder auto-creates phis, it needs scope-aware logic
+4. **Cranelift backend**: Should validate that phi incoming values exist in their source blocks
+
+**Files Modified (Investigation):**
+- `compiler/src/ir/hir_to_mir.rs` lines 5314, 5346, 5355, 5360, 5364, 5384, 5403, 5425-5463 (added debug output)
+- Changes may need to be reverted and applied to correct location once found
+
+**Test Case:**
+`/Users/amaterasu/Vibranium/rayzor/compiler/examples/test_deque_condition.rs` - `test_mutex_try_acquire()` function
+
+**Workaround:**
+Don't define variables in only one branch of an if/else statement
 
 ---
 

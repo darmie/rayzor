@@ -5311,7 +5311,7 @@ impl<'a> HirToMirContext<'a> {
         then_branch: &HirBlock,
         else_branch: Option<&HirBlock>,
     ) {
-        // eprintln!("DEBUG HIR→MIR: lower_if_statement called, has_else={}", else_branch.is_some());
+        eprintln!("DEBUG: lower_if_statement called, has_else={}", else_branch.is_some());
         let Some(then_block) = self.builder.create_block() else {
             return;
         };
@@ -5325,12 +5325,8 @@ impl<'a> HirToMirContext<'a> {
             merge_block
         };
 
-        // eprintln!("DEBUG IF: then_block={:?}, merge_block={:?}, else_block={:?}, has_else={}",
-        //           then_block, merge_block, else_block, else_branch.is_some());
-
         // Get the current block before branching
         let entry_block = if let Some(block_id) = self.builder.current_block() {
-            // eprintln!("DEBUG IF: Entry block is {:?}", block_id);
             block_id
         } else {
             return;
@@ -5347,6 +5343,8 @@ impl<'a> HirToMirContext<'a> {
             }
         }
 
+        eprintln!("DEBUG: modified_vars.len() = {}", modified_vars.len());
+
         // Save initial values of variables that will be modified
         let mut var_initial_values: HashMap<SymbolId, (IrId, IrType)> = HashMap::new();
         for symbol_id in &modified_vars {
@@ -5354,11 +5352,16 @@ impl<'a> HirToMirContext<'a> {
                 // Get the type from the locals table
                 if let Some(func) = self.builder.current_function() {
                     if let Some(local) = func.locals.get(&reg) {
+                        eprintln!("DEBUG: var {:?} has initial value {:?}", symbol_id, reg);
                         var_initial_values.insert(*symbol_id, (reg, local.ty.clone()));
                     }
                 }
+            } else {
+                eprintln!("DEBUG: var {:?} NOT in symbol_map (new in branch)", symbol_id);
             }
         }
+
+        eprintln!("DEBUG: var_initial_values.len() = {}", var_initial_values.len());
 
         // Evaluate condition
         if let Some(cond_reg) = self.lower_expression(condition) {
@@ -5379,7 +5382,9 @@ impl<'a> HirToMirContext<'a> {
             // Save values after then branch
             let mut then_values: HashMap<SymbolId, IrId> = HashMap::new();
             if then_end_block.is_some() {
-                for symbol_id in &modified_vars {
+                // Only collect values for variables that existed BEFORE the if/else
+                // Variables defined within the then branch should not be added
+                for symbol_id in var_initial_values.keys() {
                     if let Some(&reg) = self.symbol_map.get(symbol_id) {
                         then_values.insert(*symbol_id, reg);
                     }
@@ -5396,7 +5401,9 @@ impl<'a> HirToMirContext<'a> {
                     self.builder.build_branch(merge_block);
 
                     // Save values after else branch
-                    for symbol_id in &modified_vars {
+                    // Only collect values for variables that existed BEFORE the if/else
+                    // Variables defined within one branch should not leak into the other
+                    for symbol_id in var_initial_values.keys() {
                         if let Some(&reg) = self.symbol_map.get(symbol_id) {
                             else_values.insert(*symbol_id, reg);
                         }
@@ -5418,36 +5425,42 @@ impl<'a> HirToMirContext<'a> {
             self.builder.switch_to_block(merge_block);
 
             // Create phi nodes for modified variables
+            eprintln!("DEBUG: var_initial_values.len() = {}", var_initial_values.len());
             for (symbol_id, (initial_reg, var_type)) in &var_initial_values {
+                eprintln!("DEBUG: Checking var {:?} for phi node", symbol_id);
                 // Only create phi if at least one branch modified the variable
                 let then_val = then_values.get(symbol_id).copied().unwrap_or(*initial_reg);
                 let else_val = else_values.get(symbol_id).copied().unwrap_or(*initial_reg);
 
+                eprintln!("DEBUG:   then_val {:?}, else_val {:?}", then_val, else_val);
+
                 // If both branches lead to the same value, no phi needed
                 if then_val == else_val {
+                    eprintln!("DEBUG:   Skipping phi - same value");
                     continue;
                 }
 
                 // Only create phi if we have valid incoming blocks
                 if then_end_block.is_none() && else_end_block.is_none() {
+                    eprintln!("DEBUG:   Skipping phi - no valid incoming blocks");
                     continue;
                 }
 
-                // eprintln!("DEBUG: Creating phi for symbol {:?}, then_val {:?}, else_val {:?}", symbol_id, then_val, else_val);
-                // eprintln!("DEBUG:   then_end_block {:?}, else_end_block {:?}", then_end_block, else_end_block);
+                eprintln!("DEBUG: Creating phi for symbol {:?}, then_val {:?}, else_val {:?}", symbol_id, then_val, else_val);
+                eprintln!("DEBUG:   then_end_block {:?}, else_end_block {:?}", then_end_block, else_end_block);
 
                 // Create phi node
                 if let Some(phi_reg) = self.builder.build_phi(merge_block, var_type.clone()) {
-                    // eprintln!("DEBUG:   Created phi node {:?} in merge block {:?}", phi_reg, merge_block);
+                    eprintln!("DEBUG:   Created phi node {:?} in merge block {:?}", phi_reg, merge_block);
 
                     // Add incoming values from both branches
                     if let Some(then_blk) = then_end_block {
-                        // eprintln!("DEBUG:   Adding phi incoming from then block {:?}, value {:?}", then_blk, then_val);
+                        eprintln!("DEBUG:   Adding phi incoming from then block {:?}, value {:?}", then_blk, then_val);
                         self.builder
                             .add_phi_incoming(merge_block, phi_reg, then_blk, then_val);
                     }
                     if let Some(else_blk) = else_end_block {
-                        // eprintln!("DEBUG:   Adding phi incoming from else block {:?}, value {:?}", else_blk, else_val);
+                        eprintln!("DEBUG:   Adding phi incoming from else block {:?}, value {:?}", else_blk, else_val);
                         self.builder
                             .add_phi_incoming(merge_block, phi_reg, else_blk, else_val);
                     }
