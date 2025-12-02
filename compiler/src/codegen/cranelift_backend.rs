@@ -1488,6 +1488,16 @@ impl CraneliftBackend {
                                     crate::ir::IrType::I64 | crate::ir::IrType::I32 | crate::ir::IrType::Bool) {
                                     eprintln!("!!! [EXTERN BRANCH] Extending arg {} for {} from i8 to i64", i, extern_func.name);
                                     cl_value = builder.ins().sextend(types::I64, cl_value);
+                                } else if (cl_value_type == types::I32 || cl_value_type == types::I64)
+                                    && matches!(param.ty, crate::ir::IrType::F64)
+                                {
+                                    // Integer to float conversion (e.g., Math.abs(-5))
+                                    cl_value = builder.ins().fcvt_from_sint(types::F64, cl_value);
+                                } else if (cl_value_type == types::I32 || cl_value_type == types::I64)
+                                    && matches!(param.ty, crate::ir::IrType::F32)
+                                {
+                                    // Integer to float32 conversion
+                                    cl_value = builder.ins().fcvt_from_sint(types::F32, cl_value);
                                 }
                             }
                         }
@@ -1578,14 +1588,6 @@ impl CraneliftBackend {
                             || called_func.attributes.linkage == crate::ir::Linkage::External)
                         && !cfg!(target_os = "windows");
 
-                    if called_func.name.starts_with("rayzor_channel")
-                        || called_func.name == "Channel_init"
-                    {
-                        eprintln!("DEBUG: [In {}] Calling {} - is_c_extern={}, calling_conv={:?}, is_extern={}, linkage={:?}",
-                             function.name, called_func.name, is_c_extern, called_func.signature.calling_convention,
-                             is_extern_func, called_func.attributes.linkage);
-                    }
-
                     for (i, arg_id) in args.iter().enumerate() {
                         let mut arg_val = *value_map.get(arg_id).ok_or_else(|| {
                             format!("Argument {:?} not found in value_map", arg_id)
@@ -1618,6 +1620,25 @@ impl CraneliftBackend {
                                             // Bools are extended to i64 in C ABI
                                             arg_val = builder.ins().sextend(types::I64, arg_val);
                                         }
+                                        crate::ir::IrType::F64 => {
+                                            // Convert integer to f64 (e.g., Math.abs(-5))
+                                            arg_val = builder.ins().fcvt_from_sint(types::F64, arg_val);
+                                        }
+                                        crate::ir::IrType::F32 => {
+                                            // Convert integer to f32
+                                            arg_val = builder.ins().fcvt_from_sint(types::F32, arg_val);
+                                        }
+                                        _ => {}
+                                    }
+                                } else if actual_cl_ty == types::I64 {
+                                    // Also handle i64 -> f64 conversion
+                                    match &param.ty {
+                                        crate::ir::IrType::F64 => {
+                                            arg_val = builder.ins().fcvt_from_sint(types::F64, arg_val);
+                                        }
+                                        crate::ir::IrType::F32 => {
+                                            arg_val = builder.ins().fcvt_from_sint(types::F32, arg_val);
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -1631,7 +1652,7 @@ impl CraneliftBackend {
                                     types::I64 // Default fallback
                                 };
 
-                            // Insert type conversion if needed (i32 -> i64 or i64 -> i32)
+                            // Insert type conversion if needed
                             if actual_cl_ty != expected_cl_ty {
                                 if actual_cl_ty == types::I32 && expected_cl_ty == types::I64 {
                                     // Sign-extend i32 to i64
@@ -1639,8 +1660,24 @@ impl CraneliftBackend {
                                 } else if actual_cl_ty == types::I64 && expected_cl_ty == types::I32 {
                                     // Reduce i64 to i32
                                     arg_val = builder.ins().ireduce(types::I32, arg_val);
+                                } else if (actual_cl_ty == types::I32 || actual_cl_ty == types::I64)
+                                    && expected_cl_ty == types::F64
+                                {
+                                    // Integer to float conversion (e.g., Math.abs(-5))
+                                    arg_val = builder.ins().fcvt_from_sint(types::F64, arg_val);
+                                } else if (actual_cl_ty == types::I32 || actual_cl_ty == types::I64)
+                                    && expected_cl_ty == types::F32
+                                {
+                                    // Integer to float32 conversion
+                                    arg_val = builder.ins().fcvt_from_sint(types::F32, arg_val);
+                                } else if actual_cl_ty == types::F64 && expected_cl_ty == types::I64 {
+                                    // Float to integer conversion
+                                    arg_val = builder.ins().fcvt_to_sint(types::I64, arg_val);
+                                } else if actual_cl_ty == types::F64 && expected_cl_ty == types::I32 {
+                                    // Float to i32 conversion
+                                    arg_val = builder.ins().fcvt_to_sint(types::I32, arg_val);
                                 }
-                                // Other type mismatches are not handled here
+                                // Other type mismatches are handled elsewhere or cause verifier errors
                             }
                         }
                         call_args.push(arg_val);

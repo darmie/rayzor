@@ -5452,8 +5452,11 @@ impl<'a> AstLowering<'a> {
                     };
 
                     // var _len = arr.length (field access)
+                    // Create a symbol for the field access. The name "length" will be used during
+                    // HIR->MIR lowering to look up the stdlib runtime function (haxe_array_length)
                     let length_name = self.context.intern_string("length");
                     let length_symbol = self.context.symbol_table.create_variable(length_name);
+
                     let length_access = TypedExpression {
                         expr_type: int_type,
                         kind: TypedExpressionKind::FieldAccess {

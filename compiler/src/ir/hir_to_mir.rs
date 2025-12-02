@@ -1267,7 +1267,6 @@ impl<'a> HirToMirContext<'a> {
 
     /// Lower a HIR statement to MIR instructions
     fn lower_statement(&mut self, stmt: &HirStatement) {
-        // eprintln!("DEBUG: lower_statement - {:?}", std::mem::discriminant(stmt));
         match stmt {
             HirStatement::Let {
                 pattern,
@@ -1277,7 +1276,6 @@ impl<'a> HirToMirContext<'a> {
             } => {
                 // Lower initialization expression if present
                 if let Some(init_expr) = init {
-                    // DEBUG: eprintln!("Let statement - lowering init expression");
 
                     // Check if this is a New expression for a generic stdlib class (Vec<T>)
                     // We need to track the monomorphized class name for later method calls
@@ -8906,8 +8904,8 @@ impl<'a> HirToMirContext<'a> {
             for elem in elements.iter() {
                 let elem_val = self.lower_expression(elem)?;
 
-                // Call haxe_array_push_i64(arr, val)
-                self.builder.build_call_direct(push_func_id, vec![array_ptr, elem_val], IrType::Void)?;
+                // Call haxe_array_push_i64(arr, val) - this is a void function, so ignore the None return
+                self.builder.build_call_direct(push_func_id, vec![array_ptr, elem_val], IrType::Void);
             }
         }
 
