@@ -1487,6 +1487,48 @@ trace(v.length());  // Works fine
 
 ## Known Issues (Technical Debt)
 
+### Phi Node Bug: Variables with Limited Scope in If/Else ⚠️
+
+**Status:** Bug - Cranelift Verifier Error
+**Priority:** High
+**Discovered:** 2025-12-02
+
+**Problem:** When a variable is defined in only one branch of an if/else statement and then used after the merge point, the MIR-to-Cranelift IR conversion incorrectly generates block parameters for the merge block that reference the variable from both branches, even though it's only defined in one.
+
+**Example:**
+```haxe
+var acquired = mutex.tryAcquire();
+if (acquired) {
+    var acquired2 = mutex.tryAcquire();  // Only defined in true branch
+    trace(acquired2);
+} else {
+    trace("failed");
+}
+// acquiredvar acquired2 is NOT used here, but compiler generates bad phi nodes
+```
+
+**Cranelift Error:**
+```
+inst32 (jump block3(v12)): uses value v12 from non-dominating inst16
+```
+
+**Root Cause:** The codegen creates a join block (block3) that expects `v12` (acquired2) as a block parameter from both branches, but `v12` is only defined in block1 (true branch), not in block2 (false branch).
+
+**Location:** Likely in `compiler/src/codegen/cranelift_backend.rs` or `compiler/src/ir/hir_to_mir.rs` - phi node generation for merge points after if/else statements.
+
+**Fix Required:**
+1. Analyze variable liveness and scope before creating block parameters
+2. Only create block parameters for variables that are:
+   - Defined in all incoming branches, OR
+   - Actually used after the merge point
+3. For variables with limited scope, don't create block parameters
+
+**Test Case:** `/Users/amaterasu/Vibranium/rayzor/compiler/examples/test_deque_condition.rs` - `test_mutex_try_acquire()` function
+
+**Workaround:** Don't define variables in only one branch of an if/else if they might be used as block parameters.
+
+---
+
 ### String ABI Inconsistency ⏸️
 
 **Problem:** Multiple incompatible `HaxeString` struct definitions exist in the runtime:

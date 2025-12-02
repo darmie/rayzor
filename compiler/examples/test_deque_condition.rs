@@ -14,6 +14,9 @@ fn main() -> Result<(), String> {
     // Test 2: Condition basic operations
     test_condition_basic()?;
 
+    // Test 3: Mutex tryAcquire with trace
+    test_mutex_try_acquire()?;
+
     println!("\n=== All Deque/Condition tests passed! ===");
     Ok(())
 }
@@ -78,8 +81,10 @@ class Main {
         condition.release();
         trace("Released lock");
 
-        // Try acquire
+        // Try acquire and trace the boolean value directly
         var acquired = condition.tryAcquire();
+        trace("tryAcquire result:");
+        trace(acquired);
         if (acquired) {
             trace("tryAcquire succeeded");
             condition.release();
@@ -93,6 +98,45 @@ class Main {
 "#;
 
     run_code(code, "test_condition_basic")
+}
+
+fn test_mutex_try_acquire() -> Result<(), String> {
+    println!("\nTEST: sys.thread.Mutex tryAcquire with trace");
+
+    let code = r#"
+import sys.thread.Mutex;
+
+class Main {
+    static function main() {
+        trace("Testing Mutex tryAcquire with trace");
+
+        var mutex = new Mutex();
+
+        // Try acquire (should succeed on unlocked mutex)
+        var acquired = mutex.tryAcquire();
+        trace("First tryAcquire result:");
+        trace(acquired);
+
+        if (acquired) {
+            trace("First tryAcquire succeeded");
+
+            // Try acquire again (should fail - already locked)
+            var acquired2 = mutex.tryAcquire();
+            trace("Second tryAcquire result (should be false):");
+            trace(acquired2);
+
+            mutex.release();
+            trace("Mutex released");
+        } else {
+            trace("First tryAcquire failed (unexpected)");
+        }
+
+        trace("Mutex tryAcquire test works!");
+    }
+}
+"#;
+
+    run_code(code, "test_mutex_try_acquire")
 }
 
 fn run_code(code: &str, test_name: &str) -> Result<(), String> {
