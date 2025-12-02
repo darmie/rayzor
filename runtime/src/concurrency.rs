@@ -954,20 +954,23 @@ pub unsafe extern "C" fn sys_mutex_acquire(mutex: *mut u8) {
 }
 
 /// Try to acquire a mutex (non-blocking)
+/// Returns boxed Bool (Dynamic value): true if acquired, false if already locked
 #[no_mangle]
-pub unsafe extern "C" fn sys_mutex_try_acquire(mutex: *mut u8) -> bool {
+pub unsafe extern "C" fn sys_mutex_try_acquire(mutex: *mut u8) -> *mut u8 {
     if mutex.is_null() {
-        return false;
+        return crate::type_system::haxe_box_bool_ptr(false);
     }
 
     let mutex_handle = &mut *(mutex as *mut SimpleMutexHandle);
     let guard = rayzor_mutex_try_lock(mutex_handle.inner_mutex);
-    if !guard.is_null() {
+    let result = if !guard.is_null() {
         mutex_handle.current_guard = guard;
         true
     } else {
         false
-    }
+    };
+
+    crate::type_system::haxe_box_bool_ptr(result)
 }
 
 /// Release a mutex
@@ -1118,20 +1121,23 @@ pub unsafe extern "C" fn sys_condition_acquire(condition: *mut u8) {
 }
 
 /// Try to acquire the internal mutex (non-blocking)
+/// Returns boxed Bool (Dynamic value)
 #[no_mangle]
-pub unsafe extern "C" fn sys_condition_try_acquire(condition: *mut u8) -> bool {
+pub unsafe extern "C" fn sys_condition_try_acquire(condition: *mut u8) -> *mut u8 {
     if condition.is_null() {
-        return false;
+        return crate::type_system::haxe_box_bool_ptr(false);
     }
 
     let handle = &mut *(condition as *mut ConditionHandle);
-    if let Ok(guard) = handle.mutex.try_lock() {
+    let result = if let Ok(guard) = handle.mutex.try_lock() {
         let guard: std::sync::MutexGuard<'static, ()> = std::mem::transmute(guard);
         handle.guard = Some(guard);
         true
     } else {
         false
-    }
+    };
+
+    crate::type_system::haxe_box_bool_ptr(result)
 }
 
 /// Release the internal mutex
