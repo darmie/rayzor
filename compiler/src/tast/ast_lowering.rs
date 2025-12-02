@@ -571,6 +571,12 @@ pub struct AstLowering<'a> {
     skip_pre_registration: bool,
     /// Collected errors during lowering (for error recovery)
     pub collected_errors: Vec<LoweringError>,
+    /// Active 'using' modules for static extension resolution
+    /// Maps module name (e.g., "StringTools") to class symbol ID
+    using_modules: Vec<(InternedString, SymbolId)>,
+    /// Pending 'using' modules that need to be loaded (not yet compiled)
+    /// These are module paths like "StringTools" that were used but only pre-registered
+    pub pending_usings: Vec<String>,
 }
 
 impl<'a> AstLowering<'a> {
@@ -867,6 +873,8 @@ impl<'a> AstLowering<'a> {
             skip_stdlib_loading: false,
             skip_pre_registration: false,
             collected_errors: Vec::new(),
+            using_modules: Vec::new(),
+            pending_usings: Vec::new(),
         }
     }
 
@@ -1462,6 +1470,14 @@ impl<'a> AstLowering<'a> {
         match declaration {
             TypeDeclaration::Class(class_decl) => {
                 let class_name = self.context.intern_string(&class_decl.name);
+
+                // Check if this class already exists in the root scope (from a previous compilation)
+                // If so, skip pre-registration to avoid creating duplicate symbols
+                if self.context.symbol_table.lookup_symbol(ScopeId::first(), class_name).is_some() {
+                    // Class already pre-registered, skip
+                    return Ok(());
+                }
+
                 let class_symbol = self
                     .context
                     .symbol_table
@@ -1497,6 +1513,12 @@ impl<'a> AstLowering<'a> {
             }
             TypeDeclaration::Interface(interface_decl) => {
                 let interface_name = self.context.intern_string(&interface_decl.name);
+
+                // Check if this interface already exists in the root scope
+                if self.context.symbol_table.lookup_symbol(ScopeId::first(), interface_name).is_some() {
+                    return Ok(());
+                }
+
                 let interface_symbol = self
                     .context
                     .symbol_table
@@ -1532,6 +1554,12 @@ impl<'a> AstLowering<'a> {
             }
             TypeDeclaration::Enum(enum_decl) => {
                 let enum_name = self.context.intern_string(&enum_decl.name);
+
+                // Check if this enum already exists in the root scope
+                if self.context.symbol_table.lookup_symbol(ScopeId::first(), enum_name).is_some() {
+                    return Ok(());
+                }
+
                 let enum_symbol = self
                     .context
                     .symbol_table
@@ -1567,6 +1595,12 @@ impl<'a> AstLowering<'a> {
             }
             TypeDeclaration::Typedef(typedef_decl) => {
                 let typedef_name = self.context.intern_string(&typedef_decl.name);
+
+                // Check if this typedef already exists in the root scope
+                if self.context.symbol_table.lookup_symbol(ScopeId::first(), typedef_name).is_some() {
+                    return Ok(());
+                }
+
                 let typedef_symbol = self
                     .context
                     .symbol_table
@@ -1584,6 +1618,12 @@ impl<'a> AstLowering<'a> {
             }
             TypeDeclaration::Abstract(abstract_decl) => {
                 let abstract_name = self.context.intern_string(&abstract_decl.name);
+
+                // Check if this abstract already exists in the root scope
+                if self.context.symbol_table.lookup_symbol(ScopeId::first(), abstract_name).is_some() {
+                    return Ok(());
+                }
+
                 let abstract_symbol = self
                     .context
                     .symbol_table
@@ -1730,10 +1770,6 @@ impl<'a> AstLowering<'a> {
                     // When importing "rayzor.Bytes", the qualified name should be "rayzor.Bytes", not just "Bytes".
                     // This is needed for runtime mapping to work correctly (e.g., "rayzor_Bytes" pattern matching).
                     let full_qualified_name = import.path.join(".");
-                    let symbol_name_str = self.context.string_interner.get(symbol_name).unwrap_or("?");
-                    if symbol_name_str == "Bytes" {
-                        eprintln!("DEBUG: [import] Creating NEW symbol for Bytes: symbol_id={:?}, qualified_name={}", new_sym, full_qualified_name);
-                    }
                     if let Some(sym) = self.context.symbol_table.get_symbol_mut(new_sym) {
                         sym.qualified_name = Some(self.context.string_interner.intern(&full_qualified_name));
                     }
@@ -1774,8 +1810,74 @@ impl<'a> AstLowering<'a> {
 
     /// Lower a using declaration
     fn lower_using(&mut self, using: &Using) -> LoweringResult<TypedUsing> {
+        let module_path_str = using.path.join(".");
+        let module_path = self.context.intern_string(&module_path_str);
+
+        // Try to resolve the using module to a class symbol for static extension resolution
+        // The module path is typically just the class name (e.g., "StringTools")
+        // or a qualified path (e.g., "haxe.StringTools")
+        let class_name = using.path.last().map(|s| s.as_str()).unwrap_or(&module_path_str);
+        let class_name_interned = self.context.intern_string(class_name);
+
+        // First try to find via namespace resolver (handles qualified paths)
+        let package_path: Vec<_> = using.path.iter()
+            .take(using.path.len().saturating_sub(1))
+            .map(|s| self.context.string_interner.intern(s))
+            .collect();
+        let qualified_path = super::namespace::QualifiedPath::new(package_path, class_name_interned);
+
+        let class_symbol_id = if let Some(symbol_id) = self.context.namespace_resolver.lookup_symbol(&qualified_path) {
+            // Found via namespace resolver
+            Some(symbol_id)
+        } else if let Some(class_symbol) = self.context.symbol_table.lookup_symbol(ScopeId::first(), class_name_interned) {
+            // Found in global scope - but check if this symbol was actually lowered
+            // If scope_id is ScopeId(0), it was only pre-registered but not lowered
+            // In that case, search for a symbol with the same name that WAS lowered
+            if class_symbol.scope_id == ScopeId::first() {
+                // This symbol wasn't lowered - search for one that was
+                let mut found_lowered = None;
+                for sym in self.context.symbol_table.symbols_of_kind(crate::tast::symbols::SymbolKind::Class) {
+                    if sym.name == class_name_interned && sym.scope_id != ScopeId::first() {
+                        found_lowered = Some(sym.id);
+                        break;
+                    }
+                }
+                if found_lowered.is_some() {
+                    found_lowered
+                } else {
+                    // No lowered symbol found, use pre-registered one (will trigger loading)
+                    Some(class_symbol.id)
+                }
+            } else {
+                Some(class_symbol.id)
+            }
+        } else {
+            None
+        };
+
+        if let Some(symbol_id) = class_symbol_id {
+            // Found the class - register it for static extension resolution
+            // Check if the class has been fully compiled (scope_id should not be ScopeId::first() or ScopeId(0))
+            let needs_loading = if let Some(sym) = self.context.symbol_table.get_symbol(symbol_id) {
+                // If scope_id is still the root scope (ScopeId(0)), the class was only pre-registered
+                // and not actually compiled with its method bodies
+                sym.scope_id == ScopeId::first()
+            } else {
+                true
+            };
+
+            if needs_loading {
+                // Queue the module for loading - the compilation unit will load it
+                self.pending_usings.push(module_path_str.clone());
+            }
+
+            self.using_modules.push((class_name_interned, symbol_id));
+        }
+        // Note: If class not found, static extensions will still work through the
+        // "LAST RESORT" mechanism in hir_to_mir.rs which searches all stdlib classes
+
         Ok(TypedUsing {
-            module_path: self.context.intern_string(&using.path.join(".")),
+            module_path,
             target_type: None, // TODO: Handle target type if specified
             source_location: self.context.create_location_from_span(using.span),
         })
@@ -1917,6 +2019,12 @@ impl<'a> AstLowering<'a> {
 
         // Note: The class symbol remains in the parent scope, while its members are in class_scope
         // This is correct because the class name should be accessible from outside
+
+        // Update the class symbol's scope_id to point to the class scope where its methods are registered
+        // This is crucial for static extension resolution to find methods by scope lookup
+        if let Some(sym) = self.context.symbol_table.get_symbol_mut(class_symbol) {
+            sym.scope_id = class_scope;
+        }
 
         // Push class onto context stack for method resolution
         self.context.class_context_stack.push(class_symbol);
@@ -4084,6 +4192,40 @@ impl<'a> AstLowering<'a> {
         self.context.symbol_table.create_function(method_name)
     }
 
+    /// Try to find a static extension method in using modules
+    /// Returns (class_symbol, method_symbol) if found
+    fn find_static_extension_method(
+        &self,
+        method_name: InternedString,
+        _receiver_type: TypeId,
+    ) -> Option<(SymbolId, SymbolId)> {
+        // Check each using module for a static method with this name
+        for (_class_name, class_symbol) in &self.using_modules {
+            // First, check local class_methods (for classes lowered in this instance)
+            if let Some(methods) = self.class_methods.get(class_symbol) {
+                for (meth_name, meth_symbol, is_static) in methods {
+                    if *meth_name == method_name && *is_static {
+                        return Some((*class_symbol, *meth_symbol));
+                    }
+                }
+            }
+
+            // Then, check the shared symbol table for methods registered by other lowering passes
+            // Look up the class symbol to get its scope, then search for the method
+            if let Some(class_sym) = self.context.symbol_table.get_symbol(*class_symbol) {
+                // The class should have a scope ID where its members are registered
+                // Try to find a method with the given name in that scope
+                if let Some(method_sym) = self.context.symbol_table.lookup_symbol(class_sym.scope_id, method_name) {
+                    // Check if it's a static method by looking at its modifiers or kind
+                    if method_sym.kind == crate::tast::symbols::SymbolKind::Function {
+                        return Some((*class_symbol, method_sym.id));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Lower an expression as a statement
     fn lower_expression_as_statement(&mut self, expr: &Expr) -> LoweringResult<TypedStatement> {
         let typed_expr = self.lower_expression(expr)?;
@@ -4353,14 +4495,48 @@ impl<'a> AstLowering<'a> {
                         let receiver_expr = self.lower_expression(obj_expr)?;
                         let method_name = self.context.intern_string(field);
 
-                        // Create or lookup method symbol
+                        // First, try to resolve as a regular method on the receiver
                         let method_symbol = self.resolve_method_symbol(&receiver_expr, method_name);
 
-                        TypedExpressionKind::MethodCall {
-                            receiver: Box::new(receiver_expr),
-                            method_symbol,
-                            arguments: arg_exprs,
-                            type_arguments: Vec::new(),
+                        // Check if the resolved symbol is a placeholder (newly created function)
+                        // If so, try to find a static extension method from 'using' modules
+                        let is_placeholder = self.context.symbol_table.get_symbol(method_symbol)
+                            .map(|s| s.kind == crate::tast::symbols::SymbolKind::Function)
+                            .unwrap_or(false);
+
+                        if is_placeholder {
+                            // Try to find a static extension method
+                            if let Some((class_symbol, static_method_symbol)) =
+                                self.find_static_extension_method(method_name, receiver_expr.expr_type)
+                            {
+                                // Found a static extension! Convert to static method call
+                                // with receiver as first argument
+                                let mut new_args = vec![receiver_expr];
+                                new_args.extend(arg_exprs);
+
+                                TypedExpressionKind::StaticMethodCall {
+                                    class_symbol,
+                                    method_symbol: static_method_symbol,
+                                    arguments: new_args,
+                                    type_arguments: Vec::new(),
+                                }
+                            } else {
+                                // No static extension found, use regular method call
+                                TypedExpressionKind::MethodCall {
+                                    receiver: Box::new(receiver_expr),
+                                    method_symbol,
+                                    arguments: arg_exprs,
+                                    type_arguments: Vec::new(),
+                                }
+                            }
+                        } else {
+                            // Method was found on the receiver, use it
+                            TypedExpressionKind::MethodCall {
+                                receiver: Box::new(receiver_expr),
+                                method_symbol,
+                                arguments: arg_exprs,
+                                type_arguments: Vec::new(),
+                            }
                         }
                     }
                     _ => {
@@ -6962,6 +7138,29 @@ impl<'a> AstLowering<'a> {
                                 Ok(*return_type)
                             }
                             _ => Ok(type_table.dynamic_type()),
+                        }
+                    } else {
+                        Ok(type_table.dynamic_type())
+                    }
+                } else {
+                    Ok(self.context.type_table.borrow().dynamic_type())
+                }
+            }
+            TypedExpressionKind::StaticMethodCall {
+                method_symbol,
+                ..
+            } => {
+                // Extract return type from static method signature
+                if let Some(symbol) = self.context.symbol_table.get_symbol(*method_symbol) {
+                    let type_table = self.context.type_table.borrow();
+                    if let Some(method_type) = type_table.get(symbol.type_id) {
+                        match &method_type.kind {
+                            crate::tast::core::TypeKind::Function { return_type, .. } => {
+                                Ok(*return_type)
+                            }
+                            _ => {
+                                Ok(type_table.dynamic_type())
+                            }
                         }
                     } else {
                         Ok(type_table.dynamic_type())

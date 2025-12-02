@@ -971,8 +971,8 @@ impl CraneliftBackend {
                 sret_ptr,
             ) {
                 eprintln!(
-                    "\n!!! Error translating terminator in block {:?}: {}",
-                    mir_block_id, e
+                    "\n!!! Error translating terminator in function '{}' block {:?}: {}",
+                    function.name, mir_block_id, e
                 );
                 eprintln!("=== Cranelift IR so far ===");
                 eprintln!("{}", self.ctx.func.display());

@@ -667,4 +667,21 @@ abstract UInt(Int) {}
         assert!(!result.contains("Flash implementation"), "Result was: {}", result);
         assert!(result.contains("abstract UInt(Int)"), "Result was: {}", result);
     }
+
+    #[test]
+    fn test_stringtools_complex_condition() {
+        // Pattern from StringTools.hx: complex OR condition with parentheses
+        let source = r#"public static #if (cs || java || python || (js && js_es >= 6)) inline #end function startsWith(s:String, start:String):Bool {"#;
+
+        let config = PreprocessorConfig::default(); // rayzor defined, none of cs/java/python/js
+        let result = preprocess(source, &config);
+
+        println!("Result: '{}'", result);
+
+        // None of cs, java, python, js are defined, so inline should be REMOVED
+        assert!(!result.contains("inline"), "inline should be removed. Result was: '{}'", result);
+        assert!(result.contains("public static  function startsWith"), "Result was: '{}'", result);
+        assert!(result.contains("s:String"), "Result was: '{}'", result);
+        assert!(!result.contains("#if"), "Result was: '{}'", result);
+    }
 }

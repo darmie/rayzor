@@ -818,6 +818,11 @@ class Main {
     // ============================================================================
     // Run all tests
     // ============================================================================
+    // NOTE: Static extension tests (using StringTools) are in isolated test:
+    // compiler/examples/test_using_static.rs
+    // Run with: cargo run --package compiler --example test_using_static
+
+    // ============================================================================
     let results = suite.run_all();
     suite.print_summary(&results);
 

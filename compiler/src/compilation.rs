@@ -69,6 +69,11 @@ pub struct CompilationUnit {
     /// Mapping from HIR function symbols to MIR function IDs for stdlib functions
     /// This allows user code to call pure Haxe stdlib functions (like StringTools)
     stdlib_function_map: HashMap<crate::tast::SymbolId, crate::ir::IrFunctionId>,
+
+    /// Name-based mapping from qualified function names to MIR function IDs
+    /// This is used for cross-file lookups where SymbolIds differ between compilation units
+    /// e.g., "StringTools.startsWith" -> IrFunctionId(N)
+    stdlib_function_name_map: HashMap<String, crate::ir::IrFunctionId>,
 }
 
 /// Configuration for compilation
@@ -334,6 +339,7 @@ impl CompilationUnit {
             mir_modules: Vec::new(),
             loaded_stdlib_typed_files: Vec::new(),
             stdlib_function_map: HashMap::new(),
+            stdlib_function_name_map: HashMap::new(),
         }
     }
 
@@ -939,6 +945,8 @@ impl CompilationUnit {
                               filename.contains("/haxe-std/") ||
                               filename.contains("\\haxe-std\\");
 
+        eprintln!("DEBUG: [MIR LOWERING] filename='{}', is_stdlib_file={}", filename, is_stdlib_file);
+
         // For user files, pass the stdlib function map so they can call stdlib functions
         // For stdlib files, pass an empty map (they can call each other once we accumulate the map)
         let external_functions = if is_stdlib_file {
@@ -949,12 +957,16 @@ impl CompilationUnit {
             self.stdlib_function_map.clone()
         };
 
+        // Name-based external function map for cross-file lookups where SymbolIds differ
+        let external_functions_by_name = self.stdlib_function_name_map.clone();
+
         let mir_result = lower_hir_to_mir_with_function_map(
             &hir_module,
             &self.string_interner,
             &self.type_table,
             &self.symbol_table,
             external_functions,
+            external_functions_by_name,
         ).map_err(|errors| {
             errors.into_iter().map(|e| CompilationError {
                 message: format!("MIR lowering error: {:?}", e),
@@ -974,6 +986,23 @@ impl CompilationUnit {
             for (symbol_id, func_id) in mir_result.function_map {
                 self.stdlib_function_map.insert(symbol_id, func_id);
             }
+
+            // Also collect name-based mappings for cross-file lookups
+            // The function `name` field contains the qualified name (e.g., "StringTools.startsWith")
+            let mut added_count = 0;
+            let mut skipped_count = 0;
+            for (func_id, func) in &mir_module.functions {
+                // Only add non-empty CFG functions (skip forward refs/stubs)
+                if !func.cfg.blocks.is_empty() {
+                    self.stdlib_function_name_map.insert(func.name.clone(), *func_id);
+                    eprintln!("DEBUG: [NAME MAP] Added '{}' -> {:?}", func.name, func_id);
+                    added_count += 1;
+                } else {
+                    eprintln!("DEBUG: [NAME MAP SKIP] '{}' has empty CFG (forward ref/stub)", func.name);
+                    skipped_count += 1;
+                }
+            }
+            eprintln!("DEBUG: [NAME MAP] {} added, {} skipped for {}", added_count, skipped_count, filename);
         }
 
         // Only skip EXTERN stdlib files (those with Rust implementations in build_stdlib).
@@ -1233,25 +1262,41 @@ impl CompilationUnit {
         let mut all_typed_files = Vec::new();
         let mut all_errors = Vec::new();
 
-        // Step 2: Pre-load stdlib files for explicit imports in user files
+        // Step 2: Pre-load stdlib files for explicit imports AND using statements in user files
         // This ensures typedefs like sys.FileStat are available before compilation
-        // Also handles root-level imports like "import StringTools;"
-        let imports_to_load: Vec<String> = self.user_files.iter()
+        // Also handles root-level imports like "import StringTools;" and "using StringTools;"
+        let (imports_to_load, usings_to_load): (Vec<String>, Vec<String>) = self.user_files.iter()
             .filter_map(|file| file.input.as_ref().map(|source| (file.filename.clone(), source.clone())))
-            .flat_map(|(filename, source)| {
-                parser::parse_haxe_file(&filename, &source, false)
-                    .map(|ast| {
-                        ast.imports.iter()
-                            .filter(|import| !import.path.is_empty())
-                            .map(|import| import.path.join("."))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default()
-            })
-            .collect();
+            .fold((Vec::new(), Vec::new()), |(mut imports, mut usings), (filename, source)| {
+                if let Ok(ast) = parser::parse_haxe_file(&filename, &source, false) {
+                    // Collect imports
+                    for import in &ast.imports {
+                        if !import.path.is_empty() {
+                            imports.push(import.path.join("."));
+                        }
+                    }
+                    // Collect using statements (static extensions)
+                    for using in &ast.using {
+                        if !using.path.is_empty() {
+                            usings.push(using.path.join("."));
+                        }
+                    }
+                }
+                (imports, usings)
+            });
 
+        // Pre-load imports
         for qualified_path in imports_to_load {
             let _ = self.load_import_file(&qualified_path);
+        }
+
+        // Pre-load using statements (for static extensions like StringTools)
+        for qualified_path in usings_to_load {
+            if let Err(e) = self.load_import_file(&qualified_path) {
+                // Using modules might not always exist as separate files
+                // (e.g., if they're already in the user project)
+                log::debug!("Could not pre-load using module '{}': {}", qualified_path, e);
+            }
         }
 
         // Step 3: Compile import.hx files using SHARED state

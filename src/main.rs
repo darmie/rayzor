@@ -267,7 +267,10 @@ fn compile_haxe_to_mir(source: &str, filename: &str) -> Result<compiler::ir::IrM
     unit.add_file(source, filename)?;
 
     // Compile the unit to TAST
-    let typed_files = unit.lower_to_tast()?;
+    let typed_files = unit.lower_to_tast().map_err(|errors| {
+        let messages: Vec<_> = errors.iter().map(|e| format!("{:?}", e)).collect();
+        format!("TAST lowering errors: {}", messages.join(", "))
+    })?;
 
     if typed_files.is_empty() {
         return Err("No typed files generated".to_string());
@@ -288,7 +291,7 @@ fn compile_haxe_to_mir(source: &str, filename: &str) -> Result<compiler::ir::IrM
     })?;
 
     // Lower HIR to MIR
-    let mir_module = lower_hir_to_mir(&hir_module, &*string_interner_rc.borrow(), &unit.type_table)
+    let mir_module = lower_hir_to_mir(&hir_module, &*string_interner_rc.borrow(), &unit.type_table, &unit.symbol_table)
         .map_err(|errors| {
             let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
             format!("MIR lowering errors: {}", messages.join(", "))
