@@ -22,62 +22,95 @@
 
 package sys.thread;
 
-#if (!target.threaded)
-#error "This class is not available on this target"
-#end
+/**
+ * System thread implementation backed by rayzor.concurrent.Thread.
+ *
+ * This provides the standard Haxe sys.thread.Thread API using
+ * the Rayzor runtime's native thread implementation.
+ */
+@:native("sys::thread::Thread")
+extern class Thread {
+    /**
+     * Returns the current thread.
+     *
+     * Maps to rayzor_thread_current_id internally.
+     */
+    @:native("current")
+    public static function current(): Thread;
 
-private typedef ThreadImpl = {};
+    /**
+     * Creates a new thread that will execute the `job` function, then exit.
+     *
+     * This function does not setup an event loop for a new thread.
+     * Maps to rayzor_thread_spawn internally.
+     *
+     * @param job The function to execute in the new thread
+     * @return A handle to the spawned thread
+     */
+    @:native("create")
+    public static function create(job: Void->Void): Thread;
 
-extern abstract Thread(ThreadImpl) from ThreadImpl {
-	/**
-		Event loop of this thread (if available).
+    /**
+     * Reads a message from the thread queue. If `block` is true, the function
+     * blocks until a message is available. If `block` is false, the function
+     * returns `null` if no message is available.
+     *
+     * Note: Message passing requires additional channel infrastructure.
+     * Currently returns null - use rayzor.concurrent.Channel for message passing.
+     */
+    @:native("readMessage")
+    public static function readMessage(block: Bool): Dynamic;
 
-		Note that by default event loop is only available in the main thread.
-		To setup an event loop in other threads use `sys.thread.Thread.runWithEventLoop`
-		or create new threads with built-in event loops using `sys.thread.Thread.createWithEventLoop`
-	**/
-	public var events(get,never):EventLoop;
+    /**
+     * Send a message to the thread queue.
+     *
+     * Note: Message passing requires additional channel infrastructure.
+     * Use rayzor.concurrent.Channel for message passing between threads.
+     */
+    @:native("sendMessage")
+    public function sendMessage(msg: Dynamic): Void;
 
-	/**
-		Send a message to the thread queue. This message can be read by using `readMessage`.
-	**/
-	public function sendMessage(msg:Dynamic):Void;
+    /**
+     * Check if this thread has finished execution.
+     *
+     * Maps to rayzor_thread_is_finished internally.
+     */
+    @:native("isFinished")
+    public function isFinished(): Bool;
 
-	/**
-		Returns the current thread.
-	**/
-	public static function current():Thread;
+    /**
+     * Wait for this thread to complete.
+     *
+     * Maps to rayzor_thread_join internally.
+     */
+    @:native("join")
+    public function join(): Void;
 
-	/**
-		Creates a new thread that will execute the `job` function, then exit.
+    // ========================================================================
+    // Static utility methods
+    // ========================================================================
 
-		This function does not setup an event loop for a new thread.
-	**/
-	public static function create(job:()->Void):Thread;
+    /**
+     * Yield execution to allow other threads to run.
+     *
+     * Maps to rayzor_thread_yield_now internally.
+     */
+    @:native("yield")
+    public static function yield(): Void;
 
-	/**
-		Simply execute `job` if current thread already has an event loop.
+    /**
+     * Sleep the current thread for the specified duration in seconds.
+     *
+     * Maps to rayzor_thread_sleep internally (converted to milliseconds).
+     */
+    @:native("sleep")
+    public static function sleep(seconds: Float): Void;
 
-		But if current thread does not have an event loop: setup event loop,
-		run `job` and then destroy event loop. And in this case this function
-		does not return until no more events left to run.
-	**/
-	public static function runWithEventLoop(job:()->Void):Void;
-
-	/**
-		This is logically equal to `Thread.create(() -> Thread.runWithEventLoop(job));`
-	**/
-	public static function createWithEventLoop(job:()->Void):Thread;
-
-	/**
-		Reads a message from the thread queue. If `block` is true, the function
-		blocks until a message is available. If `block` is false, the function
-		returns `null` if no message is available.
-	**/
-	public static function readMessage(block:Bool):Dynamic;
-
-	/**
-		Run event loop of the current thread
-	**/
-	private static function processEvents():Void;
+    /**
+     * Get the current thread's ID.
+     *
+     * Maps to rayzor_thread_current_id internally.
+     */
+    @:native("currentId")
+    public static function currentId(): Int;
 }

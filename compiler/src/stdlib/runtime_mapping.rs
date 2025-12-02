@@ -108,6 +108,11 @@ impl StdlibMapping {
         mapping.register_intmap_methods();
         mapping.register_date_methods();
         mapping.register_bytes_methods();
+        // sys.thread.* mappings (standard Haxe threading API)
+        mapping.register_sys_thread_methods();
+        mapping.register_sys_mutex_methods();
+        mapping.register_sys_lock_methods();
+        mapping.register_sys_semaphore_methods();
 
         mapping
     }
@@ -1361,6 +1366,101 @@ impl StdlibMapping {
             map_method!(instance "haxe_io_Bytes", "setInt64" => "haxe_bytes_set_int64", params: 2, returns: void),
             map_method!(instance "haxe_io_Bytes", "setFloat" => "haxe_bytes_set_float", params: 2, returns: void),
             map_method!(instance "haxe_io_Bytes", "setDouble" => "haxe_bytes_set_double", params: 2, returns: void),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // sys.thread.Thread Methods (standard Haxe threading API)
+    // ============================================================================
+    //
+    // Maps sys.thread.Thread to rayzor's thread runtime.
+    // This provides compatibility with standard Haxe threading code.
+
+    fn register_sys_thread_methods(&mut self) {
+        let mappings = vec![
+            // sys.thread.Thread.create(job: Void->Void) -> Thread
+            map_method!(static "sys_thread_Thread", "create" => "sys_thread_create", params: 1, returns: complex),
+            // sys.thread.Thread.current() -> Thread
+            map_method!(static "sys_thread_Thread", "current" => "sys_thread_current", params: 0, returns: complex),
+            // sys.thread.Thread.readMessage(block: Bool) -> Dynamic
+            // Note: Message passing uses channels internally
+            map_method!(static "sys_thread_Thread", "readMessage" => "sys_thread_read_message", params: 1, returns: complex),
+            // thread.sendMessage(msg: Dynamic) -> Void
+            map_method!(instance "sys_thread_Thread", "sendMessage" => "sys_thread_send_message", params: 1, returns: void),
+            // thread.isFinished() -> Bool
+            map_method!(instance "sys_thread_Thread", "isFinished" => "sys_thread_is_finished", params: 0, returns: primitive),
+            // thread.join() -> Void
+            map_method!(instance "sys_thread_Thread", "join" => "sys_thread_join", params: 0, returns: void),
+            // Thread.yield() -> Void
+            map_method!(static "sys_thread_Thread", "yield" => "sys_thread_yield", params: 0, returns: void),
+            // Thread.sleep(seconds: Float) -> Void
+            map_method!(static "sys_thread_Thread", "sleep" => "sys_thread_sleep", params: 1, returns: void),
+            // Thread.currentId() -> Int
+            map_method!(static "sys_thread_Thread", "currentId" => "rayzor_thread_current_id", params: 0, returns: primitive),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // sys.thread.Mutex Methods (standard Haxe mutex API)
+    // ============================================================================
+    //
+    // Maps sys.thread.Mutex to rayzor's mutex runtime.
+    // Unlike rayzor.concurrent.Mutex<T>, this is a simple lock without an inner value.
+
+    fn register_sys_mutex_methods(&mut self) {
+        let mappings = vec![
+            // Constructor: new Mutex() -> Mutex
+            map_method!(constructor "sys_thread_Mutex", "new" => "sys_mutex_alloc", params: 0, returns: primitive),
+            // mutex.acquire() -> Void (blocking)
+            map_method!(instance "sys_thread_Mutex", "acquire" => "sys_mutex_acquire", params: 0, returns: void),
+            // mutex.tryAcquire() -> Bool
+            map_method!(instance "sys_thread_Mutex", "tryAcquire" => "sys_mutex_try_acquire", params: 0, returns: primitive),
+            // mutex.release() -> Void
+            map_method!(instance "sys_thread_Mutex", "release" => "sys_mutex_release", params: 0, returns: void),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // sys.thread.Lock Methods (standard Haxe lock API)
+    // ============================================================================
+    //
+    // A Lock is essentially a semaphore initialized to 0.
+    // release() increments, wait() decrements (blocking if 0).
+
+    fn register_sys_lock_methods(&mut self) {
+        let mappings = vec![
+            // Constructor: new Lock() -> Lock
+            // Creates a semaphore with initial value 0
+            map_method!(constructor "sys_thread_Lock", "new" => "rayzor_semaphore_init", params: 0, returns: primitive),
+            // lock.wait(timeout?: Float) -> Bool
+            map_method!(instance "sys_thread_Lock", "wait" => "rayzor_semaphore_try_acquire", params: 1, returns: primitive),
+            // lock.release() -> Void
+            map_method!(instance "sys_thread_Lock", "release" => "rayzor_semaphore_release", params: 0, returns: void),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // sys.thread.Semaphore Methods (standard Haxe semaphore API)
+    // ============================================================================
+
+    fn register_sys_semaphore_methods(&mut self) {
+        let mappings = vec![
+            // Constructor: new Semaphore(value: Int) -> Semaphore
+            map_method!(constructor "sys_thread_Semaphore", "new" => "rayzor_semaphore_init", params: 1, returns: primitive),
+            // semaphore.acquire() -> Void
+            map_method!(instance "sys_thread_Semaphore", "acquire" => "rayzor_semaphore_acquire", params: 0, returns: void),
+            // semaphore.tryAcquire(timeout?: Float) -> Bool
+            map_method!(instance "sys_thread_Semaphore", "tryAcquire" => "rayzor_semaphore_try_acquire", params: 1, returns: primitive),
+            // semaphore.release() -> Void
+            map_method!(instance "sys_thread_Semaphore", "release" => "rayzor_semaphore_release", params: 0, returns: void),
         ];
 
         self.register_from_tuples(mappings);

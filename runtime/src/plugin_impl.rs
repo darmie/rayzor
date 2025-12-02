@@ -437,6 +437,27 @@ register_symbol!("rayzor_channel_capacity", crate::concurrency::rayzor_channel_c
 register_symbol!("rayzor_channel_is_empty", crate::concurrency::rayzor_channel_is_empty);
 register_symbol!("rayzor_channel_is_full", crate::concurrency::rayzor_channel_is_full);
 
+// Semaphore functions (for sys.thread.Lock and sys.thread.Semaphore)
+register_symbol!("rayzor_semaphore_init", crate::concurrency::rayzor_semaphore_init);
+register_symbol!("rayzor_semaphore_acquire", crate::concurrency::rayzor_semaphore_acquire);
+register_symbol!("rayzor_semaphore_try_acquire", crate::concurrency::rayzor_semaphore_try_acquire);
+register_symbol!("rayzor_semaphore_release", crate::concurrency::rayzor_semaphore_release);
+register_symbol!("rayzor_semaphore_count", crate::concurrency::rayzor_semaphore_count);
+
+// sys.thread.Thread wrapper functions
+register_symbol!("sys_thread_create", crate::concurrency::sys_thread_create);
+register_symbol!("sys_thread_join", crate::concurrency::sys_thread_join);
+register_symbol!("sys_thread_is_finished", crate::concurrency::sys_thread_is_finished);
+register_symbol!("sys_thread_yield", crate::concurrency::sys_thread_yield);
+register_symbol!("sys_thread_sleep", crate::concurrency::sys_thread_sleep);
+register_symbol!("sys_thread_current", crate::concurrency::sys_thread_current);
+
+// sys.thread.Mutex wrapper functions
+register_symbol!("sys_mutex_alloc", crate::concurrency::sys_mutex_alloc);
+register_symbol!("sys_mutex_acquire", crate::concurrency::sys_mutex_acquire);
+register_symbol!("sys_mutex_try_acquire", crate::concurrency::sys_mutex_try_acquire);
+register_symbol!("sys_mutex_release", crate::concurrency::sys_mutex_release);
+
 // ============================================================================
 // Generic Vec<T> Functions
 // ============================================================================

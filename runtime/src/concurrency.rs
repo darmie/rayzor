@@ -768,6 +768,238 @@ pub unsafe extern "C" fn rayzor_channel_is_full(channel: *const u8) -> bool {
 }
 
 // ============================================================================
+// Semaphore Implementation
+// ============================================================================
+
+/// Semaphore state
+struct SemaphoreState {
+    count: i32,
+}
+
+/// Semaphore handle - counting semaphore for synchronization
+struct SemaphoreHandle {
+    state: Mutex<SemaphoreState>,
+    not_zero: Condvar,
+}
+
+/// Initialize a new semaphore with an initial value
+#[no_mangle]
+pub unsafe extern "C" fn rayzor_semaphore_init(initial_value: i32) -> *mut u8 {
+    let semaphore = Box::new(SemaphoreHandle {
+        state: Mutex::new(SemaphoreState {
+            count: initial_value.max(0),
+        }),
+        not_zero: Condvar::new(),
+    });
+
+    Box::into_raw(semaphore) as *mut u8
+}
+
+/// Acquire (decrement) the semaphore, blocking if count is zero
+#[no_mangle]
+pub unsafe extern "C" fn rayzor_semaphore_acquire(semaphore: *mut u8) {
+    if semaphore.is_null() {
+        return;
+    }
+
+    let sem = &*(semaphore as *const SemaphoreHandle);
+    let mut state = sem.state.lock().unwrap();
+
+    // Wait while count is zero
+    while state.count == 0 {
+        state = sem.not_zero.wait(state).unwrap();
+    }
+
+    // Decrement
+    state.count -= 1;
+}
+
+/// Try to acquire the semaphore with optional timeout (in seconds)
+/// Returns true if acquired, false if timed out or count was zero (non-blocking)
+#[no_mangle]
+pub unsafe extern "C" fn rayzor_semaphore_try_acquire(
+    semaphore: *mut u8,
+    timeout_seconds: f64,
+) -> bool {
+    if semaphore.is_null() {
+        return false;
+    }
+
+    let sem = &*(semaphore as *const SemaphoreHandle);
+    let mut state = sem.state.lock().unwrap();
+
+    // If timeout is negative or zero, just try once without blocking
+    if timeout_seconds <= 0.0 {
+        if state.count > 0 {
+            state.count -= 1;
+            return true;
+        }
+        return false;
+    }
+
+    // Wait with timeout
+    let timeout = Duration::from_secs_f64(timeout_seconds);
+    let deadline = std::time::Instant::now() + timeout;
+
+    while state.count == 0 {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return false; // Timeout
+        }
+
+        let result = sem.not_zero.wait_timeout(state, remaining).unwrap();
+        state = result.0;
+        if result.1.timed_out() && state.count == 0 {
+            return false;
+        }
+    }
+
+    state.count -= 1;
+    true
+}
+
+/// Release (increment) the semaphore
+#[no_mangle]
+pub unsafe extern "C" fn rayzor_semaphore_release(semaphore: *mut u8) {
+    if semaphore.is_null() {
+        return;
+    }
+
+    let sem = &*(semaphore as *const SemaphoreHandle);
+    let mut state = sem.state.lock().unwrap();
+    state.count += 1;
+    drop(state);
+
+    // Wake one waiting thread
+    sem.not_zero.notify_one();
+}
+
+/// Get the current count of the semaphore
+#[no_mangle]
+pub unsafe extern "C" fn rayzor_semaphore_count(semaphore: *const u8) -> i32 {
+    if semaphore.is_null() {
+        return 0;
+    }
+
+    let sem = &*(semaphore as *const SemaphoreHandle);
+    let state = sem.state.lock().unwrap();
+    state.count
+}
+
+// ============================================================================
+// sys.thread.Thread wrapper functions
+// ============================================================================
+
+/// Create a thread using sys.thread.Thread API (wrapper around rayzor_thread_spawn)
+/// This version doesn't return a value, just runs a void->void closure
+#[no_mangle]
+pub unsafe extern "C" fn sys_thread_create(closure: *const u8, closure_env: *const u8) -> *mut u8 {
+    rayzor_thread_spawn(closure, closure_env)
+}
+
+/// Join a thread (wrapper for sys.thread.Thread compatibility)
+#[no_mangle]
+pub unsafe extern "C" fn sys_thread_join(handle: *mut u8) {
+    let _ = rayzor_thread_join(handle);
+}
+
+/// Check if thread is finished
+#[no_mangle]
+pub unsafe extern "C" fn sys_thread_is_finished(handle: *const u8) -> bool {
+    rayzor_thread_is_finished(handle)
+}
+
+/// Yield current thread
+#[no_mangle]
+pub extern "C" fn sys_thread_yield() {
+    rayzor_thread_yield_now();
+}
+
+/// Sleep for specified seconds (converts to milliseconds)
+#[no_mangle]
+pub extern "C" fn sys_thread_sleep(seconds: f64) {
+    if seconds > 0.0 {
+        let millis = (seconds * 1000.0) as i32;
+        rayzor_thread_sleep(millis);
+    }
+}
+
+/// Get current thread (returns a thread handle representing current thread)
+#[no_mangle]
+pub extern "C" fn sys_thread_current() -> *mut u8 {
+    // Return the current thread ID as the handle
+    // Note: This is a simplified implementation
+    rayzor_thread_current_id() as usize as *mut u8
+}
+
+// ============================================================================
+// sys.thread.Mutex wrapper functions (simple lock without inner value)
+// ============================================================================
+
+/// Create a simple mutex (no inner value)
+#[no_mangle]
+pub unsafe extern "C" fn sys_mutex_new() -> *mut u8 {
+    rayzor_mutex_init(ptr::null_mut())
+}
+
+/// Acquire a mutex (blocking)
+#[no_mangle]
+pub unsafe extern "C" fn sys_mutex_acquire(mutex: *mut u8) {
+    if !mutex.is_null() {
+        let mutex_handle = &mut *(mutex as *mut SimpleMutexHandle);
+        // Lock the inner mutex and store the guard
+        let guard = rayzor_mutex_lock(mutex_handle.inner_mutex);
+        mutex_handle.current_guard = guard;
+    }
+}
+
+/// Try to acquire a mutex (non-blocking)
+#[no_mangle]
+pub unsafe extern "C" fn sys_mutex_try_acquire(mutex: *mut u8) -> bool {
+    if mutex.is_null() {
+        return false;
+    }
+
+    let mutex_handle = &mut *(mutex as *mut SimpleMutexHandle);
+    let guard = rayzor_mutex_try_lock(mutex_handle.inner_mutex);
+    if !guard.is_null() {
+        mutex_handle.current_guard = guard;
+        true
+    } else {
+        false
+    }
+}
+
+/// Release a mutex
+#[no_mangle]
+pub unsafe extern "C" fn sys_mutex_release(mutex: *mut u8) {
+    if !mutex.is_null() {
+        let mutex_handle = &mut *(mutex as *mut SimpleMutexHandle);
+        if !mutex_handle.current_guard.is_null() {
+            rayzor_mutex_unlock(mutex_handle.current_guard);
+            mutex_handle.current_guard = ptr::null_mut();
+        }
+    }
+}
+
+/// Simple mutex handle for sys.thread.Mutex
+struct SimpleMutexHandle {
+    inner_mutex: *mut u8, // Points to MutexHandle
+    current_guard: *mut u8,
+}
+
+/// Allocate a simple mutex
+#[no_mangle]
+pub unsafe extern "C" fn sys_mutex_alloc() -> *mut u8 {
+    let inner = rayzor_mutex_init(ptr::null_mut());
+    let handle = Box::new(SimpleMutexHandle {
+        inner_mutex: inner,
+        current_guard: ptr::null_mut(),
+    });
+    Box::into_raw(handle) as *mut u8
+}
+
+// ============================================================================
 // JIT Lifecycle Management
 // ============================================================================
 

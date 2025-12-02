@@ -1706,9 +1706,23 @@ impl<'a> HirToMirContext<'a> {
 
         // Use StdlibMapping to find the runtime function
         // This is the ONLY source of truth - all mappings come from the actual Rust implementations
-        self.stdlib_mapping
-            .find_by_name(class_name, method_name)
-            .map(|(_sig, mapping)| mapping.runtime_name)
+
+        // First try simple class name (e.g., "Thread")
+        if let Some((_sig, mapping)) = self.stdlib_mapping.find_by_name(class_name, method_name) {
+            return Some(mapping.runtime_name);
+        }
+
+        // Then try qualified class name with underscore format (e.g., "sys_thread_Thread")
+        // This handles sys.thread.Thread -> sys_thread_Thread mappings
+        if parts.len() >= 2 {
+            // Build qualified class name: all parts except the last (method name), joined with underscore
+            let qualified_class_name = parts[..parts.len() - 1].join("_");
+            if let Some((_sig, mapping)) = self.stdlib_mapping.find_by_name(&qualified_class_name, method_name) {
+                return Some(mapping.runtime_name);
+            }
+        }
+
+        None
     }
 
     /// Get the correct signature for a stdlib MIR wrapper function.
@@ -4197,12 +4211,15 @@ impl<'a> HirToMirContext<'a> {
                                         // SPECIAL CASE: Thread/Channel/Mutex/Arc methods are MIR wrappers, not runtime_mapping
                                         // These are implemented in stdlib MIR (thread.rs, channel.rs, etc.)
                                         // Pattern: "rayzor.concurrent.Thread.spawn" -> "Thread_spawn"
+                                        // NOTE: This only applies to rayzor.concurrent.*, NOT sys.thread.*
                                         let parts: Vec<&str> = qual_name_str.split('.').collect();
                                         if parts.len() >= 2 {
                                             let class_name = parts[parts.len() - 2];
 
-                                            // Check if this is a stdlib concurrent class
-                                            if ["Thread", "Channel", "Mutex", "Arc"].contains(&class_name) {
+                                            // Check if this is a rayzor.concurrent.* class (NOT sys.thread.*)
+                                            // sys.thread.Thread uses runtime mapping directly, not MIR wrappers
+                                            let is_rayzor_concurrent = qual_name_str.starts_with("rayzor.concurrent.");
+                                            if is_rayzor_concurrent && ["Thread", "Channel", "Mutex", "Arc"].contains(&class_name) {
                                                 let mir_func_name = format!("{}_{}", class_name, method_name);
                                                 eprintln!("DEBUG: [STDLIB MIR] Detected stdlib MIR function: {}", mir_func_name);
 
@@ -4805,8 +4822,28 @@ impl<'a> HirToMirContext<'a> {
 
                     // Use find_constructor to look up the registered constructor mapping
                     // This returns both the MethodSignature and RuntimeFunctionCall from the registry
-                    let found_constructor = stdlib_mapping.find_constructor(class_name);
-                    eprintln!("DEBUG [NEW EXPR]: find_constructor('{}') = {:?}", class_name, found_constructor.as_ref().map(|(_, rc)| rc.runtime_name));
+                    // PRIORITY: Try qualified class name FIRST (e.g., "sys_thread_Mutex")
+                    // This ensures sys.thread.Mutex uses sys_mutex_alloc, not Mutex_init (rayzor.concurrent.Mutex)
+                    let mut found_constructor: Option<(&crate::stdlib::MethodSignature, &crate::stdlib::RuntimeFunctionCall)> = None;
+                    if let Some(sym_id) = actual_symbol_id {
+                        if let Some(sym) = self.symbol_table.get_symbol(sym_id) {
+                            if let Some(qn) = sym.qualified_name {
+                                if let Some(qual_name) = self.string_interner.get(qn) {
+                                    // Convert "sys.thread.Mutex" to "sys_thread_Mutex"
+                                    let qualified_class_name = qual_name.replace(".", "_");
+                                    found_constructor = stdlib_mapping.find_constructor(&qualified_class_name);
+                                    eprintln!("DEBUG [NEW EXPR]: find_constructor(qualified='{}') = {:?}",
+                                        qualified_class_name, found_constructor.as_ref().map(|(_, rc)| rc.runtime_name));
+                                }
+                            }
+                        }
+                    }
+
+                    // FALLBACK: If not found via qualified name, try simple class name (e.g., "Mutex")
+                    if found_constructor.is_none() {
+                        found_constructor = stdlib_mapping.find_constructor(class_name);
+                        eprintln!("DEBUG [NEW EXPR]: find_constructor('{}') = {:?}", class_name, found_constructor.as_ref().map(|(_, rc)| rc.runtime_name));
+                    }
                     if let Some((_method_sig, runtime_call)) = found_constructor {
                         // Found a constructor mapping!
                         let wrapper_name = runtime_call.runtime_name;

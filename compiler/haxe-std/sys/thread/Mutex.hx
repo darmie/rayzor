@@ -22,38 +22,54 @@
 
 package sys.thread;
 
-#if (!target.threaded)
-#error "This class is not available on this target"
-#end
-
 /**
-	Creates a mutex, which can be used to acquire a temporary lock
-	to access some ressource. The main difference with a lock is
-	that a mutex must always be released by the owner thread.
-**/
+ * System mutex implementation backed by rayzor's native mutex.
+ *
+ * Creates a mutex, which can be used to acquire a temporary lock
+ * to access some resource. The main difference with a lock is
+ * that a mutex must always be released by the owner thread.
+ *
+ * Note: Unlike rayzor.concurrent.Mutex<T>, this mutex does not wrap
+ * a value - it's a simple lock primitive for synchronization.
+ */
+@:native("sys::thread::Mutex")
 extern class Mutex {
-	/**
-		Creates a mutex.
-	**/
-	function new():Void;
+    /**
+     * Creates a new mutex.
+     *
+     * Maps to rayzor_mutex_init internally with a null inner value.
+     */
+    @:native("new")
+    public function new(): Void;
 
-	/**
-		The current thread acquire the mutex or wait if not available.
-		The same thread can acquire several times the same mutex but
-		must release it as many times it has been acquired.
-	**/
-	function acquire():Void;
+    /**
+     * The current thread acquires the mutex or waits if not available.
+     *
+     * The same thread can acquire several times the same mutex but
+     * must release it as many times it has been acquired.
+     *
+     * Maps to rayzor_mutex_lock internally.
+     */
+    @:native("acquire")
+    public function acquire(): Void;
 
-	/**
-		Try to acquire the mutex, returns true if acquire or false
-		if it's already locked by another thread.
-	**/
-	function tryAcquire():Bool;
+    /**
+     * Try to acquire the mutex, returns true if acquired or false
+     * if it's already locked by another thread.
+     *
+     * Maps to rayzor_mutex_try_lock internally.
+     */
+    @:native("tryAcquire")
+    public function tryAcquire(): Bool;
 
-	/**
-		Release a mutex that has been acquired by the current thread.
-		The behavior is undefined if the current thread does not own
-		the mutex.
-	**/
-	function release():Void;
+    /**
+     * Release a mutex that has been acquired by the current thread.
+     *
+     * The behavior is undefined if the current thread does not own
+     * the mutex.
+     *
+     * Maps to rayzor_mutex_unlock internally.
+     */
+    @:native("release")
+    public function release(): Void;
 }
