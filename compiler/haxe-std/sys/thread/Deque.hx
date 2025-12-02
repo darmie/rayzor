@@ -29,11 +29,15 @@ package sys.thread;
 /**
 	A Deque is a double-ended queue with a `pop` method that can block until
 	an element is available. It is commonly used to synchronize threads.
+
+	Backed by Rayzor's native double-ended queue implementation using VecDeque
+	with Mutex and Condvar for thread-safe blocking operations.
  */
-@:coreApi extern class Deque<T> {
+extern class Deque<T> {
 	/**
 		Create a new Deque instance which is initially empty.
 	**/
+	@:native("sys_deque_alloc")
 	function new():Void;
 
 	/**
@@ -41,6 +45,7 @@ package sys.thread;
 
 		(Java,Jvm): throws `java.lang.NullPointerException` if `i` is `null`.
 	**/
+	@:native("sys_deque_add")
 	function add(i:T):Void;
 
 	/**
@@ -48,6 +53,7 @@ package sys.thread;
 
 		(Java,Jvm): throws `java.lang.NullPointerException` if `i` is `null`.
 	**/
+	@:native("sys_deque_push")
 	function push(i:T):Void;
 
 	/**
@@ -59,5 +65,6 @@ package sys.thread;
 
 		Otherwise, execution blocks until an element is available and returns it.
 	**/
+	@:native("sys_deque_pop")
 	function pop(block:Bool):Null<T>;
 }

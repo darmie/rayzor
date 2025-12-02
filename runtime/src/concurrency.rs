@@ -1000,6 +1000,195 @@ pub unsafe extern "C" fn sys_mutex_alloc() -> *mut u8 {
 }
 
 // ============================================================================
+// sys.thread.Deque - Double-Ended Queue
+// ============================================================================
+
+/// Handle for sys.thread.Deque<T>
+/// A thread-safe double-ended queue with blocking pop operation
+struct DequeHandle {
+    /// The actual deque storage (stores Dynamic pointers)
+    deque: Arc<Mutex<VecDeque<*mut u8>>>,
+    /// Condition variable for blocking on empty deque
+    not_empty: Arc<Condvar>,
+}
+
+/// Create a new sys.thread.Deque
+#[no_mangle]
+pub unsafe extern "C" fn sys_deque_alloc() -> *mut u8 {
+    let handle = DequeHandle {
+        deque: Arc::new(Mutex::new(VecDeque::new())),
+        not_empty: Arc::new(Condvar::new()),
+    };
+    Box::into_raw(Box::new(handle)) as *mut u8
+}
+
+/// Add element to the end of the deque
+#[no_mangle]
+pub unsafe extern "C" fn sys_deque_add(deque: *mut u8, item: *mut u8) {
+    if deque.is_null() {
+        return;
+    }
+
+    let handle = &*(deque as *const DequeHandle);
+    let mut queue = handle.deque.lock().unwrap();
+    queue.push_back(item);
+
+    // Notify one waiting thread
+    handle.not_empty.notify_one();
+}
+
+/// Push element to the front of the deque
+#[no_mangle]
+pub unsafe extern "C" fn sys_deque_push(deque: *mut u8, item: *mut u8) {
+    if deque.is_null() {
+        return;
+    }
+
+    let handle = &*(deque as *const DequeHandle);
+    let mut queue = handle.deque.lock().unwrap();
+    queue.push_front(item);
+
+    // Notify one waiting thread
+    handle.not_empty.notify_one();
+}
+
+/// Pop element from the front of the deque
+/// If block is true, blocks until an element is available
+/// If block is false and deque is empty, returns null
+#[no_mangle]
+pub unsafe extern "C" fn sys_deque_pop(deque: *mut u8, block: bool) -> *mut u8 {
+    if deque.is_null() {
+        return ptr::null_mut();
+    }
+
+    let handle = &*(deque as *const DequeHandle);
+    let mut queue = handle.deque.lock().unwrap();
+
+    if block {
+        // Block until an element is available
+        while queue.is_empty() {
+            queue = handle.not_empty.wait(queue).unwrap();
+        }
+        queue.pop_front().unwrap_or(ptr::null_mut())
+    } else {
+        // Non-blocking: return null if empty
+        queue.pop_front().unwrap_or(ptr::null_mut())
+    }
+}
+
+// ============================================================================
+// sys.thread.Condition - Condition Variable
+// ============================================================================
+
+/// Handle for sys.thread.Condition
+/// A condition variable with an internal mutex for thread synchronization
+struct ConditionHandle {
+    /// Internal mutex
+    mutex: Arc<Mutex<()>>,
+    /// The condition variable
+    condvar: Arc<Condvar>,
+    /// Current guard (if mutex is locked)
+    guard: Option<std::sync::MutexGuard<'static, ()>>,
+}
+
+/// Create a new sys.thread.Condition
+#[no_mangle]
+pub unsafe extern "C" fn sys_condition_alloc() -> *mut u8 {
+    let handle = ConditionHandle {
+        mutex: Arc::new(Mutex::new(())),
+        condvar: Arc::new(Condvar::new()),
+        guard: None,
+    };
+    Box::into_raw(Box::new(handle)) as *mut u8
+}
+
+/// Acquire the internal mutex
+#[no_mangle]
+pub unsafe extern "C" fn sys_condition_acquire(condition: *mut u8) {
+    if condition.is_null() {
+        return;
+    }
+
+    let handle = &mut *(condition as *mut ConditionHandle);
+    let guard = handle.mutex.lock().unwrap();
+    // Extend lifetime to 'static - this is safe because the guard is stored in the handle
+    // and will be released when sys_condition_release is called
+    let guard: std::sync::MutexGuard<'static, ()> = std::mem::transmute(guard);
+    handle.guard = Some(guard);
+}
+
+/// Try to acquire the internal mutex (non-blocking)
+#[no_mangle]
+pub unsafe extern "C" fn sys_condition_try_acquire(condition: *mut u8) -> bool {
+    if condition.is_null() {
+        return false;
+    }
+
+    let handle = &mut *(condition as *mut ConditionHandle);
+    if let Ok(guard) = handle.mutex.try_lock() {
+        let guard: std::sync::MutexGuard<'static, ()> = std::mem::transmute(guard);
+        handle.guard = Some(guard);
+        true
+    } else {
+        false
+    }
+}
+
+/// Release the internal mutex
+#[no_mangle]
+pub unsafe extern "C" fn sys_condition_release(condition: *mut u8) {
+    if condition.is_null() {
+        return;
+    }
+
+    let handle = &mut *(condition as *mut ConditionHandle);
+    // Drop the guard to release the mutex
+    handle.guard = None;
+}
+
+/// Wait on the condition variable
+/// Atomically releases the mutex and blocks until signaled
+#[no_mangle]
+pub unsafe extern "C" fn sys_condition_wait(condition: *mut u8) {
+    if condition.is_null() {
+        return;
+    }
+
+    let handle = &mut *(condition as *mut ConditionHandle);
+
+    // Take the guard out (this releases the mutex for the condvar wait)
+    if let Some(guard) = handle.guard.take() {
+        // Wait on the condvar - this will automatically release and reacquire the mutex
+        let guard = handle.condvar.wait(guard).unwrap();
+        // Store the reacquired guard
+        let guard: std::sync::MutexGuard<'static, ()> = std::mem::transmute(guard);
+        handle.guard = Some(guard);
+    }
+}
+
+/// Signal one waiting thread
+#[no_mangle]
+pub unsafe extern "C" fn sys_condition_signal(condition: *mut u8) {
+    if condition.is_null() {
+        return;
+    }
+
+    let handle = &*(condition as *const ConditionHandle);
+    handle.condvar.notify_one();
+}
+
+/// Broadcast to all waiting threads
+#[no_mangle]
+pub unsafe extern "C" fn sys_condition_broadcast(condition: *mut u8) {
+    if condition.is_null() {
+        return;
+    }
+
+    let handle = &*(condition as *const ConditionHandle);
+    handle.condvar.notify_all();
+}
+
+// ============================================================================
 // JIT Lifecycle Management
 // ============================================================================
 

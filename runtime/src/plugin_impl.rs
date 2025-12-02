@@ -458,6 +458,21 @@ register_symbol!("sys_mutex_acquire", crate::concurrency::sys_mutex_acquire);
 register_symbol!("sys_mutex_try_acquire", crate::concurrency::sys_mutex_try_acquire);
 register_symbol!("sys_mutex_release", crate::concurrency::sys_mutex_release);
 
+// sys.thread.Deque<T>
+register_symbol!("sys_deque_alloc", crate::concurrency::sys_deque_alloc);
+register_symbol!("sys_deque_add", crate::concurrency::sys_deque_add);
+register_symbol!("sys_deque_push", crate::concurrency::sys_deque_push);
+register_symbol!("sys_deque_pop", crate::concurrency::sys_deque_pop);
+
+// sys.thread.Condition
+register_symbol!("sys_condition_alloc", crate::concurrency::sys_condition_alloc);
+register_symbol!("sys_condition_acquire", crate::concurrency::sys_condition_acquire);
+register_symbol!("sys_condition_try_acquire", crate::concurrency::sys_condition_try_acquire);
+register_symbol!("sys_condition_release", crate::concurrency::sys_condition_release);
+register_symbol!("sys_condition_wait", crate::concurrency::sys_condition_wait);
+register_symbol!("sys_condition_signal", crate::concurrency::sys_condition_signal);
+register_symbol!("sys_condition_broadcast", crate::concurrency::sys_condition_broadcast);
+
 // ============================================================================
 // Generic Vec<T> Functions
 // ============================================================================

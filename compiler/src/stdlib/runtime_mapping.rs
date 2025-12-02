@@ -113,6 +113,8 @@ impl StdlibMapping {
         mapping.register_sys_mutex_methods();
         mapping.register_sys_lock_methods();
         mapping.register_sys_semaphore_methods();
+        mapping.register_sys_deque_methods();
+        mapping.register_sys_condition_methods();
 
         mapping
     }
@@ -1461,6 +1463,42 @@ impl StdlibMapping {
             map_method!(instance "sys_thread_Semaphore", "tryAcquire" => "rayzor_semaphore_try_acquire", params: 1, returns: primitive),
             // semaphore.release() -> Void
             map_method!(instance "sys_thread_Semaphore", "release" => "rayzor_semaphore_release", params: 0, returns: void),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    fn register_sys_deque_methods(&mut self) {
+        let mappings = vec![
+            // Constructor: new Deque<T>() -> Deque<T>
+            map_method!(constructor "sys_thread_Deque", "new" => "sys_deque_alloc", params: 0, returns: primitive),
+            // deque.add(item: T) -> Void
+            map_method!(instance "sys_thread_Deque", "add" => "sys_deque_add", params: 1, returns: void),
+            // deque.push(item: T) -> Void
+            map_method!(instance "sys_thread_Deque", "push" => "sys_deque_push", params: 1, returns: void),
+            // deque.pop(block: Bool) -> Null<T>
+            map_method!(instance "sys_thread_Deque", "pop" => "sys_deque_pop", params: 1, returns: primitive),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    fn register_sys_condition_methods(&mut self) {
+        let mappings = vec![
+            // Constructor: new Condition() -> Condition
+            map_method!(constructor "sys_thread_Condition", "new" => "sys_condition_alloc", params: 0, returns: primitive),
+            // condition.acquire() -> Void
+            map_method!(instance "sys_thread_Condition", "acquire" => "sys_condition_acquire", params: 0, returns: void),
+            // condition.tryAcquire() -> Bool
+            map_method!(instance "sys_thread_Condition", "tryAcquire" => "sys_condition_try_acquire", params: 0, returns: primitive),
+            // condition.release() -> Void
+            map_method!(instance "sys_thread_Condition", "release" => "sys_condition_release", params: 0, returns: void),
+            // condition.wait() -> Void
+            map_method!(instance "sys_thread_Condition", "wait" => "sys_condition_wait", params: 0, returns: void),
+            // condition.signal() -> Void
+            map_method!(instance "sys_thread_Condition", "signal" => "sys_condition_signal", params: 0, returns: void),
+            // condition.broadcast() -> Void
+            map_method!(instance "sys_thread_Condition", "broadcast" => "sys_condition_broadcast", params: 0, returns: void),
         ];
 
         self.register_from_tuples(mappings);
