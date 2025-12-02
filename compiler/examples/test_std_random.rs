@@ -1,0 +1,78 @@
+//! Test std_random issue
+use compiler::codegen::CraneliftBackend;
+use compiler::compilation::{CompilationConfig, CompilationUnit};
+
+fn main() -> Result<(), String> {
+    println!("=== Testing std_random ===\n");
+
+    let code = r#"
+class Main {
+    static function main() {
+        var r = Std.random(100);
+        trace(r >= 0 && r < 100);
+    }
+}
+"#;
+
+    // Create compilation unit
+    let mut unit = CompilationUnit::new(CompilationConfig::default());
+
+    // Load stdlib
+    unit.load_stdlib()
+        .map_err(|e| format!("Failed to load stdlib: {}", e))?;
+
+    // Add test code
+    unit.add_file(code, "test/Main.hx")
+        .map_err(|e| format!("Failed to add file: {}", e))?;
+
+    // Compile to TAST
+    unit.lower_to_tast()
+        .map_err(|errors| format!("TAST errors: {:?}", errors))?;
+
+    // Get MIR modules
+    let mir_modules = unit.get_mir_modules();
+    if mir_modules.is_empty() {
+        return Err("No MIR modules generated".to_string());
+    }
+
+    // Print MIR for the main function
+    for module in &mir_modules {
+        for (_func_id, func) in &module.functions {
+            if func.name == "main" {
+                println!("\n=== MIR for main ===");
+                println!("Function: {}", func.name);
+                println!("Blocks: {}", func.cfg.blocks.len());
+                for (block_id, block) in &func.cfg.blocks {
+                    println!("\nBlock {:?}:", block_id);
+                    for instr in &block.instructions {
+                        println!("  {:?}", instr);
+                    }
+                    println!("  TERM: {:?}", &block.terminator);
+                }
+            }
+        }
+    }
+
+    // Create Cranelift backend with runtime symbols
+    let plugin = rayzor_runtime::plugin_impl::get_plugin();
+    let symbols = plugin.runtime_symbols();
+    let symbols_ref: Vec<(&str, *const u8)> = symbols.iter().map(|(n, p)| (*n, *p)).collect();
+
+    let mut backend = CraneliftBackend::with_symbols(&symbols_ref)?;
+
+    // Compile modules
+    for module in &mir_modules {
+        backend.compile_module(module)?;
+    }
+
+    // Execute
+    println!("\n=== Executing ===");
+    for module in mir_modules.iter().rev() {
+        if backend.call_main(module).is_ok() {
+            println!("\n=== Execution Complete ===");
+            return Ok(());
+        }
+    }
+
+    Err("No main found".to_string())
+}

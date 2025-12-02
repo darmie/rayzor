@@ -7279,22 +7279,27 @@ impl<'a> HirToMirContext<'a> {
         // Evaluate LHS
         let lhs_val = self.lower_expression(lhs)?;
 
+        // Create false_val BEFORE branching so it's in this block's scope
+        let false_val = self.builder.build_bool(false)?;
+
+        // Capture the current block BEFORE branching - this is where LHS was evaluated
+        let lhs_block = self.builder.current_block()?;
+
         // Branch on LHS: if true, evaluate RHS; if false, skip to merge with false
         self.builder.build_cond_branch(lhs_val, eval_rhs, merge)?;
 
         // Block for evaluating RHS
         self.builder.switch_to_block(eval_rhs);
         let rhs_val = self.lower_expression(rhs)?;
-        self.builder.build_branch(merge)?;
         let rhs_block = self.builder.current_block()?;
+        self.builder.build_branch(merge)?;
 
         // Merge block with phi node
         self.builder.switch_to_block(merge);
         let result = self.builder.build_phi(merge, IrType::Bool)?;
-        let false_val = self.builder.build_bool(false)?;
-        let lhs_false_block = self.builder.current_block()?; // Where we came from if LHS was false
+        // lhs_block is where we came from if LHS was false (short-circuit path)
         self.builder
-            .add_phi_incoming(merge, result, lhs_false_block, false_val)?;
+            .add_phi_incoming(merge, result, lhs_block, false_val)?;
         self.builder
             .add_phi_incoming(merge, result, rhs_block, rhs_val)?;
 
@@ -7310,22 +7315,27 @@ impl<'a> HirToMirContext<'a> {
         // Evaluate LHS
         let lhs_val = self.lower_expression(lhs)?;
 
+        // Create true_val BEFORE branching so it's in this block's scope
+        let true_val = self.builder.build_bool(true)?;
+
+        // Capture the current block BEFORE branching - this is where LHS was evaluated
+        let lhs_block = self.builder.current_block()?;
+
         // Branch on LHS: if false, evaluate RHS; if true, skip to merge with true
         self.builder.build_cond_branch(lhs_val, merge, eval_rhs)?;
 
         // Block for evaluating RHS
         self.builder.switch_to_block(eval_rhs);
         let rhs_val = self.lower_expression(rhs)?;
-        self.builder.build_branch(merge)?;
         let rhs_block = self.builder.current_block()?;
+        self.builder.build_branch(merge)?;
 
         // Merge block with phi node
         self.builder.switch_to_block(merge);
         let result = self.builder.build_phi(merge, IrType::Bool)?;
-        let true_val = self.builder.build_bool(true)?;
-        let lhs_true_block = self.builder.current_block()?; // Where we came from if LHS was true
+        // lhs_block is where we came from if LHS was true (short-circuit path)
         self.builder
-            .add_phi_incoming(merge, result, lhs_true_block, true_val)?;
+            .add_phi_incoming(merge, result, lhs_block, true_val)?;
         self.builder
             .add_phi_incoming(merge, result, rhs_block, rhs_val)?;
 
