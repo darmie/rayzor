@@ -224,21 +224,48 @@ pub extern "C" fn haxe_array_pop(arr: *mut HaxeArray, out: *mut u8) -> bool {
     }
 }
 
-/// Pop element from array and return it as a boxed value
+/// Pop element from array and return it as i64 (for Array<Int>)
+/// Returns 0 if array is empty (Haxe's Null<Int> semantics)
+#[no_mangle]
+pub extern "C" fn haxe_array_pop_i64(arr: *mut HaxeArray) -> i64 {
+    if arr.is_null() {
+        return 0;
+    }
+
+    unsafe {
+        let arr_ref = &mut *arr;
+        if arr_ref.len == 0 {
+            return 0; // Null<Int> -> 0
+        }
+
+        arr_ref.len -= 1;
+
+        // Get pointer to the element we're popping
+        let elem_ptr = arr_ref.ptr.add(arr_ref.len * arr_ref.elem_size);
+
+        // Read as i64 (elem_size should be 8 for Int arrays)
+        if arr_ref.elem_size == 8 {
+            *(elem_ptr as *const i64)
+        } else if arr_ref.elem_size == 4 {
+            *(elem_ptr as *const i32) as i64
+        } else {
+            0
+        }
+    }
+}
+
+/// Pop element from array and return it as a boxed Dynamic value
 /// Returns null if array is empty
+/// The returned pointer is a DynamicValue* suitable for haxe_trace_any
 #[no_mangle]
 pub extern "C" fn haxe_array_pop_ptr(arr: *mut HaxeArray) -> *mut u8 {
-    eprintln!("[DEBUG haxe_array_pop_ptr] Called with arr={:p}", arr);
     if arr.is_null() {
-        eprintln!("[DEBUG haxe_array_pop_ptr] arr is null, returning null");
         return ptr::null_mut();
     }
 
     unsafe {
         let arr_ref = &mut *arr;
-        eprintln!("[DEBUG haxe_array_pop_ptr] arr.len={}, elem_size={}", arr_ref.len, arr_ref.elem_size);
         if arr_ref.len == 0 {
-            eprintln!("[DEBUG haxe_array_pop_ptr] Array is empty, returning null");
             return ptr::null_mut();
         }
 
@@ -247,24 +274,18 @@ pub extern "C" fn haxe_array_pop_ptr(arr: *mut HaxeArray) -> *mut u8 {
         // Get pointer to the element we're popping
         let elem_ptr = arr_ref.ptr.add(arr_ref.len * arr_ref.elem_size);
 
-        // For primitive types (Int, Float), we need to read the value and box it
-        // For now, assume we're dealing with Int (i64 or i32) - read as i64
-        // The caller is responsible for knowing the type
+        // Box the value as a DynamicValue so it can be used with trace() and other dynamic operations
         if arr_ref.elem_size == 8 {
-            // 64-bit value - could be i64, f64, or pointer
             let value = *(elem_ptr as *const i64);
-            eprintln!("[DEBUG haxe_array_pop_ptr] Popped 64-bit value: {}", value);
-            // Return the value directly (caller will handle boxing if needed)
-            value as *mut u8
+            // Use haxe_box_int_ptr to create a proper DynamicValue*
+            crate::type_system::haxe_box_int_ptr(value)
         } else if arr_ref.elem_size == 4 {
-            // 32-bit value - could be i32 or f32
             let value = *(elem_ptr as *const i32);
-            eprintln!("[DEBUG haxe_array_pop_ptr] Popped 32-bit value: {}", value);
-            value as *mut u8
+            crate::type_system::haxe_box_int_ptr(value as i64)
         } else {
-            // For other sizes, return pointer to the element (caller must copy)
-            eprintln!("[DEBUG haxe_array_pop_ptr] Popped element at {:p}", elem_ptr);
-            elem_ptr
+            // For other sizes (objects, etc.), the value is already a pointer
+            // Return the pointer directly - caller must handle boxing if needed
+            *(elem_ptr as *const *mut u8)
         }
     }
 }

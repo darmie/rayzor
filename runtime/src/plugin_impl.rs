@@ -101,6 +101,7 @@ register_symbol!("haxe_array_get_ptr", crate::haxe_array::haxe_array_get_ptr);
 // Modification
 register_symbol!("haxe_array_push", crate::haxe_array::haxe_array_push);
 register_symbol!("haxe_array_pop", crate::haxe_array::haxe_array_pop);
+register_symbol!("haxe_array_pop_i64", crate::haxe_array::haxe_array_pop_i64);
 register_symbol!("haxe_array_pop_ptr", crate::haxe_array::haxe_array_pop_ptr);
 register_symbol!("haxe_array_insert", crate::haxe_array::haxe_array_insert);
 register_symbol!("haxe_array_remove", crate::haxe_array::haxe_array_remove);
