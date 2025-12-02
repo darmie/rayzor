@@ -41,6 +41,10 @@ pub struct HirToMirContext<'a> {
     /// These are functions defined in other modules that can be called from this module
     external_function_map: HashMap<SymbolId, crate::ir::IrFunctionId>,
 
+    /// Name-based external function map for cross-file lookups
+    /// This is used when SymbolIds don't match (e.g., "StringTools.startsWith" -> IrFunctionId)
+    external_function_name_map: HashMap<String, crate::ir::IrFunctionId>,
+
     /// Mapping from HIR blocks to MIR blocks
     block_map: HashMap<usize, IrBlockId>,
 
@@ -89,6 +93,10 @@ pub struct HirToMirContext<'a> {
     /// Mapping from class TypeId to constructor IrFunctionId
     /// This allows new expressions to find the constructor by class type
     constructor_map: HashMap<TypeId, IrFunctionId>,
+
+    /// Mapping from qualified class name to constructor IrFunctionId
+    /// This is a fallback when TypeIds don't match (e.g., across separately compiled files)
+    constructor_name_map: HashMap<String, IrFunctionId>,
 
     /// Reference to HIR type declarations for inheritance lookup
     /// Needed to access parent class fields during field inheritance
@@ -184,6 +192,7 @@ impl<'a> HirToMirContext<'a> {
             symbol_map: HashMap::new(),
             function_map: HashMap::new(),
             external_function_map: HashMap::new(),
+            external_function_name_map: HashMap::new(),
             block_map: HashMap::new(),
             loop_stack: Vec::new(),
             current_module: Some(module_name),
@@ -198,6 +207,7 @@ impl<'a> HirToMirContext<'a> {
             typedef_field_map: HashMap::new(),
             property_access_map: HashMap::new(),
             constructor_map: HashMap::new(),
+            constructor_name_map: HashMap::new(),
             current_hir_types: hir_types,
             stdlib_mapping: StdlibMapping::new(),
             symbol_table,
@@ -213,6 +223,20 @@ impl<'a> HirToMirContext<'a> {
         self.function_map.get(symbol)
             .copied()
             .or_else(|| self.external_function_map.get(symbol).copied())
+    }
+
+    /// Register a constructor by qualified name for cross-file resolution
+    /// This is critical when the TypeId differs between files (e.g., loading StringIteratorUnicode
+    /// as a dependency gives it a different TypeId than when StringTools.hx references it)
+    fn register_constructor_by_name(&mut self, class_symbol: SymbolId, func_id: IrFunctionId) {
+        if let Some(sym_info) = self.symbol_table.get_symbol(class_symbol) {
+            if let Some(qual_name) = sym_info.qualified_name.and_then(|q| self.string_interner.get(q)) {
+                self.constructor_name_map.insert(qual_name.to_string(), func_id);
+            } else if let Some(name) = self.string_interner.get(sym_info.name) {
+                // Fallback to simple name if no qualified name
+                self.constructor_name_map.insert(name.to_string(), func_id);
+            }
+        }
     }
 
     /// Extract SSA optimization hints from HIR module metadata
@@ -607,6 +631,7 @@ impl<'a> HirToMirContext<'a> {
         let func_id = self.builder.start_function(class_symbol, "new".to_string(), signature);
         self.function_map.insert(class_symbol, func_id);
         self.constructor_map.insert(type_id, func_id);
+        self.register_constructor_by_name(class_symbol, func_id);
 
         let fallback_type_id = TypeId::from_raw(class_symbol.as_raw());
         if fallback_type_id != type_id {
@@ -656,6 +681,7 @@ impl<'a> HirToMirContext<'a> {
             .start_function(class_symbol, "new".to_string(), signature);
         self.function_map.insert(class_symbol, func_id);
         self.constructor_map.insert(type_id, func_id);
+        self.register_constructor_by_name(class_symbol, func_id);
 
         // Also register with TypeId derived from class SymbolId as a fallback
         let fallback_type_id = TypeId::from_raw(class_symbol.as_raw());
@@ -1147,6 +1173,7 @@ impl<'a> HirToMirContext<'a> {
 
         // Register in constructor_map by TypeId for new expressions
         self.constructor_map.insert(class_type_id, func_id);
+        self.register_constructor_by_name(class_symbol, func_id);
 
         // Also register with TypeId derived from class SymbolId as a fallback
         // This handles cases where expression TypeIds differ from types map TypeIds
@@ -1675,7 +1702,7 @@ impl<'a> HirToMirContext<'a> {
         method_name: &str,
     ) -> Option<&'static str> {
         // Parse qualified name to extract class name
-        // Patterns: "rayzor.concurrent.Thread.spawn", "test.Thread.spawn"
+        // Patterns: "rayzor.concurrent.Thread.spawn", "test.Thread.spawn", "StringTools.startsWith"
         let parts: Vec<&str> = qualified_name.split('.').collect();
         let class_name = parts.iter().rev().nth(1)?; // Second-to-last part is class name
 
@@ -4526,13 +4553,32 @@ impl<'a> HirToMirContext<'a> {
                     }
                 }
 
-                // Before falling through to indirect call, try to register a forward reference
+                // Before falling through to indirect call, try to look up by name or register a forward reference
                 // for unresolved static method calls (cross-module dependencies during stdlib compilation)
                 if let HirExprKind::Variable { symbol, .. } = &callee.kind {
                     if let Some(sym_info) = self.symbol_table.get_symbol(*symbol) {
                         if let Some(qual_name) = sym_info.qualified_name {
                             if let Some(qual_name_str) = self.string_interner.get(qual_name) {
-                                let method_name = self.string_interner.get(sym_info.name).unwrap_or("<unknown>");
+                                let _method_name = self.string_interner.get(sym_info.name).unwrap_or("<unknown>");
+                                eprintln!("DEBUG: [PRE-CHECK] Qualified name: '{}'", qual_name_str);
+
+                                // FIRST: Check if this function is already compiled and in the name map
+                                if let Some(&existing_func_id) = self.external_function_name_map.get(qual_name_str) {
+                                    eprintln!("DEBUG: [NAME MAP HIT] Found '{}' in external_function_name_map -> {:?}", qual_name_str, existing_func_id);
+
+                                    // Lower arguments
+                                    let arg_regs: Vec<_> = args.iter()
+                                        .filter_map(|a| self.lower_expression(a))
+                                        .collect();
+
+                                    // Generate the call to the external function
+                                    return self.builder.build_call_direct(
+                                        existing_func_id,
+                                        arg_regs,
+                                        result_type,
+                                    );
+                                }
+
                                 eprintln!("DEBUG: [FORWARD REF] Registering forward reference for unresolved call to '{}'", qual_name_str);
 
                                 // Lower arguments and collect their types
@@ -9525,6 +9571,7 @@ pub fn lower_hir_to_mir_with_function_map(
     type_table: &Rc<RefCell<TypeTable>>,
     symbol_table: &SymbolTable,
     external_functions: HashMap<SymbolId, IrFunctionId>,
+    external_functions_by_name: HashMap<String, IrFunctionId>,
 ) -> Result<MirLoweringResult, Vec<LoweringError>> {
     let mut context = HirToMirContext::new(
         hir_module.name.clone(),
@@ -9535,8 +9582,9 @@ pub fn lower_hir_to_mir_with_function_map(
         symbol_table,
     );
 
-    // Set the external function map
+    // Set the external function maps (by SymbolId and by qualified name)
     context.external_function_map = external_functions;
+    context.external_function_name_map = external_functions_by_name;
 
     let module = context.lower_module(hir_module)?;
 

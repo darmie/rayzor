@@ -277,6 +277,114 @@ fn haxe_string_as_ptr(s: *const HaxeString) -> *const u8 {
     }
 }
 
+/// Check if a string starts with another string
+/// Returns 1 (true) or 0 (false)
+#[no_mangle]
+pub extern "C" fn haxe_string_starts_with(s: *const HaxeString, prefix: *const HaxeString) -> i8 {
+    unsafe {
+        // Handle null cases
+        if s.is_null() || prefix.is_null() {
+            return 0;
+        }
+
+        let s_ref = &*s;
+        let prefix_ref = &*prefix;
+
+        // Empty prefix always matches
+        if prefix_ref.len == 0 {
+            return 1;
+        }
+
+        // String shorter than prefix can't start with it
+        if s_ref.len < prefix_ref.len {
+            return 0;
+        }
+
+        // Compare bytes
+        for i in 0..prefix_ref.len {
+            if *s_ref.ptr.add(i) != *prefix_ref.ptr.add(i) {
+                return 0;
+            }
+        }
+
+        1
+    }
+}
+
+/// Check if a string ends with another string
+/// Returns 1 (true) or 0 (false)
+#[no_mangle]
+pub extern "C" fn haxe_string_ends_with(s: *const HaxeString, suffix: *const HaxeString) -> i8 {
+    unsafe {
+        // Handle null cases
+        if s.is_null() || suffix.is_null() {
+            return 0;
+        }
+
+        let s_ref = &*s;
+        let suffix_ref = &*suffix;
+
+        // Empty suffix always matches
+        if suffix_ref.len == 0 {
+            return 1;
+        }
+
+        // String shorter than suffix can't end with it
+        if s_ref.len < suffix_ref.len {
+            return 0;
+        }
+
+        // Compare bytes at the end
+        let offset = s_ref.len - suffix_ref.len;
+        for i in 0..suffix_ref.len {
+            if *s_ref.ptr.add(offset + i) != *suffix_ref.ptr.add(i) {
+                return 0;
+            }
+        }
+
+        1
+    }
+}
+
+/// Check if a string contains another string
+/// Returns 1 (true) or 0 (false)
+#[no_mangle]
+pub extern "C" fn haxe_string_contains(s: *const HaxeString, needle: *const HaxeString) -> i8 {
+    unsafe {
+        // Handle null cases
+        if s.is_null() || needle.is_null() {
+            return 0;
+        }
+
+        let s_ref = &*s;
+        let needle_ref = &*needle;
+
+        // Empty needle always matches
+        if needle_ref.len == 0 {
+            return 1;
+        }
+
+        // String shorter than needle can't contain it
+        if s_ref.len < needle_ref.len {
+            return 0;
+        }
+
+        // Naive string search algorithm
+        let search_len = s_ref.len - needle_ref.len + 1;
+        'outer: for start in 0..search_len {
+            for i in 0..needle_ref.len {
+                if *s_ref.ptr.add(start + i) != *needle_ref.ptr.add(i) {
+                    continue 'outer;
+                }
+            }
+            // All characters matched
+            return 1;
+        }
+
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

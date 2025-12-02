@@ -70,6 +70,9 @@ register_symbol!("haxe_string_to_upper_case", crate::haxe_string::haxe_string_to
 register_symbol!("haxe_string_to_lower_case", crate::haxe_string::haxe_string_to_lower_case);
 register_symbol!("haxe_string_index_of", crate::haxe_string::haxe_string_index_of);
 register_symbol!("haxe_string_split", crate::haxe_string::haxe_string_split);
+register_symbol!("haxe_string_starts_with", crate::string::haxe_string_starts_with);
+register_symbol!("haxe_string_ends_with", crate::string::haxe_string_ends_with);
+register_symbol!("haxe_string_contains", crate::string::haxe_string_contains);
 
 // Memory
 register_symbol!("haxe_string_free", crate::haxe_string::haxe_string_free);

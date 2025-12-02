@@ -90,6 +90,7 @@ impl StdlibMapping {
         };
 
         mapping.register_string_methods();
+        mapping.register_stringtools_methods();
         mapping.register_array_methods();
         mapping.register_math_methods();
         mapping.register_sys_methods();
@@ -654,6 +655,43 @@ impl StdlibMapping {
             map_method!(instance "String", "toLowerCase" => "haxe_string_lower", params: 0, returns: primitive),
             map_method!(instance "String", "toUpperCase" => "haxe_string_upper", params: 0, returns: primitive),
             map_method!(instance "String", "toString" => "haxe_string_copy", params: 0, returns: primitive),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // StringTools Methods (using static extension)
+    // ============================================================================
+    //
+    // StringTools is a static utility class that provides additional string operations.
+    // When used with "using StringTools;", it allows calling these as instance methods:
+    //   "hello".startsWith("he")  ->  StringTools.startsWith("hello", "he")
+    //
+    // These are all static methods that take (String, ...) and return Bool/Int/String.
+
+    fn register_stringtools_methods(&mut self) {
+        let mappings = vec![
+            // StringTools.startsWith(s: String, start: String) -> Bool
+            map_method!(static "StringTools", "startsWith" => "haxe_string_starts_with", params: 2, returns: primitive),
+            // StringTools.endsWith(s: String, end: String) -> Bool
+            map_method!(static "StringTools", "endsWith" => "haxe_string_ends_with", params: 2, returns: primitive),
+            // StringTools.contains(s: String, search: String) -> Bool
+            map_method!(static "StringTools", "contains" => "haxe_string_contains", params: 2, returns: primitive),
+            // StringTools.trim(s: String) -> String
+            map_method!(static "StringTools", "trim" => "haxe_string_trim", params: 1, returns: primitive),
+            // StringTools.ltrim(s: String) -> String
+            map_method!(static "StringTools", "ltrim" => "haxe_string_ltrim", params: 1, returns: primitive),
+            // StringTools.rtrim(s: String) -> String
+            map_method!(static "StringTools", "rtrim" => "haxe_string_rtrim", params: 1, returns: primitive),
+            // StringTools.replace(s: String, sub: String, by: String) -> String
+            map_method!(static "StringTools", "replace" => "haxe_string_replace", params: 3, returns: primitive),
+            // StringTools.isSpace(s: String, pos: Int) -> Bool
+            map_method!(static "StringTools", "isSpace" => "haxe_string_is_space", params: 2, returns: primitive),
+            // StringTools.lpad(s: String, c: String, l: Int) -> String
+            map_method!(static "StringTools", "lpad" => "haxe_string_lpad", params: 3, returns: primitive),
+            // StringTools.rpad(s: String, c: String, l: Int) -> String
+            map_method!(static "StringTools", "rpad" => "haxe_string_rpad", params: 3, returns: primitive),
         ];
 
         self.register_from_tuples(mappings);
