@@ -8847,46 +8847,68 @@ impl<'a> HirToMirContext<'a> {
     fn lower_array_literal(&mut self, elements: &[HirExpr]) -> Option<IrId> {
         // Array literal: [e1, e2, e3, ...]
         //
-        // 1. Allocate array structure
-        // 2. Initialize each element
-        // 3. Return array pointer
+        // HaxeArray is a 32-byte struct (4 x 8-byte fields): ptr, len, cap, elem_size
         //
-        // For now, we'll use a simple implementation that:
-        // - Allocates space for array header + elements
-        // - Stores length in header
-        // - Initializes each element
+        // Strategy:
+        // 1. Allocate HaxeArray struct on stack
+        // 2. Zero-initialize it (like new Array<T>())
+        // 3. For each element, call haxe_array_push_ptr to add it
+        // 4. Return pointer to HaxeArray struct
 
-        // Calculate total size: header (length field) + elements
         let element_count = elements.len();
 
-        // Allocate array structure (simplified - actual implementation needs runtime support)
-        // Allocate (element_count + 1) slots for header + elements
-        let count_val = self
-            .builder
-            .build_int((element_count + 1) as i64, IrType::I64)?;
+        // Allocate HaxeArray struct on stack (4 x i64 = 32 bytes)
+        let array_ptr = self.builder.build_alloc(IrType::I64, None)?;
 
-        // Allocate memory (array of Any pointers)
-        let array_ptr = self
-            .builder
-            .build_alloc(IrType::Ptr(Box::new(IrType::Any)), Some(count_val))?;
+        // Zero-initialize the HaxeArray struct fields
+        if let Some(zero_i64) = self.builder.build_const(IrValue::I64(0)) {
+            // Zero out ptr field (offset 0)
+            if let Some(index_0) = self.builder.build_const(IrValue::I32(0)) {
+                if let Some(ptr_field) = self.builder.build_gep(array_ptr, vec![index_0], IrType::I64) {
+                    self.builder.build_store(ptr_field, zero_i64);
+                }
+            }
+            // Zero out len field (offset 8)
+            if let Some(index_1) = self.builder.build_const(IrValue::I32(1)) {
+                if let Some(len_field) = self.builder.build_gep(array_ptr, vec![index_1], IrType::I64) {
+                    self.builder.build_store(len_field, zero_i64);
+                }
+            }
+            // Zero out cap field (offset 16)
+            if let Some(index_2) = self.builder.build_const(IrValue::I32(2)) {
+                if let Some(cap_field) = self.builder.build_gep(array_ptr, vec![index_2], IrType::I64) {
+                    self.builder.build_store(cap_field, zero_i64);
+                }
+            }
+            // Set elem_size field to 8 bytes (offset 24) - assume pointer size
+            if let Some(elem_size_val) = self.builder.build_const(IrValue::I64(8)) {
+                if let Some(index_3) = self.builder.build_const(IrValue::I32(3)) {
+                    if let Some(elem_size_field) = self.builder.build_gep(array_ptr, vec![index_3], IrType::I64) {
+                        self.builder.build_store(elem_size_field, elem_size_val);
+                    }
+                }
+            }
+        }
 
-        // Store length at offset 0
-        let length_val = self.builder.build_int(element_count as i64, IrType::I64)?;
-        self.builder.build_store(array_ptr, length_val)?;
+        // For non-empty arrays, push each element using haxe_array_push_i64
+        // This is inefficient but works correctly with the HaxeArray runtime
+        if element_count > 0 {
+            // Register haxe_array_push_i64: fn(arr: *HaxeArray, val: i64) -> void
+            let push_func_id = self.get_or_register_extern_function(
+                "haxe_array_push_i64",
+                vec![
+                    IrType::Ptr(Box::new(IrType::I64)),  // arr pointer
+                    IrType::I64,                         // value (i64 for pointer-sized values)
+                ],
+                IrType::Void,
+            );
 
-        // Store each element using GEP for pointer arithmetic
-        for (i, elem) in elements.iter().enumerate() {
-            let elem_val = self.lower_expression(elem)?;
+            for elem in elements.iter() {
+                let elem_val = self.lower_expression(elem)?;
 
-            // Use GEP to get pointer to element at index (i + 1)
-            let index = self.builder.build_int((i + 1) as i64, IrType::I64)?;
-            let elem_ptr = self.builder.build_gep(
-                array_ptr,
-                vec![index],
-                IrType::Ptr(Box::new(IrType::Any)),
-            )?;
-
-            self.builder.build_store(elem_ptr, elem_val)?;
+                // Call haxe_array_push_i64(arr, val)
+                self.builder.build_call_direct(push_func_id, vec![array_ptr, elem_val], IrType::Void)?;
+            }
         }
 
         Some(array_ptr)
