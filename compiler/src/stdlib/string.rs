@@ -27,13 +27,27 @@ pub fn build_string_type(builder: &mut MirBuilder) {
 
 /// Declare extern runtime functions for string operations
 fn declare_string_externs(builder: &mut MirBuilder) {
+    let ptr_void = IrType::Ptr(Box::new(IrType::Void));
+    let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
+
     // extern fn haxe_string_concat(a: *String, b: *String) -> *String
     // Returns a pointer to avoid struct return ABI issues
-    let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
     let func_id = builder.begin_function("haxe_string_concat")
         .param("a", string_ptr_ty.clone())
         .param("b", string_ptr_ty.clone())
         .returns(string_ptr_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // extern fn haxe_string_split(out: *mut*HaxeString, out_len: *mut usize, s: *String, delim: *String)
+    // Uses out-param pattern to return array of strings
+    let func_id = builder.begin_function("haxe_string_split")
+        .param("out", ptr_void.clone())
+        .param("out_len", ptr_void.clone())
+        .param("s", string_ptr_ty.clone())
+        .param("delimiter", string_ptr_ty.clone())
+        .returns(IrType::Void)
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
