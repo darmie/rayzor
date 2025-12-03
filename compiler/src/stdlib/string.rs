@@ -40,14 +40,12 @@ fn declare_string_externs(builder: &mut MirBuilder) {
         .build();
     builder.mark_as_extern(func_id);
 
-    // extern fn haxe_string_split(out: *mut*HaxeString, out_len: *mut usize, s: *String, delim: *String)
-    // Uses out-param pattern to return array of strings
-    let func_id = builder.begin_function("haxe_string_split")
-        .param("out", ptr_void.clone())
-        .param("out_len", ptr_void.clone())
+    // extern fn haxe_string_split_array(s: *String, delim: *String) -> *HaxeArray
+    // Returns a proper HaxeArray structure containing string pointers
+    let func_id = builder.begin_function("haxe_string_split_array")
         .param("s", string_ptr_ty.clone())
         .param("delimiter", string_ptr_ty.clone())
-        .returns(IrType::Void)
+        .returns(ptr_void.clone()) // Returns *HaxeArray
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);

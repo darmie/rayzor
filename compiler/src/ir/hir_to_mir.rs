@@ -2919,8 +2919,10 @@ impl<'a> HirToMirContext<'a> {
                         // Get the actual MIR type from the register (not the HIR type)
                         // This is important because HIR types may be vague (Ptr(Void)) but
                         // MIR registers have the actual type (String, etc.)
-                        let mut arg_type = self.builder.get_register_type(arg_reg)
+                        let actual_reg_type = self.builder.get_register_type(arg_reg)
                             .unwrap_or_else(|| self.convert_type(arg.ty));
+
+                        let mut arg_type = actual_reg_type.clone();
 
                         // If the MIR type is Ptr(Void) but we have better type info from the symbol,
                         // use the symbol's type instead. This handles cases like trace(t) where t is
@@ -2993,17 +2995,24 @@ impl<'a> HirToMirContext<'a> {
                         let (param_types, final_arg_reg) = match trace_method {
                             "traceInt" => {
                                 // Runtime expects i64, cast from i32 if needed
-                                let cast_reg = if matches!(arg_type, IrType::I32) {
-                                    self.builder.build_cast(arg_reg, IrType::I32, IrType::I64)
-                                        .unwrap_or(arg_reg)
+                                // Use actual_reg_type (not arg_type) to detect the real register type
+                                eprintln!("DEBUG [traceInt]: actual_reg_type = {:?}, arg_reg = {:?}", actual_reg_type, arg_reg);
+                                let cast_reg = if matches!(actual_reg_type, IrType::I32) {
+                                    eprintln!("DEBUG [traceInt]: Generating cast from I32 to I64");
+                                    let result = self.builder.build_cast(arg_reg, IrType::I32, IrType::I64);
+                                    eprintln!("DEBUG [traceInt]: Cast result = {:?}", result);
+                                    result.unwrap_or(arg_reg)
                                 } else {
+                                    eprintln!("DEBUG [traceInt]: No cast needed, actual_reg_type is not I32");
                                     arg_reg
                                 };
+                                eprintln!("DEBUG [traceInt]: final cast_reg = {:?}", cast_reg);
                                 (vec![IrType::I64], cast_reg)
                             }
                             "traceFloat" => {
                                 // Runtime expects f64, cast from f32 if needed
-                                let cast_reg = if matches!(arg_type, IrType::F32) {
+                                // Use actual_reg_type (not arg_type) to detect the real register type
+                                let cast_reg = if matches!(actual_reg_type, IrType::F32) {
                                     self.builder.build_cast(arg_reg, IrType::F32, IrType::F64)
                                         .unwrap_or(arg_reg)
                                 } else {

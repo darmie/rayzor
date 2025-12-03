@@ -368,6 +368,97 @@ pub extern "C" fn haxe_string_split(
     }
 }
 
+/// Split string into an array of strings (returns proper HaxeArray)
+/// This is the preferred version that returns Array<String> properly
+#[no_mangle]
+pub extern "C" fn haxe_string_split_array(
+    s: *const HaxeString,
+    delimiter: *const HaxeString
+) -> *mut crate::haxe_array::HaxeArray {
+    use crate::haxe_array::HaxeArray;
+
+    if s.is_null() || delimiter.is_null() {
+        // Return empty array
+        let arr = Box::new(HaxeArray {
+            ptr: ptr::null_mut(),
+            len: 0,
+            cap: 0,
+            elem_size: 8, // size of pointer (i64)
+        });
+        return Box::into_raw(arr);
+    }
+
+    unsafe {
+        let s_ref = &*s;
+        let delim_ref = &*delimiter;
+
+        // Count occurrences
+        let mut count = 1;
+        let mut pos = 0;
+        loop {
+            let idx = haxe_string_index_of(s, delimiter, pos);
+            if idx < 0 {
+                break;
+            }
+            count += 1;
+            pos = (idx as usize) + delim_ref.len;
+        }
+
+        // Create HaxeArray to hold string pointers as i64
+        let elem_size = 8; // size of pointer
+        let total_size = count * elem_size;
+        let layout = Layout::from_size_align_unchecked(total_size, 8);
+        let data_ptr = alloc(layout);
+
+        if data_ptr.is_null() {
+            panic!("Failed to allocate memory for string split array");
+        }
+
+        // Fill array with string pointers
+        let mut array_idx = 0;
+        let mut start = 0;
+        let i64_ptr = data_ptr as *mut i64;
+
+        loop {
+            let idx = haxe_string_index_of(s, delimiter, start);
+            if idx < 0 {
+                // Last part - allocate and store substring
+                let substring = Box::new(HaxeString {
+                    ptr: ptr::null_mut(),
+                    len: 0,
+                    cap: 0,
+                });
+                let substr_ptr = Box::into_raw(substring);
+                haxe_string_substring(substr_ptr, s, start, s_ref.len);
+                *i64_ptr.add(array_idx) = substr_ptr as i64;
+                break;
+            }
+
+            // Allocate and store substring
+            let substring = Box::new(HaxeString {
+                ptr: ptr::null_mut(),
+                len: 0,
+                cap: 0,
+            });
+            let substr_ptr = Box::into_raw(substring);
+            haxe_string_substring(substr_ptr, s, start, idx as usize);
+            *i64_ptr.add(array_idx) = substr_ptr as i64;
+
+            array_idx += 1;
+            start = (idx as usize) + delim_ref.len;
+        }
+
+        // Create and return HaxeArray
+        let arr = Box::new(HaxeArray {
+            ptr: data_ptr,
+            len: count,
+            cap: count,
+            elem_size: 8,
+        });
+        Box::into_raw(arr)
+    }
+}
+
 // ============================================================================
 // Memory Management
 // ============================================================================

@@ -655,7 +655,7 @@ impl StdlibMapping {
             map_method!(instance "String", "lastIndexOf" => "haxe_string_last_index_of_ptr", params: 2, returns: primitive),
 
             // String transformations
-            map_method!(instance "String", "split" => "haxe_string_split_ptr", params: 1, returns: complex),
+            map_method!(instance "String", "split" => "haxe_string_split_array", params: 1, returns: primitive),
             map_method!(instance "String", "substr" => "haxe_string_substr_ptr", params: 2, returns: primitive),
             map_method!(instance "String", "substring" => "haxe_string_substring_ptr", params: 2, returns: primitive),
             // toLowerCase/toUpperCase use pointer-returning wrapper functions (not out-param style)

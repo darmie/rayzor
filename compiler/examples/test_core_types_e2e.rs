@@ -495,7 +495,7 @@ class Main {
 }
 "#,
         )
-        .expect_mir_calls(vec!["haxe_string_split"])
+        .expect_mir_calls(vec!["haxe_string_split_array"])
         .expect_level(TestLevel::Execution),
     );
 
