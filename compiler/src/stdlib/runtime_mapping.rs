@@ -727,7 +727,8 @@ impl StdlibMapping {
             map_method!(instance "Array", "remove" => "haxe_array_remove", params: 1, returns: primitive, ptr_params: 0b10),
 
             // Extraction methods
-            map_method!(instance "Array", "slice" => "haxe_array_slice", params: 2, returns: complex),
+            // Array.slice uses MIR wrapper that handles out-param allocation
+            map_method!(instance "Array", "slice" => "Array_slice", params: 2, returns: primitive),
             map_method!(instance "Array", "copy" => "haxe_array_copy", params: 0, returns: complex),
 
             // Search methods
