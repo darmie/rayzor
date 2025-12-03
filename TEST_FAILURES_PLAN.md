@@ -395,3 +395,49 @@ After fixing immediate issues, consider:
 **Plan Author:** Claude Code
 **Last Updated:** 2025-12-03
 **Tracking:** See BACKLOG.md for implementation progress
+
+---
+
+## Investigation Updates (2025-12-03 Evening)
+
+### ✅ integration_math_array - FIXED
+**Commit:** 95a6594
+
+**Root Cause:** Binary operations (Add, Sub, Mul) always used integer instructions (iadd, isub, imul) regardless of operand type.
+
+**Fix:** Added type checking in `instruction_lowering.rs` to select fadd/fsub/fmul for float operations.
+
+**Result:** test_core_types_e2e improved from 20/25 to 21/25 (84%)
+
+---
+
+### ⏸️ array_index - BLOCKED (More Complex Than Expected)
+
+**Investigation Findings:**
+- `haxe_array_get` exists in runtime (runtime/src/haxe_array.rs:100)
+- Function is registered in plugin_impl.rs
+- BUT: Function is never called in MIR generation
+- Current implementation uses GEP (Get Element Pointer) for array access
+- This works for C-style arrays but NOT for HaxeArray struct
+
+**Root Cause:**
+- `lowering.rs::lower_array_access` (line 1119) uses:
+  ```rust
+  let elem_ptr = self.builder.build_gep(array_reg, vec![index_reg], elem_type)?;
+  let value = self.builder.build_load(elem_ptr, elem_type)?;
+  ```
+- Should instead generate call to `haxe_array_get_ptr(arr, index)`
+
+**Required Fix:**
+1. Modify `lower_array_access` to detect HaxeArray vs raw array
+2. For HaxeArray: Generate call to runtime function
+3. Register `haxe_array_get_ptr` as extern in MIR
+4. Similar fix needed for array write access (`arr[i] = val`)
+
+**Complexity:** Medium-High (4-6 hours)
+- Requires distinguishing array types at lowering time
+- Need to handle both read (`arr[i]`) and write (`arr[i] = val`)
+- May affect other array operations
+
+**Recommendation:** Defer to Phase 2, tackle test_vec_e2e first (clearer path)
+
