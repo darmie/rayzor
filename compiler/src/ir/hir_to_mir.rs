@@ -122,6 +122,9 @@ pub struct HirToMirContext<'a> {
     /// Enums that need RTTI registration
     /// Maps enum SymbolId -> (runtime_type_id, enum_name, variant_names)
     enums_for_registration: HashMap<SymbolId, (u32, String, Vec<String>)>,
+
+    /// Counter for generating unique wrapper function names
+    next_wrapper_id: u32,
 }
 
 /// SSA-derived optimization hints from DFG analysis
@@ -215,6 +218,7 @@ impl<'a> HirToMirContext<'a> {
             current_this_type: None,
             monomorphized_var_types: HashMap::new(),
             enums_for_registration: HashMap::new(),
+            next_wrapper_id: 0,
         }
     }
 
@@ -3416,6 +3420,57 @@ impl<'a> HirToMirContext<'a> {
                             let raw_value_mask = runtime_call.raw_value_params;
                             let returns_raw_value = runtime_call.returns_raw_value;
                             let extend_i64_mask = runtime_call.extend_to_i64_params;
+                            let needs_out_param = runtime_call.needs_out_param;
+
+                            // SPECIAL CASE: Instance methods that need out parameter (like Array.slice, String.split)
+                            // These have void return but write result to first out parameter
+                            // Generate inline wrapper: allocate + call runtime + return pointer
+                            if needs_out_param {
+                                eprintln!("DEBUG: [OUT PARAM] Instance method {}.{} needs out param inline wrapper", class_name, method_name);
+
+                                // Lower all arguments (receiver + method args)
+                                let mut call_arg_regs = Vec::new();
+                                for arg in args {
+                                    if let Some(reg) = self.lower_expression(arg) {
+                                        call_arg_regs.push(reg);
+                                    }
+                                }
+
+                                // Allocate space for the result object
+                                // For arrays/strings, allocate an opaque pointer-sized value
+                                let out_ptr_ty = IrType::Ptr(Box::new(IrType::Void));
+                                let out_ptr = self.builder.build_alloc(out_ptr_ty.clone(), None)?;
+
+                                // Register the extern runtime function
+                                // Signature: void runtime_func(out: *Ptr(Void), receiver: Ptr(Void), ...params)
+                                let mut extern_param_types = vec![out_ptr_ty.clone()]; // out parameter
+                                for arg in args {
+                                    extern_param_types.push(self.convert_type(arg.ty));
+                                }
+
+                                let extern_func_id = self.get_or_register_extern_function(
+                                    runtime_func,
+                                    extern_param_types,
+                                    IrType::Void,
+                                );
+
+                                // Call runtime function: runtime_func(out_ptr, receiver, ...args)
+                                let mut runtime_args = vec![out_ptr];
+                                runtime_args.extend(call_arg_regs);
+
+                                self.builder.build_call_direct(
+                                    extern_func_id,
+                                    runtime_args,
+                                    IrType::Void,
+                                );
+
+                                // Load the result pointer from the out parameter
+                                let result_ptr = self.builder.build_load(out_ptr, out_ptr_ty)?;
+
+                                eprintln!("DEBUG: [OUT PARAM] Generated inline wrapper for {}, result_ptr: {:?}", runtime_func, result_ptr);
+
+                                return Some(result_ptr);
+                            }
 
                             // SPECIAL CASE: Check if this is a stdlib MIR function
                             // For these classes, we have MIR wrapper functions that forward to extern runtime functions.
@@ -6033,8 +6088,9 @@ impl<'a> HirToMirContext<'a> {
             Some(TypeKind::Interface { .. }) => IrType::Ptr(Box::new(IrType::Void)),
             Some(TypeKind::Enum { .. }) => IrType::I64, // Enums as discriminant values (i64 to match Haxe Int)
             Some(TypeKind::Array { element_type, .. }) => {
-                let elem_ty = self.convert_type(*element_type);
-                IrType::Ptr(Box::new(elem_ty)) // Arrays as pointers
+                // HaxeArray is an opaque runtime structure, represented as Ptr(Void)
+                // regardless of element type. Element type information is tracked at runtime.
+                IrType::Ptr(Box::new(IrType::Void))
             }
             Some(TypeKind::Optional { inner_type }) => {
                 // Optional types (T?) as nullable pointers
@@ -6999,12 +7055,18 @@ impl<'a> HirToMirContext<'a> {
         // SPECIAL CASE: Check if this is a property access on a @:coreType extern class
         // For example, Array.length should map to haxe_array_length() runtime call
         // These classes have no actual fields - all access must go through runtime functions
+        let field_name_debug = self.symbol_table.get_symbol(field)
+            .and_then(|s| self.string_interner.get(s.name))
+            .unwrap_or("<unknown>");
+        eprintln!("DEBUG: [lower_field_access] Checking stdlib for field='{}', field={:?}, receiver_ty={:?}", field_name_debug, field, receiver_ty);
+
         if let Some((_class, _method, runtime_call)) = self.get_stdlib_runtime_info(field, receiver_ty) {
             let runtime_func = runtime_call.runtime_name;
+            eprintln!("DEBUG: [lower_field_access] Found stdlib property! runtime_func={}", runtime_func);
             // Generate a call to the runtime property getter
             // Property getters take the object as the only parameter
-            // Infer param type from the object register
-            let param_types = vec![self.builder.get_register_type(obj).unwrap_or(IrType::Any)];
+            // Use explicit Ptr(Void) type for opaque stdlib objects (Array, String, etc.)
+            let param_types = vec![IrType::Ptr(Box::new(IrType::Void))];
             let result_type = self.convert_type(field_ty);
             let runtime_func_id = self.get_or_register_extern_function(
                 &runtime_func,
@@ -7018,6 +7080,56 @@ impl<'a> HirToMirContext<'a> {
                 vec![obj],
                 result_type,
             );
+        } else {
+            eprintln!("DEBUG: [lower_field_access] get_stdlib_runtime_info returned None for field='{}' ({:?}), receiver_ty={:?}", field_name_debug, field, receiver_ty);
+
+            // FALLBACK: receiver_ty didn't match, but this might be a stdlib property from an out-param function
+            // Try checking all common stdlib class types
+            let common_stdlib_types = [
+                crate::tast::TypeKind::Array { element_type: TypeId::from_raw(0) },
+                crate::tast::TypeKind::String,
+            ];
+
+            for ref_kind in &common_stdlib_types {
+                // Find a type ID matching this kind
+                let matching_type_id = {
+                    let type_table = self.type_table.borrow();
+                    let mut found = None;
+                    for (type_id, type_info) in type_table.iter() {
+                        let matches = match (&type_info.kind, ref_kind) {
+                            (crate::tast::TypeKind::Array { .. }, crate::tast::TypeKind::Array { .. }) => true,
+                            (crate::tast::TypeKind::String, crate::tast::TypeKind::String) => true,
+                            _ => false,
+                        };
+                        if matches {
+                            found = Some(type_id);
+                            break;
+                        }
+                    }
+                    found
+                };
+
+                // Check if this field is a stdlib property for this class
+                if let Some(class_ty) = matching_type_id {
+                    if let Some((_class, _method, runtime_call)) = self.get_stdlib_runtime_info(field, class_ty) {
+                        let runtime_func = runtime_call.runtime_name;
+                        eprintln!("DEBUG: [lower_field_access fallback] Found stdlib property! runtime_func={}", runtime_func);
+                        // Use explicit pointer type for parameter (matches stdlib signatures)
+                        let param_types = vec![IrType::Ptr(Box::new(IrType::Void))];
+                        let result_type = self.convert_type(field_ty);
+                        let runtime_func_id = self.get_or_register_extern_function(
+                            &runtime_func,
+                            param_types,
+                            result_type.clone(),
+                        );
+                        return self.builder.build_call_direct(
+                            runtime_func_id,
+                            vec![obj],
+                            result_type,
+                        );
+                    }
+                }
+            }
         }
 
         // Check if this is a property with a custom getter
@@ -7250,6 +7362,71 @@ impl<'a> HirToMirContext<'a> {
     /// Used when we know the object is a raw pointer (e.g., from StringMap<Point>.get())
     /// but TAST thinks it's Dynamic because the type parameter wasn't resolved.
     fn lower_field_access_for_class(&mut self, obj: IrId, field: SymbolId, field_ty: TypeId) -> Option<IrId> {
+        // CRITICAL: Check for stdlib runtime properties FIRST (e.g., Array.length, String.length)
+        // These are properties that should call runtime functions, not do direct field access
+        // When we have a Ptr(Void) from a stdlib function, we need to check if the field
+        // being accessed is a stdlib property by trying all stdlib class types
+
+        // Get field name for debugging
+        let field_name = self.symbol_table.get_symbol(field)
+            .and_then(|s| self.string_interner.get(s.name))
+            .unwrap_or("<unknown>");
+
+        eprintln!("DEBUG: [lower_field_access_for_class] field_name='{}', field={:?}", field_name, field);
+
+        // Try common stdlib classes that might have properties
+        let common_stdlib_types = [
+            crate::tast::TypeKind::Array { element_type: TypeId::from_raw(0) },
+            crate::tast::TypeKind::String,
+        ];
+
+        for ref_kind in &common_stdlib_types {
+            // Find a type ID matching this kind
+            let matching_type_id = {
+                let type_table = self.type_table.borrow();
+                let mut found = None;
+                for (type_id, type_info) in type_table.iter() {
+                    let matches = match (&type_info.kind, ref_kind) {
+                        (crate::tast::TypeKind::Array { .. }, crate::tast::TypeKind::Array { .. }) => true,
+                        (crate::tast::TypeKind::String, crate::tast::TypeKind::String) => true,
+                        _ => false,
+                    };
+                    if matches {
+                        found = Some(type_id);
+                        break;
+                    }
+                }
+                eprintln!("DEBUG: [lower_field_access_for_class] Checked for {:?}, found type_id: {:?}", ref_kind, found);
+                found
+            };
+
+            // Check if this field is a stdlib property for this class
+            if let Some(class_ty) = matching_type_id {
+                eprintln!("DEBUG: [lower_field_access_for_class] Checking get_stdlib_runtime_info for field={:?}, class_ty={:?}", field, class_ty);
+                if let Some((_class, _method, runtime_call)) = self.get_stdlib_runtime_info(field, class_ty) {
+                    let runtime_func = runtime_call.runtime_name;
+                    eprintln!("DEBUG: [lower_field_access_for_class] Found stdlib property! runtime_func={}", runtime_func);
+                    // Use explicit pointer type for parameter (matches stdlib signatures)
+                    let param_types = vec![IrType::Ptr(Box::new(IrType::Void))];
+                    let result_type = self.convert_type(field_ty);
+                    let runtime_func_id = self.get_or_register_extern_function(
+                        &runtime_func,
+                        param_types,
+                        result_type.clone(),
+                    );
+                    return self.builder.build_call_direct(
+                        runtime_func_id,
+                        vec![obj],
+                        result_type,
+                    );
+                } else {
+                    eprintln!("DEBUG: [lower_field_access_for_class] get_stdlib_runtime_info returned None");
+                }
+            }
+        }
+
+        eprintln!("DEBUG: [lower_field_access_for_class] No stdlib property found, falling through to field_index_map");
+
         // Look up the field index from our field_index_map
         // Also get the actual field type from the symbol table, NOT from the passed-in field_ty
         // which may be Dynamic due to unresolved type parameters
