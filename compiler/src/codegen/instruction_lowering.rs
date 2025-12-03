@@ -71,9 +71,27 @@ impl CraneliftBackend {
         };
 
         let value = match op {
-            BinaryOp::Add => builder.ins().iadd(lhs, rhs),
-            BinaryOp::Sub => builder.ins().isub(lhs, rhs),
-            BinaryOp::Mul => builder.ins().imul(lhs, rhs),
+            BinaryOp::Add => {
+                if ty.is_float() {
+                    builder.ins().fadd(lhs, rhs)
+                } else {
+                    builder.ins().iadd(lhs, rhs)
+                }
+            }
+            BinaryOp::Sub => {
+                if ty.is_float() {
+                    builder.ins().fsub(lhs, rhs)
+                } else {
+                    builder.ins().isub(lhs, rhs)
+                }
+            }
+            BinaryOp::Mul => {
+                if ty.is_float() {
+                    builder.ins().fmul(lhs, rhs)
+                } else {
+                    builder.ins().imul(lhs, rhs)
+                }
+            }
             BinaryOp::Div => {
                 if ty.is_float() {
                     builder.ins().fdiv(lhs, rhs)
@@ -340,9 +358,27 @@ impl CraneliftBackend {
         };
 
         let value = match op {
-            BinaryOp::Add => builder.ins().iadd(lhs, rhs),
-            BinaryOp::Sub => builder.ins().isub(lhs, rhs),
-            BinaryOp::Mul => builder.ins().imul(lhs, rhs),
+            BinaryOp::Add => {
+                if ty.is_float() {
+                    builder.ins().fadd(lhs, rhs)
+                } else {
+                    builder.ins().iadd(lhs, rhs)
+                }
+            }
+            BinaryOp::Sub => {
+                if ty.is_float() {
+                    builder.ins().fsub(lhs, rhs)
+                } else {
+                    builder.ins().isub(lhs, rhs)
+                }
+            }
+            BinaryOp::Mul => {
+                if ty.is_float() {
+                    builder.ins().fmul(lhs, rhs)
+                } else {
+                    builder.ins().imul(lhs, rhs)
+                }
+            }
             BinaryOp::Div => {
                 if ty.is_float() {
                     builder.ins().fdiv(lhs, rhs)
