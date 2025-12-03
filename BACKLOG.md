@@ -1487,12 +1487,13 @@ trace(v.length());  // Works fine
 
 ## Known Issues (Technical Debt)
 
-### Phi Node Bug: Variables with Limited Scope in If/Else ⚠️
+### Phi Node Bug: Variables with Limited Scope in If/Else ✅ RESOLVED
 
-**Status:** Bug - Cranelift Verifier Error
+**Status:** ✅ Fixed
 **Priority:** High
 **Discovered:** 2025-12-02
-**Investigation Status:** Active - Scope information lost during lowering
+**Resolved:** 2025-12-03
+**Fix Commit:** d5ab906
 
 **Problem:** When a variable is defined in only one branch of an if/else statement, the compiler incorrectly generates block parameters for the merge block that reference the variable from both branches, even though it's only defined in one.
 
@@ -1574,8 +1575,45 @@ block1(v23: i64):  // Merge block expects parameter
 **Test Case:**
 `/Users/amaterasu/Vibranium/rayzor/compiler/examples/test_deque_condition.rs` - `test_mutex_try_acquire()` function
 
-**Workaround:**
-Don't define variables in only one branch of an if/else statement
+---
+
+## ✅ RESOLUTION (2025-12-03)
+
+**Root Cause Confirmed:**
+1. **TAST→HIR**: Block expressions in conditionals were not handled (unimplemented expression error)
+2. **HIR→MIR**: Phi node generation used fallback logic that violated SSA dominance by using values from wrong branches
+
+**The Fix:**
+
+**1. compiler/src/ir/lowering.rs (TAST→HIR):**
+- Added Block expression handling (lines 463-471) to process statements within block expressions
+- Modified `lower_conditional` (lines 1243-1298) to detect Block expressions and use proper control flow with basic blocks instead of select operations
+
+**2. compiler/src/ir/hir_to_mir.rs (HIR→MIR):**
+- Added pre-check before phi node creation (lines 7557-7566) to skip variables that don't exist in all non-terminated branches
+- Fixed phi incoming edge logic (lines 7583-7617) to only use values that exist in each specific branch
+
+**Key Change:**
+```rust
+// BEFORE: Used values from wrong branches (violated dominance)
+let val = else_reg.unwrap_or(before_reg.unwrap_or(sample_reg));
+                                               // └─> from then branch!
+
+// AFTER: Only use values that exist in current branch
+if let Some(val) = else_reg.or(before_reg) {
+    self.builder.add_phi_incoming(merge_block, phi_reg, else_end_block, val);
+}
+```
+
+**Test Results:**
+- ✅ test_deque_condition: 3/3 PASS (was failing with verifier error)
+- ✅ test_rayzor_stdlib_e2e: 8/8 PASS (no regression)
+- ✅ Zero Cranelift verifier errors
+- ✅ All pre-existing test failures remain unchanged (verified with git stash)
+
+**Files Modified:**
+- `compiler/src/ir/lowering.rs`: +92 lines (Block expr handling, control flow conditionals)
+- `compiler/src/ir/hir_to_mir.rs`: +36 lines (phi node validation logic)
 
 ---
 
@@ -1632,3 +1670,41 @@ arc.get().someMethod();  // Works with explicit .get()
 1. Implement runtime concurrency primitives
 2. Register runtime symbols in Cranelift backend
 3. Enable JIT execution for e2e tests
+
+## Recent Progress (Session 2025-12-03)
+
+**Completed:**
+- ✅ Fixed phi node bug for branch-local variables (Cranelift verifier error)
+- ✅ Added Block expression handling in TAST→HIR lowering
+- ✅ Fixed control flow for conditionals with Block expressions
+- ✅ Validated phi node generation logic in HIR→MIR
+- ✅ All test_rayzor_stdlib_e2e tests pass (8/8)
+- ✅ All test_deque_condition tests pass (3/3, previously failing)
+- ✅ Comprehensive regression testing (no regressions introduced)
+- ✅ Created detailed test failure investigation plan
+
+**Test Suite Status:**
+- ✅ test_rayzor_stdlib_e2e: 8/8 PASS (100%)
+- ✅ test_deque_condition: 3/3 PASS (100%)
+- ✅ test_generics_e2e: Compilation successful
+- ⚠️ test_core_types_e2e: 20/25 PASS (80%) - 5 pre-existing failures
+- ⚠️ test_vec_e2e: 0/5 PASS (0%) - 5 pre-existing failures
+
+**Identified Issues (Pre-existing):**
+- ❌ Missing extern function: haxe_array_get
+- ❌ Field index not found: Array.length, String fields
+- ❌ Wrong instruction type: iadd.f64 instead of fadd.f64
+- ❌ Return value handling broken in Vec methods
+- ❌ Class registration issues for String/Array
+
+**Documentation:**
+- 📋 TEST_FAILURES_PLAN.md: Detailed investigation and fix plan for 10 failing tests
+- 📋 BACKLOG.md: Updated with phi node bug resolution
+
+**Next Steps:**
+See TEST_FAILURES_PLAN.md for prioritized fix strategy:
+1. Fix integration_math_array (iadd.f64 instruction bug) - High ROI
+2. Add haxe_array_get extern function - Enables array operations
+3. Fix test_vec_e2e return value handling - All 5 tests
+4. Fix array_slice field access - Array manipulation
+5. Fix string_split class registration - String utilities
