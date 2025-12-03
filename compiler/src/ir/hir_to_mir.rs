@@ -7512,11 +7512,15 @@ impl<'a> HirToMirContext<'a> {
 
         // Call haxe_array_get_ptr(array, index)
         // The function returns a pointer to the element (*mut u8)
-        self.builder.build_call_direct(
+        let elem_ptr = self.builder.build_call_direct(
             func_id,
             vec![obj, idx],
             IrType::Ptr(Box::new(IrType::U8)),
-        )
+        )?;
+
+        // Dereference the pointer to get the actual value
+        // Array elements are stored as i64 values, so load as i64
+        self.builder.build_load(elem_ptr, IrType::I64)
     }
 
     fn lower_logical_and(&mut self, lhs: &HirExpr, rhs: &HirExpr) -> Option<IrId> {

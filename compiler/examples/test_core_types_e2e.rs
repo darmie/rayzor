@@ -649,7 +649,7 @@ class Main {
 }
 "#,
         )
-        .expect_mir_calls(vec!["haxe_array_push", "haxe_array_pop_ptr"])
+        .expect_mir_calls(vec!["haxe_array_push_i64", "haxe_array_pop_ptr"])
         .expect_level(TestLevel::Execution),
     );
 
