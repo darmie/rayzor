@@ -411,33 +411,43 @@ After fixing immediate issues, consider:
 
 ---
 
-### ⏸️ array_index - BLOCKED (More Complex Than Expected)
+### ✅ array_index - FIXED
+**Commit:** 83854c4
 
-**Investigation Findings:**
-- `haxe_array_get` exists in runtime (runtime/src/haxe_array.rs:100)
-- Function is registered in plugin_impl.rs
-- BUT: Function is never called in MIR generation
-- Current implementation uses GEP (Get Element Pointer) for array access
-- This works for C-style arrays but NOT for HaxeArray struct
+**Root Cause:** Array index operations used GEP (Get Element Pointer) instructions for direct memory access, which doesn't work with HaxeArray's dynamic structure.
 
-**Root Cause:**
-- `lowering.rs::lower_array_access` (line 1119) uses:
-  ```rust
-  let elem_ptr = self.builder.build_gep(array_reg, vec![index_reg], elem_type)?;
-  let value = self.builder.build_load(elem_ptr, elem_type)?;
-  ```
-- Should instead generate call to `haxe_array_get_ptr(arr, index)`
+**Fix:** Modified HIR→MIR lowering to call runtime functions instead:
+- **Array read** (`arr[i]`): Call `haxe_array_get_ptr()` in `lower_index_access()` (hir_to_mir.rs:7269)
+  - Returns pointer to boxed element (*mut u8)
+- **Array write** (`arr[i] = val`): Call `haxe_array_set()` in `lower_lvalue_write()` (hir_to_mir.rs:6854)
+  - Automatically boxes primitive values (Int, Float, Bool) before storing
+  - Uses box_int/box_float/box_bool helper functions
 
-**Required Fix:**
-1. Modify `lower_array_access` to detect HaxeArray vs raw array
-2. For HaxeArray: Generate call to runtime function
-3. Register `haxe_array_get_ptr` as extern in MIR
-4. Similar fix needed for array write access (`arr[i] = val`)
+**Result:** test_core_types_e2e improved from 21/25 to 22/25 (88%)
 
-**Complexity:** Medium-High (4-6 hours)
-- Requires distinguishing array types at lowering time
-- Need to handle both read (`arr[i]`) and write (`arr[i] = val`)
-- May affect other array operations
 
-**Recommendation:** Defer to Phase 2, tackle test_vec_e2e first (clearer path)
+---
 
+## Current Status (2025-12-03 Late Evening)
+
+### Progress Summary
+- ✅ **2 of 5 high-priority issues fixed**
+- **Test Score**: 22/25 PASS (88%) - up from 20/25 (80%)
+- **Commits**: 95a6594 (integration_math_array), 83854c4 (array_index)
+
+### Fixed Issues
+1. ✅ integration_math_array - Float arithmetic instruction selection
+2. ✅ array_index - Array access runtime function calls with automatic boxing
+
+### Remaining Issues (3 tests)
+1. **array_slice** - Field 'length' access on Array
+2. **string_split** - Class registration for String methods
+3. **integration_string_array** - Combination of string_split + array_slice issues
+
+### Next Steps
+Priority order for remaining fixes:
+1. **array_slice** (HIGH) - Likely simple fix for Array.length field access
+2. **string_split** (MEDIUM) - May require String class registration
+3. **integration_string_array** (LOW) - Should be fixed by above two
+
+Target: 25/25 PASS (100%)
