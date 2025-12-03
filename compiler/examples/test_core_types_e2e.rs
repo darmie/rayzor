@@ -649,7 +649,7 @@ class Main {
 }
 "#,
         )
-        .expect_mir_calls(vec!["haxe_array_push", "haxe_array_pop"])
+        .expect_mir_calls(vec!["haxe_array_push", "haxe_array_pop_ptr"])
         .expect_level(TestLevel::Execution),
     );
 
@@ -675,7 +675,7 @@ class Main {
 }
 "#,
         )
-        .expect_mir_calls(vec!["haxe_array_get", "haxe_array_set"])
+        .expect_mir_calls(vec!["haxe_array_get_ptr", "haxe_array_set"])
         .expect_level(TestLevel::Execution),
     );
 
