@@ -7554,6 +7554,17 @@ impl<'a> HirToMirContext<'a> {
                 }
             };
 
+            // Only create phi nodes for variables that have values from all non-terminated branches
+            // This prevents creating invalid phi nodes for branch-local variables
+            let has_then_value = !then_terminated && (then_reg.is_some() || before_reg.is_some());
+            let has_else_value = !else_terminated && (else_reg.is_some() || before_reg.is_some());
+
+            // Skip if we can't provide values from all active branches
+            if (!then_terminated && !has_then_value) || (!else_terminated && !has_else_value) {
+                // eprintln!("  Skipping phi for {:?} - not in all branches", symbol_id);
+                continue;
+            }
+
             let sample_reg = then_reg.or(else_reg).or(before_reg).unwrap();
 
             // Create phi node
@@ -7571,43 +7582,49 @@ impl<'a> HirToMirContext<'a> {
             // eprintln!("  Created phi node {:?}", phi_reg);
 
             // Add incoming edges for non-terminated branches
+            // IMPORTANT: Only add phi incoming if the variable exists in that branch
+            // Don't use variables from other branches (causes domination errors)
             // eprintln!(
             //     "  Adding phi incoming: then_terminated={}, else_terminated={}",
             //     then_terminated, else_terminated
             // );
             if !then_terminated {
-                let val = then_reg.unwrap_or(before_reg.unwrap_or(sample_reg));
-                // eprintln!(
-                //     "  Calling add_phi_incoming(merge={:?}, phi={:?}, from={:?}, val={:?})",
-                //     merge_block, phi_reg, then_end_block, val
-                // );
-                 self
-                    .builder
-                    .add_phi_incoming(merge_block, phi_reg, then_end_block, val);
-                // {
-                //     Some(()) => eprintln!("  Successfully added phi incoming from then"),
-                //     None => eprintln!(
-                //         "  WARNING: Failed to add phi incoming from then block {:?}",
-                //         then_end_block
-                //     ),
-                // }
+                // Use then_reg if it exists, otherwise before_reg
+                // Do NOT use else_reg here - it would violate SSA dominance
+                if let Some(val) = then_reg.or(before_reg) {
+                    // eprintln!(
+                    //     "  Calling add_phi_incoming(merge={:?}, phi={:?}, from={:?}, val={:?})",
+                    //     merge_block, phi_reg, then_end_block, val
+                    // );
+                    self.builder
+                        .add_phi_incoming(merge_block, phi_reg, then_end_block, val);
+                    // {
+                    //     Some(()) => eprintln!("  Successfully added phi incoming from then"),
+                    //     None => eprintln!(
+                    //         "  WARNING: Failed to add phi incoming from then block {:?}",
+                    //         then_end_block
+                    //     ),
+                    // }
+                }
             }
             if !else_terminated {
-                let val = else_reg.unwrap_or(before_reg.unwrap_or(sample_reg));
-                // eprintln!(
-                //     "  Calling add_phi_incoming(merge={:?}, phi={:?}, from={:?}, val={:?})",
-                //     merge_block, phi_reg, else_end_block, val
-                // );
-               self
-                    .builder
-                    .add_phi_incoming(merge_block, phi_reg, else_end_block, val);
-                // {
-                //     Some(()) => eprintln!("  Successfully added phi incoming from else"),
-                //     None => eprintln!(
-                //         "  WARNING: Failed to add phi incoming from else block {:?}",
-                //         else_end_block
-                //     ),
-                // }
+                // Use else_reg if it exists, otherwise before_reg
+                // Do NOT use then_reg here - it would violate SSA dominance
+                if let Some(val) = else_reg.or(before_reg) {
+                    // eprintln!(
+                    //     "  Calling add_phi_incoming(merge={:?}, phi={:?}, from={:?}, val={:?})",
+                    //     merge_block, phi_reg, else_end_block, val
+                    // );
+                    self.builder
+                        .add_phi_incoming(merge_block, phi_reg, else_end_block, val);
+                    // {
+                    //     Some(()) => eprintln!("  Successfully added phi incoming from else"),
+                    //     None => eprintln!(
+                    //         "  WARNING: Failed to add phi incoming from else block {:?}",
+                    //         else_end_block
+                    //     ),
+                    // }
+                }
             }
 
             // Register phi as local

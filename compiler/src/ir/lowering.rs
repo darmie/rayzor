@@ -459,7 +459,17 @@ impl<'a> LoweringContext<'a> {
             EK::Conditional { condition, then_expr, else_expr } => {
                 self.lower_conditional(condition, then_expr, else_expr.as_ref().map(|e| &**e))
             }
-            
+
+            EK::Block { statements, scope_id } => {
+                // Lower all statements in the block
+                for stmt in statements {
+                    self.lower_statement(stmt);
+                }
+                // Blocks used in conditionals return void
+                use crate::ir::types::IrValue;
+                self.builder.build_const(IrValue::Void)
+            }
+
             _ => {
                 self.add_error(
                     format!("Unimplemented expression kind: {:?}", expr.kind),
@@ -1229,17 +1239,77 @@ impl<'a> LoweringContext<'a> {
         then_expr: &TypedExpression,
         else_expr: Option<&TypedExpression>,
     ) -> Option<IrId> {
-        let cond_val = self.lower_expression(condition)?;
-        let then_val = self.lower_expression(then_expr)?;
-        
-        if let Some(else_expr) = else_expr {
-            let else_val = self.lower_expression(else_expr)?;
-            self.builder.build_select(cond_val, then_val, else_val)
+        use crate::tast::node::TypedExpressionKind as EK;
+
+        // Check if we have Block expressions - if so, use control flow instead of select
+        let has_blocks = matches!(then_expr.kind, EK::Block { .. }) ||
+                        else_expr.as_ref().map_or(false, |e| matches!(e.kind, EK::Block { .. }));
+
+        if has_blocks {
+            // Use control flow for Block expressions
+            // Create blocks for the conditional
+            let then_block = self.builder.create_block()?;
+            let merge_block = self.builder.create_block()?;
+            let else_block = if else_expr.is_some() {
+                self.builder.create_block()?
+            } else {
+                merge_block
+            };
+
+            // Evaluate condition and branch
+            let cond_val = self.lower_expression(condition)?;
+            self.builder.build_cond_branch(cond_val, then_block, else_block);
+
+            // Lower then branch
+            self.builder.switch_to_block(then_block);
+            let _then_val = self.lower_expression(then_expr)?;
+            // Jump to merge block if not already terminated
+            if let Some(current_block) = self.builder.current_block() {
+                if let Some(func) = self.builder.current_function() {
+                    if let Some(block) = func.cfg.get_block(current_block) {
+                        if !block.is_terminated() {
+                            self.builder.build_branch(merge_block);
+                        }
+                    }
+                }
+            }
+
+            // Lower else branch if present
+            if let Some(else_expr) = else_expr {
+                self.builder.switch_to_block(else_block);
+                let _else_val = self.lower_expression(else_expr)?;
+                // Jump to merge block if not already terminated
+                if let Some(current_block) = self.builder.current_block() {
+                    if let Some(func) = self.builder.current_function() {
+                        if let Some(block) = func.cfg.get_block(current_block) {
+                            if !block.is_terminated() {
+                                self.builder.build_branch(merge_block);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Continue in merge block
+            self.builder.switch_to_block(merge_block);
+
+            // Return void for block-based conditionals
+            use crate::ir::types::IrValue;
+            self.builder.build_const(IrValue::Void)
         } else {
-            // For conditional without else, we need to handle it differently
-            // For now, just return the then value if condition is true, null otherwise
-            let null_val = self.builder.build_null()?;
-            self.builder.build_select(cond_val, then_val, null_val)
+            // Use select for simple value expressions
+            let cond_val = self.lower_expression(condition)?;
+            let then_val = self.lower_expression(then_expr)?;
+
+            if let Some(else_expr) = else_expr {
+                let else_val = self.lower_expression(else_expr)?;
+                self.builder.build_select(cond_val, then_val, else_val)
+            } else {
+                // For conditional without else, we need to handle it differently
+                // For now, just return the then value if condition is true, null otherwise
+                let null_val = self.builder.build_null()?;
+                self.builder.build_select(cond_val, then_val, null_val)
+            }
         }
     }
     
