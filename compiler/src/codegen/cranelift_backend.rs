@@ -1175,6 +1175,11 @@ impl CraneliftBackend {
     ) -> Result<(), String> {
         use crate::ir::IrInstruction;
 
+        // Debug: Log every instruction being lowered
+        if matches!(instruction, IrInstruction::Cast { .. }) {
+            eprintln!("CRANELIFT DEBUG: Lowering Cast instruction: {:?}", instruction);
+        }
+
         match instruction {
             IrInstruction::Const { dest, value } => {
                 let cl_value = Self::translate_const_value(

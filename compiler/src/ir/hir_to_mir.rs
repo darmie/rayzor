@@ -2992,36 +2992,17 @@ impl<'a> HirToMirContext<'a> {
                         // - haxe_trace_int expects i64
                         // - haxe_trace_float expects f64
                         // We need to cast arguments to match
-                        let (param_types, final_arg_reg) = match trace_method {
-                            "traceInt" => {
-                                // Runtime expects i64, cast from i32 if needed
-                                // Use actual_reg_type (not arg_type) to detect the real register type
-                                eprintln!("DEBUG [traceInt]: actual_reg_type = {:?}, arg_reg = {:?}", actual_reg_type, arg_reg);
-                                let cast_reg = if matches!(actual_reg_type, IrType::I32) {
-                                    eprintln!("DEBUG [traceInt]: Generating cast from I32 to I64");
-                                    let result = self.builder.build_cast(arg_reg, IrType::I32, IrType::I64);
-                                    eprintln!("DEBUG [traceInt]: Cast result = {:?}", result);
-                                    result.unwrap_or(arg_reg)
-                                } else {
-                                    eprintln!("DEBUG [traceInt]: No cast needed, actual_reg_type is not I32");
-                                    arg_reg
-                                };
-                                eprintln!("DEBUG [traceInt]: final cast_reg = {:?}", cast_reg);
-                                (vec![IrType::I64], cast_reg)
-                            }
-                            "traceFloat" => {
-                                // Runtime expects f64, cast from f32 if needed
-                                // Use actual_reg_type (not arg_type) to detect the real register type
-                                let cast_reg = if matches!(actual_reg_type, IrType::F32) {
-                                    self.builder.build_cast(arg_reg, IrType::F32, IrType::F64)
-                                        .unwrap_or(arg_reg)
-                                } else {
-                                    arg_reg
-                                };
-                                (vec![IrType::F64], cast_reg)
-                            }
-                            _ => (vec![arg_type.clone()], arg_reg),
+                        // Note: We don't need to cast arguments here - the Cranelift backend
+                        // handles signature-aware type conversion automatically (see cranelift_backend.rs:1487-1491)
+                        // It will insert sextend for i32->i64, fcvt for f32->f64, etc.
+                        let param_types = match trace_method {
+                            "traceInt" => vec![IrType::I64],
+                            "traceFloat" => vec![IrType::F64],
+                            "traceBool" => vec![IrType::Bool],
+                            _ => vec![arg_type.clone()],
                         };
+
+                        let final_arg_reg = arg_reg;
 
                         let runtime_func_id = self.get_or_register_extern_function(
                             runtime_func,
