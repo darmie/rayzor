@@ -6853,13 +6853,64 @@ impl<'a> HirToMirContext<'a> {
             }
             HirLValue::Index { object, index } => {
                 // Write object[index] = value
+                // Call haxe_array_set runtime function for HaxeArray
+                // Signature: fn haxe_array_set(arr: *mut HaxeArray, index: usize, data: *const u8) -> bool
                 if let Some(obj_reg) = self.lower_expression(object) {
                     if let Some(idx_reg) = self.lower_expression(index) {
-                        // Use GEP to get element pointer then store
-                        let elem_ty = self.convert_type(object.ty);
-                        if let Some(ptr) = self.builder.build_gep(obj_reg, vec![idx_reg], elem_ty) {
-                            self.builder.build_store(ptr, value);
-                        }
+                        // Box the value if it's a primitive type (Int, Float, Bool)
+                        // HaxeArray stores elements as boxed pointers
+                        let value_ir_type = self.builder.get_register_type(value);
+                        let boxed_value = match &value_ir_type {
+                            Some(IrType::I32) | Some(IrType::I64) => {
+                                // Box integer value
+                                let box_func_id = self.get_or_register_extern_function(
+                                    "box_int",
+                                    vec![IrType::I64],
+                                    IrType::Ptr(Box::new(IrType::U8)),
+                                );
+                                self.builder.build_call_direct(box_func_id, vec![value], IrType::Ptr(Box::new(IrType::U8)))
+                            }
+                            Some(IrType::F32) | Some(IrType::F64) => {
+                                // Box float value
+                                let box_func_id = self.get_or_register_extern_function(
+                                    "box_float",
+                                    vec![IrType::F64],
+                                    IrType::Ptr(Box::new(IrType::U8)),
+                                );
+                                self.builder.build_call_direct(box_func_id, vec![value], IrType::Ptr(Box::new(IrType::U8)))
+                            }
+                            Some(IrType::Bool) => {
+                                // Box bool value
+                                let box_func_id = self.get_or_register_extern_function(
+                                    "box_bool",
+                                    vec![IrType::I64],
+                                    IrType::Ptr(Box::new(IrType::U8)),
+                                );
+                                self.builder.build_call_direct(box_func_id, vec![value], IrType::Ptr(Box::new(IrType::U8)))
+                            }
+                            _ => {
+                                // Already a pointer or unknown type, use as-is
+                                Some(value)
+                            }
+                        }.unwrap_or(value);
+
+                        // Get or declare the haxe_array_set extern function
+                        let func_id = self.get_or_register_extern_function(
+                            "haxe_array_set",
+                            vec![
+                                IrType::Ptr(Box::new(IrType::Void)),  // array
+                                IrType::I64,                          // index
+                                IrType::Ptr(Box::new(IrType::U8)),    // data pointer
+                            ],
+                            IrType::Bool,  // returns bool (success indicator)
+                        );
+
+                        // Call haxe_array_set(array, index, boxed_value)
+                        self.builder.build_call_direct(
+                            func_id,
+                            vec![obj_reg, idx_reg, boxed_value],
+                            IrType::Bool,
+                        );
                     }
                 }
             }
@@ -7267,57 +7318,28 @@ impl<'a> HirToMirContext<'a> {
     }
 
     fn lower_index_access(&mut self, obj: IrId, idx: IrId, ty: TypeId) -> Option<IrId> {
-        // Array/map index access
-        // obj is a pointer to HaxeArray struct: { ptr: *u8, len: usize, cap: usize, elem_size: usize }
-        // HaxeArray layout: [ptr(8 bytes), len(8 bytes), cap(8 bytes), elem_size(8 bytes)]
+        // Array index access - call haxe_array_get_ptr runtime function
+        // For HaxeArray, we need to call the runtime function instead of using GEP
+        // because array elements may be boxed and require proper dynamic type handling
         //
-        // Steps:
-        // 1. Get pointer to field 0 (ptr: *u8) using GEP
-        // 2. Load the data pointer
-        // 3. Get pointer to field 3 (elem_size: usize) using GEP
-        // 4. Load elem_size
-        // 5. Calculate byte offset: idx * elem_size
-        // 6. Use GEP on data pointer to get element pointer
-        // 7. Load element
+        // Signature: fn haxe_array_get_ptr(arr: *const HaxeArray, index: usize) -> *mut u8
+        //
+        // The runtime function returns a pointer to the boxed element
 
-        let elem_ty = self.convert_type(ty);
+        // Get or declare the haxe_array_get_ptr extern function
+        let func_id = self.get_or_register_extern_function(
+            "haxe_array_get_ptr",
+            vec![IrType::Ptr(Box::new(IrType::Void)), IrType::I64],
+            IrType::Ptr(Box::new(IrType::U8)),
+        );
 
-        // Get pointer to field 0 (ptr: *u8) of HaxeArray
-        let field_0_idx = self.builder.build_const(IrValue::I32(0))?;
-        let ptr_u8_ty = IrType::Ptr(Box::new(IrType::U8));
-        let data_ptr_ptr = self.builder.build_gep(obj, vec![field_0_idx], ptr_u8_ty.clone())?;
-
-        // Load the data pointer
-        let data_ptr = self.builder.build_load(data_ptr_ptr, ptr_u8_ty.clone())?;
-
-        // Get pointer to field 3 (elem_size: usize) of HaxeArray
-        let field_3_idx = self.builder.build_const(IrValue::I32(3))?;
-        let elem_size_ptr = self.builder.build_gep(obj, vec![field_3_idx], IrType::U64)?;
-
-        // Load elem_size
-        let elem_size = self.builder.build_load(elem_size_ptr, IrType::U64)?;
-
-        // Calculate byte offset: idx * elem_size
-        // Note: idx might be i32 or i64; Cranelift backend will handle type coercion
-        let byte_offset = self.builder.build_binop(crate::ir::BinaryOp::Mul, idx, elem_size)?;
-
-        // Register the byte_offset type as I64 (signed) to match GEP expectations
-        if let Some(func) = self.builder.current_function_mut() {
-            func.locals.insert(byte_offset, super::IrLocal {
-                name: format!("_byte_offset{}", byte_offset.0),
-                ty: IrType::I64,
-                mutable: false,
-                source_location: IrSourceLocation::unknown(),
-                allocation: super::AllocationHint::Stack,
-            });
-        }
-
-        // Use GEP to offset the u8 pointer by byte_offset bytes
-        // GEP on *u8 with index N computes ptr + N * sizeof(u8) = ptr + N bytes
-        let elem_ptr = self.builder.build_gep(data_ptr, vec![byte_offset], IrType::U8)?;
-
-        // Load the element from the pointer
-        self.builder.build_load(elem_ptr, elem_ty)
+        // Call haxe_array_get_ptr(array, index)
+        // The function returns a pointer to the element (*mut u8)
+        self.builder.build_call_direct(
+            func_id,
+            vec![obj, idx],
+            IrType::Ptr(Box::new(IrType::U8)),
+        )
     }
 
     fn lower_logical_and(&mut self, lhs: &HirExpr, rhs: &HirExpr) -> Option<IrId> {
