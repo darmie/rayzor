@@ -3307,8 +3307,13 @@ impl<'a> HirToMirContext<'a> {
                                             // Determine return type based on method
                                             // Methods that return Int (i32): length, charCodeAt, indexOf, lastIndexOf
                                             // Methods that return String (Ptr<String>): charAt, substr, substring, toLowerCase, toUpperCase, toString
+                                            // Methods that return Array (Ptr<Void>): split
                                             let return_type = match method_name {
                                                 "length" | "charCodeAt" | "indexOf" | "lastIndexOf" => IrType::I32,
+                                                "split" => {
+                                                    // split returns Array<String>, convert to Ptr(Void)
+                                                    IrType::Ptr(Box::new(IrType::Void))
+                                                }
                                                 _ => string_ptr_ty.clone(),
                                             };
 
