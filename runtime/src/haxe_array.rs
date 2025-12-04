@@ -86,9 +86,23 @@ pub extern "C" fn haxe_array_length(arr: *const HaxeArray) -> usize {
         eprintln!("[DEBUG haxe_array_length] arr is null, returning 0");
         return 0;
     }
-    let len = unsafe { (*arr).len };
-    eprintln!("[DEBUG haxe_array_length] arr.len={}", len);
-    len
+    unsafe {
+        let arr_ref = &*arr;
+        eprintln!("[DEBUG haxe_array_length] arr.len={}, arr.cap={}, arr.elem_size={}, arr.ptr={:?}",
+            arr_ref.len, arr_ref.cap, arr_ref.elem_size, arr_ref.ptr);
+
+        // If it's an array of pointers (elem_size=8), print first few elements
+        if arr_ref.elem_size == 8 && arr_ref.len > 0 && !arr_ref.ptr.is_null() {
+            eprintln!("[DEBUG haxe_array_length] First few i64 values:");
+            let i64_ptr = arr_ref.ptr as *const i64;
+            for i in 0..arr_ref.len.min(5) {
+                let val = *i64_ptr.add(i);
+                eprintln!("  [{}] = 0x{:x} ({})", i, val, val);
+            }
+        }
+
+        arr_ref.len
+    }
 }
 
 // ============================================================================

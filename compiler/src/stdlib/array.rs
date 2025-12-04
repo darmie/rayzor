@@ -134,12 +134,12 @@ fn build_array_pop(builder: &mut MirBuilder) {
     }
 }
 
-/// Build: fn array_length(arr: Any) -> i32
-/// Returns the length of the array
+/// Build: fn array_length(arr: Any) -> i64
+/// Returns the length of the array (usize as i64)
 fn build_array_length(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("array_length")
         .param("arr", IrType::Any)
-        .returns(IrType::I32)
+        .returns(IrType::I64)
         .calling_convention(CallingConvention::C)
         .build();
 
@@ -155,11 +155,10 @@ fn build_array_length(builder: &mut MirBuilder) {
         .expect("haxe_array_length extern not found");
 
     if let Some(len_i64) = builder.call(extern_func, vec![arr]) {
-        // Cast i64 to i32 (array lengths should fit in i32)
-        let len_i32 = builder.cast(len_i64, IrType::I64, IrType::I32);
-        builder.ret(Some(len_i32));
+        // Return i64 directly - no cast needed
+        builder.ret(Some(len_i64));
     } else {
-        let zero = builder.const_i32(0);
+        let zero = builder.const_i64(0);
         builder.ret(Some(zero));
     }
 }

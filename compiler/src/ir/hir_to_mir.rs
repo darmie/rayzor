@@ -2955,7 +2955,9 @@ impl<'a> HirToMirContext<'a> {
                             }
                         };
 
-                        // Debug tracing removed to reduce output
+                        // Debug: Print trace method selection
+                        eprintln!("[DEBUG trace] arg_reg={}, arg_type={:?}, trace_method={}",
+                            arg_reg, arg_type, trace_method);
 
                         // Build the qualified name for the trace function
                         let trace_func_name = format!("rayzor.Trace.{}", trace_method);
@@ -7058,11 +7060,39 @@ impl<'a> HirToMirContext<'a> {
         if let Some((_class, _method, runtime_call)) = self.get_stdlib_runtime_info(field, receiver_ty) {
             let runtime_func = runtime_call.runtime_name;
             eprintln!("DEBUG: [lower_field_access] Found stdlib property! runtime_func={}", runtime_func);
+
+            // Determine result type based on whether it returns a primitive or complex type
+            // If needs_out_param is false and has_return is true, it returns a primitive (i32/i64/f64)
+            // Otherwise it returns a complex type (Ptr) or void
+            let result_type = if !runtime_call.needs_out_param && runtime_call.has_return {
+                // Returns a primitive - get the actual primitive type from field_ty
+                let field_kind = {
+                    let type_table = self.type_table.borrow();
+                    type_table.get(field_ty).map(|t| t.kind.clone())
+                };
+
+                // Map TAST primitive types to IR types correctly
+                match field_kind {
+                    Some(crate::tast::TypeKind::Int) => IrType::I64,
+                    Some(crate::tast::TypeKind::Float) => IrType::F64,
+                    Some(crate::tast::TypeKind::Bool) => IrType::Bool,
+                    _ => {
+                        eprintln!("WARNING: Unexpected field kind {:?} for primitive-returning function {}", field_kind, runtime_func);
+                        self.convert_type(field_ty)
+                    }
+                }
+            } else {
+                // Returns a complex type or void
+                self.convert_type(field_ty)
+            };
+
+            eprintln!("DEBUG: [lower_field_access] result_type for {} = {:?} (needs_out_param={}, has_return={})",
+                runtime_func, result_type, runtime_call.needs_out_param, runtime_call.has_return);
+
             // Generate a call to the runtime property getter
             // Property getters take the object as the only parameter
             // Use explicit Ptr(Void) type for opaque stdlib objects (Array, String, etc.)
             let param_types = vec![IrType::Ptr(Box::new(IrType::Void))];
-            let result_type = self.convert_type(field_ty);
             let runtime_func_id = self.get_or_register_extern_function(
                 &runtime_func,
                 param_types,

@@ -69,7 +69,8 @@ register_symbol!("haxe_string_substr", crate::haxe_string::haxe_string_substr);
 register_symbol!("haxe_string_to_upper_case", crate::haxe_string::haxe_string_to_upper_case);
 register_symbol!("haxe_string_to_lower_case", crate::haxe_string::haxe_string_to_lower_case);
 register_symbol!("haxe_string_index_of", crate::haxe_string::haxe_string_index_of);
-register_symbol!("haxe_string_split", crate::haxe_string::haxe_string_split);
+// Commented out old out-param version to avoid conflicts
+// register_symbol!("haxe_string_split", crate::haxe_string::haxe_string_split);
 register_symbol!("haxe_string_split_array", crate::haxe_string::haxe_string_split_array);
 register_symbol!("haxe_string_starts_with", crate::string::haxe_string_starts_with);
 register_symbol!("haxe_string_ends_with", crate::string::haxe_string_ends_with);
@@ -203,7 +204,8 @@ register_symbol!("haxe_string_substr_ptr", crate::haxe_sys::haxe_string_substr_p
 register_symbol!("haxe_string_substring_ptr", crate::haxe_sys::haxe_string_substring_ptr);
 register_symbol!("haxe_string_from_char_code", crate::haxe_sys::haxe_string_from_char_code);
 register_symbol!("haxe_string_copy", crate::haxe_sys::haxe_string_copy);
-register_symbol!("haxe_string_split_ptr", crate::haxe_sys::haxe_string_split_ptr);
+// Commented out to avoid conflict with haxe_string_split_array
+// register_symbol!("haxe_string_split_ptr", crate::haxe_sys::haxe_string_split_ptr);
 
 // Program control
 register_symbol!("haxe_sys_exit", crate::haxe_sys::haxe_sys_exit);
