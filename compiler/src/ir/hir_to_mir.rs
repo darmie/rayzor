@@ -2410,9 +2410,13 @@ impl<'a> HirToMirContext<'a> {
                 }
 
                 // Regular field access
+                eprintln!("DEBUG: [Field expression] About to lower object");
                 let obj_reg = self.lower_expression(object)?;
+                eprintln!("DEBUG: [Field expression] Object lowered to reg={}, now calling lower_field_access", obj_reg);
                 let receiver_ty = object.ty; // The type of the object being accessed
-                self.lower_field_access(obj_reg, *field, receiver_ty, expr.ty)
+                let result = self.lower_field_access(obj_reg, *field, receiver_ty, expr.ty);
+                eprintln!("DEBUG: [Field expression] lower_field_access returned {:?}", result);
+                result
             }
 
             HirExprKind::Index { object, index } => {
@@ -2889,7 +2893,9 @@ impl<'a> HirToMirContext<'a> {
                         }
 
                         // Lower the argument first to get the actual MIR register
+                        eprintln!("DEBUG: [TRACE] Lowering trace argument, expr kind: {:?}", std::mem::discriminant(&arg.kind));
                         let arg_reg = self.lower_expression(arg)?;
+                        eprintln!("DEBUG: [TRACE] After lowering, arg_reg={}", arg_reg);
 
                         // Check if the HIR type is an enum
                         // Also check if the arg is a variable and look up its declared type
@@ -7100,11 +7106,22 @@ impl<'a> HirToMirContext<'a> {
             );
 
             // Call the property getter with just the object
-            return self.builder.build_call_direct(
+            let result_reg = self.builder.build_call_direct(
                 runtime_func_id,
                 vec![obj],
-                result_type,
+                result_type.clone(),
             );
+
+            // DEBUG: Check actual type of result register
+            if let Some(reg) = result_reg {
+                if let Some(reg_type) = self.builder.get_register_type(reg) {
+                    eprintln!("DEBUG: [lower_field_access] result_reg={}, register_type={:?}", reg, reg_type);
+                } else {
+                    eprintln!("DEBUG: [lower_field_access] result_reg={} has no type in builder", reg);
+                }
+            }
+
+            return result_reg;
         } else {
             eprintln!("DEBUG: [lower_field_access] get_stdlib_runtime_info returned None for field='{}' ({:?}), receiver_ty={:?}", field_name_debug, field, receiver_ty);
 

@@ -204,8 +204,7 @@ register_symbol!("haxe_string_substr_ptr", crate::haxe_sys::haxe_string_substr_p
 register_symbol!("haxe_string_substring_ptr", crate::haxe_sys::haxe_string_substring_ptr);
 register_symbol!("haxe_string_from_char_code", crate::haxe_sys::haxe_string_from_char_code);
 register_symbol!("haxe_string_copy", crate::haxe_sys::haxe_string_copy);
-// Commented out to avoid conflict with haxe_string_split_array
-// register_symbol!("haxe_string_split_ptr", crate::haxe_sys::haxe_string_split_ptr);
+register_symbol!("haxe_string_split_ptr", crate::haxe_sys::haxe_string_split_ptr);
 
 // Program control
 register_symbol!("haxe_sys_exit", crate::haxe_sys::haxe_sys_exit);
