@@ -2274,6 +2274,11 @@ impl<'a> HirToMirContext<'a> {
     fn lower_expression(&mut self, expr: &HirExpr) -> Option<IrId> {
         // eprintln!("DEBUG: lower_expression - {:?}", std::mem::discriminant(&expr.kind));
 
+        // DEBUG: Check if this is Field expression being lowered
+        if matches!(&expr.kind, HirExprKind::Field { .. }) {
+            eprintln!("DEBUG: [lower_expression] START - Field expression");
+        }
+
         // Set source location for debugging
         self.builder
             .set_source_location(self.convert_source_location(&expr.source_location));
@@ -2796,6 +2801,8 @@ impl<'a> HirToMirContext<'a> {
                         let type_kind = type_table.get(arg.ty).map(|ti| ti.kind.clone());
                         drop(type_table);
 
+                        eprintln!("DEBUG: [TRACE ARG TYPE] arg.ty={:?}, type_kind={:?}", arg.ty, type_kind);
+
                         let class_info = if let Some(crate::tast::core::TypeKind::Class { symbol_id, .. }) = &type_kind {
                             // Get class name
                             self.symbol_table.get_symbol(*symbol_id)
@@ -2893,9 +2900,28 @@ impl<'a> HirToMirContext<'a> {
                         }
 
                         // Lower the argument first to get the actual MIR register
+                        // Check if this is a field access
+                        let is_field = matches!(&arg.kind, HirExprKind::Field { .. });
+                        if is_field {
+                            if let HirExprKind::Field { object, field } = &arg.kind {
+                                let field_sym = self.symbol_table.get_symbol(*field);
+                                let field_name = field_sym.and_then(|s| self.string_interner.get(s.name)).unwrap_or("<unknown>");
+                                eprintln!("DEBUG: [TRACE] Argument is Field access: field={}", field_name);
+
+                                // Check what the object is
+                                if let HirExprKind::Variable { symbol, .. } = &object.kind {
+                                    let var_sym = self.symbol_table.get_symbol(*symbol);
+                                    let var_name = var_sym.and_then(|s| self.string_interner.get(s.name)).unwrap_or("<unknown>");
+                                    eprintln!("DEBUG: [TRACE] Field object is Variable: {}", var_name);
+                                }
+                            }
+                        }
                         eprintln!("DEBUG: [TRACE] Lowering trace argument, expr kind: {:?}", std::mem::discriminant(&arg.kind));
                         let arg_reg = self.lower_expression(arg)?;
-                        eprintln!("DEBUG: [TRACE] After lowering, arg_reg={}", arg_reg);
+                        eprintln!("DEBUG: [TRACE] After lowering, arg_reg={}, checking type...", arg_reg);
+                        if let Some(ty) = self.builder.get_register_type(arg_reg) {
+                            eprintln!("DEBUG: [TRACE] arg_reg type from builder: {:?}", ty);
+                        }
 
                         // Check if the HIR type is an enum
                         // Also check if the arg is a variable and look up its declared type
@@ -7450,17 +7476,72 @@ impl<'a> HirToMirContext<'a> {
                     eprintln!("DEBUG: [lower_field_access_for_class] Found stdlib property! runtime_func={}", runtime_func);
                     // Use explicit pointer type for parameter (matches stdlib signatures)
                     let param_types = vec![IrType::Ptr(Box::new(IrType::Void))];
-                    let result_type = self.convert_type(field_ty);
+
+                    // Determine result type based on whether it returns a primitive or complex type
+                    let result_type = if !runtime_call.needs_out_param && runtime_call.has_return {
+                        // Returns a primitive - look up the MIR wrapper function to get its return type
+                        // The stdlib property getter is registered in MIR (e.g., array_length)
+                        if let Some(mir_func) = self.builder.module.functions.iter()
+                            .find(|(_, f)| f.name == runtime_func)
+                            .map(|(_, f)| f) {
+                            // Use the MIR function's return type
+                            eprintln!("DEBUG: [lower_field_access_for_class] Found MIR function {}, return_type={:?}",
+                                runtime_func, mir_func.signature.return_type);
+                            mir_func.signature.return_type.clone()
+                        } else {
+                            // Fallback: try to infer from field type in symbol table
+                            let actual_field_type = self.symbol_table.get_symbol(field)
+                                .map(|s| s.type_id)
+                                .unwrap_or(field_ty);
+
+                            let field_kind = {
+                                let type_table = self.type_table.borrow();
+                                type_table.get(actual_field_type).map(|t| t.kind.clone())
+                            };
+
+                            eprintln!("DEBUG: [lower_field_access_for_class] No MIR function found, actual_field_type={:?}, field_kind={:?}",
+                                actual_field_type, field_kind);
+
+                            // Map TAST primitive types to IR types correctly
+                            match field_kind {
+                                Some(crate::tast::TypeKind::Int) => IrType::I64,
+                                Some(crate::tast::TypeKind::Float) => IrType::F64,
+                                Some(crate::tast::TypeKind::Bool) => IrType::Bool,
+                                _ => {
+                                    eprintln!("WARNING: Unexpected field kind {:?} for primitive-returning function {}, defaulting to I64", field_kind, runtime_func);
+                                    // Default to I64 for unknown primitive types (most stdlib properties return integers)
+                                    IrType::I64
+                                }
+                            }
+                        }
+                    } else {
+                        // Returns a complex type or void
+                        self.convert_type(field_ty)
+                    };
+
+                    eprintln!("DEBUG: [lower_field_access_for_class] result_type for {} = {:?} (needs_out_param={}, has_return={})",
+                        runtime_func, result_type, runtime_call.needs_out_param, runtime_call.has_return);
+
                     let runtime_func_id = self.get_or_register_extern_function(
                         &runtime_func,
                         param_types,
                         result_type.clone(),
                     );
-                    return self.builder.build_call_direct(
+
+                    let result_reg = self.builder.build_call_direct(
                         runtime_func_id,
                         vec![obj],
-                        result_type,
+                        result_type.clone(),
                     );
+
+                    // DEBUG: Check actual type of result register
+                    if let Some(reg) = result_reg {
+                        if let Some(reg_type) = self.builder.get_register_type(reg) {
+                            eprintln!("DEBUG: [lower_field_access_for_class] result_reg={}, register_type={:?}", reg, reg_type);
+                        }
+                    }
+
+                    return result_reg;
                 } else {
                     eprintln!("DEBUG: [lower_field_access_for_class] get_stdlib_runtime_info returned None");
                 }
