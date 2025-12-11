@@ -3505,7 +3505,8 @@ impl<'a> HirToMirContext<'a> {
                             // For these classes, we have MIR wrapper functions that forward to extern runtime functions.
                             // The wrappers take care of calling convention differences.
                             if self.stdlib_mapping.is_mir_wrapper_class(class_name) {
-                                let mir_func_name = format!("{}_{}", class_name, method_name);
+                                // Use lowercase class name to match stdlib MIR wrapper naming convention
+                                let mir_func_name = format!("{}_{}", class_name.to_lowercase(), method_name);
                                 eprintln!("DEBUG: [STDLIB MIR] Detected stdlib MIR function (instance): {}", mir_func_name);
 
                                 // Lower all arguments and collect their types
@@ -4036,7 +4037,8 @@ impl<'a> HirToMirContext<'a> {
                                 if let Some(class_name) = inferred_class {
                                     // SPECIAL CASE: Check if this is a stdlib MIR function
                                     if self.stdlib_mapping.is_mir_wrapper_class(class_name) {
-                                        let mir_func_name = format!("{}_{}", class_name, method_name);
+                                        // Use lowercase class name to match stdlib MIR wrapper naming convention
+                                        let mir_func_name = format!("{}_{}", class_name.to_lowercase(), method_name);
                                         eprintln!("DEBUG: [STDLIB MIR] Detected stdlib MIR function: {}", mir_func_name);
 
                                         // Lower all arguments and collect their types
@@ -4304,6 +4306,7 @@ impl<'a> HirToMirContext<'a> {
                                             // sys.thread.Thread uses runtime mapping directly, not MIR wrappers
                                             let is_rayzor_concurrent = qual_name_str.starts_with("rayzor.concurrent.");
                                             if is_rayzor_concurrent && ["Thread", "Channel", "Mutex", "Arc"].contains(&class_name) {
+                                                // Use capitalized class names for rayzor.concurrent (Thread, Channel, etc.)
                                                 let mir_func_name = format!("{}_{}", class_name, method_name);
                                                 eprintln!("DEBUG: [STDLIB MIR] Detected stdlib MIR function: {}", mir_func_name);
 
