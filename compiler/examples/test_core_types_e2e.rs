@@ -703,7 +703,7 @@ class Main {
 }
 "#,
         )
-        .expect_mir_calls(vec!["Array_slice"])
+        .expect_mir_calls(vec!["haxe_array_slice"])
         .expect_level(TestLevel::Execution),
     );
 
