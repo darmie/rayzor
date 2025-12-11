@@ -1375,11 +1375,31 @@ impl CraneliftBackend {
             }
 
             IrInstruction::Alloc { dest, ty, count } => {
-                // For now, allocate with fixed size (need to handle dynamic count)
+                // Get count value - look for it in value_map
                 let count_val = match count {
-                    Some(_id) => {
-                        // TODO: Get runtime value
-                        Some(1)
+                    Some(count_id) => {
+                        // Try to get the count from value_map (should be a Cranelift iconst)
+                        if let Some(&count_value) = value_map.get(count_id) {
+                            // Extract immediate value from Cranelift instruction
+                            // The value should be defined by an iconst instruction
+                            match builder.func.dfg.value_def(count_value) {
+                                cranelift_codegen::ir::ValueDef::Result(inst, _) => {
+                                    if let cranelift_codegen::ir::InstructionData::UnaryImm { imm, .. } = builder.func.dfg.insts[inst] {
+                                        Some(imm.bits() as u32)
+                                    } else {
+                                        eprintln!("WARNING: Alloc count instruction is not UnaryImm, defaulting to 1");
+                                        Some(1)
+                                    }
+                                }
+                                _ => {
+                                    eprintln!("WARNING: Alloc count value not from instruction result, defaulting to 1");
+                                    Some(1)
+                                }
+                            }
+                        } else {
+                            eprintln!("WARNING: Alloc count IrId {:?} not found in value_map, defaulting to 1", count_id);
+                            Some(1)
+                        }
                     }
                     None => None,
                 };

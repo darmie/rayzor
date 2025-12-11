@@ -443,23 +443,30 @@ pub extern "C" fn haxe_array_copy(out: *mut HaxeArray, arr: *const HaxeArray) {
 /// Slice array
 #[no_mangle]
 pub extern "C" fn haxe_array_slice(out: *mut HaxeArray, arr: *const HaxeArray, start: usize, end: usize) {
+    eprintln!("[DEBUG haxe_array_slice] Called with out={:?}, arr={:?}, start={}, end={}", out, arr, start, end);
     if arr.is_null() {
+        eprintln!("[DEBUG haxe_array_slice] arr is null, returning");
         return;
     }
 
     unsafe {
         let arr_ref = &*arr;
+        eprintln!("[DEBUG haxe_array_slice] arr.len={}, arr.cap={}, arr.elem_size={}", arr_ref.len, arr_ref.cap, arr_ref.elem_size);
         let actual_start = start.min(arr_ref.len);
         let actual_end = end.min(arr_ref.len);
+        eprintln!("[DEBUG haxe_array_slice] actual_start={}, actual_end={}", actual_start, actual_end);
 
         if actual_start >= actual_end {
+            eprintln!("[DEBUG haxe_array_slice] Creating empty array (start >= end)");
             haxe_array_new(out, arr_ref.elem_size);
             return;
         }
 
         let count = actual_end - actual_start;
         let start_ptr = arr_ref.ptr.add(actual_start * arr_ref.elem_size);
+        eprintln!("[DEBUG haxe_array_slice] Copying {} elements from offset {}", count, actual_start);
         haxe_array_from_elements(out, start_ptr, count, arr_ref.elem_size);
+        eprintln!("[DEBUG haxe_array_slice] Done");
     }
 }
 

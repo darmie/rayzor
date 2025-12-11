@@ -163,7 +163,7 @@ fn build_array_length(builder: &mut MirBuilder) {
     }
 }
 
-/// Build: fn Array_slice(arr: Ptr(Void), start: i64, end: i64) -> Ptr(Void)
+/// Build: fn array_slice(arr: Ptr(Void), start: i64, end: i64) -> Ptr(Void)
 /// Wrapper for haxe_array_slice that handles out-param allocation
 ///
 /// This wrapper:
@@ -174,8 +174,8 @@ fn build_array_slice(builder: &mut MirBuilder) {
     let ptr_void = IrType::Ptr(Box::new(IrType::Void));
     let i64_ty = IrType::I64;
 
-    // Function signature: Array_slice(arr: *Array, start: i64, end: i64) -> *Array
-    let func_id = builder.begin_function("Array_slice")
+    // Function signature: array_slice(arr: *Array, start: i64, end: i64) -> *Array
+    let func_id = builder.begin_function("array_slice")
         .param("arr", ptr_void.clone())
         .param("start", i64_ty.clone())
         .param("end", i64_ty.clone())
@@ -192,21 +192,24 @@ fn build_array_slice(builder: &mut MirBuilder) {
     let start = builder.get_param(1);
     let end = builder.get_param(2);
 
-    // Allocate space for HaxeArray struct (32 bytes = 4 x i64)
+    // HEAP-allocate space for HaxeArray struct (32 bytes)
     // HaxeArray struct: { ptr: *mut u8, len: usize, cap: usize, elem_size: usize }
-    // We allocate an array of 4 i64 values on the stack
-    let array_count = builder.const_i64(4);
-    let out_ptr = builder.alloc(i64_ty.clone(), Some(array_count));
+    // Must use heap allocation since we're returning this pointer!
+    let malloc_func = builder.get_function_by_name("malloc")
+        .expect("malloc extern not found");
+    let size = builder.const_i64(HAXE_ARRAY_STRUCT_SIZE as i64);
+    let out_ptr = builder.call(malloc_func, vec![size])
+        .expect("malloc should return a pointer");
 
     // Call haxe_array_slice(out_ptr, arr, start, end)
-    let extern_func = builder.get_function_by_name("haxe_array_slice")
+    let slice_func = builder.get_function_by_name("haxe_array_slice")
         .expect("haxe_array_slice extern not found");
 
     builder.call(
-        extern_func,
+        slice_func,
         vec![out_ptr, arr, start, end],
     );
 
-    // Return the pointer to the allocated array
+    // Return the pointer to the heap-allocated array
     builder.ret(Some(out_ptr));
 }
