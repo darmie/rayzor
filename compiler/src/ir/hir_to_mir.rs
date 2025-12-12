@@ -1987,10 +1987,12 @@ impl<'a> HirToMirContext<'a> {
             })
             .collect();
 
+        // Stdlib MIR wrappers use C calling convention (no env param)
+        // This matches the actual definitions in thread.rs, channel.rs, sync.rs
         let signature = IrFunctionSignature {
             parameters: params,
             return_type: return_type.clone(),
-            calling_convention: CallingConvention::Haxe, // Haxe calling convention!
+            calling_convention: CallingConvention::C, // C calling convention for stdlib MIR wrappers
             can_throw: false,
             type_params: vec![],
             uses_sret: matches!(return_type, IrType::Struct { .. }),
@@ -3439,7 +3441,36 @@ impl<'a> HirToMirContext<'a> {
                             }
                         }
 
+                        // GUARD: Skip instance method handling if receiver is a Class type itself
+                        // This can happen when static method calls come through with is_method=true
+                        // e.g., Thread.spawn(closure) might be seen as Thread(receiver).spawn(closure)
+                        let receiver_is_class_type = {
+                            let type_table = self.type_table.borrow();
+                            type_table.get(receiver_type)
+                                .map(|ti| {
+                                    // Check if the type is a class AND matches one of our MIR wrapper classes
+                                    if let crate::tast::core::TypeKind::Class { symbol_id, .. } = &ti.kind {
+                                        self.symbol_table.get_symbol(*symbol_id)
+                                            .and_then(|s| self.string_interner.get(s.name))
+                                            .map(|name| {
+                                                // Check if it's Thread/Channel/Mutex/Arc
+                                                let is_mir_wrapper = ["Thread", "Channel", "Mutex", "MutexGuard", "Arc"].contains(&name);
+                                                if is_mir_wrapper {
+                                                    eprintln!("DEBUG: [GUARD] Receiver type is {} class, skipping instance method path", name);
+                                                }
+                                                is_mir_wrapper
+                                            })
+                                            .unwrap_or(false)
+                                    } else {
+                                        false
+                                    }
+                                })
+                                .unwrap_or(false)
+                        };
+
                         // Try the receiver type path first (for true instance methods)
+                        // Skip if receiver is a MIR wrapper class type (those are static methods)
+                        if !receiver_is_class_type {
                         if let Some((class_name, method_name, runtime_call)) =
                             self.get_stdlib_runtime_info(*symbol, receiver_type)
                         {
@@ -4278,6 +4309,7 @@ impl<'a> HirToMirContext<'a> {
                                 }
                             }
                         }
+                    } // end if !receiver_is_class_type
                     }
                     // For static methods, check if it's a stdlib static method
                     else if !is_method {
@@ -4307,12 +4339,48 @@ impl<'a> HirToMirContext<'a> {
                                             if is_rayzor_concurrent && ["Thread", "Channel", "Mutex", "Arc"].contains(&class_name) {
                                                 // Use capitalized class names for rayzor.concurrent (Thread, Channel, etc.)
                                                 let mir_func_name = format!("{}_{}", class_name, method_name);
-                                                eprintln!("DEBUG: [STDLIB MIR] Detected stdlib MIR function: {}", mir_func_name);
+                                                eprintln!("DEBUG: [STDLIB MIR] Detected stdlib MIR function: {}, args.len()={}", mir_func_name, args.len());
+                                                for (idx, arg) in args.iter().enumerate() {
+                                                    eprintln!("DEBUG: [STDLIB MIR PRE] arg[{}] kind={:?}, ty={:?}", idx, std::mem::discriminant(&arg.kind), arg.ty);
+                                                }
+
+                                                // WORKAROUND: During dependency loading retries, static method calls like
+                                                // Thread.spawn(closure) can be incorrectly treated as instance method calls
+                                                // with args = [Thread_class, closure] instead of just [closure].
+                                                // Detect and fix this by checking if first arg is the class itself.
+                                                let actual_args = if args.len() >= 2 {
+                                                    // Check if first arg might be the class type
+                                                    let type_table = self.type_table.borrow();
+                                                    let first_arg_is_class = type_table.get(args[0].ty)
+                                                        .map(|ti| {
+                                                            // Check if this type is a Class type matching our static method class
+                                                            if let crate::tast::core::TypeKind::Class { symbol_id, .. } = &ti.kind {
+                                                                self.symbol_table.get_symbol(*symbol_id)
+                                                                    .and_then(|s| self.string_interner.get(s.name))
+                                                                    .map(|name| name == class_name)
+                                                                    .unwrap_or(false)
+                                                            } else {
+                                                                false
+                                                            }
+                                                        })
+                                                        .unwrap_or(false);
+                                                    drop(type_table);
+
+                                                    if first_arg_is_class {
+                                                        eprintln!("DEBUG: [STDLIB MIR FIX] Detected spurious class argument, skipping first arg");
+                                                        &args[1..]  // Skip the class "receiver" argument
+                                                    } else {
+                                                        &args[..]
+                                                    }
+                                                } else {
+                                                    &args[..]
+                                                };
 
                                                 // Lower all arguments and collect their types
                                                 let mut arg_regs = Vec::new();
                                                 let mut param_types = Vec::new();
-                                                for arg in args {
+                                                for (idx, arg) in actual_args.iter().enumerate() {
+                                                    eprintln!("DEBUG: [STDLIB MIR] arg[{}] ty={:?}", idx, arg.ty);
                                                     if let Some(reg) = self.lower_expression(arg) {
                                                         arg_regs.push(reg);
                                                         param_types.push(self.convert_type(arg.ty));

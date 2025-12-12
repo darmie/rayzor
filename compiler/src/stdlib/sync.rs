@@ -151,6 +151,7 @@ fn build_arc_init(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Arc_init")
         .param("value", ptr_u8.clone())
         .returns(ptr_u8.clone())
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -174,6 +175,7 @@ fn build_arc_clone(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Arc_clone")
         .param("arc", ptr_u8.clone())
         .returns(ptr_u8.clone())
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -197,6 +199,7 @@ fn build_arc_get(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Arc_get")
         .param("arc", ptr_u8.clone())
         .returns(ptr_u8.clone())
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -221,6 +224,7 @@ fn build_arc_strong_count(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Arc_strongCount")
         .param("arc", ptr_u8)
         .returns(u64_ty)
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -244,6 +248,7 @@ fn build_arc_try_unwrap(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Arc_tryUnwrap")
         .param("arc", ptr_u8.clone())
         .returns(ptr_u8.clone())
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -268,6 +273,7 @@ fn build_arc_as_ptr(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Arc_asPtr")
         .param("arc", ptr_u8)
         .returns(u64_ty)
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -295,6 +301,7 @@ fn build_mutex_init(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Mutex_init")
         .param("value", ptr_u8.clone())
         .returns(ptr_u8.clone())
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -318,6 +325,7 @@ fn build_mutex_lock(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Mutex_lock")
         .param("mutex", ptr_u8.clone())
         .returns(ptr_u8.clone())
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -341,6 +349,7 @@ fn build_mutex_try_lock(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Mutex_tryLock")
         .param("mutex", ptr_u8.clone())
         .returns(ptr_u8.clone())
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -365,6 +374,7 @@ fn build_mutex_is_locked(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Mutex_isLocked")
         .param("mutex", ptr_u8)
         .returns(bool_ty)
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -388,6 +398,7 @@ fn build_mutex_guard_get(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("MutexGuard_get")
         .param("guard", ptr_u8.clone())
         .returns(ptr_u8.clone())
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -412,6 +423,7 @@ fn build_mutex_unlock(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("MutexGuard_unlock")
         .param("guard", ptr_u8)
         .returns(void_ty)
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);

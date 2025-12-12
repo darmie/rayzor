@@ -93,6 +93,7 @@ fn build_thread_spawn(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Thread_spawn")
         .param("closure_obj", ptr_u8.clone())
         .returns(ptr_u8.clone())
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -127,6 +128,7 @@ fn build_thread_join(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Thread_join")
         .param("handle", ptr_u8.clone())
         .returns(ptr_u8.clone())  // Return ptr_u8 (i64) to match rayzor_thread_join
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -156,6 +158,7 @@ fn build_thread_is_finished(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Thread_isFinished")
         .param("handle", ptr_u8)
         .returns(bool_ty)
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -179,6 +182,7 @@ fn build_thread_yield_now(builder: &mut MirBuilder) {
 
     let func_id = builder.begin_function("Thread_yieldNow")
         .returns(void_ty)
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -202,6 +206,7 @@ fn build_thread_sleep(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Thread_sleep")
         .param("millis", i32_ty)
         .returns(void_ty)
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -225,6 +230,7 @@ fn build_thread_current_id(builder: &mut MirBuilder) {
 
     let func_id = builder.begin_function("Thread_currentId")
         .returns(u64_ty)
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);

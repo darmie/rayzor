@@ -522,14 +522,18 @@ impl CraneliftBackend {
         }
 
         // Add environment parameter (hidden first/second parameter) for non-extern functions
-        // All non-extern functions now accept an environment pointer (null for static functions)
-        // Extern functions do NOT get this parameter since they're C ABI
-        // IMPORTANT: Lambda functions already have an 'env' parameter added during HIR/MIR lowering,
-        // so we must NOT add another environment parameter or we'll have a double-env-param bug
+        // that use Haxe calling convention. All such functions accept an environment pointer
+        // (null for static functions).
+        // DO NOT add env parameter for:
+        // - Extern functions (they're C ABI)
+        // - C calling convention functions (they're wrappers around externs)
+        // - Lambda functions (they already have an explicit 'env' parameter)
         let already_has_env_param = !function.signature.parameters.is_empty()
             && function.signature.parameters[0].name == "env";
+        let is_c_calling_conv = function.signature.calling_convention
+            == crate::ir::CallingConvention::C;
 
-        if !is_extern && !already_has_env_param {
+        if !is_extern && !already_has_env_param && !is_c_calling_conv {
             sig.params.push(AbiParam::new(types::I64));
         }
 
@@ -790,12 +794,16 @@ impl CraneliftBackend {
             ));
         }
 
-        // Add environment parameter (but not for lambdas that already have one)
-        // Lambda functions already have an explicit 'env' parameter in their MIR signature
+        // Add environment parameter for Haxe calling convention functions only
+        // DO NOT add env parameter for:
+        // - C calling convention functions (they're wrappers around externs)
+        // - Lambda functions (they already have an explicit 'env' parameter)
         let already_has_env_param = !function.signature.parameters.is_empty()
             && function.signature.parameters[0].name == "env";
+        let is_c_calling_conv = function.signature.calling_convention
+            == crate::ir::CallingConvention::C;
 
-        if !already_has_env_param {
+        if !already_has_env_param && !is_c_calling_conv {
             self.ctx
                 .func
                 .signature
@@ -854,6 +862,8 @@ impl CraneliftBackend {
         // Determine if this function already has an explicit 'env' parameter (e.g., lambdas)
         let already_has_env_param = !function.signature.parameters.is_empty()
             && function.signature.parameters[0].name == "env";
+        let is_c_calling_conv = function.signature.calling_convention
+            == crate::ir::CallingConvention::C;
 
         // If using sret, first parameter is the return pointer
         // Environment parameter is next (if added implicitly, not for lambdas with explicit env)
@@ -870,8 +880,17 @@ impl CraneliftBackend {
             // For lambdas, the env parameter is the first user parameter
             // current_env_param should point to it
             self.current_env_param = Some(param_values[sret_offset]);
+        } else if is_c_calling_conv {
+            // C calling convention function: no hidden environment parameter
+            // Parameters map directly (after optional sret)
+            for (i, param) in function.signature.parameters.iter().enumerate() {
+                self.value_map
+                    .insert(param.reg, param_values[i + sret_offset]);
+            }
+            // No env param for C functions
+            self.current_env_param = None;
         } else {
-            // Regular function with implicit hidden environment parameter
+            // Regular Haxe function with implicit hidden environment parameter
             let env_offset = sret_offset; // env param is at this index
             let param_offset = env_offset + 1; // user params start after env
 
@@ -1589,16 +1608,26 @@ impl CraneliftBackend {
                         call_args.push(sret_ptr);
                     }
 
-                    // Add environment argument (null for direct calls to non-extern functions)
-                    // Extern functions (including libc functions) do NOT take an environment parameter.
-                    // Lambdas already have an explicit 'env' parameter in their signature, so we shouldn't add a null one.
+                    // Add environment argument (null for direct calls to Haxe calling convention functions)
+                    // DO NOT add env argument for:
+                    // - Extern functions (they're C ABI)
+                    // - C calling convention functions (they're wrappers around externs)
+                    // - Lambda functions (they already have an explicit 'env' parameter)
+                    // - malloc/realloc/free (libc functions)
                     let is_lambda = called_func.name.starts_with("<lambda");
-                    if !is_extern_func
+                    let is_c_calling_conv = called_func.signature.calling_convention
+                        == crate::ir::CallingConvention::C;
+
+                    let should_add_env = !is_extern_func
                         && !is_lambda
+                        && !is_c_calling_conv
                         && !(called_func.name == "malloc"
                             || called_func.name == "realloc"
-                            || called_func.name == "free")
-                    {
+                            || called_func.name == "free");
+                    eprintln!("DEBUG: [ENV CHECK] func='{}' is_extern={} is_lambda={} is_c_cc={} calling_conv={:?} should_add_env={}",
+                             called_func.name, is_extern_func, is_lambda, is_c_calling_conv, called_func.signature.calling_convention, should_add_env);
+
+                    if should_add_env {
                         // For direct calls to regular functions, we pass a null environment pointer
                         call_args.push(builder.ins().iconst(types::I64, 0));
                     }
@@ -1706,6 +1735,12 @@ impl CraneliftBackend {
                             }
                         }
                         call_args.push(arg_val);
+                    }
+
+                    // Debug: print call_args length and MIR args length
+                    if called_func.name == "Thread_spawn" || called_func.name == "Channel_init" || called_func.name == "Mutex_lock" {
+                        eprintln!("DEBUG: [CALL] func='{}' call_args.len()={} mir_args.len()={} mir_args={:?}",
+                                 called_func.name, call_args.len(), args.len(), args);
                     }
 
                     // Emit the call instruction

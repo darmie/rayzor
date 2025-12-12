@@ -139,6 +139,7 @@ fn build_channel_init(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Channel_init")
         .param("capacity", i32_ty)
         .returns(ptr_u8.clone())
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -164,6 +165,7 @@ fn build_channel_send(builder: &mut MirBuilder) {
         .param("channel", ptr_u8.clone())
         .param("value", ptr_u8)
         .returns(void_ty)
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -190,6 +192,7 @@ fn build_channel_try_send(builder: &mut MirBuilder) {
         .param("channel", ptr_u8.clone())
         .param("value", ptr_u8)
         .returns(bool_ty)
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -214,6 +217,7 @@ fn build_channel_receive(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Channel_receive")
         .param("channel", ptr_u8.clone())
         .returns(ptr_u8.clone())
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -237,6 +241,7 @@ fn build_channel_try_receive(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Channel_tryReceive")
         .param("channel", ptr_u8.clone())
         .returns(ptr_u8.clone())
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -261,6 +266,7 @@ fn build_channel_close(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Channel_close")
         .param("channel", ptr_u8)
         .returns(void_ty)
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -285,6 +291,7 @@ fn build_channel_is_closed(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Channel_isClosed")
         .param("channel", ptr_u8)
         .returns(bool_ty)
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -309,6 +316,7 @@ fn build_channel_len(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Channel_len")
         .param("channel", ptr_u8)
         .returns(i32_ty)
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -333,6 +341,7 @@ fn build_channel_capacity(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Channel_capacity")
         .param("channel", ptr_u8)
         .returns(i32_ty)
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -357,6 +366,7 @@ fn build_channel_is_empty(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Channel_isEmpty")
         .param("channel", ptr_u8)
         .returns(bool_ty)
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
@@ -381,6 +391,7 @@ fn build_channel_is_full(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("Channel_isFull")
         .param("channel", ptr_u8)
         .returns(bool_ty)
+        .calling_convention(CallingConvention::C)
         .build();
 
     builder.set_current_function(func_id);
