@@ -1687,7 +1687,6 @@ impl<'a> HirToMirContext<'a> {
             }
         }
         if let Some((sig, mapping)) = self.stdlib_mapping.find_by_name(class_name, method_name) {
-            eprintln!("DEBUG: [get_stdlib_runtime_info] Found {}.{} via simple name -> {}", class_name, method_name, mapping.runtime_name);
             Some((sig.class, sig.method, mapping))
         } else {
             None

@@ -642,7 +642,7 @@ impl StdlibMapping {
             map_method!(static "String", "fromCharCode" => "haxe_string_from_char_code", params: 1, returns: primitive),
 
             // Properties (treated as getters with 0 params)
-            map_method!(instance "String", "length" => "haxe_string_len", params: 0, returns: primitive),
+            map_method!(instance "String", "length" => "string_length", params: 0, returns: primitive),
 
             // Instance methods - character access
             // charAt returns String pointer (empty string for out of bounds)
@@ -727,7 +727,7 @@ impl StdlibMapping {
 
             // Extraction methods
             // Array.slice uses MIR wrapper that handles out-param allocation
-            map_method!(instance "Array", "slice" => "Array_slice", params: 2, returns: primitive),
+            map_method!(instance "Array", "slice" => "array_slice", params: 2, returns: primitive),
             map_method!(instance "Array", "copy" => "haxe_array_copy", params: 0, returns: complex),
 
             // Search methods

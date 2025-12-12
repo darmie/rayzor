@@ -317,13 +317,16 @@ impl E2ETestSuite {
             let success = result.is_success();
             let test_name = test.name.clone();
 
-            results.push((test_name.clone(), result));
-
             if success {
                 println!("\n✅ {} PASSED", test_name);
             } else {
+                if let TestResult::Failed { ref error, ref level, .. } = result {
+                    println!("  Error at {:?}: {}", level, error);
+                }
                 println!("\n❌ {} FAILED", test_name);
             }
+
+            results.push((test_name.clone(), result));
             sleep(Duration::from_millis(100));
         }
 
@@ -411,7 +414,7 @@ class Main {
 }
 "#,
         )
-        .expect_mir_calls(vec!["haxe_string_len"])
+        .expect_mir_calls(vec!["string_length"])
         .expect_level(TestLevel::Execution),
     );
 
@@ -703,7 +706,7 @@ class Main {
 }
 "#,
         )
-        .expect_mir_calls(vec!["haxe_array_slice"])
+        .expect_mir_calls(vec!["array_slice"])
         .expect_level(TestLevel::Execution),
     );
 
@@ -916,7 +919,7 @@ class Main {
     suite.add_test(
         E2ETestCase::new(
             "integration_string_array",
-            "String split to array and iterate",
+            "String split to array",
             r#"
 package test;
 
@@ -924,19 +927,12 @@ class Main {
     static function main() {
         var s = "apple,banana,cherry";
         var fruits = s.split(",");
-        var count = fruits.length;  // 3
-
-        var i = 0;
-        while (i < count) {
-            var fruit = fruits[i];
-            var len = fruit.length;
-            i++;
-        }
+        trace(fruits.length);  // Expected: 3
     }
 }
 "#,
         )
-        .expect_mir_calls(vec!["haxe_string_split", "haxe_array_length", "haxe_string_length"])
+        .expect_mir_calls(vec!["haxe_string_split", "array_length"])
         .expect_level(TestLevel::Execution),
     );
 

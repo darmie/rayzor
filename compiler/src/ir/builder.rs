@@ -181,6 +181,8 @@ impl IrBuilder {
     /// Build a load instruction
     pub fn build_load(&mut self, ptr: IrId, ty: IrType) -> Option<IrId> {
         let dest = self.alloc_reg()?;
+        // Track the type of the loaded value
+        self.set_register_type(dest, ty.clone());
         self.add_instruction(IrInstruction::Load { dest, ptr, ty })?;
         Some(dest)
     }
