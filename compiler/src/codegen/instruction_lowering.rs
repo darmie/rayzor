@@ -43,10 +43,21 @@ impl CraneliftBackend {
 
         // Coerce both operands to a common type - always use the larger of the two
         // to avoid truncating pointers (i64 values from generic functions)
-        let operation_ty = if lhs_ty.bits() >= rhs_ty.bits() { lhs_ty } else { rhs_ty };
-        let operation_ty = if operation_ty.bits() > expected_ty.bits() {
-            operation_ty
+        // Also handle the case where MIR type is float but operands are integers
+        let both_operands_are_int = lhs_ty.is_int() && rhs_ty.is_int();
+        let larger_operand_ty = if lhs_ty.bits() >= rhs_ty.bits() { lhs_ty } else { rhs_ty };
+
+        let operation_ty = if both_operands_are_int && !expected_ty.is_int() {
+            // Expected type is not an integer but operands are - use the larger operand type
+            // This happens with unresolved generics that become Ptr(Void) -> I64
+            larger_operand_ty
+        } else if larger_operand_ty.is_int() && expected_ty.is_int() && larger_operand_ty.bits() > expected_ty.bits() {
+            // Operand type is larger than expected - use larger to prevent truncation
+            larger_operand_ty
+        } else if expected_ty.is_int() {
+            expected_ty
         } else {
+            // For non-integer operations (float), use expected type
             expected_ty
         };
 
@@ -70,30 +81,34 @@ impl CraneliftBackend {
             rhs
         };
 
+        // Use the actual operation_ty (Cranelift type) to decide float vs int operations.
+        // This handles cases where MIR type might incorrectly be a float but operands are integers.
+        let use_float_ops = operation_ty.is_float();
+
         let value = match op {
             BinaryOp::Add => {
-                if ty.is_float() {
+                if use_float_ops {
                     builder.ins().fadd(lhs, rhs)
                 } else {
                     builder.ins().iadd(lhs, rhs)
                 }
             }
             BinaryOp::Sub => {
-                if ty.is_float() {
+                if use_float_ops {
                     builder.ins().fsub(lhs, rhs)
                 } else {
                     builder.ins().isub(lhs, rhs)
                 }
             }
             BinaryOp::Mul => {
-                if ty.is_float() {
+                if use_float_ops {
                     builder.ins().fmul(lhs, rhs)
                 } else {
                     builder.ins().imul(lhs, rhs)
                 }
             }
             BinaryOp::Div => {
-                if ty.is_float() {
+                if use_float_ops {
                     builder.ins().fdiv(lhs, rhs)
                 } else if ty.is_signed() {
                     builder.ins().sdiv(lhs, rhs)
@@ -357,30 +372,36 @@ impl CraneliftBackend {
             rhs
         };
 
+        // Use the actual operation_ty (Cranelift type) to decide float vs int operations.
+        // This handles cases where MIR type might incorrectly be a float but operands are integers.
+        // For example, when dealing with Dynamic types that resolve to Ptr(Void), the MIR type
+        // might be wrong, but the actual operand types tell us the truth.
+        let use_float_ops = operation_ty.is_float();
+
         let value = match op {
             BinaryOp::Add => {
-                if ty.is_float() {
+                if use_float_ops {
                     builder.ins().fadd(lhs, rhs)
                 } else {
                     builder.ins().iadd(lhs, rhs)
                 }
             }
             BinaryOp::Sub => {
-                if ty.is_float() {
+                if use_float_ops {
                     builder.ins().fsub(lhs, rhs)
                 } else {
                     builder.ins().isub(lhs, rhs)
                 }
             }
             BinaryOp::Mul => {
-                if ty.is_float() {
+                if use_float_ops {
                     builder.ins().fmul(lhs, rhs)
                 } else {
                     builder.ins().imul(lhs, rhs)
                 }
             }
             BinaryOp::Div => {
-                if ty.is_float() {
+                if use_float_ops {
                     builder.ins().fdiv(lhs, rhs)
                 } else if ty.is_signed() {
                     builder.ins().sdiv(lhs, rhs)
