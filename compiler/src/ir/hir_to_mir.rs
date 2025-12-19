@@ -6566,19 +6566,42 @@ impl<'a> HirToMirContext<'a> {
             IrType::I32 | IrType::I64 => "int_to_string",
             IrType::F32 | IrType::F64 => "float_to_string",
             IrType::Bool => "bool_to_string",
-            IrType::String | IrType::Ptr(_) => {
-                // Already a string (or pointer that should be string)
+            IrType::String => {
+                // Already a string
                 return Some(value);
+            }
+            IrType::Ptr(inner) if matches!(inner.as_ref(), IrType::String) => {
+                // Pointer to string - already a string pointer
+                return Some(value);
+            }
+            IrType::Ptr(inner) if matches!(inner.as_ref(), IrType::Void) => {
+                // Ptr(Void) is often an unresolved generic - treat as i64 (Dynamic/pointer value)
+                // For now, assume it's an integer that needs conversion
+                eprintln!("DEBUG: [CONVERT TO STRING] Ptr(Void) detected, treating as int");
+                "int_to_string"
+            }
+            IrType::Ptr(_) => {
+                // Other pointer types - treat as opaque integer for conversion
+                "int_to_string"
             }
             _ => "int_to_string", // Fallback
         };
 
         eprintln!("DEBUG: [CONVERT TO STRING] Using {} for type {:?}", mir_wrapper, from_type);
 
-        // Cast i32 to i64 if needed (int_to_string expects i32 but we should handle i64 too)
-        let final_value = if matches!(from_type, IrType::I64) && mir_wrapper == "int_to_string" {
-            // int_to_string takes i32, so reduce i64 to i32
-            self.builder.build_cast(value, IrType::I64, IrType::I32).unwrap_or(value)
+        // Cast to proper type if needed (int_to_string expects i32)
+        let final_value = if mir_wrapper == "int_to_string" {
+            match from_type {
+                IrType::I64 => {
+                    // int_to_string takes i32, so reduce i64 to i32
+                    self.builder.build_cast(value, IrType::I64, IrType::I32).unwrap_or(value)
+                }
+                IrType::Ptr(_) => {
+                    // Pointer value (likely unresolved generic like Ptr(Void)) - treat as i64, then cast to i32
+                    self.builder.build_cast(value, IrType::I64, IrType::I32).unwrap_or(value)
+                }
+                _ => value,
+            }
         } else {
             value
         };

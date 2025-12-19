@@ -2106,10 +2106,15 @@ impl CraneliftBackend {
                     .get(src)
                     .ok_or_else(|| format!("Cast source {:?} not found in value_map", src))?;
 
-                let from_cl_ty = Self::mir_type_to_cranelift_static(from_ty)?;
+                // Use the ACTUAL Cranelift value type, not the declared MIR from_ty
+                // This handles cases where MIR type is wrong (e.g., Ptr(Void) for generic returns)
+                let actual_src_ty = builder.func.dfg.value_type(src_val);
                 let to_cl_ty = Self::mir_type_to_cranelift_static(to_ty)?;
 
-                let result = match (from_cl_ty, to_cl_ty) {
+                let result = match (actual_src_ty, to_cl_ty) {
+                    // Same type - just copy (no conversion needed)
+                    (from, to) if from == to => src_val,
+
                     // Int to Float conversions
                     (types::I32, types::F64) => builder.ins().fcvt_from_sint(types::F64, src_val),
                     (types::I64, types::F64) => builder.ins().fcvt_from_sint(types::F64, src_val),
@@ -2136,13 +2141,10 @@ impl CraneliftBackend {
                     (types::I32, types::I8) => builder.ins().ireduce(types::I8, src_val),
                     (types::I64, types::I8) => builder.ins().ireduce(types::I8, src_val),
 
-                    // Same type - just copy
-                    (from, to) if from == to => src_val,
-
                     _ => {
                         return Err(format!(
-                            "Unsupported cast from {:?} to {:?}",
-                            from_ty, to_ty
+                            "Unsupported cast from {:?} ({:?}) to {:?}",
+                            actual_src_ty, from_ty, to_ty
                         ))
                     }
                 };
