@@ -397,7 +397,14 @@ impl<'a> HirToMirContext<'a> {
                             } else {
                                 false
                             };
-                            has_mapping
+
+                            // Also skip if this is a generic stdlib class (like Vec<T>)
+                            // that has monomorphized variants with MIR wrappers
+                            let is_generic_stdlib = class_name
+                                .map(|n| self.stdlib_mapping.is_generic_stdlib_class(n))
+                                .unwrap_or(false);
+
+                            has_mapping || is_generic_stdlib
                         } else {
                             false
                         };
@@ -460,7 +467,8 @@ impl<'a> HirToMirContext<'a> {
                                 }
                                 has_runtime_constructor
                             } else {
-                                false
+                                // Also skip if this is a generic stdlib class (like Vec<T>)
+                                self.stdlib_mapping.is_generic_stdlib_class(class_name_str)
                             }
                         } else {
                             false
@@ -3535,8 +3543,9 @@ impl<'a> HirToMirContext<'a> {
                             // For these classes, we have MIR wrapper functions that forward to extern runtime functions.
                             // The wrappers take care of calling convention differences.
                             if self.stdlib_mapping.is_mir_wrapper_class(class_name) {
-                                // Use lowercase class name to match stdlib MIR wrapper naming convention
-                                let mir_func_name = format!("{}_{}", class_name.to_lowercase(), method_name);
+                                // Use PascalCase class name to match stdlib MIR wrapper naming convention
+                                // e.g., VecI32_first, Thread_join, Channel_send
+                                let mir_func_name = format!("{}_{}", class_name, method_name);
                                 eprintln!("DEBUG: [STDLIB MIR] Detected stdlib MIR function (instance): {}", mir_func_name);
 
                                 // Lower all arguments and collect their types
