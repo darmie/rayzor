@@ -4309,10 +4309,69 @@ impl<'a> HirToMirContext<'a> {
                                 }
                             }
                         }
-                    } // end if !receiver_is_class_type
+                    } else {
+                        // receiver_is_class_type == true
+                        // This is an instance method call on a MIR wrapper class (Thread, Channel, etc.)
+                        // Route to the MIR wrapper function (Thread_join, Channel_send, etc.)
+                        if let Some(sym_info) = self.symbol_table.get_symbol(*symbol) {
+                            if let Some(method_name) = self.string_interner.get(sym_info.name) {
+                                // Get the class name from the receiver type
+                                let class_name = {
+                                    let type_table = self.type_table.borrow();
+                                    type_table.get(receiver_type)
+                                        .and_then(|ti| {
+                                            if let crate::tast::core::TypeKind::Class { symbol_id, .. } = &ti.kind {
+                                                self.symbol_table.get_symbol(*symbol_id)
+                                                    .and_then(|s| self.string_interner.get(s.name))
+                                                    .map(|s| s.to_string())
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                };
+
+                                if let Some(class_name) = class_name {
+                                    // Build MIR wrapper function name: Thread_join, Channel_send, etc.
+                                    let mir_func_name = format!("{}_{}", class_name, method_name);
+                                    eprintln!("DEBUG: [MIR WRAPPER INSTANCE] Routing {}.{} to {}", class_name, method_name, mir_func_name);
+
+                                    // Get the registered signature for this MIR wrapper
+                                    if let Some((mir_param_types, mir_return_type)) = self.get_stdlib_mir_wrapper_signature(&mir_func_name) {
+                                        // Lower all arguments (first arg is receiver/self)
+                                        let mut arg_regs = Vec::new();
+                                        for arg in args {
+                                            if let Some(reg) = self.lower_expression(arg) {
+                                                arg_regs.push(reg);
+                                            }
+                                        }
+
+                                        // Register forward reference to MIR wrapper
+                                        let mir_func_id = self.register_stdlib_mir_forward_ref(
+                                            &mir_func_name,
+                                            mir_param_types,
+                                            mir_return_type,
+                                        );
+
+                                        eprintln!("DEBUG: [MIR WRAPPER INSTANCE] Registered forward ref to {} with ID {:?}", mir_func_name, mir_func_id);
+
+                                        // Generate the call
+                                        let result = self.builder.build_call_direct(
+                                            mir_func_id,
+                                            arg_regs,
+                                            result_type,
+                                        );
+                                        eprintln!("DEBUG: [MIR WRAPPER INSTANCE] Generated call, result: {:?}", result);
+                                        return result;
+                                    } else {
+                                        eprintln!("DEBUG: [MIR WRAPPER INSTANCE] No signature found for {}, falling through", mir_func_name);
+                                    }
+                                }
+                            }
+                        }
+                    } // end if receiver_is_class_type else block
                     }
                     // For static methods, check if it's a stdlib static method
-                    else if !is_method {
+                    if !*is_method {
                         // eprintln!("DEBUG: Static method path (is_method=false)");
                         if let Some(sym_info) = self.symbol_table.get_symbol(*symbol) {
                             if let Some(method_name) = self.string_interner.get(sym_info.name) {
