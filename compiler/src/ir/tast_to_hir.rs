@@ -1013,6 +1013,7 @@ impl<'a> TastToHirContext<'a> {
                         method: method_name,
                         is_static: _is_static,
                         is_constructor: false,  // Not checking for constructors in this code path
+                        param_count: arguments.len(), // Use actual arg count for lookup
                     };
 
                     if let Some(_mapping) = self.stdlib_mapping.get(&sig) {

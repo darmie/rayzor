@@ -1507,6 +1507,11 @@ impl CraneliftBackend {
                     // Lower arguments
                     // For C extern functions on non-Windows platforms, extend i32/u32 to i64
                     let mut arg_values = Vec::new();
+
+                    // Get the expected Cranelift parameter types from the function signature
+                    let expected_sig = module.declarations().get_function_decl(cl_func_id);
+                    let expected_param_types: Vec<_> = expected_sig.signature.params.iter().map(|p| p.value_type).collect();
+
                     for (i, &arg_reg) in args.iter().enumerate() {
                         let mut cl_value = *value_map.get(&arg_reg).ok_or_else(|| {
                             format!("Argument register {:?} not found in value_map", arg_reg)
@@ -1521,18 +1526,20 @@ impl CraneliftBackend {
                             // Get the actual Cranelift type of the value
                             let cl_value_type = builder.func.dfg.value_type(cl_value);
 
-                            if let Some(param) = extern_func.signature.parameters.get(i) {
-                                // Check if value is i32 but expected is i64
-                                if cl_value_type == types::I32 && matches!(param.ty,
-                                    crate::ir::IrType::I64 | crate::ir::IrType::I32) {
-                                    eprintln!("!!! [EXTERN BRANCH] Extending arg {} for {} from i32 to i64 (value_type={:?}, param_type={:?})",
-                                        i, extern_func.name, cl_value_type, param.ty);
-                                    cl_value = builder.ins().sextend(types::I64, cl_value);
-                                } else if cl_value_type == types::I8 && matches!(param.ty,
-                                    crate::ir::IrType::I64 | crate::ir::IrType::I32 | crate::ir::IrType::Bool) {
-                                    eprintln!("!!! [EXTERN BRANCH] Extending arg {} for {} from i8 to i64", i, extern_func.name);
-                                    cl_value = builder.ins().sextend(types::I64, cl_value);
-                                } else if (cl_value_type == types::I32 || cl_value_type == types::I64)
+                            // Get the expected Cranelift type from the signature (not the MIR type)
+                            let expected_cl_type = expected_param_types.get(i).copied();
+
+                            // Extend i32 to i64 if the Cranelift signature expects i64
+                            if cl_value_type == types::I32 && expected_cl_type == Some(types::I64) {
+                                eprintln!("!!! [EXTERN BRANCH] Extending arg {} for {} from i32 to i64 (based on Cranelift signature)",
+                                    i, extern_func.name);
+                                cl_value = builder.ins().sextend(types::I64, cl_value);
+                            } else if cl_value_type == types::I8 && expected_cl_type == Some(types::I64) {
+                                eprintln!("!!! [EXTERN BRANCH] Extending arg {} for {} from i8 to i64", i, extern_func.name);
+                                cl_value = builder.ins().sextend(types::I64, cl_value);
+                            } else if let Some(param) = extern_func.signature.parameters.get(i) {
+                                // Fallback to MIR type-based conversions for special cases
+                                if (cl_value_type == types::I32 || cl_value_type == types::I64)
                                     && matches!(param.ty, crate::ir::IrType::F64)
                                 {
                                     // Integer to float conversion (e.g., Math.abs(-5))

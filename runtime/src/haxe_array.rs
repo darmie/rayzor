@@ -5,6 +5,9 @@
 
 use std::alloc::{alloc, dealloc, realloc, Layout};
 use std::ptr;
+use std::slice;
+use std::str;
+use crate::haxe_string::HaxeString;
 
 /// Haxe Array representation (generic via element size)
 #[repr(C)]
@@ -543,5 +546,106 @@ pub extern "C" fn haxe_array_get_f64(arr: *const HaxeArray, index: usize) -> f64
         value
     } else {
         0.0
+    }
+}
+
+// ============================================================================
+// Array Join (for string arrays)
+// ============================================================================
+
+/// Join array elements with a separator, returning a new string
+/// arr: pointer to array of HaxeString pointers
+/// sep: separator string
+/// Returns: pointer to a new HaxeString (caller should manage memory)
+#[no_mangle]
+pub extern "C" fn haxe_array_join(arr: *const HaxeArray, sep: *const HaxeString) -> *mut HaxeString {
+    unsafe {
+        // Allocate result string
+        let result_layout = Layout::new::<HaxeString>();
+        let result_ptr = alloc(result_layout) as *mut HaxeString;
+        if result_ptr.is_null() {
+            panic!("Failed to allocate HaxeString for join result");
+        }
+
+        if arr.is_null() {
+            // Empty array -> empty string
+            crate::haxe_string::haxe_string_new(result_ptr);
+            return result_ptr;
+        }
+
+        let arr_ref = &*arr;
+
+        if arr_ref.len == 0 {
+            // Empty array -> empty string
+            crate::haxe_string::haxe_string_new(result_ptr);
+            return result_ptr;
+        }
+
+        // Get separator string data
+        let (sep_ptr, sep_len) = if sep.is_null() {
+            (ptr::null(), 0usize)
+        } else {
+            let sep_ref = &*sep;
+            (sep_ref.ptr as *const u8, sep_ref.len)
+        };
+
+        // Calculate total length needed
+        let mut total_len: usize = 0;
+
+        // The array contains pointers to HaxeString
+        // elem_size should be sizeof(*HaxeString) = sizeof(usize) typically
+        for i in 0..arr_ref.len {
+            // Get pointer to the HaxeString pointer stored in the array
+            let elem_ptr = arr_ref.ptr.add(i * arr_ref.elem_size) as *const *const HaxeString;
+            let string_ptr = *elem_ptr;
+
+            if !string_ptr.is_null() {
+                total_len += (*string_ptr).len;
+            }
+
+            // Add separator length (except for last element)
+            if i < arr_ref.len - 1 {
+                total_len += sep_len;
+            }
+        }
+
+        // Allocate result buffer
+        let buf_cap = total_len + 1; // +1 for null terminator
+        let buf_layout = Layout::from_size_align_unchecked(buf_cap, 1);
+        let buf_ptr = alloc(buf_layout);
+        if buf_ptr.is_null() {
+            panic!("Failed to allocate buffer for join result");
+        }
+
+        // Copy strings with separator
+        let mut offset: usize = 0;
+        for i in 0..arr_ref.len {
+            let elem_ptr = arr_ref.ptr.add(i * arr_ref.elem_size) as *const *const HaxeString;
+            let string_ptr = *elem_ptr;
+
+            if !string_ptr.is_null() {
+                let s = &*string_ptr;
+                if s.len > 0 && !s.ptr.is_null() {
+                    ptr::copy_nonoverlapping(s.ptr, buf_ptr.add(offset), s.len);
+                    offset += s.len;
+                }
+            }
+
+            // Add separator (except for last element)
+            if i < arr_ref.len - 1 && sep_len > 0 && !sep_ptr.is_null() {
+                ptr::copy_nonoverlapping(sep_ptr, buf_ptr.add(offset), sep_len);
+                offset += sep_len;
+            }
+        }
+
+        // Null terminate
+        *buf_ptr.add(offset) = 0;
+
+        // Set up result HaxeString
+        (*result_ptr).ptr = buf_ptr;
+        (*result_ptr).len = total_len;
+        (*result_ptr).cap = buf_cap;
+
+        result_ptr
     }
 }

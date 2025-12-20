@@ -75,6 +75,10 @@ pub struct MethodSignature {
 
     /// Whether this is a constructor (new method on extern class)
     pub is_constructor: bool,
+
+    /// Parameter count - allows multiple mappings for methods with optional params
+    /// For example, indexOf with 1 param vs indexOf with 2 params
+    pub param_count: usize,
 }
 
 /// Standard library runtime mapping
@@ -136,6 +140,16 @@ impl StdlibMapping {
     pub fn find_by_name(&self, class: &str, method: &str) -> Option<(&MethodSignature, &RuntimeFunctionCall)> {
         self.mappings.iter().find(|(sig, _)| {
             sig.class == class && sig.method == method
+        })
+    }
+
+    /// Find a stdlib method mapping by class, method name, AND parameter count
+    /// This enables overloaded mappings where the same method has different implementations
+    /// based on the number of arguments (e.g., indexOf with 1 vs 2 params)
+    /// Returns the signature and runtime function call if found
+    pub fn find_by_name_and_params(&self, class: &str, method: &str, param_count: usize) -> Option<(&MethodSignature, &RuntimeFunctionCall)> {
+        self.mappings.iter().find(|(sig, call)| {
+            sig.class == class && sig.method == method && call.param_count == param_count
         })
     }
 
@@ -282,6 +296,7 @@ macro_rules! map_method {
                 method: $method,
                 is_static: true,  // Constructors are called like static methods
                 is_constructor: true,
+                param_count: $params,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -306,6 +321,7 @@ macro_rules! map_method {
                 method: $method,
                 is_static: true,  // Constructors are called like static methods
                 is_constructor: true,
+                param_count: $params,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -329,6 +345,7 @@ macro_rules! map_method {
                 method: $method,
                 is_static: false,
                 is_constructor: false,
+                param_count: $params,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -353,6 +370,7 @@ macro_rules! map_method {
                 method: $method,
                 is_static: false,
                 is_constructor: false,
+                param_count: $params,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -377,6 +395,7 @@ macro_rules! map_method {
                 method: $method,
                 is_static: false,
                 is_constructor: false,
+                param_count: $params,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -401,6 +420,7 @@ macro_rules! map_method {
                 method: $method,
                 is_static: false,
                 is_constructor: false,
+                param_count: $params,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -424,6 +444,7 @@ macro_rules! map_method {
                 method: $method,
                 is_static: false,
                 is_constructor: false,
+                param_count: $params,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -447,6 +468,7 @@ macro_rules! map_method {
                 method: $method,
                 is_static: false,
                 is_constructor: false,
+                param_count: $params,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -470,6 +492,7 @@ macro_rules! map_method {
                 method: $method,
                 is_static: false,
                 is_constructor: false,
+                param_count: $params,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -493,6 +516,7 @@ macro_rules! map_method {
                 method: $method,
                 is_static: false,
                 is_constructor: false,
+                param_count: $params,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -516,6 +540,7 @@ macro_rules! map_method {
                 method: $method,
                 is_static: false,
                 is_constructor: false,
+                param_count: $params,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -540,6 +565,7 @@ macro_rules! map_method {
                 method: $method,
                 is_static: false,
                 is_constructor: false,
+                param_count: $params,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -563,6 +589,7 @@ macro_rules! map_method {
                 method: $method,
                 is_static: true,
                 is_constructor: false,
+                param_count: $params,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -586,6 +613,7 @@ macro_rules! map_method {
                 method: $method,
                 is_static: true,
                 is_constructor: false,
+                param_count: $params,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -609,6 +637,7 @@ macro_rules! map_method {
                 method: $method,
                 is_static: true,
                 is_constructor: false,
+                param_count: $params,
             },
             RuntimeFunctionCall {
                 runtime_name: $runtime,
@@ -649,10 +678,18 @@ impl StdlibMapping {
             map_method!(instance "String", "charAt" => "haxe_string_char_at_ptr", params: 1, returns: primitive),
             // charCodeAt returns Null<Int> (-1 for out of bounds, which we represent as i64)
             map_method!(instance "String", "charCodeAt" => "haxe_string_char_code_at_ptr", params: 1, returns: primitive),
+            // cca is an internal alias for charCodeAt used in StringTools.unsafeCodeAt
+            map_method!(instance "String", "cca" => "haxe_string_char_code_at_ptr", params: 1, returns: primitive),
 
             // Search operations
-            map_method!(instance "String", "indexOf" => "haxe_string_index_of_ptr", params: 2, returns: primitive),
-            map_method!(instance "String", "lastIndexOf" => "haxe_string_last_index_of_ptr", params: 2, returns: primitive),
+            // indexOf and lastIndexOf have optional startIndex parameter, so we have two mappings each:
+            // - 1-arg versions use MIR wrappers that provide default startIndex (0 for indexOf, -1 for lastIndexOf)
+            // - 2-arg versions use MIR wrappers that forward the explicit startIndex
+            // The caller uses find_by_name_and_params() to select the right mapping based on arg count
+            map_method!(instance "String", "indexOf" => "String_indexOf", params: 1, returns: primitive),
+            map_method!(instance "String", "indexOf" => "String_indexOf_2", params: 2, returns: primitive),
+            map_method!(instance "String", "lastIndexOf" => "String_lastIndexOf", params: 1, returns: primitive),
+            map_method!(instance "String", "lastIndexOf" => "String_lastIndexOf_2", params: 2, returns: primitive),
 
             // String transformations
             map_method!(instance "String", "split" => "haxe_string_split_array", params: 1, returns: primitive),
@@ -685,16 +722,10 @@ impl StdlibMapping {
             map_method!(static "StringTools", "endsWith" => "haxe_string_ends_with", params: 2, returns: primitive),
             // StringTools.contains(s: String, search: String) -> Bool
             map_method!(static "StringTools", "contains" => "haxe_string_contains", params: 2, returns: primitive),
-            // StringTools.trim(s: String) -> String
-            map_method!(static "StringTools", "trim" => "haxe_string_trim", params: 1, returns: primitive),
-            // StringTools.ltrim(s: String) -> String
-            map_method!(static "StringTools", "ltrim" => "haxe_string_ltrim", params: 1, returns: primitive),
-            // StringTools.rtrim(s: String) -> String
-            map_method!(static "StringTools", "rtrim" => "haxe_string_rtrim", params: 1, returns: primitive),
+            // StringTools.trim, ltrim, rtrim, isSpace are implemented in Haxe, don't map to runtime
+            // They use charCodeAt, substr, etc. which ARE mapped
             // StringTools.replace(s: String, sub: String, by: String) -> String
             map_method!(static "StringTools", "replace" => "haxe_string_replace", params: 3, returns: primitive),
-            // StringTools.isSpace(s: String, pos: Int) -> Bool
-            map_method!(static "StringTools", "isSpace" => "haxe_string_is_space", params: 2, returns: primitive),
             // StringTools.lpad(s: String, c: String, l: Int) -> String
             map_method!(static "StringTools", "lpad" => "haxe_string_lpad", params: 3, returns: primitive),
             // StringTools.rpad(s: String, c: String, l: Int) -> String
@@ -735,6 +766,10 @@ impl StdlibMapping {
             // Bitmask: 0b10 = bit 1 set
             map_method!(instance "Array", "indexOf" => "haxe_array_index_of", params: 2, returns: primitive, ptr_params: 0b10),
             map_method!(instance "Array", "lastIndexOf" => "haxe_array_last_index_of", params: 2, returns: primitive, ptr_params: 0b10),
+
+            // Array.join(sep: String) -> String
+            // Joins array elements with separator, returns new string
+            map_method!(instance "Array", "join" => "array_join", params: 1, returns: primitive),
         ];
 
         self.register_from_tuples(mappings);
@@ -1525,6 +1560,7 @@ mod tests {
             method: "charAt",
             is_static: false,
             is_constructor: false,
+            param_count: 0, // Will be ignored in lookup by key
         };
         let call = mapping.get(&sig).expect("charAt should be mapped");
         assert_eq!(call.runtime_name, "haxe_string_char_at");
@@ -1539,6 +1575,7 @@ mod tests {
             method: "toUpperCase",
             is_static: false,
             is_constructor: false,
+            param_count: 0, // Will be ignored in lookup by key
         };
         let call = mapping.get(&sig).expect("toUpperCase should be mapped");
         assert_eq!(call.runtime_name, "haxe_string_to_upper_case");
@@ -1555,6 +1592,7 @@ mod tests {
             method: "push",
             is_static: false,
             is_constructor: false,
+            param_count: 0, // Will be ignored in lookup by key
         };
         let call = mapping.get(&sig).expect("push should be mapped");
         assert_eq!(call.runtime_name, "haxe_array_push");
@@ -1570,6 +1608,7 @@ mod tests {
             method: "sin",
             is_static: true,
             is_constructor: false,
+            param_count: 0, // Will be ignored in lookup by key
         };
         let call = mapping.get(&sig).expect("sin should be mapped");
         assert_eq!(call.runtime_name, "haxe_math_sin");
@@ -1626,6 +1665,7 @@ mod tests {
             method: "push",
             is_static: false,
             is_constructor: false,
+            param_count: 0, // Will be ignored in lookup by key
         };
         let call = mapping.get(&sig).expect("VecI32.push should be mapped");
         assert_eq!(call.runtime_name, "rayzor_vec_i32_push");
@@ -1640,6 +1680,7 @@ mod tests {
             method: "get",
             is_static: false,
             is_constructor: false,
+            param_count: 0, // Will be ignored in lookup by key
         };
         let call = mapping.get(&sig).expect("VecF64.get should be mapped");
         assert_eq!(call.runtime_name, "rayzor_vec_f64_get");
@@ -1653,6 +1694,7 @@ mod tests {
             method: "push",
             is_static: false,
             is_constructor: false,
+            param_count: 0, // Will be ignored in lookup by key
         };
         let call = mapping.get(&sig).expect("VecPtr.push should be mapped");
         assert_eq!(call.runtime_name, "rayzor_vec_ptr_push");
@@ -1663,6 +1705,7 @@ mod tests {
             method: "pop",
             is_static: false,
             is_constructor: false,
+            param_count: 0, // Will be ignored in lookup by key
         };
         let call = mapping.get(&sig).expect("VecBool.pop should be mapped");
         assert_eq!(call.runtime_name, "rayzor_vec_bool_pop");

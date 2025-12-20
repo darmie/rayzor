@@ -112,6 +112,7 @@ register_symbol!("haxe_array_reverse", crate::haxe_array::haxe_array_reverse);
 // Operations
 register_symbol!("haxe_array_copy", crate::haxe_array::haxe_array_copy);
 register_symbol!("haxe_array_slice", crate::haxe_array::haxe_array_slice);
+register_symbol!("haxe_array_join", crate::haxe_array::haxe_array_join);
 
 // Memory
 register_symbol!("haxe_array_free", crate::haxe_array::haxe_array_free);

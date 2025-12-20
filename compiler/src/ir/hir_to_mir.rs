@@ -443,6 +443,7 @@ impl<'a> HirToMirContext<'a> {
                                     method: "new",
                                     is_static: true,
                                     is_constructor: true,
+                                    param_count: 0,
                                 };
                                 let has_runtime_constructor = self.stdlib_mapping.get(&method_sig).is_some();
                                 if has_runtime_constructor {
@@ -460,6 +461,7 @@ impl<'a> HirToMirContext<'a> {
                                     method: "new",
                                     is_static: true,
                                     is_constructor: true,
+                                    param_count: 0,
                                 };
                                 let has_runtime_constructor = self.stdlib_mapping.get(&method_sig).is_some();
                                 if has_runtime_constructor {
@@ -2461,6 +2463,7 @@ impl<'a> HirToMirContext<'a> {
                 );
 
                 // Check if this is a method call (callee is a field access)
+                eprintln!("DEBUG: [CALL CHECK] callee.kind discriminant = {:?}", std::mem::discriminant(&callee.kind));
                 if let HirExprKind::Field { object, field } = &callee.kind {
                     // This is a method call: object.method(args)
                     // The method symbol should be in our function_map (local or external)
@@ -2473,11 +2476,32 @@ impl<'a> HirToMirContext<'a> {
 
                         // FIRST: Try to route through runtime mapping for extern class methods
                         // Check if there's a runtime mapping using the standard approach
-                        if let Some((class_name, method_name, runtime_call)) =
-                            self.get_stdlib_runtime_info(*field, object.ty)
+                        // BUT: for String methods with optional params, use param-count-aware lookup
+                        let stdlib_info = {
+                            let method_name_str = self.symbol_table.get_symbol(*field)
+                                .and_then(|s| self.string_interner.get(s.name));
+
+                            // Check if this is a String method with optional params
+                            if let Some(mn) = method_name_str {
+                                if (mn == "indexOf" || mn == "lastIndexOf") {
+                                    // Use param-count-aware lookup for indexOf/lastIndexOf
+                                    let arg_count = args.len();
+                                    eprintln!("DEBUG: [indexOf/lastIndexOf lookup] method={}, arg_count={}", mn, arg_count);
+                                    self.stdlib_mapping
+                                        .find_by_name_and_params("String", mn, arg_count)
+                                        .map(|(sig, mapping)| (sig.class, sig.method, mapping))
+                                } else {
+                                    self.get_stdlib_runtime_info(*field, object.ty)
+                                }
+                            } else {
+                                self.get_stdlib_runtime_info(*field, object.ty)
+                            }
+                        };
+
+                        if let Some((class_name, method_name, runtime_call)) = stdlib_info
                         {
                             let runtime_func = runtime_call.runtime_name;
-                            eprintln!("DEBUG: [Extern method redirect] {}.{} -> {}", class_name, method_name, runtime_func);
+                            eprintln!("DEBUG: [Extern method redirect] {}.{} -> {} (param_count={})", class_name, method_name, runtime_func, runtime_call.param_count);
 
                             // Lower the object (this will be the first parameter)
                             let obj_reg = self.lower_expression(object)?;
@@ -2638,18 +2662,26 @@ impl<'a> HirToMirContext<'a> {
                         {
                             let type_table = self.type_table.borrow();
                             if let Some(type_info) = type_table.get(object_type) {
+                                eprintln!("DEBUG: [CHECK STRING] object_type={:?}, kind={:?}", object_type, type_info.kind);
                                 if matches!(type_info.kind, TypeKind::String) {
                                     // Get the method name from the field symbol
                                     let method_name = self.symbol_table.get_symbol(*field)
                                         .and_then(|s| self.string_interner.get(s.name));
 
                                     if let Some(method_name) = method_name {
+                                        // For String methods with optional params (indexOf, lastIndexOf),
+                                        // look up the mapping by param count to get the right variant
+                                        let arg_count = args.len();
+                                        let mapping_opt = self.stdlib_mapping
+                                            .find_by_name_and_params("String", method_name, arg_count)
+                                            .or_else(|| self.stdlib_mapping.find_by_name("String", method_name));
+
                                         // Look up the runtime function for this String method
-                                        if let Some((_sig, mapping)) = self.stdlib_mapping.find_by_name("String", method_name) {
+                                        if let Some((_sig, mapping)) = mapping_opt {
                                             let runtime_func = mapping.runtime_name;
 
-                                            eprintln!("DEBUG: [STRING METHOD] Found String.{} -> {}",
-                                                     method_name, runtime_func);
+                                            eprintln!("DEBUG: [STRING METHOD] Found String.{} with {} args -> {}",
+                                                     method_name, arg_count, runtime_func);
 
                                             drop(type_table);
 
@@ -3306,8 +3338,16 @@ impl<'a> HirToMirContext<'a> {
                                         .and_then(|s| self.string_interner.get(s.name));
 
                                     if let Some(method_name) = method_name {
+                                        // For String methods with optional params (indexOf, lastIndexOf),
+                                        // look up the mapping by param count (args[1..] is the method args)
+                                        let arg_count = args.len().saturating_sub(1); // Exclude receiver
+                                        eprintln!("DEBUG: [String arg_count] method={}, args.len()={}, arg_count={}", method_name, args.len(), arg_count);
+                                        let mapping_opt = self.stdlib_mapping
+                                            .find_by_name_and_params("String", method_name, arg_count)
+                                            .or_else(|| self.stdlib_mapping.find_by_name("String", method_name));
+
                                         // Look up the runtime function for this String method
-                                        if let Some((_sig, mapping)) = self.stdlib_mapping.find_by_name("String", method_name) {
+                                        if let Some((_sig, mapping)) = mapping_opt {
                                             let runtime_func = mapping.runtime_name;
 
                                             eprintln!("DEBUG: [STRING METHOD] Variable path - Found String.{} -> {}",
@@ -3461,8 +3501,8 @@ impl<'a> HirToMirContext<'a> {
                                         self.symbol_table.get_symbol(*symbol_id)
                                             .and_then(|s| self.string_interner.get(s.name))
                                             .map(|name| {
-                                                // Check if it's Thread/Channel/Mutex/Arc
-                                                let is_mir_wrapper = ["Thread", "Channel", "Mutex", "MutexGuard", "Arc"].contains(&name);
+                                                // Check if it's Thread/Channel/Mutex/Arc/String
+                                                let is_mir_wrapper = ["Thread", "Channel", "Mutex", "MutexGuard", "Arc", "String"].contains(&name);
                                                 if is_mir_wrapper {
                                                     eprintln!("DEBUG: [GUARD] Receiver type is {} class, skipping instance method path", name);
                                                 }
@@ -4746,6 +4786,7 @@ impl<'a> HirToMirContext<'a> {
                                             method: method_static,
                                             is_static: true,
                                             is_constructor: false,  // Normal static method, not constructor
+                                            param_count: args.len(),
                                         };
                                         if let Some(mapping) = self.stdlib_mapping.get(&sig) {
                                             found_mapping = Some((class_name, mapping));
@@ -4981,6 +5022,7 @@ impl<'a> HirToMirContext<'a> {
                             method: "new",
                             is_static: true,
                             is_constructor: true,
+                            param_count: 0,
                         };
                         if stdlib_mapping.get(&method_sig).is_some() {
                             class_name = Some(potential_class);
@@ -5740,11 +5782,9 @@ impl<'a> HirToMirContext<'a> {
         // Collect all variables referenced in condition
         let mut referenced_vars = std::collections::HashSet::new();
         self.collect_referenced_variables_in_expr(condition, &mut referenced_vars);
-        // eprintln!("DEBUG: Variables in condition: {:?}", referenced_vars);
 
         // Collect all variables referenced in body
         self.collect_referenced_variables_in_block(body, &mut referenced_vars);
-        // eprintln!("DEBUG: Variables in condition + body: {:?}", referenced_vars);
 
         // Only include variables that were declared before the loop
         // (i.e., they're already in the symbol_map)
@@ -5762,12 +5802,9 @@ impl<'a> HirToMirContext<'a> {
                 } else {
                     false
                 };
-                // eprintln!("DEBUG: Symbol {:?} in map: {}, is_param: {}", sym, in_map, is_param);
                 in_map && !is_param
             })
             .collect();
-
-        // eprintln!("DEBUG: Found {} loop variables: {:?}", modified_vars.len(), modified_vars);
 
         // Save initial values of loop variables before jumping to condition
         let mut loop_var_initial_values: HashMap<SymbolId, (IrId, IrType)> = HashMap::new();
@@ -5823,20 +5860,38 @@ impl<'a> HirToMirContext<'a> {
         }
         // eprintln!("DEBUG: Created {} phi nodes", phi_nodes.len());
 
-        // Create exit block phi nodes NOW (before pushing loop context)
-        // so that break statements can add incoming edges to them
+        // Push loop context (exit phi nodes will be added after condition evaluation)
+        // We need to evaluate the condition FIRST to know which block we're actually in
+        // (short-circuit operators like && create additional blocks)
+        self.loop_stack.push(LoopContext {
+            continue_block: cond_block,
+            break_block: exit_block,
+            label: label.cloned(),
+            exit_phi_nodes: HashMap::new(), // Will be populated after condition eval
+        });
+
+        // Evaluate condition - this may create additional blocks for short-circuit operators!
+        // After this, we may be in a different block than cond_block
+        let cond_result = self.lower_expression(condition);
+
+        // Capture the block we're actually in AFTER condition evaluation
+        // This is where the conditional branch to body/exit will happen
+        let cond_end_block = self.builder.current_block().unwrap_or(cond_block);
+
+        // Now create exit block phi nodes with the correct predecessor block
         let mut exit_phi_nodes: HashMap<SymbolId, IrId> = HashMap::new();
         for (symbol_id, loop_phi_reg) in &phi_nodes {
             if let Some((_, var_type)) = loop_var_initial_values.get(symbol_id) {
                 // Allocate a new register for the exit block parameter
                 let exit_param_reg = self.builder.alloc_reg().unwrap();
 
-                // Create the phi node in the exit block with initial incoming edge from cond_block
+                // Create the phi node in the exit block with incoming edge from the ACTUAL
+                // block that branches to exit (cond_end_block, not necessarily cond_block)
                 if let Some(func) = self.builder.current_function_mut() {
                     if let Some(exit_block_data) = func.cfg.get_block_mut(exit_block) {
                         let exit_phi = super::IrPhiNode {
                             dest: exit_param_reg,
-                            incoming: vec![(cond_block, *loop_phi_reg)],
+                            incoming: vec![(cond_end_block, *loop_phi_reg)],
                             ty: var_type.clone(),
                         };
                         exit_block_data.add_phi(exit_phi);
@@ -5859,16 +5914,13 @@ impl<'a> HirToMirContext<'a> {
             }
         }
 
-        // Push loop context with exit phi nodes
-        self.loop_stack.push(LoopContext {
-            continue_block: cond_block,
-            break_block: exit_block,
-            label: label.cloned(),
-            exit_phi_nodes: exit_phi_nodes.clone(),
-        });
+        // Update loop context with the exit phi nodes
+        if let Some(loop_ctx) = self.loop_stack.last_mut() {
+            loop_ctx.exit_phi_nodes = exit_phi_nodes.clone();
+        }
 
-        // Evaluate condition
-        if let Some(cond_reg) = self.lower_expression(condition) {
+        // Build conditional branch from the block we're actually in
+        if let Some(cond_reg) = cond_result {
             self.builder
                 .build_cond_branch(cond_reg, body_block, exit_block);
         }
@@ -6962,8 +7014,40 @@ impl<'a> HirToMirContext<'a> {
     fn lower_lvalue_write(&mut self, lvalue: &HirLValue, value: IrId) {
         match lvalue {
             HirLValue::Variable(symbol) => {
+                // Get the old register before updating (for type inference)
+                let old_reg = self.symbol_map.get(symbol).copied();
+
                 // Update the variable binding
                 self.symbol_map.insert(*symbol, value);
+
+                // Ensure the new value register has a local entry for phi node tracking
+                // Get the existing local type from the symbol, or infer from value
+                if let Some(func) = self.builder.current_function_mut() {
+                    // Only add if not already present
+                    if !func.locals.contains_key(&value) {
+                        // Try to get the type from an existing binding of this symbol
+                        let var_type = old_reg
+                            .and_then(|r| func.locals.get(&r))
+                            .map(|local| local.ty.clone())
+                            .unwrap_or(IrType::Ptr(Box::new(IrType::Void)));
+
+                        let var_name = self.symbol_table.get_symbol(*symbol)
+                            .and_then(|s| self.string_interner.get(s.name))
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| format!("var_{}", symbol.as_raw()));
+
+                        func.locals.insert(
+                            value,
+                            super::IrLocal {
+                                name: format!("{}_v{}", var_name, value.0),
+                                ty: var_type,
+                                mutable: true,
+                                source_location: super::IrSourceLocation::unknown(),
+                                allocation: super::AllocationHint::Register,
+                            },
+                        );
+                    }
+                }
             }
             HirLValue::Field { object, field } => {
                 // Write object.field = value
@@ -8205,14 +8289,16 @@ impl<'a> HirToMirContext<'a> {
         //     body;
         // } while (condition);
         //
-        // MIR structure:
-        // body_block:
+        // MIR structure with phi nodes:
+        // entry_block:
+        //     goto body_block(initial_values)
+        // body_block(phi_nodes):
         //     <body statements>
         //     goto cond_block
         // cond_block:
         //     %cond = <evaluate condition>
-        //     br %cond, body_block, exit_block
-        // exit_block:
+        //     br %cond, body_block(updated_values), exit_block(final_values)
+        // exit_block(exit_phi_nodes):
         //     <continue>
 
         // Create blocks
@@ -8226,11 +8312,87 @@ impl<'a> HirToMirContext<'a> {
             return;
         };
 
+        // Save the entry block (current block before loop)
+        let entry_block = if let Some(block_id) = self.builder.current_block() {
+            block_id
+        } else {
+            return;
+        };
+
+        // Find all variables that are referenced in the loop body and condition
+        let mut referenced_vars = std::collections::HashSet::new();
+        self.collect_referenced_variables_in_block(body, &mut referenced_vars);
+        self.collect_referenced_variables_in_expr(condition, &mut referenced_vars);
+
+        // Only include variables that were declared before the loop
+        // (i.e., they're already in the symbol_map)
+        // Exclude function parameters since they're immutable
+        let modified_vars: std::collections::HashSet<SymbolId> = referenced_vars
+            .into_iter()
+            .filter(|sym| {
+                let in_map = self.symbol_map.contains_key(sym);
+                // Check if this is a function parameter by seeing if it's in the current function's parameters
+                let is_param = if let Some(func) = self.builder.current_function() {
+                    func.signature.parameters.iter().any(|p| {
+                        self.symbol_map.get(sym) == Some(&p.reg)
+                    })
+                } else {
+                    false
+                };
+                in_map && !is_param
+            })
+            .collect();
+
+        // Save initial values of loop variables before jumping to body
+        let mut loop_var_initial_values: HashMap<SymbolId, (IrId, IrType)> = HashMap::new();
+        for symbol_id in &modified_vars {
+            if let Some(&reg) = self.symbol_map.get(symbol_id) {
+                // Get the type from the locals table
+                if let Some(func) = self.builder.current_function() {
+                    if let Some(local) = func.locals.get(&reg) {
+                        loop_var_initial_values.insert(*symbol_id, (reg, local.ty.clone()));
+                    }
+                }
+            }
+        }
+
         // Jump to body first (do-while always executes once)
         self.builder.build_branch(body_block);
 
-        // Push loop context
-        // TODO: Implement exit_phi_nodes for do-while loops
+        // Body block - create phi nodes for loop variables
+        self.builder.switch_to_block(body_block);
+
+        // Create phi nodes for all loop variables at the start of body block
+        let mut phi_nodes: HashMap<SymbolId, IrId> = HashMap::new();
+        for (symbol_id, (initial_reg, var_type)) in &loop_var_initial_values {
+            if let Some(phi_reg) = self.builder.build_phi(body_block, var_type.clone()) {
+                // Add incoming value from entry block (first iteration)
+                self.builder
+                    .add_phi_incoming(body_block, phi_reg, entry_block, *initial_reg);
+
+                // Register the phi node as a local so Cranelift can find its type
+                if let Some(func) = self.builder.current_function_mut() {
+                    if let Some(local) = func.locals.get(initial_reg).cloned() {
+                        func.locals.insert(
+                            phi_reg,
+                            super::IrLocal {
+                                name: format!("{}_phi", local.name),
+                                ty: var_type.clone(),
+                                mutable: true,
+                                source_location: local.source_location,
+                                allocation: super::AllocationHint::Register,
+                            },
+                        );
+                    }
+                }
+
+                // Update symbol map to use phi node
+                phi_nodes.insert(*symbol_id, phi_reg);
+                self.symbol_map.insert(*symbol_id, phi_reg);
+            }
+        }
+
+        // Push loop context with empty exit_phi_nodes (will be populated later)
         self.loop_stack.push(LoopContext {
             continue_block: cond_block,
             break_block: exit_block,
@@ -8238,16 +8400,94 @@ impl<'a> HirToMirContext<'a> {
             exit_phi_nodes: HashMap::new(),
         });
 
-        // Build body block
-        self.builder.switch_to_block(body_block);
+        // Lower the body statements
         self.lower_block(body);
+
+        // Get the block we're in after the body (might be different if there are nested blocks)
+        let body_end_block = if let Some(block_id) = self.builder.current_block() {
+            block_id
+        } else {
+            self.loop_stack.pop();
+            return;
+        };
+
+        // Branch to condition block if not already terminated
         if !self.is_terminated() {
             self.builder.build_branch(cond_block);
         }
 
         // Build condition block
         self.builder.switch_to_block(cond_block);
-        if let Some(cond_reg) = self.lower_expression(condition) {
+        let cond_result = self.lower_expression(condition);
+
+        // Capture the block we're actually in AFTER condition evaluation
+        // This is where the conditional branch to body/exit will happen
+        let cond_end_block = self.builder.current_block().unwrap_or(cond_block);
+
+        // Now create exit block phi nodes with the correct predecessor block
+        let mut exit_phi_nodes: HashMap<SymbolId, IrId> = HashMap::new();
+        for (symbol_id, _phi_reg) in &phi_nodes {
+            if let Some((_, var_type)) = loop_var_initial_values.get(symbol_id) {
+                // Get the current value of the variable after the loop body
+                let current_value = if let Some(&updated_reg) = self.symbol_map.get(symbol_id) {
+                    updated_reg
+                } else {
+                    continue;
+                };
+
+                // Allocate a new register for the exit block parameter
+                let exit_param_reg = self.builder.alloc_reg().unwrap();
+
+                // Create the phi node in the exit block with incoming edge from cond_end_block
+                if let Some(func) = self.builder.current_function_mut() {
+                    if let Some(exit_block_data) = func.cfg.get_block_mut(exit_block) {
+                        let exit_phi = super::IrPhiNode {
+                            dest: exit_param_reg,
+                            incoming: vec![(cond_end_block, current_value)],
+                            ty: var_type.clone(),
+                        };
+                        exit_block_data.add_phi(exit_phi);
+
+                        // Register as a local
+                        func.locals.insert(
+                            exit_param_reg,
+                            super::IrLocal {
+                                name: format!("loop_exit_{}", symbol_id.as_raw()),
+                                ty: var_type.clone(),
+                                mutable: false,
+                                source_location: super::IrSourceLocation::unknown(),
+                                allocation: super::AllocationHint::Register,
+                            },
+                        );
+                    }
+                }
+
+                exit_phi_nodes.insert(*symbol_id, exit_param_reg);
+            }
+        }
+
+        // Update loop context with the exit phi nodes
+        if let Some(loop_ctx) = self.loop_stack.last_mut() {
+            loop_ctx.exit_phi_nodes = exit_phi_nodes.clone();
+        }
+
+        // Add back-edge phi incoming values from body end to body block
+        // These represent the updated values for the next iteration
+        for (symbol_id, phi_reg) in &phi_nodes {
+            // Get the current value of the variable after the loop body
+            let back_edge_value = if let Some(&updated_reg) = self.symbol_map.get(symbol_id) {
+                updated_reg
+            } else {
+                *phi_reg
+            };
+
+            // Add incoming value from cond block (back edge for next iteration)
+            // The back edge comes from cond_end_block (after condition is evaluated)
+            self.builder.add_phi_incoming(body_block, *phi_reg, cond_end_block, back_edge_value);
+        }
+
+        // Build conditional branch from the block we're actually in
+        if let Some(cond_reg) = cond_result {
             self.builder
                 .build_cond_branch(cond_reg, body_block, exit_block);
         }
@@ -8255,8 +8495,13 @@ impl<'a> HirToMirContext<'a> {
         // Pop loop context
         self.loop_stack.pop();
 
-        // Continue at exit
+        // Continue at exit block
         self.builder.switch_to_block(exit_block);
+
+        // Update symbol map to use exit phi nodes after the loop
+        for (symbol_id, exit_reg) in exit_phi_nodes {
+            self.symbol_map.insert(symbol_id, exit_reg);
+        }
     }
 
     fn lower_for_in_loop(

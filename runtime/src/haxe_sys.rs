@@ -279,7 +279,7 @@ pub extern "C" fn haxe_string_len(s: *const HaxeString) -> i32 {
 /// Get character at index - returns empty string if out of bounds
 /// Note: charAt returns String, not Int, per Haxe specification
 #[no_mangle]
-pub extern "C" fn haxe_string_char_at_ptr(s: *const HaxeString, index: i32) -> *mut HaxeString {
+pub extern "C" fn haxe_string_char_at_ptr(s: *const HaxeString, index: i64) -> *mut HaxeString {
     if s.is_null() {
         return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 }));
     }
@@ -303,7 +303,7 @@ pub extern "C" fn haxe_string_char_at_ptr(s: *const HaxeString, index: i32) -> *
 
 /// Get character code at index - returns -1 (represented as null Int) if out of bounds
 #[no_mangle]
-pub extern "C" fn haxe_string_char_code_at_ptr(s: *const HaxeString, index: i32) -> i32 {
+pub extern "C" fn haxe_string_char_code_at_ptr(s: *const HaxeString, index: i64) -> i64 {
     if s.is_null() {
         return -1; // null
     }
@@ -312,7 +312,7 @@ pub extern "C" fn haxe_string_char_code_at_ptr(s: *const HaxeString, index: i32)
         if index < 0 || (index as usize) >= s_ref.len || s_ref.ptr.is_null() {
             return -1; // null
         }
-        *s_ref.ptr.add(index as usize) as i32
+        *s_ref.ptr.add(index as usize) as i64
     }
 }
 

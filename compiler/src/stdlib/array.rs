@@ -24,13 +24,14 @@ pub fn build_array_type(builder: &mut MirBuilder) {
     build_array_pop(builder);
     build_array_length(builder);
     build_array_slice(builder);
+    build_array_join(builder);
 }
 
 /// Declare Array extern runtime functions
 fn declare_array_externs(builder: &mut MirBuilder) {
     let ptr_void = IrType::Ptr(Box::new(IrType::Void));
     let i64_ty = IrType::I64;
-    let i32_ty = IrType::I32;
+    let _i32_ty = IrType::I32;
     let void_ty = IrType::Void;
 
     // haxe_array_push_i64(arr: *mut HaxeArray, val: i64)
@@ -74,6 +75,15 @@ fn declare_array_externs(builder: &mut MirBuilder) {
         .param("out", ptr_void.clone())
         .param("arr", ptr_void.clone())
         .returns(void_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // haxe_array_join(arr: *const HaxeArray, sep: *const HaxeString) -> *mut HaxeString
+    let func_id = builder.begin_function("haxe_array_join")
+        .param("arr", ptr_void.clone())
+        .param("sep", ptr_void.clone())
+        .returns(ptr_void.clone())
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
@@ -212,4 +222,38 @@ fn build_array_slice(builder: &mut MirBuilder) {
 
     // Return the pointer to the heap-allocated array
     builder.ret(Some(out_ptr));
+}
+
+/// Build: fn array_join(arr: Ptr(Void), sep: Ptr(Void)) -> Ptr(Void)
+/// Wrapper for haxe_array_join that joins array elements with separator
+fn build_array_join(builder: &mut MirBuilder) {
+    let ptr_void = IrType::Ptr(Box::new(IrType::Void));
+
+    // Function signature: array_join(arr: *Array, sep: *String) -> *String
+    let func_id = builder.begin_function("array_join")
+        .param("arr", ptr_void.clone())
+        .param("sep", ptr_void.clone())
+        .returns(ptr_void.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let arr = builder.get_param(0);
+    let sep = builder.get_param(1);
+
+    // Call haxe_array_join(arr, sep) -> *String
+    let join_func = builder.get_function_by_name("haxe_array_join")
+        .expect("haxe_array_join extern not found");
+
+    if let Some(result) = builder.call(join_func, vec![arr, sep]) {
+        builder.ret(Some(result));
+    } else {
+        // Return null on failure
+        let null_val = builder.const_value(crate::ir::IrValue::Null);
+        builder.ret(Some(null_val));
+    }
 }

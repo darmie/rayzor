@@ -23,12 +23,21 @@ pub fn build_string_type(builder: &mut MirBuilder) {
     build_string_to_float(builder);
     build_string_from_chars(builder);
     build_trace(builder);
+
+    // MIR wrapper functions for String methods with optional parameters
+    // 1-arg versions provide default startIndex
+    build_string_indexof_wrapper(builder);
+    build_string_lastindexof_wrapper(builder);
+    // 2-arg versions pass through the explicit startIndex
+    build_string_indexof_2_wrapper(builder);
+    build_string_lastindexof_2_wrapper(builder);
 }
 
 /// Declare extern runtime functions for string operations
 fn declare_string_externs(builder: &mut MirBuilder) {
     let ptr_void = IrType::Ptr(Box::new(IrType::Void));
     let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
+    let i32_ty = IrType::I32;
 
     // extern fn haxe_string_concat(a: *String, b: *String) -> *String
     // Returns a pointer to avoid struct return ABI issues
@@ -46,6 +55,26 @@ fn declare_string_externs(builder: &mut MirBuilder) {
         .param("s", string_ptr_ty.clone())
         .param("delimiter", string_ptr_ty.clone())
         .returns(ptr_void.clone()) // Returns *HaxeArray
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // extern fn haxe_string_index_of_ptr(s: *String, needle: *String, startIndex: i32) -> i32
+    let func_id = builder.begin_function("haxe_string_index_of_ptr")
+        .param("s", string_ptr_ty.clone())
+        .param("needle", string_ptr_ty.clone())
+        .param("start_index", i32_ty.clone())
+        .returns(i32_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // extern fn haxe_string_last_index_of_ptr(s: *String, needle: *String, startIndex: i32) -> i32
+    let func_id = builder.begin_function("haxe_string_last_index_of_ptr")
+        .param("s", string_ptr_ty.clone())
+        .param("needle", string_ptr_ty.clone())
+        .param("start_index", i32_ty.clone())
+        .returns(i32_ty.clone())
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
@@ -373,4 +402,136 @@ fn build_trace(builder: &mut MirBuilder) {
     // This would typically call a runtime function or intrinsic
     // For now, just return (no-op)
     builder.ret(None);
+}
+
+/// Build: fn String_indexOf(s: *String, needle: *String) -> i32
+/// MIR wrapper for String.indexOf that provides default startIndex=0
+/// This is the method called when user writes: s.indexOf(needle)
+fn build_string_indexof_wrapper(builder: &mut MirBuilder) {
+    let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
+    let i32_ty = IrType::I32;
+
+    let func_id = builder.begin_function("String_indexOf")
+        .param("s", string_ptr_ty.clone())
+        .param("needle", string_ptr_ty.clone())
+        .returns(i32_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let s = builder.get_param(0);
+    let needle = builder.get_param(1);
+
+    // Default startIndex = 0
+    let start_index = builder.const_i32(0);
+
+    // Call the runtime function with default startIndex
+    let extern_id = builder.get_function_by_name("haxe_string_index_of_ptr")
+        .expect("haxe_string_index_of_ptr not found");
+    let result = builder.call(extern_id, vec![s, needle, start_index]).unwrap();
+
+    builder.ret(Some(result));
+}
+
+/// Build: fn String_lastIndexOf(s: *String, needle: *String) -> i32
+/// MIR wrapper for String.lastIndexOf that provides default startIndex=-1 (search from end)
+/// This is the method called when user writes: s.lastIndexOf(needle)
+fn build_string_lastindexof_wrapper(builder: &mut MirBuilder) {
+    let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
+    let i32_ty = IrType::I32;
+
+    let func_id = builder.begin_function("String_lastIndexOf")
+        .param("s", string_ptr_ty.clone())
+        .param("needle", string_ptr_ty.clone())
+        .returns(i32_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let s = builder.get_param(0);
+    let needle = builder.get_param(1);
+
+    // Default startIndex = -1 (means search from end in runtime)
+    // Actually for lastIndexOf, the default should be null which means string.length
+    // In Haxe, passing -1 or a large number would search from end
+    let start_index = builder.const_i32(-1);
+
+    // Call the runtime function with default startIndex
+    let extern_id = builder.get_function_by_name("haxe_string_last_index_of_ptr")
+        .expect("haxe_string_last_index_of_ptr not found");
+    let result = builder.call(extern_id, vec![s, needle, start_index]).unwrap();
+
+    builder.ret(Some(result));
+}
+
+/// Build: fn String_indexOf_2(s: *String, needle: *String, startIndex: i32) -> i32
+/// MIR wrapper for String.indexOf with explicit startIndex
+/// This is used when user writes: s.indexOf(needle, startIndex)
+fn build_string_indexof_2_wrapper(builder: &mut MirBuilder) {
+    let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
+    let i32_ty = IrType::I32;
+
+    let func_id = builder.begin_function("String_indexOf_2")
+        .param("s", string_ptr_ty.clone())
+        .param("needle", string_ptr_ty.clone())
+        .param("start_index", i32_ty.clone())
+        .returns(i32_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let s = builder.get_param(0);
+    let needle = builder.get_param(1);
+    let start_index = builder.get_param(2);
+
+    // Forward to the runtime function
+    let extern_id = builder.get_function_by_name("haxe_string_index_of_ptr")
+        .expect("haxe_string_index_of_ptr not found");
+    let result = builder.call(extern_id, vec![s, needle, start_index]).unwrap();
+
+    builder.ret(Some(result));
+}
+
+/// Build: fn String_lastIndexOf_2(s: *String, needle: *String, startIndex: i32) -> i32
+/// MIR wrapper for String.lastIndexOf with explicit startIndex
+/// This is used when user writes: s.lastIndexOf(needle, startIndex)
+fn build_string_lastindexof_2_wrapper(builder: &mut MirBuilder) {
+    let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
+    let i32_ty = IrType::I32;
+
+    let func_id = builder.begin_function("String_lastIndexOf_2")
+        .param("s", string_ptr_ty.clone())
+        .param("needle", string_ptr_ty.clone())
+        .param("start_index", i32_ty.clone())
+        .returns(i32_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let s = builder.get_param(0);
+    let needle = builder.get_param(1);
+    let start_index = builder.get_param(2);
+
+    // Forward to the runtime function
+    let extern_id = builder.get_function_by_name("haxe_string_last_index_of_ptr")
+        .expect("haxe_string_last_index_of_ptr not found");
+    let result = builder.call(extern_id, vec![s, needle, start_index]).unwrap();
+
+    builder.ret(Some(result));
 }
