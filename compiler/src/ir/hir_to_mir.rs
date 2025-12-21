@@ -4233,24 +4233,27 @@ impl<'a> HirToMirContext<'a> {
                                     }
                                 }
 
-                                // Last resort: try all stdlib classes
+                                // Last resort: try all stdlib classes with param count matching
+                                // NOTE: We must match by param count to disambiguate overloaded methods
+                                // (e.g., Array.join(sep) with 1 param vs Thread.join() with 0 params)
+                                let actual_arg_count = args.len().saturating_sub(1); // Subtract 1 for receiver (self)
                                 eprintln!(
-                                    "DEBUG: [LAST RESORT] Could not infer class for method '{}', trying all stdlib classes",
-                                    method_name
+                                    "DEBUG: [LAST RESORT] Could not infer class for method '{}' with {} args, trying all stdlib classes",
+                                    method_name, actual_arg_count
                                 );
                                 // Get all stdlib classes dynamically from the mapping
                                 // NOTE: We do NOT add stdlib MIR detection here because we don't know which class
                                 // to use - the fallback tries all classes and would match the wrong one
                                 let stdlib_classes = self.stdlib_mapping.get_all_classes();
                                 for class_name in &stdlib_classes {
-                                    // Build a fake qualified name for lookup
-                                    let fake_qual_name =
-                                        format!("rayzor.concurrent.{}.{}", class_name, method_name);
-                                    if let Some(runtime_func) = self.get_static_stdlib_runtime_func(
-                                        &fake_qual_name,
+                                    // Use find_by_name_and_params to ensure param count matches
+                                    // This prevents Array.join(1 param) from matching Thread.join(0 params)
+                                    if let Some((sig, mapping)) = self.stdlib_mapping.find_by_name_and_params(
+                                        class_name,
                                         method_name,
+                                        actual_arg_count,
                                     ) {
-                                        // println!("✅ Generating runtime call to {} for {}.{} (stdlib mapping fallback)", runtime_func, class_name, method_name);
+                                        let runtime_func = mapping.runtime_name;
 
                                         // CHECK: Is this a MIR wrapper or an extern?
                                         if let Some((mir_param_types, mir_return_type)) = self.get_stdlib_mir_wrapper_signature(&runtime_func) {
