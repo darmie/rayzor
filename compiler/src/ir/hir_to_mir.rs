@@ -1720,19 +1720,20 @@ impl<'a> HirToMirContext<'a> {
         // Use StdlibMapping to find the runtime function
         // This is the ONLY source of truth - all mappings come from the actual Rust implementations
 
-        // First try simple class name (e.g., "Thread")
-        if let Some((_sig, mapping)) = self.stdlib_mapping.find_by_name(class_name, method_name) {
-            return Some(mapping.runtime_name);
-        }
-
-        // Then try qualified class name with underscore format (e.g., "sys_thread_Thread")
-        // This handles sys.thread.Thread -> sys_thread_Thread mappings
+        // PRIORITY: First try qualified class name with underscore format (e.g., "sys_thread_Thread")
+        // This handles sys.thread.Thread -> sys_thread_Thread mappings and prevents
+        // conflicts between sys.thread.Thread and rayzor.concurrent.Thread
         if parts.len() >= 2 {
             // Build qualified class name: all parts except the last (method name), joined with underscore
             let qualified_class_name = parts[..parts.len() - 1].join("_");
             if let Some((_sig, mapping)) = self.stdlib_mapping.find_by_name(&qualified_class_name, method_name) {
                 return Some(mapping.runtime_name);
             }
+        }
+
+        // FALLBACK: Then try simple class name (e.g., "Thread")
+        if let Some((_sig, mapping)) = self.stdlib_mapping.find_by_name(class_name, method_name) {
+            return Some(mapping.runtime_name);
         }
 
         None
@@ -2481,7 +2482,7 @@ impl<'a> HirToMirContext<'a> {
                             let method_name_str = self.symbol_table.get_symbol(*field)
                                 .and_then(|s| self.string_interner.get(s.name));
 
-                            // Check if this is a String method with optional params
+                            // Check if this is a method with optional params that needs param-count-aware lookup
                             if let Some(mn) = method_name_str {
                                 if (mn == "indexOf" || mn == "lastIndexOf") {
                                     // Use param-count-aware lookup for indexOf/lastIndexOf
@@ -2490,6 +2491,23 @@ impl<'a> HirToMirContext<'a> {
                                     self.stdlib_mapping
                                         .find_by_name_and_params("String", mn, arg_count)
                                         .map(|(sig, mapping)| (sig.class, sig.method, mapping))
+                                } else if mn == "wait" {
+                                    // Lock.wait() has overloads: 0 params (blocking) vs 1 param (with timeout)
+                                    let arg_count = args.len();
+                                    eprintln!("DEBUG: [wait lookup] method={}, arg_count={}", mn, arg_count);
+                                    self.stdlib_mapping
+                                        .find_by_name_and_params("sys_thread_Lock", mn, arg_count)
+                                        .or_else(|| self.stdlib_mapping.find_by_name_and_params("sys_thread_Condition", mn, arg_count))
+                                        .map(|(sig, mapping)| (sig.class, sig.method, mapping))
+                                        .or_else(|| self.get_stdlib_runtime_info(*field, object.ty))
+                                } else if mn == "tryAcquire" {
+                                    // Semaphore.tryAcquire() has overloads: 0 params vs 1 param (with timeout)
+                                    let arg_count = args.len();
+                                    eprintln!("DEBUG: [tryAcquire lookup] method={}, arg_count={}", mn, arg_count);
+                                    self.stdlib_mapping
+                                        .find_by_name_and_params("sys_thread_Semaphore", mn, arg_count)
+                                        .map(|(sig, mapping)| (sig.class, sig.method, mapping))
+                                        .or_else(|| self.get_stdlib_runtime_info(*field, object.ty))
                                 } else {
                                     self.get_stdlib_runtime_info(*field, object.ty)
                                 }

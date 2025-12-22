@@ -858,6 +858,32 @@ pub unsafe extern "C" fn rayzor_semaphore_try_acquire(
     true
 }
 
+// ============================================================================
+// sys.thread.Lock wrapper functions
+// ============================================================================
+
+/// Wait for the lock indefinitely (blocking)
+/// Returns true when acquired (always, since it blocks forever)
+#[no_mangle]
+pub unsafe extern "C" fn sys_lock_wait(semaphore: *mut u8) -> bool {
+    if semaphore.is_null() {
+        return false;
+    }
+    rayzor_semaphore_acquire(semaphore);
+    true
+}
+
+// ============================================================================
+// sys.thread.Semaphore wrapper functions
+// ============================================================================
+
+/// Try to acquire semaphore without blocking (0-arg version)
+/// Returns true if acquired, false if count was zero
+#[no_mangle]
+pub unsafe extern "C" fn sys_semaphore_try_acquire_nowait(semaphore: *mut u8) -> bool {
+    rayzor_semaphore_try_acquire(semaphore, 0.0)
+}
+
 /// Release (increment) the semaphore
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_semaphore_release(semaphore: *mut u8) {

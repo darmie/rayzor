@@ -1418,7 +1418,8 @@ impl StdlibMapping {
     fn register_sys_thread_methods(&mut self) {
         let mappings = vec![
             // sys.thread.Thread.create(job: Void->Void) -> Thread
-            map_method!(static "sys_thread_Thread", "create" => "sys_thread_create", params: 1, returns: complex),
+            // Uses Thread_spawn wrapper which extracts fn_ptr and env_ptr from closure object
+            map_method!(static "sys_thread_Thread", "create" => "Thread_spawn", params: 1, returns: complex),
             // sys.thread.Thread.current() -> Thread
             map_method!(static "sys_thread_Thread", "current" => "sys_thread_current", params: 0, returns: complex),
             // sys.thread.Thread.readMessage(block: Bool) -> Dynamic
@@ -1475,7 +1476,9 @@ impl StdlibMapping {
             // Constructor: new Lock() -> Lock
             // Creates a semaphore with initial value 0
             map_method!(constructor "sys_thread_Lock", "new" => "rayzor_semaphore_init", params: 0, returns: primitive),
-            // lock.wait(timeout?: Float) -> Bool
+            // lock.wait() -> Bool (no timeout, blocks indefinitely until released)
+            map_method!(instance "sys_thread_Lock", "wait" => "sys_lock_wait", params: 0, returns: primitive),
+            // lock.wait(timeout: Float) -> Bool (with timeout)
             map_method!(instance "sys_thread_Lock", "wait" => "rayzor_semaphore_try_acquire", params: 1, returns: primitive),
             // lock.release() -> Void
             map_method!(instance "sys_thread_Lock", "release" => "rayzor_semaphore_release", params: 0, returns: void),
@@ -1494,7 +1497,9 @@ impl StdlibMapping {
             map_method!(constructor "sys_thread_Semaphore", "new" => "rayzor_semaphore_init", params: 1, returns: primitive),
             // semaphore.acquire() -> Void
             map_method!(instance "sys_thread_Semaphore", "acquire" => "rayzor_semaphore_acquire", params: 0, returns: void),
-            // semaphore.tryAcquire(timeout?: Float) -> Bool
+            // semaphore.tryAcquire() -> Bool (non-blocking, no timeout)
+            map_method!(instance "sys_thread_Semaphore", "tryAcquire" => "sys_semaphore_try_acquire_nowait", params: 0, returns: primitive),
+            // semaphore.tryAcquire(timeout: Float) -> Bool (with timeout)
             map_method!(instance "sys_thread_Semaphore", "tryAcquire" => "rayzor_semaphore_try_acquire", params: 1, returns: primitive),
             // semaphore.release() -> Void
             map_method!(instance "sys_thread_Semaphore", "release" => "rayzor_semaphore_release", params: 0, returns: void),

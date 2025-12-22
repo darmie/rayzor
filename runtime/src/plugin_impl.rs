@@ -447,6 +447,12 @@ register_symbol!("rayzor_semaphore_try_acquire", crate::concurrency::rayzor_sema
 register_symbol!("rayzor_semaphore_release", crate::concurrency::rayzor_semaphore_release);
 register_symbol!("rayzor_semaphore_count", crate::concurrency::rayzor_semaphore_count);
 
+// sys.thread.Lock wrapper functions
+register_symbol!("sys_lock_wait", crate::concurrency::sys_lock_wait);
+
+// sys.thread.Semaphore wrapper functions
+register_symbol!("sys_semaphore_try_acquire_nowait", crate::concurrency::sys_semaphore_try_acquire_nowait);
+
 // sys.thread.Thread wrapper functions
 register_symbol!("sys_thread_create", crate::concurrency::sys_thread_create);
 register_symbol!("sys_thread_join", crate::concurrency::sys_thread_join);
