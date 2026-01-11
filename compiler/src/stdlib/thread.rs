@@ -27,6 +27,9 @@ pub fn build_thread_type(builder: &mut MirBuilder) {
     build_thread_yield_now(builder);
     build_thread_sleep(builder);
     build_thread_current_id(builder);
+
+    // Lock wrapper (Lock is backed by semaphore with initial count 0)
+    build_lock_init(builder);
 }
 
 /// Declare extern runtime functions
@@ -80,6 +83,15 @@ fn declare_thread_externs(builder: &mut MirBuilder) {
     // extern fn rayzor_thread_current_id() -> u64
     let func_id = builder.begin_function("rayzor_thread_current_id")
         .returns(u64_ty)
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // extern fn rayzor_semaphore_init(initial_value: i32) -> *u8
+    let i32_ty_clone = builder.i32_type();
+    let func_id = builder.begin_function("rayzor_semaphore_init")
+        .param("initial_value", i32_ty_clone)
+        .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
@@ -244,4 +256,28 @@ fn build_thread_current_id(builder: &mut MirBuilder) {
     let result = builder.call(current_id_fn, vec![]).unwrap();
 
     builder.ret(Some(result));
+}
+
+/// Build: fn Lock_init() -> *u8
+/// Lock is backed by a semaphore initialized with count 0
+fn build_lock_init(builder: &mut MirBuilder) {
+    let ptr_u8 = builder.ptr_type(builder.u8_type());
+
+    let func_id = builder.begin_function("Lock_init")
+        .returns(ptr_u8.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    // Call rayzor_semaphore_init(0) to create a semaphore with initial count 0
+    let semaphore_init_id = builder.get_function_by_name("rayzor_semaphore_init")
+        .expect("rayzor_semaphore_init not found");
+    let zero = builder.const_i32(0);
+    let handle = builder.call(semaphore_init_id, vec![zero]).unwrap();
+
+    builder.ret(Some(handle));
 }

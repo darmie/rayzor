@@ -1758,6 +1758,9 @@ impl<'a> HirToMirContext<'a> {
             "Thread_yieldNow" => Some((vec![], void_type)),                   // () -> void
             "Thread_currentId" => Some((vec![], u64_type)),                   // () -> id
 
+            // Lock MIR wrapper (backed by semaphore)
+            "Lock_init" => Some((vec![], ptr_u8.clone())),                    // () -> handle
+
             // Channel methods
             "Channel_init" => Some((vec![i32_type.clone()], ptr_u8.clone())),       // (capacity) -> channel
             "Channel_send" => Some((vec![ptr_u8.clone(), ptr_u8.clone()], void_type)), // (channel, value) -> void
@@ -1951,6 +1954,44 @@ impl<'a> HirToMirContext<'a> {
             "haxe_unbox_int_ptr" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::I64)),
             "haxe_unbox_float_ptr" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::F64)),
             "haxe_unbox_bool_ptr" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::I64)),  // Bool extended to i64 on ARM64
+
+            // sys.thread.Thread functions
+            "sys_thread_join" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Void)),
+            "sys_thread_is_finished" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Bool)),
+            "sys_thread_yield" => Some((vec![], IrType::Void)),
+            "sys_thread_sleep" => Some((vec![IrType::F64], IrType::Void)),
+            "sys_thread_current" => Some((vec![], IrType::Ptr(Box::new(IrType::U8)))),
+
+            // sys.thread.Mutex functions
+            "sys_mutex_alloc" => Some((vec![], IrType::Ptr(Box::new(IrType::U8)))),
+            "sys_mutex_acquire" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Void)),
+            "sys_mutex_try_acquire" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Bool)),
+            "sys_mutex_release" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Void)),
+
+            // sys.thread.Lock wrapper
+            "sys_lock_wait" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Bool)),
+
+            // sys.thread.Semaphore functions
+            "sys_semaphore_try_acquire_nowait" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Bool)),
+            "rayzor_semaphore_init" => Some((vec![IrType::I32], IrType::Ptr(Box::new(IrType::U8)))),
+            "rayzor_semaphore_acquire" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Void)),
+            "rayzor_semaphore_try_acquire" => Some((vec![IrType::Ptr(Box::new(IrType::U8)), IrType::F64], IrType::Bool)),
+            "rayzor_semaphore_release" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Void)),
+
+            // sys.thread.Deque functions
+            "sys_deque_alloc" => Some((vec![], IrType::Ptr(Box::new(IrType::U8)))),
+            "sys_deque_add" => Some((vec![IrType::Ptr(Box::new(IrType::U8)), IrType::Ptr(Box::new(IrType::U8))], IrType::Void)),
+            "sys_deque_push" => Some((vec![IrType::Ptr(Box::new(IrType::U8)), IrType::Ptr(Box::new(IrType::U8))], IrType::Void)),
+            "sys_deque_pop" => Some((vec![IrType::Ptr(Box::new(IrType::U8)), IrType::Bool], IrType::Ptr(Box::new(IrType::U8)))),
+
+            // sys.thread.Condition functions
+            "sys_condition_alloc" => Some((vec![], IrType::Ptr(Box::new(IrType::U8)))),
+            "sys_condition_acquire" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Void)),
+            "sys_condition_try_acquire" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Bool)),
+            "sys_condition_release" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Void)),
+            "sys_condition_wait" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Void)),
+            "sys_condition_signal" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Void)),
+            "sys_condition_broadcast" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Void)),
 
             _ => None,
         }

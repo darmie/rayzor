@@ -1474,8 +1474,8 @@ impl StdlibMapping {
     fn register_sys_lock_methods(&mut self) {
         let mappings = vec![
             // Constructor: new Lock() -> Lock
-            // Creates a semaphore with initial value 0
-            map_method!(constructor "sys_thread_Lock", "new" => "rayzor_semaphore_init", params: 0, returns: primitive),
+            // Creates a semaphore with initial value 0 via Lock_init wrapper
+            map_method!(constructor "sys_thread_Lock", "new" => "Lock_init", params: 0, returns: complex),
             // lock.wait() -> Bool (no timeout, blocks indefinitely until released)
             map_method!(instance "sys_thread_Lock", "wait" => "sys_lock_wait", params: 0, returns: primitive),
             // lock.wait(timeout: Float) -> Bool (with timeout)
