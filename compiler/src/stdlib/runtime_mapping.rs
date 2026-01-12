@@ -1477,9 +1477,11 @@ impl StdlibMapping {
             // Creates a semaphore with initial value 0 via Lock_init wrapper
             map_method!(constructor "sys_thread_Lock", "new" => "Lock_init", params: 0, returns: complex),
             // lock.wait() -> Bool (no timeout, blocks indefinitely until released)
-            map_method!(instance "sys_thread_Lock", "wait" => "sys_lock_wait", params: 0, returns: primitive),
+            // Uses Lock_wait MIR wrapper which calls rayzor_semaphore_acquire
+            map_method!(instance "sys_thread_Lock", "wait" => "Lock_wait", params: 0, returns: primitive),
             // lock.wait(timeout: Float) -> Bool (with timeout)
-            map_method!(instance "sys_thread_Lock", "wait" => "rayzor_semaphore_try_acquire", params: 1, returns: primitive),
+            // Uses Lock_wait_timeout MIR wrapper which calls rayzor_semaphore_try_acquire
+            map_method!(instance "sys_thread_Lock", "wait" => "Lock_wait_timeout", params: 1, returns: primitive),
             // lock.release() -> Void
             map_method!(instance "sys_thread_Lock", "release" => "rayzor_semaphore_release", params: 0, returns: void),
         ];
@@ -1498,9 +1500,11 @@ impl StdlibMapping {
             // semaphore.acquire() -> Void
             map_method!(instance "sys_thread_Semaphore", "acquire" => "rayzor_semaphore_acquire", params: 0, returns: void),
             // semaphore.tryAcquire() -> Bool (non-blocking, no timeout)
-            map_method!(instance "sys_thread_Semaphore", "tryAcquire" => "sys_semaphore_try_acquire_nowait", params: 0, returns: primitive),
+            // Uses Semaphore_tryAcquire MIR wrapper which calls sys_semaphore_try_acquire_nowait
+            map_method!(instance "sys_thread_Semaphore", "tryAcquire" => "Semaphore_tryAcquire", params: 0, returns: primitive),
             // semaphore.tryAcquire(timeout: Float) -> Bool (with timeout)
-            map_method!(instance "sys_thread_Semaphore", "tryAcquire" => "rayzor_semaphore_try_acquire", params: 1, returns: primitive),
+            // Uses Semaphore_tryAcquire_timeout MIR wrapper which calls rayzor_semaphore_try_acquire
+            map_method!(instance "sys_thread_Semaphore", "tryAcquire" => "Semaphore_tryAcquire_timeout", params: 1, returns: primitive),
             // semaphore.release() -> Void
             map_method!(instance "sys_thread_Semaphore", "release" => "rayzor_semaphore_release", params: 0, returns: void),
         ];

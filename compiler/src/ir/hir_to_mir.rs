@@ -1539,10 +1539,12 @@ impl<'a> HirToMirContext<'a> {
     /// Check if a method symbol corresponds to a stdlib method with runtime mapping
     ///
     /// Returns (class_name, method_name, runtime_function_name) if this is a stdlib method
+    /// If `param_count` is provided, it's used to disambiguate overloaded methods
     fn get_stdlib_runtime_info(
         &self,
         method_symbol: SymbolId,
         receiver_type: TypeId,
+        param_count: Option<usize>,
     ) -> Option<(&'static str, &'static str, &crate::stdlib::RuntimeFunctionCall)> {
         // Get the method name and optional qualified name from the symbol table
         let (method_name, qualified_name) = if let Some(symbol) = self.symbol_table.get_symbol(method_symbol) {
@@ -1690,12 +1692,29 @@ impl<'a> HirToMirContext<'a> {
         // Try to find this method in the stdlib mapping
         // First try qualified name (e.g., "rayzor_Bytes"), then fall back to simple name
         // This avoids hardcoding class names and lets the StdlibMapping be the single source of truth
+        // If param_count is provided, use find_by_name_and_params to disambiguate overloaded methods
         if let Some(ref qn) = qualified_class_name {
+            // Try with param_count first if available (to disambiguate overloads)
+            if let Some(count) = param_count {
+                if let Some((sig, mapping)) = self.stdlib_mapping.find_by_name_and_params(qn, method_name, count) {
+                    eprintln!("DEBUG: [get_stdlib_runtime_info] Found {}.{} ({} params) via qualified name -> {}", qn, method_name, count, mapping.runtime_name);
+                    return Some((sig.class, sig.method, mapping));
+                }
+            }
+            // Fallback to find_by_name without param count
             if let Some((sig, mapping)) = self.stdlib_mapping.find_by_name(qn, method_name) {
                 eprintln!("DEBUG: [get_stdlib_runtime_info] Found {}.{} via qualified name -> {}", qn, method_name, mapping.runtime_name);
                 return Some((sig.class, sig.method, mapping));
             }
         }
+        // Try with param_count first if available
+        if let Some(count) = param_count {
+            if let Some((sig, mapping)) = self.stdlib_mapping.find_by_name_and_params(class_name, method_name, count) {
+                eprintln!("DEBUG: [get_stdlib_runtime_info] Found {}.{} ({} params) -> {}", class_name, method_name, count, mapping.runtime_name);
+                return Some((sig.class, sig.method, mapping));
+            }
+        }
+        // Fallback without param count
         if let Some((sig, mapping)) = self.stdlib_mapping.find_by_name(class_name, method_name) {
             Some((sig.class, sig.method, mapping))
         } else {
@@ -1758,8 +1777,14 @@ impl<'a> HirToMirContext<'a> {
             "Thread_yieldNow" => Some((vec![], void_type)),                   // () -> void
             "Thread_currentId" => Some((vec![], u64_type)),                   // () -> id
 
-            // Lock MIR wrapper (backed by semaphore)
+            // Lock MIR wrappers (backed by semaphore)
             "Lock_init" => Some((vec![], ptr_u8.clone())),                    // () -> handle
+            "Lock_wait" => Some((vec![ptr_u8.clone()], bool_type)),           // (handle) -> bool
+            "Lock_wait_timeout" => Some((vec![ptr_u8.clone(), IrType::F64], bool_type)), // (handle, timeout) -> bool
+
+            // Semaphore MIR wrappers
+            "Semaphore_tryAcquire" => Some((vec![ptr_u8.clone()], bool_type)), // (handle) -> bool
+            "Semaphore_tryAcquire_timeout" => Some((vec![ptr_u8.clone(), IrType::F64], bool_type)), // (handle, timeout) -> bool
 
             // Channel methods
             "Channel_init" => Some((vec![i32_type.clone()], ptr_u8.clone())),       // (capacity) -> channel
@@ -2540,7 +2565,7 @@ impl<'a> HirToMirContext<'a> {
                                         .find_by_name_and_params("sys_thread_Lock", mn, arg_count)
                                         .or_else(|| self.stdlib_mapping.find_by_name_and_params("sys_thread_Condition", mn, arg_count))
                                         .map(|(sig, mapping)| (sig.class, sig.method, mapping))
-                                        .or_else(|| self.get_stdlib_runtime_info(*field, object.ty))
+                                        .or_else(|| self.get_stdlib_runtime_info(*field, object.ty, Some(arg_count)))
                                 } else if mn == "tryAcquire" {
                                     // Semaphore.tryAcquire() has overloads: 0 params vs 1 param (with timeout)
                                     let arg_count = args.len();
@@ -2548,12 +2573,12 @@ impl<'a> HirToMirContext<'a> {
                                     self.stdlib_mapping
                                         .find_by_name_and_params("sys_thread_Semaphore", mn, arg_count)
                                         .map(|(sig, mapping)| (sig.class, sig.method, mapping))
-                                        .or_else(|| self.get_stdlib_runtime_info(*field, object.ty))
+                                        .or_else(|| self.get_stdlib_runtime_info(*field, object.ty, Some(arg_count)))
                                 } else {
-                                    self.get_stdlib_runtime_info(*field, object.ty)
+                                    self.get_stdlib_runtime_info(*field, object.ty, None)
                                 }
                             } else {
-                                self.get_stdlib_runtime_info(*field, object.ty)
+                                self.get_stdlib_runtime_info(*field, object.ty, None)
                             }
                         };
 
@@ -3578,8 +3603,10 @@ impl<'a> HirToMirContext<'a> {
                         // Try the receiver type path first (for true instance methods)
                         // Skip if receiver is a MIR wrapper class type (those are static methods)
                         if !receiver_is_class_type {
+                        // Calculate param_count for overload disambiguation: args[0] is receiver, rest are params
+                        let method_param_count = if args.len() > 1 { args.len() - 1 } else { 0 };
                         if let Some((class_name, method_name, runtime_call)) =
-                            self.get_stdlib_runtime_info(*symbol, receiver_type)
+                            self.get_stdlib_runtime_info(*symbol, receiver_type, Some(method_param_count))
                         {
                             let runtime_func = runtime_call.runtime_name;
                             let ptr_conversion_mask = runtime_call.params_need_ptr_conversion;
@@ -7396,7 +7423,7 @@ impl<'a> HirToMirContext<'a> {
             .unwrap_or("<unknown>");
         eprintln!("DEBUG: [lower_field_access] Checking stdlib for field='{}', field={:?}, receiver_ty={:?}", field_name_debug, field, receiver_ty);
 
-        if let Some((_class, _method, runtime_call)) = self.get_stdlib_runtime_info(field, receiver_ty) {
+        if let Some((_class, _method, runtime_call)) = self.get_stdlib_runtime_info(field, receiver_ty, None) {
             let runtime_func = runtime_call.runtime_name;
             eprintln!("DEBUG: [lower_field_access] Found stdlib property! runtime_func={}", runtime_func);
 
@@ -7486,7 +7513,7 @@ impl<'a> HirToMirContext<'a> {
 
                 // Check if this field is a stdlib property for this class
                 if let Some(class_ty) = matching_type_id {
-                    if let Some((_class, _method, runtime_call)) = self.get_stdlib_runtime_info(field, class_ty) {
+                    if let Some((_class, _method, runtime_call)) = self.get_stdlib_runtime_info(field, class_ty, None) {
                         let runtime_func = runtime_call.runtime_name;
                         eprintln!("DEBUG: [lower_field_access fallback] Found stdlib property! runtime_func={}", runtime_func);
                         // Use explicit pointer type for parameter (matches stdlib signatures)
@@ -7778,7 +7805,7 @@ impl<'a> HirToMirContext<'a> {
             // Check if this field is a stdlib property for this class
             if let Some(class_ty) = matching_type_id {
                 eprintln!("DEBUG: [lower_field_access_for_class] Checking get_stdlib_runtime_info for field={:?}, class_ty={:?}", field, class_ty);
-                if let Some((_class, _method, runtime_call)) = self.get_stdlib_runtime_info(field, class_ty) {
+                if let Some((_class, _method, runtime_call)) = self.get_stdlib_runtime_info(field, class_ty, None) {
                     let runtime_func = runtime_call.runtime_name;
                     eprintln!("DEBUG: [lower_field_access_for_class] Found stdlib property! runtime_func={}", runtime_func);
                     // Use explicit pointer type for parameter (matches stdlib signatures)

@@ -28,8 +28,14 @@ pub fn build_thread_type(builder: &mut MirBuilder) {
     build_thread_sleep(builder);
     build_thread_current_id(builder);
 
-    // Lock wrapper (Lock is backed by semaphore with initial count 0)
+    // Lock wrappers (Lock is backed by semaphore with initial count 0)
     build_lock_init(builder);
+    build_lock_wait(builder);
+    build_lock_wait_timeout(builder);
+
+    // Semaphore wrappers
+    build_semaphore_try_acquire(builder);
+    build_semaphore_try_acquire_timeout(builder);
 }
 
 /// Declare extern runtime functions
@@ -60,7 +66,7 @@ fn declare_thread_externs(builder: &mut MirBuilder) {
     // extern fn rayzor_thread_is_finished(handle: *u8) -> bool
     let func_id = builder.begin_function("rayzor_thread_is_finished")
         .param("handle", ptr_u8.clone())
-        .returns(bool_ty)
+        .returns(bool_ty.clone())
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
@@ -75,7 +81,7 @@ fn declare_thread_externs(builder: &mut MirBuilder) {
     // extern fn rayzor_thread_sleep(millis: i32)
     let func_id = builder.begin_function("rayzor_thread_sleep")
         .param("millis", i32_ty)
-        .returns(void_ty)
+        .returns(void_ty.clone())
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
@@ -92,6 +98,32 @@ fn declare_thread_externs(builder: &mut MirBuilder) {
     let func_id = builder.begin_function("rayzor_semaphore_init")
         .param("initial_value", i32_ty_clone)
         .returns(ptr_u8.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // extern fn rayzor_semaphore_acquire(semaphore: *u8)
+    let func_id = builder.begin_function("rayzor_semaphore_acquire")
+        .param("semaphore", ptr_u8.clone())
+        .returns(void_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // extern fn rayzor_semaphore_try_acquire(semaphore: *u8, timeout: f64) -> bool
+    let func_id = builder.begin_function("rayzor_semaphore_try_acquire")
+        .param("semaphore", ptr_u8.clone())
+        .param("timeout", IrType::F64)
+        .returns(bool_ty)
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // extern fn sys_semaphore_try_acquire_nowait(semaphore: *u8) -> bool
+    let bool_ty_clone = builder.bool_type();
+    let func_id = builder.begin_function("sys_semaphore_try_acquire_nowait")
+        .param("semaphore", ptr_u8.clone())
+        .returns(bool_ty_clone)
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
@@ -280,4 +312,120 @@ fn build_lock_init(builder: &mut MirBuilder) {
     let handle = builder.call(semaphore_init_id, vec![zero]).unwrap();
 
     builder.ret(Some(handle));
+}
+
+/// Build: fn Lock_wait(handle: *u8) -> bool
+/// Blocking wait with no timeout - uses semaphore acquire then returns true
+fn build_lock_wait(builder: &mut MirBuilder) {
+    let ptr_u8 = builder.ptr_type(builder.u8_type());
+    let bool_ty = builder.bool_type();
+
+    let func_id = builder.begin_function("Lock_wait")
+        .param("handle", ptr_u8.clone())
+        .returns(bool_ty)
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let handle = builder.get_param(0);
+
+    // Call rayzor_semaphore_acquire (blocking wait)
+    let acquire_id = builder.get_function_by_name("rayzor_semaphore_acquire")
+        .expect("rayzor_semaphore_acquire not found");
+    let _ = builder.call(acquire_id, vec![handle]);
+
+    // Always return true (blocking wait always succeeds)
+    let true_val = builder.const_bool(true);
+    builder.ret(Some(true_val));
+}
+
+/// Build: fn Lock_wait_timeout(handle: *u8, timeout: f64) -> bool
+/// Wait with timeout - uses semaphore try_acquire
+fn build_lock_wait_timeout(builder: &mut MirBuilder) {
+    let ptr_u8 = builder.ptr_type(builder.u8_type());
+    let f64_ty = IrType::F64;
+    let bool_ty = builder.bool_type();
+
+    let func_id = builder.begin_function("Lock_wait_timeout")
+        .param("handle", ptr_u8.clone())
+        .param("timeout", f64_ty)
+        .returns(bool_ty)
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let handle = builder.get_param(0);
+    let timeout = builder.get_param(1);
+
+    // Call rayzor_semaphore_try_acquire(handle, timeout)
+    let try_acquire_id = builder.get_function_by_name("rayzor_semaphore_try_acquire")
+        .expect("rayzor_semaphore_try_acquire not found");
+    let result = builder.call(try_acquire_id, vec![handle, timeout]).unwrap();
+
+    builder.ret(Some(result));
+}
+
+/// Build: fn Semaphore_tryAcquire(handle: *u8) -> bool
+/// Non-blocking acquire attempt (no timeout)
+fn build_semaphore_try_acquire(builder: &mut MirBuilder) {
+    let ptr_u8 = builder.ptr_type(builder.u8_type());
+    let bool_ty = builder.bool_type();
+
+    let func_id = builder.begin_function("Semaphore_tryAcquire")
+        .param("handle", ptr_u8.clone())
+        .returns(bool_ty)
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let handle = builder.get_param(0);
+
+    // Call sys_semaphore_try_acquire_nowait(handle)
+    let try_acquire_id = builder.get_function_by_name("sys_semaphore_try_acquire_nowait")
+        .expect("sys_semaphore_try_acquire_nowait not found");
+    let result = builder.call(try_acquire_id, vec![handle]).unwrap();
+
+    builder.ret(Some(result));
+}
+
+/// Build: fn Semaphore_tryAcquire_timeout(handle: *u8, timeout: f64) -> bool
+/// Acquire with timeout
+fn build_semaphore_try_acquire_timeout(builder: &mut MirBuilder) {
+    let ptr_u8 = builder.ptr_type(builder.u8_type());
+    let f64_ty = IrType::F64;
+    let bool_ty = builder.bool_type();
+
+    let func_id = builder.begin_function("Semaphore_tryAcquire_timeout")
+        .param("handle", ptr_u8.clone())
+        .param("timeout", f64_ty)
+        .returns(bool_ty)
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let handle = builder.get_param(0);
+    let timeout = builder.get_param(1);
+
+    // Call rayzor_semaphore_try_acquire(handle, timeout)
+    let try_acquire_id = builder.get_function_by_name("rayzor_semaphore_try_acquire")
+        .expect("rayzor_semaphore_try_acquire not found");
+    let result = builder.call(try_acquire_id, vec![handle, timeout]).unwrap();
+
+    builder.ret(Some(result));
 }

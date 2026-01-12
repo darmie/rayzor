@@ -581,7 +581,7 @@ class Main {
 }
 "#,
         )
-        .expect_mir_calls(vec!["Lock_init", "rayzor_semaphore_release"]),
+        .expect_mir_calls(vec!["Lock_init", "Lock_wait", "rayzor_semaphore_release"]),
     );
 
     // TEST 9: Lock with timeout
@@ -603,7 +603,7 @@ class Main {
 }
 "#,
         )
-        .expect_mir_calls(vec!["rayzor_semaphore_try_acquire"]),
+        .expect_mir_calls(vec!["Lock_wait_timeout"]),
     );
 
     // ============================================================================
@@ -659,7 +659,7 @@ class Main {
 }
 "#,
         )
-        .expect_mir_calls(vec!["rayzor_semaphore_try_acquire"]),
+        .expect_mir_calls(vec!["Semaphore_tryAcquire", "Semaphore_tryAcquire_timeout"]),
     );
 
     // TEST 12: Semaphore as counting primitive
