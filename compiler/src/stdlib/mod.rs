@@ -43,7 +43,7 @@ pub mod sync;
 use crate::ir::{IrModule, mir_builder::MirBuilder};
 
 // Re-export runtime mapping types
-pub use runtime_mapping::{StdlibMapping, MethodSignature, RuntimeFunctionCall};
+pub use runtime_mapping::{StdlibMapping, MethodSignature, RuntimeFunctionCall, FunctionSource, IrTypeDescriptor};
 
 /// Build the complete standard library as an MIR module
 ///

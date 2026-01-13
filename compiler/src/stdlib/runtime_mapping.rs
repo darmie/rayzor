@@ -484,8 +484,15 @@ impl StdlibMapping {
         })
     }
 
-    /// Register a stdlib method -> runtime function mapping
+    /// Register a stdlib method -> runtime function mapping (internal)
     fn register(&mut self, sig: MethodSignature, call: RuntimeFunctionCall) {
+        self.mappings.insert(sig, call);
+    }
+
+    /// Register a stdlib method -> runtime function mapping (public API for plugins)
+    ///
+    /// This is used by `PluginRegistry` to merge mappings from multiple plugins.
+    pub fn register_mapping(&mut self, sig: MethodSignature, call: RuntimeFunctionCall) {
         self.mappings.insert(sig, call);
     }
 }
