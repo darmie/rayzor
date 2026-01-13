@@ -31,6 +31,7 @@ use parser::{
     ExprKind, Function, FunctionParam, HaxeFile, Import, InterfaceDecl, Metadata, Modifier,
     ModuleField, Package, Type, TypeDeclaration, TypeParam, TypedefDecl, UnaryOp, Using,
 };
+use tracing::warn;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
@@ -3839,7 +3840,7 @@ impl<'a> AstLowering<'a> {
             if let Some(trait_) = crate::tast::DerivedTrait::from_str(&trait_name) {
                 derived_traits.push(trait_);
             } else {
-                eprintln!("Warning: Unknown derived trait '{}' in @:derive", trait_name);
+                warn!("Warning: Unknown derived trait '{}' in @:derive", trait_name);
             }
         }
 
@@ -3854,9 +3855,9 @@ impl<'a> AstLowering<'a> {
         }
 
         if !missing_deps.is_empty() {
-            eprintln!("Warning: Missing required trait dependencies for class '{}':", class_decl.name);
+            warn!("Warning: Missing required trait dependencies for class '{}':", class_decl.name);
             for (trait_, required) in missing_deps {
-                eprintln!("  - {} requires {}", trait_, required);
+                warn!("  - {} requires {}", trait_, required);
             }
         }
 

@@ -28,6 +28,7 @@
 
 use std::sync::{RwLock, Once};
 use std::collections::HashMap;
+use log::debug;
 
 /// Ensures primitive types are registered exactly once
 static INIT_PRIMITIVES: Once = Once::new();
@@ -869,7 +870,7 @@ pub extern "C" fn haxe_unbox_reference_ptr(ptr: *mut u8) -> *mut u8 {
     // Debug: Check for suspicious pointer values (like boolean 1 being passed as pointer)
     let ptr_val = ptr as usize;
     if ptr_val < 0x1000 {
-        eprintln!("WARNING: haxe_unbox_reference_ptr received suspicious pointer: {:p} (value={})", ptr, ptr_val);
+        debug!("WARNING: haxe_unbox_reference_ptr received suspicious pointer: {:p} (value={})", ptr, ptr_val);
         return std::ptr::null_mut();
     }
     unsafe {

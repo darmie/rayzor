@@ -21,6 +21,7 @@ use std::cell::RefCell;
 use std::path::{PathBuf, Path};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::{HashMap, HashSet};
+use log::{debug, info, warn, trace};
 
 /// Represents a complete compilation unit with multiple source files
 pub struct CompilationUnit {
@@ -144,11 +145,11 @@ impl CompilationConfig {
         if let Ok(haxe_std_path) = std::env::var("HAXE_STD_PATH") {
             let path = PathBuf::from(&haxe_std_path);
             if path.exists() {
-                println!("Found stdlib at HAXE_STD_PATH: {}", haxe_std_path);
+                info!("Found stdlib at HAXE_STD_PATH: {}", haxe_std_path);
                 paths.push(path);
                 return paths; // Use this path exclusively if set
             } else {
-                eprintln!("Warning: HAXE_STD_PATH set but directory doesn't exist: {}", haxe_std_path);
+                warn!("HAXE_STD_PATH set but directory doesn't exist: {}", haxe_std_path);
             }
         }
 
@@ -156,7 +157,7 @@ impl CompilationConfig {
         if let Ok(haxe_home) = std::env::var("HAXE_HOME") {
             let std_path = PathBuf::from(&haxe_home).join("std");
             if std_path.exists() {
-                println!("Found stdlib at HAXE_HOME/std: {:?}", std_path);
+                info!("Found stdlib at HAXE_HOME/std: {:?}", std_path);
                 paths.push(std_path);
             }
         }
@@ -238,8 +239,8 @@ impl CompilationConfig {
         }
 
         if paths.is_empty() {
-            eprintln!("Warning: No standard library found. Set HAXE_STD_PATH environment variable.");
-            eprintln!("         or install Haxe to a standard location.");
+            warn!("No standard library found. Set HAXE_STD_PATH environment variable.");
+            warn!("         or install Haxe to a standard location.");
             // Still provide fallback paths for development
             paths.push(PathBuf::from("compiler/haxe-std"));
             paths.push(PathBuf::from("../haxe-std"));
@@ -362,7 +363,7 @@ impl CompilationUnit {
 
         // DON'T load stdlib files upfront - rely entirely on on-demand loading
         // Files will be loaded via load_import_file() when imports or qualified names are encountered
-        eprintln!("Stdlib configured for pure on-demand loading (no files loaded at startup)");
+        debug!("Stdlib configured for pure on-demand loading (no files loaded at startup)");
 
         Ok(())
     }
@@ -421,10 +422,10 @@ impl CompilationUnit {
         // Try to compile - if it fails due to missing dependencies, extract and load them
         match self.compile_file_with_shared_state(&filename, &source) {
             Ok(typed_file) => {
-                eprintln!("  ✓ Successfully compiled and registered: {}", qualified_path);
+                debug!("  ✓ Successfully compiled and registered: {}", qualified_path);
                 // Store typedef files so they're included in HIR conversion
                 if !typed_file.type_aliases.is_empty() {
-                    eprintln!("    (contains {} type aliases)", typed_file.type_aliases.len());
+                    trace!("    (contains {} type aliases)", typed_file.type_aliases.len());
                 }
 
                 // Check if any type aliases have Placeholder targets that need to be loaded
@@ -436,7 +437,7 @@ impl CompilationUnit {
                         if let Some(target_info) = type_table.get(alias.target_type) {
                             if let crate::tast::TypeKind::Placeholder { name } = &target_info.kind {
                                 if let Some(placeholder_name) = self.string_interner.get(*name) {
-                                    eprintln!("    Found typedef with Placeholder target: {}", placeholder_name);
+                                    trace!("    Found typedef with Placeholder target: {}", placeholder_name);
                                     placeholder_targets.push(placeholder_name.to_string());
                                 }
                             }
@@ -449,14 +450,14 @@ impl CompilationUnit {
                     let mut any_loaded = false;
                     for target in &placeholder_targets {
                         if let Ok(_) = self.load_import_file_recursive(target, depth + 1) {
-                            eprintln!("    ✓ Loaded typedef target: {}", target);
+                            debug!("    ✓ Loaded typedef target: {}", target);
                             any_loaded = true;
                         }
                     }
 
                     if any_loaded {
                         // Retry compilation after loading typedef targets
-                        eprintln!("  Retrying compilation of {} after loading typedef targets...", qualified_path);
+                        debug!("  Retrying compilation of {} after loading typedef targets...", qualified_path);
                         match self.compile_file_with_shared_state(&filename, &source) {
                             Ok(recompiled_file) => {
                                 self.loaded_stdlib_typed_files.push(recompiled_file);
@@ -486,7 +487,7 @@ impl CompilationUnit {
 
                 // If we found missing types, try to load them recursively
                 if !missing_types.is_empty() {
-                    eprintln!("  Detected {} missing dependencies for {}: {:?}",
+                    debug!("  Detected {} missing dependencies for {}: {:?}",
                         missing_types.len(), qualified_path, missing_types);
 
                     let mut load_success = false;
@@ -507,7 +508,7 @@ impl CompilationUnit {
 
                         // Try loading with the (possibly adjusted) name first
                         let loaded = if let Ok(_) = self.load_import_file_recursive(type_to_load, depth + 1) {
-                            eprintln!("    ✓ Loaded dependency: {}", type_to_load);
+                            debug!("    ✓ Loaded dependency: {}", type_to_load);
                             true
                         } else if !type_to_load.contains('.') {
                             // If unqualified name failed, try with common stdlib packages
@@ -516,7 +517,7 @@ impl CompilationUnit {
                             for prefix in prefixes {
                                 let qualified = format!("{}{}", prefix, type_to_load);
                                 if let Ok(_) = self.load_import_file_recursive(&qualified, depth + 1) {
-                                    eprintln!("    ✓ Loaded dependency: {} (as {})", type_to_load, qualified);
+                                    debug!("    ✓ Loaded dependency: {} (as {})", type_to_load, qualified);
                                     prefix_loaded = true;
                                     break;
                                 }
@@ -529,19 +530,19 @@ impl CompilationUnit {
                         if loaded {
                             load_success = true;
                         } else {
-                            eprintln!("    ✗ Could not load dependency: {}", missing_type);
+                            debug!("    ✗ Could not load dependency: {}", missing_type);
                             self.failed_type_loads.insert(missing_type.clone());
                         }
                     }
 
                     // If we successfully loaded at least one dependency, retry compilation
                     if load_success {
-                        eprintln!("  Retrying compilation of {} after loading dependencies...", qualified_path);
+                        debug!("  Retrying compilation of {} after loading dependencies...", qualified_path);
                         match self.compile_file_with_shared_state(&filename, &source) {
                             Ok(typed_file) => {
                                 // Store typedef files so they're included in HIR conversion
                                 if !typed_file.type_aliases.is_empty() {
-                                    eprintln!("    (contains {} type aliases after retry)", typed_file.type_aliases.len());
+                                    trace!("    (contains {} type aliases after retry)", typed_file.type_aliases.len());
                                 }
 
                                 // Check if any type aliases have Placeholder targets that need to be loaded
@@ -553,7 +554,7 @@ impl CompilationUnit {
                                         if let Some(target_info) = type_table.get(alias.target_type) {
                                             if let crate::tast::TypeKind::Placeholder { name } = &target_info.kind {
                                                 if let Some(placeholder_name) = self.string_interner.get(*name) {
-                                                    eprintln!("    Found typedef with Placeholder target (after deps): {}", placeholder_name);
+                                                    trace!("    Found typedef with Placeholder target (after deps): {}", placeholder_name);
                                                     placeholder_targets.push(placeholder_name.to_string());
                                                 }
                                             }
@@ -566,14 +567,14 @@ impl CompilationUnit {
                                     let mut any_loaded = false;
                                     for target in &placeholder_targets {
                                         if let Ok(_) = self.load_import_file_recursive(target, depth + 1) {
-                                            eprintln!("    ✓ Loaded typedef target (after deps): {}", target);
+                                            debug!("    ✓ Loaded typedef target (after deps): {}", target);
                                             any_loaded = true;
                                         }
                                     }
 
                                     if any_loaded {
                                         // Retry compilation after loading typedef targets
-                                        eprintln!("  Retrying compilation of {} after loading typedef targets...", qualified_path);
+                                        debug!("  Retrying compilation of {} after loading typedef targets...", qualified_path);
                                         match self.compile_file_with_shared_state(&filename, &source) {
                                             Ok(recompiled_file) => {
                                                 self.loaded_stdlib_typed_files.push(recompiled_file);
@@ -604,14 +605,14 @@ impl CompilationUnit {
                                     let mut loaded_any = false;
                                     for missing in &additional_missing {
                                         if let Ok(_) = self.load_import_file_recursive(missing, depth + 1) {
-                                            eprintln!("    ✓ Loaded additional dependency: {}", missing);
+                                            debug!("    ✓ Loaded additional dependency: {}", missing);
                                             loaded_any = true;
                                         }
                                     }
 
                                     if loaded_any {
                                         // Try one more time
-                                        eprintln!("  Retrying compilation of {} after loading additional dependencies...", qualified_path);
+                                        debug!("  Retrying compilation of {} after loading additional dependencies...", qualified_path);
                                         match self.compile_file_with_shared_state(&filename, &source) {
                                             Ok(final_file) => {
                                                 self.loaded_stdlib_typed_files.push(final_file);
@@ -842,12 +843,12 @@ impl CompilationUnit {
 
         // Report circular dependencies as warnings (not errors)
         if !analysis.circular_dependencies.is_empty() {
-            eprintln!("⚠️  Warning: Circular dependencies detected!");
+            debug!("⚠️  Warning: Circular dependencies detected!");
             for (i, cycle) in analysis.circular_dependencies.iter().enumerate() {
-                eprintln!("\nCycle #{}:", i + 1);
-                eprintln!("{}", cycle.format_error());
+                debug!("\nCycle #{}:", i + 1);
+                debug!("{}", cycle.format_error());
             }
-            eprintln!("\nCompilation will proceed with best-effort ordering.\n");
+            debug!("\nCompilation will proceed with best-effort ordering.\n");
         }
 
         Ok(analysis)
@@ -945,7 +946,7 @@ impl CompilationUnit {
                               filename.contains("/haxe-std/") ||
                               filename.contains("\\haxe-std\\");
 
-        eprintln!("DEBUG: [MIR LOWERING] filename='{}', is_stdlib_file={}", filename, is_stdlib_file);
+        debug!("DEBUG: [MIR LOWERING] filename='{}', is_stdlib_file={}", filename, is_stdlib_file);
 
         // For user files, pass the stdlib function map so they can call stdlib functions
         // For stdlib files, pass an empty map (they can call each other once we accumulate the map)
@@ -981,7 +982,7 @@ impl CompilationUnit {
 
         // If this is a stdlib file, collect its function mappings
         if is_stdlib_file {
-            eprintln!("DEBUG: Collecting {} function mappings from stdlib file: {}",
+            debug!("DEBUG: Collecting {} function mappings from stdlib file: {}",
                       mir_result.function_map.len(), filename);
             for (symbol_id, func_id) in mir_result.function_map {
                 self.stdlib_function_map.insert(symbol_id, func_id);
@@ -995,14 +996,14 @@ impl CompilationUnit {
                 // Only add non-empty CFG functions (skip forward refs/stubs)
                 if !func.cfg.blocks.is_empty() {
                     self.stdlib_function_name_map.insert(func.name.clone(), *func_id);
-                    eprintln!("DEBUG: [NAME MAP] Added '{}' -> {:?}", func.name, func_id);
+                    debug!("DEBUG: [NAME MAP] Added '{}' -> {:?}", func.name, func_id);
                     added_count += 1;
                 } else {
-                    eprintln!("DEBUG: [NAME MAP SKIP] '{}' has empty CFG (forward ref/stub)", func.name);
+                    debug!("DEBUG: [NAME MAP SKIP] '{}' has empty CFG (forward ref/stub)", func.name);
                     skipped_count += 1;
                 }
             }
-            eprintln!("DEBUG: [NAME MAP] {} added, {} skipped for {}", added_count, skipped_count, filename);
+            debug!("DEBUG: [NAME MAP] {} added, {} skipped for {}", added_count, skipped_count, filename);
         }
 
         // Only skip EXTERN stdlib files (those with Rust implementations in build_stdlib).
@@ -1019,7 +1020,7 @@ impl CompilationUnit {
             ));
 
         if is_extern_stdlib_file {
-            eprintln!("DEBUG: Skipping MIR module creation for EXTERN stdlib file: {}", filename);
+            debug!("DEBUG: Skipping MIR module creation for EXTERN stdlib file: {}", filename);
             // Extern stdlib files have Rust implementations in build_stdlib().
             // The Haxe files are just type declarations.
             return Ok(typed_file);
@@ -1033,7 +1034,7 @@ impl CompilationUnit {
         // DEBUG: Check a specific extern function signature before renumbering
         for (func_id, func) in &stdlib_mir.functions {
             if func.name == "rayzor_channel_init" {
-                eprintln!("DEBUG: BEFORE renumbering - rayzor_channel_init (ID {}): params={}, extern={}",
+                debug!("DEBUG: BEFORE renumbering - rayzor_channel_init (ID {}): params={}, extern={}",
                           func_id.0, func.signature.parameters.len(), func.cfg.blocks.is_empty());
             }
         }
@@ -1046,12 +1047,12 @@ impl CompilationUnit {
         // Without renumbering, stdlib's "free" would be skipped, causing vec_u8_free to call "indexOf"!
 
         // DEBUG: Print user functions before merging
-        eprintln!("DEBUG: User module has {} functions before merging:", mir_module.functions.len());
+        debug!("DEBUG: User module has {} functions before merging:", mir_module.functions.len());
         let mut user_func_ids: Vec<_> = mir_module.functions.keys().collect();
         user_func_ids.sort_by_key(|id| id.0);
         for func_id in user_func_ids.iter().take(5) {
             let func = &mir_module.functions[func_id];
-            eprintln!("  - User IrFunctionId({}) = '{}'", func_id.0, func.name);
+            debug!("  - User IrFunctionId({}) = '{}'", func_id.0, func.name);
         }
 
         // Find the maximum function ID in the user module
@@ -1067,7 +1068,7 @@ impl CompilationUnit {
 
         let offset = std::cmp::max(max_user_func_id, max_user_extern_id) + 1;
 
-        eprintln!("DEBUG: Renumbering stdlib functions with offset {} (max_user_func={}, max_user_extern={})",
+        debug!("DEBUG: Renumbering stdlib functions with offset {} (max_user_func={}, max_user_extern={})",
                   offset, max_user_func_id, max_user_extern_id);
 
         // Build mapping of old stdlib IDs to new renumbered IDs
@@ -1099,7 +1100,7 @@ impl CompilationUnit {
                 for inst in &mut block.instructions {
                     if let IrInstruction::CallDirect { func_id, .. } = inst {
                         if let Some(&new_func_id) = id_mapping.get(func_id) {
-                            eprintln!("DEBUG: Updated CallDirect in {} from func_id {} -> {}",
+                            debug!("DEBUG: Updated CallDirect in {} from func_id {} -> {}",
                                       func.name, func_id.0, new_func_id.0);
                             *func_id = new_func_id;
                         }
@@ -1108,7 +1109,7 @@ impl CompilationUnit {
             }
 
             renumbered_functions.insert(new_id, func);
-            eprintln!("DEBUG: Renumbered function '{}': {} -> {}",
+            debug!("DEBUG: Renumbered function '{}': {} -> {}",
                       renumbered_functions[&new_id].name, old_id.0, new_id.0);
         }
 
@@ -1133,18 +1134,18 @@ impl CompilationUnit {
 
         for (func_id, func) in &renumbered_functions {
             if let Some(&existing_id) = user_func_name_to_id.get(&func.name) {
-                eprintln!("DEBUG: Will replace user function '{}' (ID {}) with stdlib version (ID {})",
+                debug!("DEBUG: Will replace user function '{}' (ID {}) with stdlib version (ID {})",
                           func.name, existing_id.0, func_id.0);
                 id_replacements.insert(existing_id, *func_id);
             }
         }
 
-        eprintln!("DEBUG: ID replacement map has {} entries:", id_replacements.len());
+        debug!("DEBUG: ID replacement map has {} entries:", id_replacements.len());
         for (old_id, new_id) in &id_replacements {
             if let Some(func) = mir_module.functions.get(old_id) {
-                eprintln!("  {} (ID {}) -> ID {}", func.name, old_id.0, new_id.0);
+                debug!("  {} (ID {}) -> ID {}", func.name, old_id.0, new_id.0);
             } else {
-                eprintln!("  (unknown) ID {} -> ID {}", old_id.0, new_id.0);
+                debug!("  (unknown) ID {} -> ID {}", old_id.0, new_id.0);
             }
         }
 
@@ -1152,7 +1153,7 @@ impl CompilationUnit {
         for (func_id, func) in renumbered_functions {
             // DEBUG: Check signature after renumbering
             if func.name == "rayzor_channel_init" {
-                eprintln!("DEBUG: AFTER renumbering - rayzor_channel_init (ID {}): params={}, extern={}",
+                debug!("DEBUG: AFTER renumbering - rayzor_channel_init (ID {}): params={}, extern={}",
                           func_id.0, func.signature.parameters.len(), func.cfg.blocks.is_empty());
             }
 
@@ -1173,21 +1174,21 @@ impl CompilationUnit {
                         match instr {
                             IrInstruction::CallDirect { func_id: ref mut called_func_id, .. } => {
                                 if let Some(&new_id) = id_replacements.get(called_func_id) {
-                                    eprintln!("DEBUG: Updated CallDirect in {} from func_id {} -> {}",
+                                    debug!("DEBUG: Updated CallDirect in {} from func_id {} -> {}",
                                               caller_func.name, called_func_id.0, new_id.0);
                                     *called_func_id = new_id;
                                 }
                             }
                             IrInstruction::FunctionRef { func_id: ref mut ref_func_id, .. } => {
                                 if let Some(&new_id) = id_replacements.get(ref_func_id) {
-                                    eprintln!("DEBUG: Updated FunctionRef in {} from func_id {} -> {}",
+                                    debug!("DEBUG: Updated FunctionRef in {} from func_id {} -> {}",
                                               caller_func.name, ref_func_id.0, new_id.0);
                                     *ref_func_id = new_id;
                                 }
                             }
                             IrInstruction::MakeClosure { func_id: ref mut closure_func_id, .. } => {
                                 if let Some(&new_id) = id_replacements.get(closure_func_id) {
-                                    eprintln!("DEBUG: Updated MakeClosure in {} from func_id {} -> {}",
+                                    debug!("DEBUG: Updated MakeClosure in {} from func_id {} -> {}",
                                               caller_func.name, closure_func_id.0, new_id.0);
                                     *closure_func_id = new_id;
                                 }
@@ -1200,12 +1201,12 @@ impl CompilationUnit {
         }
 
         // DEBUG: Print all function IDs in the merged module
-        eprintln!("DEBUG: Merged module has {} functions:", mir_module.functions.len());
+        debug!("DEBUG: Merged module has {} functions:", mir_module.functions.len());
         let mut func_ids: Vec<_> = mir_module.functions.keys().collect();
         func_ids.sort_by_key(|id| id.0);
         for func_id in func_ids.iter().take(10) {  // Print first 10
             let func = &mir_module.functions[func_id];
-            eprintln!("  - IrFunctionId({}) = '{}' (extern: {})",
+            debug!("  - IrFunctionId({}) = '{}' (extern: {})",
                       func_id.0, func.name, func.cfg.blocks.is_empty());
         }
 
@@ -1214,7 +1215,7 @@ impl CompilationUnit {
         monomorphizer.monomorphize_module(&mut mir_module);
         let mono_stats = monomorphizer.stats();
         if mono_stats.generic_functions_found > 0 || mono_stats.instantiations_created > 0 {
-            eprintln!("DEBUG: Monomorphization stats: {} generic functions, {} instantiations, {} call sites rewritten",
+            debug!("DEBUG: Monomorphization stats: {} generic functions, {} instantiations, {} call sites rewritten",
                       mono_stats.generic_functions_found,
                       mono_stats.instantiations_created,
                       mono_stats.call_sites_rewritten);
@@ -1345,7 +1346,7 @@ impl CompilationUnit {
                                 continue;
                             }
                             if let Err(load_err) = self.load_import_file(&type_name) {
-                                eprintln!("On-demand load failed for {}: {}", type_name, load_err);
+                                debug!("On-demand load failed for {}: {}", type_name, load_err);
                                 self.failed_type_loads.insert(type_name.clone());
                                 all_errors.push(error);
                             } else {
@@ -1359,7 +1360,7 @@ impl CompilationUnit {
 
                     // If we successfully loaded any dependencies, retry compiling this file
                     if any_loaded {
-                        eprintln!("  Retrying {} after loading dependencies...", filename);
+                        debug!("  Retrying {} after loading dependencies...", filename);
                         match self.compile_file_with_shared_state(&filename, &source) {
                             Ok(typed_file) => {
                                 all_typed_files.push(typed_file);
@@ -1376,7 +1377,7 @@ impl CompilationUnit {
                                     if let Some(type_name) = self.extract_type_name_from_error(&error.message) {
                                         if !self.failed_type_loads.contains(&type_name) {
                                             if let Err(load_err) = self.load_import_file(&type_name) {
-                                                eprintln!("On-demand load failed for {}: {}", type_name, load_err);
+                                                debug!("On-demand load failed for {}: {}", type_name, load_err);
                                                 self.failed_type_loads.insert(type_name.clone());
                                                 all_errors.push(error);
                                             } else {
@@ -1392,7 +1393,7 @@ impl CompilationUnit {
 
                                 // If we loaded more dependencies on retry, try ONE more time
                                 if retry_loaded {
-                                    eprintln!("  Second retry of {} after loading more dependencies...", filename);
+                                    debug!("  Second retry of {} after loading more dependencies...", filename);
                                     match self.compile_file_with_shared_state(&filename, &source) {
                                         Ok(typed_file) => {
                                             all_typed_files.push(typed_file);
@@ -1467,7 +1468,7 @@ impl CompilationUnit {
             }
             // Skip built-in typedefs from StdTypes.hx (these are already loaded)
             if name == "Iterator" || name == "KeyValueIterator" || name == "Iterable" || name == "KeyValueIterable" {
-                eprintln!("  Filtering out StdTypes typedef: {}", name);
+                debug!("  Filtering out StdTypes typedef: {}", name);
                 return None;
             }
         }
@@ -1492,7 +1493,7 @@ impl CompilationUnit {
         let (mir_module, metadata) = match load_blade(&cache_path) {
             Ok(data) => data,
             Err(e) => {
-                eprintln!("Warning: Failed to load cache for {:?}: {}", source_path, e);
+                warn!("Failed to load cache for {:?}: {}", source_path, e);
                 return None;
             }
         };
@@ -1508,7 +1509,7 @@ impl CompilationUnit {
                 // Cache is stale if source was modified after cache was created
                 if source_timestamp > metadata.compile_timestamp {
                     if self.config.enable_cache {
-                        println!("Cache stale for {:?} (source: {}, cache: {})",
+                        debug!("Cache stale for {:?} (source: {}, cache: {})",
                                  source_path, source_timestamp, metadata.compile_timestamp);
                     }
                     return None;
@@ -1520,14 +1521,14 @@ impl CompilationUnit {
         let current_version = env!("CARGO_PKG_VERSION");
         if metadata.compiler_version != current_version {
             if self.config.enable_cache {
-                println!("Cache version mismatch for {:?} (cache: {}, current: {})",
+                debug!("Cache version mismatch for {:?} (cache: {}, current: {})",
                          source_path, metadata.compiler_version, current_version);
             }
             return None;
         }
 
         if self.config.enable_cache {
-            println!("Cache hit for {:?}", source_path);
+            debug!("Cache hit for {:?}", source_path);
         }
 
         Some(mir_module)
@@ -1573,7 +1574,7 @@ impl CompilationUnit {
             .map_err(|e| format!("Failed to save cache: {}", e))?;
 
         if self.config.enable_cache {
-            println!("Cached MIR for {:?} -> {:?}", source_path, cache_path);
+            debug!("Cached MIR for {:?} -> {:?}", source_path, cache_path);
         }
 
         Ok(())
@@ -1587,7 +1588,7 @@ impl CompilationUnit {
                 .map_err(|e| format!("Failed to clear cache: {}", e))?;
             std::fs::create_dir_all(&cache_dir)
                 .map_err(|e| format!("Failed to recreate cache directory: {}", e))?;
-            println!("Cache cleared: {:?}", cache_dir);
+            debug!("Cache cleared: {:?}", cache_dir);
         }
         Ok(())
     }

@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use parser::{parse_haxe_file_with_diagnostics, HaxeFile, ErrorFormatter};
+use log::{warn, info};
 
 /// Strip ANSI escape codes from a string for cleaner error output
 fn strip_ansi_codes(input: &str) -> String {
@@ -141,7 +142,7 @@ impl StdLibLoader {
                 Ok(file) => files.push(file.clone()),
                 Err(e) => {
                     // Log warning but continue - some files might not exist
-                    eprintln!("Warning: {}", e);
+                    warn!("{}", e);
                 }
             }
         }
@@ -160,13 +161,13 @@ impl StdLibLoader {
             .cloned();
 
         if let Some(path) = stdlib_path {
-            println!("Loading root stdlib from: {}", path.display());
+            info!("Loading root stdlib from: {}", path.display());
 
             // Only load .hx files directly in the root directory
             let entries = match std::fs::read_dir(&path) {
                 Ok(e) => e,
                 Err(err) => {
-                    eprintln!("Warning: Failed to read directory {:?}: {}", path, err);
+                    warn!("Failed to read directory {:?}: {}", path, err);
                     return files;
                 }
             };
@@ -187,7 +188,7 @@ impl StdLibLoader {
                         }
                         Err(e) => {
                             let clean_error = strip_ansi_codes(&e);
-                            eprintln!("Warning: Failed to parse {}: {}", file_path.display(), clean_error);
+                            warn!("Failed to parse {}: {}", file_path.display(), clean_error);
                         }
                     }
                 }
@@ -225,15 +226,15 @@ impl StdLibLoader {
                         }
                         Err(e) => {
                             let clean_error = strip_ansi_codes(&e);
-                            eprintln!("Warning: Failed to parse {}: {}", file_path.display(), clean_error);
+                            warn!("Failed to parse {}: {}", file_path.display(), clean_error);
                         }
                     }
                 }
             }
 
-            println!("Loaded {} root stdlib files", files.len());
+            info!("Loaded {} root stdlib files", files.len());
         } else {
-            eprintln!("Warning: No valid stdlib path found");
+            warn!("No valid stdlib path found");
         }
 
         files
@@ -251,11 +252,11 @@ impl StdLibLoader {
             .cloned();
 
         if let Some(path) = stdlib_path {
-            println!("Loading all stdlib from: {}", path.display());
+            info!("Loading all stdlib from: {}", path.display());
             self.scan_directory_recursive(&path, &mut files);
-            println!("Loaded {} stdlib files", files.len());
+            info!("Loaded {} stdlib files", files.len());
         } else {
-            eprintln!("Warning: No valid stdlib path found");
+            warn!("No valid stdlib path found");
         }
 
         files
@@ -283,7 +284,7 @@ impl StdLibLoader {
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
             Err(err) => {
-                eprintln!("Warning: Failed to read directory {:?}: {}", dir, err);
+                warn!("Failed to read directory {:?}: {}", dir, err);
                 return;
             }
         };
@@ -308,7 +309,7 @@ impl StdLibLoader {
                     Err(e) => {
                         // Just log the warning, don't fail - some files may have parse errors
                         let clean_error = strip_ansi_codes(&e);
-                        eprintln!("Warning: Failed to parse {}: {}", path.display(), clean_error);
+                        warn!("Failed to parse {}: {}", path.display(), clean_error);
                     }
                 }
             }
@@ -327,7 +328,7 @@ impl StdLibLoader {
         if import_path.exists() {
             match self.load_file(&import_path) {
                 Ok(file) => files.push(file.clone()),
-                Err(e) => eprintln!("Warning: Failed to load import.hx: {}", e),
+                Err(e) => warn!("Failed to load import.hx: {}", e),
             }
         }
         

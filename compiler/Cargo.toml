@@ -18,6 +18,7 @@ fxhash = "0.2.1"
 log = "0.4"
 env_logger = "0.11"
 indexmap = "2"
+tracing = '0.1.44'
 
 # Cranelift JIT compilation - fork with ARM64 PLT fixes + MAP_JIT for 100% stability
 cranelift = { git = "https://github.com/darmie/wasmtime", branch = "fix-plt-aarch64", package = "cranelift", features = ["jit", "module", "native"] }

@@ -7,6 +7,7 @@ use std::alloc::{alloc, dealloc, realloc, Layout};
 use std::ptr;
 use std::slice;
 use std::str;
+use log::debug;
 
 /// Haxe String representation (pointer-based, no struct returns)
 #[repr(C)]
@@ -319,7 +320,7 @@ pub extern "C" fn haxe_string_split(
     s: *const HaxeString,
     delimiter: *const HaxeString
 ) {
-    eprintln!("[DEBUG OLD haxe_string_split] Called!");
+    debug!("[OLD haxe_string_split] Called!");
     if s.is_null() || delimiter.is_null() {
         unsafe {
             *out = ptr::null_mut();
@@ -332,7 +333,7 @@ pub extern "C" fn haxe_string_split(
         let s_ref = &*s;
         let delim_ref = &*delimiter;
 
-        eprintln!("[DEBUG OLD split] s.len={}, delimiter.len={}", s_ref.len, delim_ref.len);
+        debug!("[OLD split] s.len={}, delimiter.len={}", s_ref.len, delim_ref.len);
 
         // Count occurrences
         let mut count = 1;
@@ -380,7 +381,7 @@ pub extern "C" fn haxe_string_split_array(
 ) -> *mut crate::haxe_array::HaxeArray {
     use crate::haxe_array::HaxeArray;
 
-    eprintln!("[DEBUG split] Function entry: s={:?}, delimiter={:?}", s, delimiter);
+    debug!("[split] Function entry: s={:?}, delimiter={:?}", s, delimiter);
 
     if s.is_null() || delimiter.is_null() {
         // Return empty array
@@ -397,21 +398,21 @@ pub extern "C" fn haxe_string_split_array(
         let s_ref = &*s;
         let delim_ref = &*delimiter;
 
-        eprintln!("[DEBUG split] s.len={}, delimiter.len={}", s_ref.len, delim_ref.len);
+        debug!("[split] s.len={}, delimiter.len={}", s_ref.len, delim_ref.len);
 
         // Count occurrences
         let mut count = 1;
         let mut pos = 0;
         loop {
             let idx = haxe_string_index_of(s, delimiter, pos);
-            eprintln!("[DEBUG split] index_of from pos={} returned idx={}", pos, idx);
+            debug!("[split] index_of from pos={} returned idx={}", pos, idx);
             if idx < 0 {
                 break;
             }
             count += 1;
             pos = (idx as usize) + delim_ref.len;
         }
-        eprintln!("[DEBUG split] Final count={}", count);
+        debug!("[split] Final count={}", count);
 
         // Create HaxeArray to hold string pointers as i64
         let elem_size = 8; // size of pointer
@@ -465,7 +466,7 @@ pub extern "C" fn haxe_string_split_array(
             elem_size: 8,
         });
         let arr_ptr = Box::into_raw(arr);
-        eprintln!("[DEBUG split] Returning HaxeArray pointer: {:?} (count={})", arr_ptr, count);
+        debug!("[split] Returning HaxeArray pointer: {:?} (count={})", arr_ptr, count);
         arr_ptr
     }
 }

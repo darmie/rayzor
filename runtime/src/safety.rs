@@ -5,6 +5,7 @@
 //! development and can be optionally enabled in production.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use log::debug;
 
 /// Global counter for safety violations
 static SAFETY_VIOLATION_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -33,15 +34,15 @@ pub enum SafetyViolation {
 pub fn report_violation(violation: SafetyViolation, function: &str, details: &str) {
     let count = SAFETY_VIOLATION_COUNT.fetch_add(1, Ordering::SeqCst);
 
-    eprintln!("\n═══════════════════════════════════════════════════════════════");
-    eprintln!(
+    debug!("\n═══════════════════════════════════════════════════════════════");
+    debug!(
         "[SAFETY VIOLATION #{:04}] {:?} in {}",
         count + 1,
         violation,
         function
     );
-    eprintln!("Details: {}", details);
-    eprintln!("═══════════════════════════════════════════════════════════════\n");
+    debug!("Details: {}", details);
+    debug!("═══════════════════════════════════════════════════════════════\n");
 
     #[cfg(feature = "panic-on-safety-violation")]
     {

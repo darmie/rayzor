@@ -33,6 +33,8 @@ use crate::tast::collections::new_id_map;
 
 #[cfg(test)]
 mod ownership_analysis_tests {
+    use tracing::warn;
+
     use super::*;
 
     /// **Test Complete Pipeline - Simple Function**
@@ -101,7 +103,7 @@ mod ownership_analysis_tests {
             })
         });
         assert!(has_borrow_conflict, "Should detect mutable-immutable borrow conflict");
-        println!("Borrow conflict detection: {} violations found", violations_conflict.len());
+        warn!("Borrow conflict detection: {} violations found", violations_conflict.len());
         
         // Test 3: Borrow outliving owner (invalid)
         let graphs_outlive = create_borrow_outliving_owner();
@@ -118,7 +120,7 @@ mod ownership_analysis_tests {
       
        
         assert!(has_outlive_violation, "Should detect borrow outliving owner");
-        println!("Borrow outliving owner detection: {} violations found", violations_outlive.len());
+        warn("Borrow outliving owner detection: {} violations found", violations_outlive.len());
     }
 
     /// **Test Move Semantics Detection**

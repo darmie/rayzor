@@ -1,3 +1,5 @@
+use tracing::debug;
+
 use crate::ir::{IrType, IrId, BinaryOp, IrBuilder};
 use crate::ir::hir::HirCapture;
 use crate::tast::{SymbolId, TypeId};
@@ -43,7 +45,7 @@ impl EnvironmentLayout {
             let final_ty = type_converter(capture.ty);
             let storage_ty = IrType::I64;  // Always store as I64 (pointer-sized)
 
-            eprintln!("DEBUG EnvironmentLayout: Capture {} (sym {:?}) - final_ty={:?}",
+            debug!("DEBUG EnvironmentLayout: Capture {} (sym {:?}) - final_ty={:?}",
                      index, capture.symbol, final_ty);
 
             // Determine if cast is needed
@@ -126,14 +128,14 @@ impl EnvironmentLayout {
         // the SEMANTIC type (field.ty = Ptr), not storage type (I64). This ensures that
         // downstream type checks recognize this as a pointer and don't truncate it.
         let register_ty = if matches!(field.ty, IrType::Ptr(_) | IrType::Ref(_) | IrType::String | IrType::Any) {
-            eprintln!("DEBUG: EnvironmentLayout registering loaded {:?} as pointer type {:?} (storage was {:?})", loaded, field.ty, field.storage_ty);
+            debug!("DEBUG: EnvironmentLayout registering loaded {:?} as pointer type {:?} (storage was {:?})", loaded, field.ty, field.storage_ty);
             field.ty.clone()
         } else {
-            eprintln!("DEBUG: EnvironmentLayout registering loaded {:?} with storage type {:?}", loaded, field.storage_ty);
+            debug!("DEBUG: EnvironmentLayout registering loaded {:?} with storage type {:?}", loaded, field.storage_ty);
             field.storage_ty.clone()
         };
         builder.register_local(loaded, register_ty)?;
-        eprintln!("DEBUG: EnvironmentLayout successfully registered loaded {:?}", loaded);
+        debug!("DEBUG: EnvironmentLayout successfully registered loaded {:?}", loaded);
 
         // Cast if needed
         let final_reg = if field.needs_cast {

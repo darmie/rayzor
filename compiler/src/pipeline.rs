@@ -727,16 +727,16 @@ impl HaxeCompilationPipeline {
                                         } else if typed_file.uses_manual_memory() {
                                             // Non-strict mode: Display warnings but continue
                                             if !memory_safety_errors.is_empty() {
-                                                eprintln!("\n⚠️  Memory Safety Warnings (non-strict mode):");
-                                                eprintln!("   The following issues were found but compilation will continue.");
-                                                eprintln!("   Unannotated classes will use ARC (atomic reference counting).\n");
+                                               warn!("\n⚠️  Memory Safety Warnings (non-strict mode):");
+                                               warn!("   The following issues were found but compilation will continue.");
+                                               warn!("   Unannotated classes will use ARC (atomic reference counting).\n");
                                                 for err in &memory_safety_errors {
-                                                    eprintln!("   {} at {}:{}", err.message, err.location.line, err.location.column);
+                                                    warn!("   {} at {}:{}", err.message, err.location.line, err.location.column);
                                                     if let Some(ref suggestion) = err.suggestion {
-                                                        eprintln!("     Suggestion: {}", suggestion);
+                                                        warn!("     Suggestion: {}", suggestion);
                                                     }
                                                 }
-                                                eprintln!();
+                                               warn!("");
                                             }
                                             // Convert errors to warnings for reporting
                                             for err in memory_safety_errors {
@@ -1640,7 +1640,7 @@ impl HaxeCompilationPipeline {
 
                 // Each captured variable is moved into the closure environment
                 for captured_var in &capture_analysis.captures {
-                    eprintln!("OWNERSHIP DEBUG: Lambda captures variable {:?}, adding move to ownership graph", captured_var.symbol_id);
+                    debug!("OWNERSHIP DEBUG: Lambda captures variable {:?}, adding move to ownership graph", captured_var.symbol_id);
                     ownership_graph.add_move(
                         captured_var.symbol_id,
                         None,  // Moved into closure environment (no destination variable)
@@ -1742,10 +1742,10 @@ impl HaxeCompilationPipeline {
                     // Check for ownership violations
                     let violations = self.check_memory_safety_violations(typed_file, graphs, symbol_table, type_table);
                     if !violations.is_empty() {
-                        eprintln!("\n⛔ MEMORY SAFETY ENFORCEMENT: Blocking MIR lowering due to {} violation(s) in strict mode", violations.len());
+                        debug!("\n⛔ MEMORY SAFETY ENFORCEMENT: Blocking MIR lowering due to {} violation(s) in strict mode", violations.len());
                         return Err(violations);
                     } else {
-                        eprintln!("✅ MEMORY SAFETY: All checks passed, proceeding to MIR lowering");
+                        debug!("✅ MEMORY SAFETY: All checks passed, proceeding to MIR lowering");
                     }
                 }
             }
@@ -1759,7 +1759,7 @@ impl HaxeCompilationPipeline {
                     use crate::ir::validation::MirSafetyValidator;
 
                     if let Err(validation_errors) = MirSafetyValidator::validate(&mir_module, graphs) {
-                        eprintln!("\n⛔ MIR SAFETY VALIDATION: Found {} violation(s)", validation_errors.len());
+                        debug!("\n⛔ MIR SAFETY VALIDATION: Found {} violation(s)", validation_errors.len());
 
                         let compilation_errors = validation_errors.into_iter().map(|err| {
                             CompilationError {
@@ -1773,7 +1773,7 @@ impl HaxeCompilationPipeline {
 
                         return Err(compilation_errors);
                     } else {
-                        eprintln!("✅ MIR SAFETY VALIDATION: All checks passed");
+                        debug!("✅ MIR SAFETY VALIDATION: All checks passed");
                     }
                 }
 
@@ -1958,23 +1958,23 @@ impl HaxeCompilationPipeline {
         if let Some(sym) = symbol_table.get_symbol(symbol_id) {
             // sym.name is an InternedString, resolve it using typed_file's string interner
             let interner = typed_file.string_interner.borrow();
-            eprintln!("DEBUG: Trying to resolve InternedString({}) from interner with {} strings", sym.name.as_raw(), interner.len());
+            debug!("DEBUG: Trying to resolve InternedString({}) from interner with {} strings", sym.name.as_raw(), interner.len());
             if let Some(name_str) = interner.get(sym.name) {
-                eprintln!("DEBUG get_variable_name: Symbol {} -> '{}'", symbol_id.as_raw(), name_str);
+                debug!("DEBUG get_variable_name: Symbol {} -> '{}'", symbol_id.as_raw(), name_str);
                 return name_str.to_string();
             } else {
-                eprintln!("DEBUG get_variable_name: Symbol {} found but couldn't resolve interned string {} in interner (interner has {} strings)",
+                debug!("DEBUG get_variable_name: Symbol {} found but couldn't resolve interned string {} in interner (interner has {} strings)",
                     symbol_id.as_raw(), sym.name.as_raw(), interner.len());
                 // Try to iterate through all strings to see what's there
-                eprintln!("DEBUG: Dumping first 100 strings in interner:");
+                debug!("DEBUG: Dumping first 100 strings in interner:");
                 for i in 0..100.min(interner.len()) {
                     if let Some(s) = interner.get(unsafe { InternedString::from_raw(i as u32) }) {
-                        eprintln!("  [{}] = '{}'", i, s);
+                        debug!("  [{}] = '{}'", i, s);
                     }
                 }
             }
         } else {
-            eprintln!("DEBUG get_variable_name: Symbol {} NOT in symbol table", symbol_id.as_raw());
+            debug!("DEBUG get_variable_name: Symbol {} NOT in symbol table", symbol_id.as_raw());
         }
 
         // Try to find the variable in typed_file declarations

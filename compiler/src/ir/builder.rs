@@ -3,6 +3,8 @@
 //! This module provides a builder interface for constructing HIR in a convenient way.
 //! The builder maintains context and provides helper methods for common patterns.
 
+use tracing::debug;
+
 use super::{
     IrModule, IrFunction, IrFunctionId, IrBasicBlock, IrBlockId,
     IrInstruction, IrTerminator, IrPhiNode, IrId, IrType, IrValue,
@@ -265,18 +267,18 @@ impl IrBuilder {
                 let expected_is_ptr = matches!(ty, IrType::Ptr(_));
 
                 if actual_is_ptr && expected_is_scalar {
-                    eprintln!("DEBUG: CallDirect type mismatch - function returns {:?}, expected {:?}, but NOT inserting cast (pointer->scalar would lose data)",
+                    debug!("DEBUG: CallDirect type mismatch - function returns {:?}, expected {:?}, but NOT inserting cast (pointer->scalar would lose data)",
                               actual_return_type, ty);
                     // Type already registered above - trust actual type
                 } else if actual_is_scalar && expected_is_ptr {
                     // Don't cast from scalar to pointer - the function returns a concrete type
                     // (e.g., F64 from Sys.time()) but the HIR expects Dynamic (Ptr(Void)).
                     // Trust the actual return type to preserve type information.
-                    eprintln!("DEBUG: CallDirect type mismatch - function returns {:?}, expected {:?}, but NOT inserting cast (scalar->pointer would lose type info)",
+                    debug!("DEBUG: CallDirect type mismatch - function returns {:?}, expected {:?}, but NOT inserting cast (scalar->pointer would lose type info)",
                               actual_return_type, ty);
                     // Type already registered above - trust actual type
                 } else {
-                    eprintln!("DEBUG: CallDirect type mismatch - function returns {:?}, expected {:?}, inserting cast",
+                    debug!("DEBUG: CallDirect type mismatch - function returns {:?}, expected {:?}, inserting cast",
                               actual_return_type, ty);
                     // Insert cast from actual type to expected type
                     return self.build_cast(dest_reg, actual_return_type.clone(), ty);
@@ -325,10 +327,10 @@ impl IrBuilder {
                 let expected_is_scalar = matches!(ty, IrType::I32 | IrType::I64 | IrType::Bool | IrType::F32 | IrType::F64);
 
                 if actual_is_ptr && expected_is_scalar {
-                    eprintln!("DEBUG: CallDirect (generic) type mismatch - function returns {:?}, expected {:?}, NOT inserting cast",
+                    debug!("DEBUG: CallDirect (generic) type mismatch - function returns {:?}, expected {:?}, NOT inserting cast",
                               actual_return_type, ty);
                 } else {
-                    eprintln!("DEBUG: CallDirect (generic) type mismatch - function returns {:?}, expected {:?}, inserting cast",
+                    debug!("DEBUG: CallDirect (generic) type mismatch - function returns {:?}, expected {:?}, inserting cast",
                               actual_return_type, ty);
                     return self.build_cast(dest_reg, actual_return_type.clone(), ty);
                 }

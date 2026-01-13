@@ -34,6 +34,7 @@ use crate::ir::{IrFunction, IrFunctionId, IrModule};
 use super::llvm_jit_backend::LLVMJitBackend;
 #[cfg(feature = "llvm-backend")]
 use inkwell::context::Context;
+use tracing::debug;
 
 /// Tiered compilation backend
 pub struct TieredBackend {
@@ -192,7 +193,7 @@ impl TieredBackend {
     /// Compile a MIR module (initially at Tier 0 - Baseline)
     pub fn compile_module(&mut self, module: IrModule) -> Result<(), String> {
         if self.config.verbosity >= 1 {
-            eprintln!(
+            debug!(
                 "[TieredBackend] Compiling {} functions at Tier 0 (Baseline)",
                 module.functions.len()
             );
@@ -288,7 +289,7 @@ impl TieredBackend {
         {
             if self.config.verbosity >= 2 {
                 let count = self.profile_data.get_function_count(func_id);
-                eprintln!(
+                debug!(
                     "[TieredBackend] Enqueuing {:?} for {} (count: {})",
                     func_id,
                     target_tier.description(),
@@ -316,7 +317,7 @@ impl TieredBackend {
     ) -> Result<(), String> {
         if self.config.verbosity >= 1 {
             let count = self.profile_data.get_function_count(func_id);
-            eprintln!(
+            debug!(
                 "[TieredBackend] Recompiling {:?} at {} (count: {})",
                 func_id,
                 target_tier.description(),
@@ -358,7 +359,7 @@ impl TieredBackend {
             .insert(func_id, target_tier);
 
         if self.config.verbosity >= 1 {
-            eprintln!(
+            debug!(
                 "[TieredBackend] Successfully recompiled {:?} at {}",
                 func_id,
                 target_tier.description()
@@ -417,7 +418,7 @@ impl TieredBackend {
         _function: &IrFunction,
     ) -> Result<usize, String> {
         if self.config.verbosity >= 1 {
-            eprintln!(
+            debug!(
                 "[TieredBackend] LLVM backend not enabled, cannot compile {:?} at Tier 3",
                 func_id
             );
@@ -442,14 +443,14 @@ impl TieredBackend {
 
         let handle = thread::spawn(move || {
             if config.verbosity >= 1 {
-                eprintln!("[TieredBackend] Background optimization worker started");
+                debug!("[TieredBackend] Background optimization worker started");
             }
 
             loop {
                 // Check for shutdown
                 if *shutdown.lock().unwrap() {
                     if config.verbosity >= 1 {
-                        eprintln!("[TieredBackend] Background worker shutting down");
+                        debug!("[TieredBackend] Background worker shutting down");
                     }
                     break;
                 }
@@ -513,7 +514,7 @@ impl TieredBackend {
 
             if let Err(e) = result {
                 if config.verbosity >= 1 {
-                    eprintln!("[TieredBackend] Failed to optimize {:?}: {}", func_id, e);
+                    debug!("[TieredBackend] Failed to optimize {:?}: {}", func_id, e);
                 }
             }
         }
@@ -531,7 +532,7 @@ impl TieredBackend {
     ) -> Result<(), String> {
         if config.verbosity >= 1 {
             let count = profile_data.get_function_count(func_id);
-            eprintln!(
+            debug!(
                 "[TieredBackend] Worker optimizing {:?} at {} (count: {})",
                 func_id,
                 target_tier.description(),
@@ -573,7 +574,7 @@ impl TieredBackend {
             .insert(func_id, target_tier);
 
         if config.verbosity >= 1 {
-            eprintln!(
+            debug!(
                 "[TieredBackend] Worker successfully recompiled {:?} at {}",
                 func_id,
                 target_tier.description()
@@ -640,9 +641,9 @@ impl TieredBackend {
 
         // Debug: Print what tiers we actually have
         if self.config.verbosity >= 2 {
-            eprintln!("[TieredBackend] Current function tiers:");
+            debug!("[TieredBackend] Current function tiers:");
             for (func_id, tier) in tiers.iter() {
-                eprintln!("  {:?} -> {:?}", func_id, tier);
+                debug!("  {:?} -> {:?}", func_id, tier);
             }
         }
 

@@ -12,6 +12,7 @@ rayzor-plugin = { path = "../plugin" }
 lazy_static = "1.4"
 libc = "0.2"
 chrono = "0.4"
+log = "0.4"
 
 [features]
 default = []

@@ -6,6 +6,8 @@
 //! - Lifetime and ownership information
 //! - Desugared syntax (e.g., for-in to iterators)
 
+use tracing::{debug, warn};
+
 use crate::ir::hir::*;
 use crate::tast::{
     node::*, TypeId, SymbolId, SourceLocation,
@@ -473,7 +475,7 @@ impl<'a> TastToHirContext<'a> {
     
     /// Lower a function
     fn lower_function(&mut self, function: &TypedFunction) -> HirFunction {
-        // eprintln!("DEBUG TAST→HIR: Function {:?} has {} statements in body",
+        // debug!(" TAST→HIR: Function {:?} has {} statements in body",
         //           self.string_interner.get(function.name),
         //           function.body.len());
 
@@ -760,9 +762,9 @@ impl<'a> TastToHirContext<'a> {
                 ))
             }
             TypedStatement::ForIn { value_var, key_var, iterable, body, .. } => {
-                eprintln!("DEBUG [tast_to_hir ForIn]: Creating HirStatement::ForIn from TypedStatement::ForIn");
-                eprintln!("DEBUG [tast_to_hir ForIn]: value_var={:?}, key_var={:?}", value_var, key_var);
-                eprintln!("DEBUG [tast_to_hir ForIn]: iterable.expr_type={:?}", iterable.expr_type);
+                debug!(" [tast_to_hir ForIn]: Creating HirStatement::ForIn from TypedStatement::ForIn");
+                debug!(" [tast_to_hir ForIn]: value_var={:?}, key_var={:?}", value_var, key_var);
+                debug!(" [tast_to_hir ForIn]: iterable.expr_type={:?}", iterable.expr_type);
                 self.loop_labels.push(None);
 
                 // Create pattern from value_var and optional key_var
@@ -822,7 +824,7 @@ impl<'a> TastToHirContext<'a> {
                 // ARRAY ACCESS OVERLOADING: Check if target is array access with @:arrayAccess set method
                 if let TypedExpressionKind::ArrayAccess { array, index } = &target.kind {
                     if let Some((set_method, _abstract_symbol)) = self.find_array_access_method(array.expr_type, "set") {
-                        eprintln!("DEBUG: Found array access set method for type {:?}: method symbol {:?}",
+                        debug!(": Found array access set method for type {:?}: method symbol {:?}",
                                   array.expr_type, set_method);
 
                         // Rewrite array assignment to method call:  `a[i] = v` → `a.set(i, v)`
@@ -836,11 +838,11 @@ impl<'a> TastToHirContext<'a> {
                             value.expr_type,
                             target.source_location,
                         ) {
-                            eprintln!("DEBUG: Successfully inlined array access set method!");
+                            debug!(": Successfully inlined array access set method!");
                             // Convert to expression statement
                             return HirStatement::Expr(inlined);
                         } else {
-                            eprintln!("DEBUG: Failed to inline array access set method");
+                            debug!(": Failed to inline array access set method");
                             // Fall through to normal assignment
                         }
                     }
@@ -953,7 +955,7 @@ impl<'a> TastToHirContext<'a> {
             TypedExpressionKind::ArrayAccess { array, index } => {
                 // ARRAY ACCESS OVERLOADING: Check if array type has @:arrayAccess get method
                 if let Some((get_method, _abstract_symbol)) = self.find_array_access_method(array.expr_type, "get") {
-                    eprintln!("DEBUG: Found array access get method for type {:?}: method symbol {:?}",
+                    debug!(": Found array access get method for type {:?}: method symbol {:?}",
                               array.expr_type, get_method);
 
                     // Rewrite array access to method call:  `a[i]` → `a.get(i)`
@@ -965,10 +967,10 @@ impl<'a> TastToHirContext<'a> {
                         expr.expr_type,
                         expr.source_location,
                     ) {
-                        eprintln!("DEBUG: Successfully inlined array access get method!");
+                        debug!(": Successfully inlined array access get method!");
                         return inlined;
                     } else {
-                        eprintln!("DEBUG: Failed to inline array access get method, falling back to method call");
+                        debug!(": Failed to inline array access get method, falling back to method call");
                         // TODO: Fall back to method call if inlining fails
                     }
                 }
@@ -1078,7 +1080,7 @@ impl<'a> TastToHirContext<'a> {
             TypedExpressionKind::UnaryOp { operator, operand } => {
                 // OPERATOR OVERLOADING: Check if operand has abstract type with @:op metadata
                 if let Some((method_symbol, _abstract_symbol)) = self.find_unary_operator_method(operand.expr_type, operator) {
-                    // eprintln!("DEBUG: Found unary operator method for {:?} on type {:?}: method symbol {:?}",
+                    // debug!(": Found unary operator method for {:?} on type {:?}: method symbol {:?}",
                     //           operator, operand.expr_type, method_symbol);
 
                     // Rewrite unary operation to method call:  `-a` → `a.negate()`
@@ -1090,10 +1092,10 @@ impl<'a> TastToHirContext<'a> {
                         expr.expr_type,
                         expr.source_location,
                     ) {
-                        // eprintln!("DEBUG: Successfully inlined unary operator method!");
+                        // debug!(": Successfully inlined unary operator method!");
                         return inlined;
                     } else {
-                        // eprintln!("DEBUG: Failed to inline unary operator method, falling back to method call");
+                        // debug!(": Failed to inline unary operator method, falling back to method call");
                         // TODO: Fall back to method call if inlining fails
                     }
                 }
@@ -1109,7 +1111,7 @@ impl<'a> TastToHirContext<'a> {
                 if *operator == BinaryOperator::Assign {
                     if let TypedExpressionKind::ArrayAccess { array, index } = &left.kind {
                         if let Some((set_method, _abstract_symbol)) = self.find_array_access_method(array.expr_type, "set") {
-                            // eprintln!("DEBUG: Found array access set method in BinaryOp for type {:?}: method symbol {:?}",
+                            // debug!(": Found array access set method in BinaryOp for type {:?}: method symbol {:?}",
                             //           array.expr_type, set_method);
 
                             // Rewrite array assignment to method call:  `a[i] = v` → `a.set(i, v)`
@@ -1123,11 +1125,11 @@ impl<'a> TastToHirContext<'a> {
                                 right.expr_type, // Return value is typically the assigned value
                                 expr.source_location,
                             ) {
-                                // eprintln!("DEBUG: Successfully inlined array access set method in BinaryOp!");
+                                // debug!(": Successfully inlined array access set method in BinaryOp!");
                                 // Return the inlined set method call
                                 return inlined;
                             } else {
-                                // eprintln!("DEBUG: Failed to inline array access set method in BinaryOp");
+                                // debug!(": Failed to inline array access set method in BinaryOp");
                                 // Fall through to normal assignment
                             }
                         }
@@ -1136,7 +1138,7 @@ impl<'a> TastToHirContext<'a> {
 
                 // OPERATOR OVERLOADING: Check if left operand has abstract type with @:op metadata
                 if let Some((method_symbol, _abstract_symbol)) = self.find_binary_operator_method(left.expr_type, operator) {
-                    // eprintln!("DEBUG: Found operator method for {:?} on type {:?}: method symbol {:?}",
+                    // debug!(": Found operator method for {:?} on type {:?}: method symbol {:?}",
                     //           operator, left.expr_type, method_symbol);
 
                     // Rewrite binary operation to method call:  `a + b` → `a.add(b)`
@@ -1148,10 +1150,10 @@ impl<'a> TastToHirContext<'a> {
                         expr.expr_type,
                         expr.source_location,
                     ) {
-                        // eprintln!("DEBUG: Successfully inlined operator method!");
+                        // debug!(": Successfully inlined operator method!");
                         return inlined;
                     } else {
-                        // eprintln!("DEBUG: Operator method found but not inlined, generating method call");
+                        // debug!(": Operator method found but not inlined, generating method call");
                         // Fall through to generate a regular method call
                         // TODO: Generate MethodCall instead of Binary
                     }
@@ -1228,9 +1230,9 @@ impl<'a> TastToHirContext<'a> {
 
                 let captures = self.compute_captures(body, &param_symbols);
 
-                eprintln!("DEBUG TAST->HIR: Lambda has {} parameters, found {} captures", parameters.len(), captures.len());
+                debug!("DEBUG TAST->HIR: Lambda has {} parameters, found {} captures", parameters.len(), captures.len());
                 for capture in &captures {
-                    eprintln!("  Captured symbol: {:?}", capture.symbol);
+                    debug!("  Captured symbol: {:?}", capture.symbol);
                 }
 
                 HirExprKind::Lambda {
@@ -1514,7 +1516,7 @@ impl<'a> TastToHirContext<'a> {
                 TypedStatement::Block { .. } => "Block",
                 _ => "Other",
             };
-            // eprintln!("DEBUG TAST statement {}: {}", i, stmt_type);
+            // debug!(" TAST statement {}: {}", i, stmt_type);
         }
 
         let hir_stmts: Vec<_> = statements.iter()
@@ -1532,7 +1534,7 @@ impl<'a> TastToHirContext<'a> {
                 HirStatement::Continue(_) => "Continue",
                 _ => "Other",
             };
-            // eprintln!("DEBUG HIR statement {}: {}", i, stmt_type);
+            // debug!(" HIR statement {}: {}", i, stmt_type);
         }
 
         HirBlock::new(hir_stmts, self.current_scope)
@@ -1693,7 +1695,7 @@ impl<'a> TastToHirContext<'a> {
                 // Look up the symbol in the symbol table
                 // The symbol should have been registered during TAST lowering
                 // if let Some(name) = self.string_interner.get(sym_str) {
-                //     eprintln!("DEBUG: Lowering import symbol: {}", name);
+                //     debug!(": Lowering import symbol: {}", name);
                 // }
                 None // For now, we don't track the actual SymbolIds in HIR imports
             }).collect()
@@ -2451,7 +2453,7 @@ impl<'a> TastToHirContext<'a> {
                     if let Some(parsed_op) = Self::parse_operator_from_metadata(op_str) {
                         // Compare using discriminant to match operator variants
                         if std::mem::discriminant(&parsed_op) == std::mem::discriminant(operator) {
-                            // eprintln!("DEBUG: Matched operator {:?} to method {} with metadata '{}'",
+                            // debug!(": Matched operator {:?} to method {} with metadata '{}'",
                             //           operator, self.string_interner.get(method.name).unwrap_or("<unknown>"), op_str);
                             return Some((method.symbol_id, abstract_symbol));
                         }
@@ -2489,13 +2491,13 @@ impl<'a> TastToHirContext<'a> {
                 "Gt" => Some(BinaryOperator::Gt),
                 "Ge" => Some(BinaryOperator::Ge),
                 _ => {
-                    eprintln!("WARNING: Unknown binary operator in metadata: '{}'", operator);
+                    warn!("WARNING: Unknown binary operator in metadata: '{}'", operator);
                     None
                 }
             }
         } else {
             // Not a valid binary operator pattern
-            eprintln!("WARNING: Invalid binary operator pattern (expected 3 tokens, got {}): '{}'",
+            warn!("WARNING: Invalid binary operator pattern (expected 3 tokens, got {}): '{}'",
                       tokens.len(), op_str);
             None
         }
@@ -2532,7 +2534,7 @@ impl<'a> TastToHirContext<'a> {
                     if let Some(parsed_op) = Self::parse_unary_operator_from_metadata(op_str) {
                         // Compare using discriminant to match operator variants
                         if std::mem::discriminant(&parsed_op) == std::mem::discriminant(operator) {
-                            // eprintln!("DEBUG: Matched unary operator {:?} to method {} with metadata '{}'",
+                            // debug!(": Matched unary operator {:?} to method {} with metadata '{}'",
                             //           operator, self.string_interner.get(method.name).unwrap_or("<unknown>"), op_str);
                             return Some((method.symbol_id, abstract_symbol));
                         }
@@ -2613,7 +2615,7 @@ impl<'a> TastToHirContext<'a> {
                     // Check if the method name matches what we're looking for
                     if let Some(name_str) = self.string_interner.get(method.name) {
                         if name_str == method_name {
-                            eprintln!("DEBUG: Matched array access '{}' to method {} on abstract '{}'",
+                            debug!("DEBUG: Matched array access '{}' to method {} on abstract '{}'",
                                       method_name,
                                       name_str,
                                       self.string_interner.get(abstract_def.name).unwrap_or("<unknown>"));
@@ -2864,7 +2866,7 @@ impl<'a> TastToHirContext<'a> {
 
                 // Fix the type information: if class_type is UNKNOWN/invalid, use expected_type
                 let fixed_class_type = if *class_type == TypeId::invalid() {
-                    // eprintln!("DEBUG: Fixing New expression type from UNKNOWN to {:?}", expected_type);
+                    // debug!(": Fixing New expression type from UNKNOWN to {:?}", expected_type);
                     expected_type
                 } else {
                     *class_type

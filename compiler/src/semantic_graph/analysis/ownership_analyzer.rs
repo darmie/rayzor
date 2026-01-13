@@ -182,7 +182,7 @@ impl OwnershipAnalyzer {
         let dfg_move_violations = match self.analyze_dfg_move_semantics(context) {
             Ok(violations) => violations,
             Err(e) => {
-                println!("ERROR in analyze_dfg_move_semantics: {:?}", e);
+                eprintln!("ERROR in analyze_dfg_move_semantics: {:?}", e);
                 return Err(e);
             }
         };
@@ -194,7 +194,7 @@ impl OwnershipAnalyzer {
         let double_move_violations = match self.detect_double_moves_via_ssa(context) {
             Ok(violations) => violations,
             Err(e) => {
-                println!("ERROR in detect_double_moves_via_ssa: {:?}", e);
+                eprintln!("ERROR in detect_double_moves_via_ssa: {:?}", e);
                 return Err(e);
             }
         };
@@ -206,7 +206,7 @@ impl OwnershipAnalyzer {
         let borrow_violations = match self.validate_borrow_lifetimes(context) {
             Ok(violations) => violations,
             Err(e) => {
-                println!("ERROR in validate_borrow_lifetimes: {:?}", e);
+                eprintln!("ERROR in validate_borrow_lifetimes: {:?}", e);
                 return Err(e);
             }
         };

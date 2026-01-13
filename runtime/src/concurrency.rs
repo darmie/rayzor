@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use log::debug;
 
 // Native pthread support for Apple Silicon
 #[cfg(target_os = "macos")]
@@ -83,17 +84,17 @@ lazy_static::lazy_static! {
 /// This should be called before dropping the JIT module to prevent use-after-free
 #[no_mangle]
 pub extern "C" fn rayzor_wait_all_threads() {
-    eprintln!("[DEBUG rayzor_wait_all_threads] Waiting for all threads to complete...");
+    debug!("[rayzor_wait_all_threads] Waiting for all threads to complete...");
 
     // Keep looping until all threads are done
     loop {
         let count = ACTIVE_THREAD_COUNT.load(Ordering::SeqCst);
         if count == 0 {
-            eprintln!("[DEBUG rayzor_wait_all_threads] All threads completed");
+            debug!("[rayzor_wait_all_threads] All threads completed");
             break;
         }
-        eprintln!(
-            "[DEBUG rayzor_wait_all_threads] {} threads still active, waiting...",
+        debug!(
+            "[rayzor_wait_all_threads] {} threads still active, waiting...",
             count
         );
         thread::sleep(Duration::from_millis(10));
@@ -331,24 +332,24 @@ pub unsafe extern "C" fn rayzor_arc_init(value: *mut u8) -> *mut u8 {
 /// - arc must be a valid Arc pointer from rayzor_arc_init or rayzor_arc_clone
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_arc_clone(arc: *const u8) -> *mut u8 {
-    eprintln!("[DEBUG rayzor_arc_clone] Called with arc={:?}", arc);
+    debug!("[rayzor_arc_clone] Called with arc={:?}", arc);
 
     if arc.is_null() {
-        eprintln!("[SAFETY ERROR] rayzor_arc_clone: NULL arc pointer");
+        debug!("[SAFETY ERROR] rayzor_arc_clone: NULL arc pointer");
         return ptr::null_mut();
     }
 
     // Reconstruct Arc from raw pointer (without decrementing count)
     let arc_ref = Arc::from_raw(arc as *const *mut u8);
-    eprintln!(
-        "[DEBUG rayzor_arc_clone] Arc reconstructed, strong_count={}",
+    debug!(
+        "[rayzor_arc_clone] Arc reconstructed, strong_count={}",
         Arc::strong_count(&arc_ref)
     );
 
     // Clone it (increments ref count)
     let cloned = Arc::clone(&arc_ref);
     let cloned_ptr = Arc::into_raw(cloned) as *mut u8;
-    eprintln!("[DEBUG rayzor_arc_clone] Cloned to {:?}", cloned_ptr);
+    debug!("[rayzor_arc_clone] Cloned to {:?}", cloned_ptr);
 
     // Forget the original to avoid decrementing ref count
     // Note: forget cannot panic, so no guard needed
@@ -365,17 +366,17 @@ pub unsafe extern "C" fn rayzor_arc_clone(arc: *const u8) -> *mut u8 {
 /// - returned pointer is valid as long as Arc exists
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_arc_get(arc: *const u8) -> *const u8 {
-    eprintln!("[DEBUG rayzor_arc_get] Called with arc={:?}", arc);
+    debug!("[rayzor_arc_get] Called with arc={:?}", arc);
 
     if arc.is_null() {
-        eprintln!("[SAFETY ERROR] rayzor_arc_get: NULL arc pointer");
+        debug!("[SAFETY ERROR] rayzor_arc_get: NULL arc pointer");
         return ptr::null();
     }
 
     // Reconstruct Arc temporarily
     let arc_ref = Arc::from_raw(arc as *const *mut u8);
-    eprintln!(
-        "[DEBUG rayzor_arc_get] Arc reconstructed, strong_count={}",
+    debug!(
+        "[rayzor_arc_get] Arc reconstructed, strong_count={}",
         Arc::strong_count(&arc_ref)
     );
 
@@ -385,7 +386,7 @@ pub unsafe extern "C" fn rayzor_arc_get(arc: *const u8) -> *const u8 {
     // Forget to avoid decrementing ref count
     std::mem::forget(arc_ref);
 
-    eprintln!("[DEBUG rayzor_arc_get] Returning {:?}", value_ptr);
+    debug!("[rayzor_arc_get] Returning {:?}", value_ptr);
     value_ptr
 }
 
@@ -587,20 +588,20 @@ pub unsafe extern "C" fn rayzor_channel_init(capacity: i32) -> *mut u8 {
 /// Send a value through a channel (blocking)
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_channel_send(channel: *mut u8, value: *mut u8) {
-    eprintln!(
-        "[DEBUG rayzor_channel_send] Called with channel={:?}, value={:?}",
+    debug!(
+        "[rayzor_channel_send] Called with channel={:?}, value={:?}",
         channel, value
     );
 
     if channel.is_null() {
-        eprintln!("[DEBUG rayzor_channel_send] channel is null, returning");
+        debug!("[rayzor_channel_send] channel is null, returning");
         return;
     }
 
     let channel_handle = &*(channel as *const ChannelHandle);
-    eprintln!("[DEBUG rayzor_channel_send] Got channel_handle, locking...");
+    debug!("[rayzor_channel_send] Got channel_handle, locking...");
     let mut state = channel_handle.state.lock().unwrap();
-    eprintln!("[DEBUG rayzor_channel_send] Lock acquired");
+    debug!("[rayzor_channel_send] Lock acquired");
 
     // For bounded channels, wait while full
     while state.capacity > 0 && state.buffer.len() >= state.capacity && !state.closed {

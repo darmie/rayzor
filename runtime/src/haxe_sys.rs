@@ -3,6 +3,7 @@
 //! System and I/O functions
 
 use std::io::{self, Write};
+use log::debug;
 
 // Use the canonical HaxeString definition from haxe_string module
 use crate::haxe_string::HaxeString;
@@ -942,7 +943,7 @@ pub extern "C" fn haxe_file_get_content(path: *const HaxeString) -> *mut HaxeStr
                 match std::fs::read_to_string(&path_str) {
                     Ok(content) => rust_string_to_haxe(content),
                     Err(e) => {
-                        eprintln!("File.getContent error: {} - {}", path_str, e);
+                        debug!("File.getContent error: {} - {}", path_str, e);
                         std::ptr::null_mut()
                     }
                 }
@@ -966,7 +967,7 @@ pub extern "C" fn haxe_file_save_content(path: *const HaxeString, content: *cons
             None => String::new(),
         };
         if let Err(e) = std::fs::write(&path_str, content_str) {
-            eprintln!("File.saveContent error: {} - {}", path_str, e);
+            debug!("File.saveContent error: {} - {}", path_str, e);
         }
     }
 }
@@ -985,7 +986,7 @@ pub extern "C" fn haxe_file_copy(src: *const HaxeString, dst: *const HaxeString)
             None => return,
         };
         if let Err(e) = std::fs::copy(&src_str, &dst_str) {
-            eprintln!("File.copy error: {} -> {} - {}", src_str, dst_str, e);
+            debug!("File.copy error: {} -> {} - {}", src_str, dst_str, e);
         }
     }
 }
@@ -1009,7 +1010,7 @@ pub extern "C" fn haxe_file_get_bytes(path: *const HaxeString) -> *mut HaxeBytes
                         Box::into_raw(bytes)
                     }
                     Err(e) => {
-                        eprintln!("File.getBytes error: {} - {}", path_str, e);
+                        debug!("File.getBytes error: {} - {}", path_str, e);
                         std::ptr::null_mut()
                     }
                 }
@@ -1030,7 +1031,7 @@ pub extern "C" fn haxe_file_save_bytes(path: *const HaxeString, bytes: *const Ha
         };
 
         if bytes.is_null() {
-            eprintln!("File.saveBytes error: bytes is null");
+            debug!("File.saveBytes error: bytes is null");
             return;
         }
 
@@ -1038,7 +1039,7 @@ pub extern "C" fn haxe_file_save_bytes(path: *const HaxeString, bytes: *const Ha
         let slice = std::slice::from_raw_parts(b.ptr, b.len);
 
         if let Err(e) = std::fs::write(&path_str, slice) {
-            eprintln!("File.saveBytes error: {} - {}", path_str, e);
+            debug!("File.saveBytes error: {} - {}", path_str, e);
         }
     }
 }
@@ -1078,7 +1079,7 @@ pub extern "C" fn haxe_filesystem_create_directory(path: *const HaxeString) {
     unsafe {
         if let Some(path_str) = haxe_string_to_rust(path) {
             if let Err(e) = std::fs::create_dir_all(&path_str) {
-                eprintln!("FileSystem.createDirectory error: {} - {}", path_str, e);
+                debug!("FileSystem.createDirectory error: {} - {}", path_str, e);
             }
         }
     }
@@ -1091,7 +1092,7 @@ pub extern "C" fn haxe_filesystem_delete_file(path: *const HaxeString) {
     unsafe {
         if let Some(path_str) = haxe_string_to_rust(path) {
             if let Err(e) = std::fs::remove_file(&path_str) {
-                eprintln!("FileSystem.deleteFile error: {} - {}", path_str, e);
+                debug!("FileSystem.deleteFile error: {} - {}", path_str, e);
             }
         }
     }
@@ -1104,7 +1105,7 @@ pub extern "C" fn haxe_filesystem_delete_directory(path: *const HaxeString) {
     unsafe {
         if let Some(path_str) = haxe_string_to_rust(path) {
             if let Err(e) = std::fs::remove_dir(&path_str) {
-                eprintln!("FileSystem.deleteDirectory error: {} - {}", path_str, e);
+                debug!("FileSystem.deleteDirectory error: {} - {}", path_str, e);
             }
         }
     }
@@ -1124,7 +1125,7 @@ pub extern "C" fn haxe_filesystem_rename(path: *const HaxeString, new_path: *con
             None => return,
         };
         if let Err(e) = std::fs::rename(&path_str, &new_path_str) {
-            eprintln!("FileSystem.rename error: {} -> {} - {}", path_str, new_path_str, e);
+            debug!("FileSystem.rename error: {} -> {} - {}", path_str, new_path_str, e);
         }
     }
 }
@@ -1374,7 +1375,7 @@ pub extern "C" fn haxe_file_read(path: *const HaxeString, _binary: bool) -> *mut
                         }))
                     }
                     Err(e) => {
-                        eprintln!("File.read error: {} - {}", path_str, e);
+                        debug!("File.read error: {} - {}", path_str, e);
                         std::ptr::null_mut()
                     }
                 }
@@ -1398,7 +1399,7 @@ pub extern "C" fn haxe_file_write(path: *const HaxeString, _binary: bool) -> *mu
                         }))
                     }
                     Err(e) => {
-                        eprintln!("File.write error: {} - {}", path_str, e);
+                        debug!("File.write error: {} - {}", path_str, e);
                         std::ptr::null_mut()
                     }
                 }
@@ -1426,7 +1427,7 @@ pub extern "C" fn haxe_file_append(path: *const HaxeString, _binary: bool) -> *m
                         }))
                     }
                     Err(e) => {
-                        eprintln!("File.append error: {} - {}", path_str, e);
+                        debug!("File.append error: {} - {}", path_str, e);
                         std::ptr::null_mut()
                     }
                 }
@@ -1455,7 +1456,7 @@ pub extern "C" fn haxe_file_update(path: *const HaxeString, _binary: bool) -> *m
                         }))
                     }
                     Err(e) => {
-                        eprintln!("File.update error: {} - {}", path_str, e);
+                        debug!("File.update error: {} - {}", path_str, e);
                         std::ptr::null_mut()
                     }
                 }

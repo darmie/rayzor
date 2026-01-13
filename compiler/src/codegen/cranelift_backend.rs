@@ -22,6 +22,7 @@ use crate::ir::{
     IrBasicBlock, IrBlockId, IrControlFlowGraph, IrFunction, IrFunctionId, IrId, IrInstruction,
     IrModule, IrTerminator, IrType, IrValue,
 };
+use tracing::{debug, info, trace, warn};
 
 /// Cranelift JIT backend for compiling MIR to native code
 pub struct CraneliftBackend {
@@ -282,7 +283,7 @@ impl CraneliftBackend {
                                         func_id,
                                         ..
                                     } if closure_dest == ptr => {
-                                        eprintln!("DEBUG: Traced func_ptr through Load from MakeClosure to lambda {:?}", func_id);
+                                        debug!("Traced func_ptr through Load from MakeClosure to lambda {:?}", func_id);
                                         return Some(*func_id);
                                     }
                                     // Also check PtrAdd (for field access at offset)
@@ -301,7 +302,7 @@ impl CraneliftBackend {
                                                 } = deepest_inst
                                                 {
                                                     if closure_dest == base_ptr {
-                                                        eprintln!("DEBUG: Traced func_ptr through Load->PtrAdd->MakeClosure to lambda {:?}", func_id);
+                                                        debug!("Traced func_ptr through Load->PtrAdd->MakeClosure to lambda {:?}", func_id);
                                                         return Some(*func_id);
                                                     }
                                                 }
@@ -332,8 +333,8 @@ impl CraneliftBackend {
             .any(|f| !f.cfg.blocks.is_empty());
 
         if !has_implementations {
-            eprintln!(
-                "DEBUG: Skipping module '{}' - no implementations (only {} extern declarations)",
+            debug!(
+            ": Skipping module '{}' - no implementations (only {} extern declarations)",
                 mir_module.name,
                 mir_module.functions.len()
             );
@@ -358,8 +359,8 @@ impl CraneliftBackend {
         // - Without persistent mappings, Module 1's code can't call externs after Module 2 clears the map
         //
         // Previously we cleared function_map, which broke cross-module extern function references.
-        eprintln!(
-            "DEBUG: Compiling module '{}' #{} (function_map has {} entries)",
+        debug!(
+            ": Compiling module '{}' #{} (function_map has {} entries)",
             mir_module.name,
             current_module,
             self.function_map.len()
@@ -378,15 +379,15 @@ impl CraneliftBackend {
         // These are always available and will be linked from libc
         // Declare them unconditionally if not already declared
         if !self.runtime_functions.contains_key("malloc") {
-            eprintln!("DEBUG: Declaring libc function: malloc");
+            debug!("Declaring libc function: malloc");
             self.declare_libc_function("malloc", 1, true)?; // 1 param (size), has return value (ptr)
         }
         if !self.runtime_functions.contains_key("realloc") {
-            eprintln!("DEBUG: Declaring libc function: realloc");
+            debug!("Declaring libc function: realloc");
             self.declare_libc_function("realloc", 2, true)?; // 2 params (ptr, size), has return value (new ptr)
         }
         if !self.runtime_functions.contains_key("free") {
-            eprintln!("DEBUG: Declaring libc function: free");
+            debug!("Declaring libc function: free");
             self.declare_libc_function("free", 1, false)?; // 1 param (ptr), no return value
         }
 
@@ -395,22 +396,22 @@ impl CraneliftBackend {
         for (func_id, function) in &mir_module.functions {
             if function.name == "malloc" {
                 let libc_id = *self.runtime_functions.get("malloc").unwrap();
-                eprintln!(
-                    "DEBUG: Mapping MIR malloc {:?} -> Cranelift {:?}",
+                debug!(
+            ": Mapping MIR malloc {:?} -> Cranelift {:?}",
                     func_id, libc_id
                 );
                 self.function_map.insert(*func_id, libc_id);
             } else if function.name == "realloc" {
                 let libc_id = *self.runtime_functions.get("realloc").unwrap();
-                eprintln!(
-                    "DEBUG: Mapping MIR realloc {:?} -> Cranelift {:?}",
+                debug!(
+            ": Mapping MIR realloc {:?} -> Cranelift {:?}",
                     func_id, libc_id
                 );
                 self.function_map.insert(*func_id, libc_id);
             } else if function.name == "free" {
                 let libc_id = *self.runtime_functions.get("free").unwrap();
-                eprintln!(
-                    "DEBUG: Mapping MIR free {:?} -> Cranelift {:?}",
+                debug!(
+            ": Mapping MIR free {:?} -> Cranelift {:?}",
                     func_id, libc_id
                 );
                 self.function_map.insert(*func_id, libc_id);
@@ -421,7 +422,7 @@ impl CraneliftBackend {
         for (func_id, function) in &mir_module.functions {
             // Skip extern functions (empty CFG means extern declaration)
             if function.cfg.blocks.is_empty() {
-                eprintln!("DEBUG: Skipping extern function: {}", function.name);
+                debug!("Skipping extern function: {}", function.name);
                 continue;
             }
             self.compile_function(*func_id, mir_module, function)?;
@@ -475,8 +476,8 @@ impl CraneliftBackend {
         // so we must not declare them twice!
         // We use runtime_functions to track all such functions (not just libc ones)
         if let Some(&existing_func_id) = self.runtime_functions.get(&function.name) {
-            eprintln!(
-                "DEBUG: Reusing existing function '{}' - MIR {:?} -> Cranelift {:?}",
+            debug!(
+            ": Reusing existing function '{}' - MIR {:?} -> Cranelift {:?}",
                 function.name, mir_func_id, existing_func_id
             );
             self.function_map.insert(mir_func_id, existing_func_id);
@@ -493,8 +494,8 @@ impl CraneliftBackend {
                 // Only link if this function has a body (non-extern)
                 // This allows the real implementation to use the forward ref's func_id
                 if !is_extern {
-                    eprintln!(
-                        "DEBUG: Linking function '{}' to forward reference '{}' - MIR {:?} -> Cranelift {:?}",
+                    debug!(
+            ": Linking function '{}' to forward reference '{}' - MIR {:?} -> Cranelift {:?}",
                         function.name, qualified_name, mir_func_id, forward_ref_func_id
                     );
                     self.function_map.insert(mir_func_id, forward_ref_func_id);
@@ -549,7 +550,7 @@ impl CraneliftBackend {
                 && matches!(param.ty, crate::ir::IrType::I32 | crate::ir::IrType::U32 | crate::ir::IrType::Bool | crate::ir::IrType::I8);
 
             if will_extend {
-                eprintln!("!!! EXTENDING {} param '{}' from {:?} to i64 (is_extern={}, calling_conv={:?})",
+                debug!("!!! EXTENDING {} param '{}' from {:?} to i64 (is_extern={}, calling_conv={:?})",
                          function.name, param.name, param.ty, is_extern, function.signature.calling_convention);
             }
 
@@ -569,8 +570,8 @@ impl CraneliftBackend {
             || function.name.starts_with("rayzor_channel")
             || function.name == "Channel_init"
         {
-            eprintln!(
-                "DEBUG: Declaring '{}' (MIR {:?}) with {} params, is_extern={}, calling_conv={:?}",
+            debug!(
+            ": Declaring '{}' (MIR {:?}) with {} params, is_extern={}, calling_conv={:?}",
                 function.name,
                 mir_func_id,
                 function.signature.parameters.len(),
@@ -592,12 +593,12 @@ impl CraneliftBackend {
                 } else {
                     cranelift_ty
                 };
-                eprintln!(
+                debug!(
                     "  param[{}]: {} (MIR {:?} -> Cranelift {:?} -> actual {:?})",
                     i, param.name, param.ty, cranelift_ty, actual_ty
                 );
             }
-            eprintln!(
+            debug!(
                 "  return_type: {:?}, uses_sret: {}",
                 function.signature.return_type, use_sret_in_signature
             );
@@ -605,13 +606,13 @@ impl CraneliftBackend {
 
         // Debug: log lambda function signatures
         if function.name.starts_with("<lambda_") {
-            eprintln!(
-                "DEBUG Lambda signature for {}: {} params",
+            debug!(
+            " Lambda signature for {}: {} params",
                 function.name,
                 function.signature.parameters.len()
             );
             for (i, param) in function.signature.parameters.iter().enumerate() {
-                eprintln!("  param{}: {} ({:?})", i, param.name, param.ty);
+                trace!("  param{}: {} ({:?})", i, param.name, param.ty);
             }
         }
 
@@ -668,8 +669,8 @@ impl CraneliftBackend {
             .declare_function(&func_name, linkage, &sig)
             .map_err(|e| format!("Failed to declare function: {}", e))?;
 
-        eprintln!(
-            "DEBUG Cranelift: Declared '{}' - MIR={:?} -> Cranelift={:?}, {} params",
+        debug!(
+            " Cranelift: Declared '{}' - MIR={:?} -> Cranelift={:?}, {} params",
             func_name,
             mir_func_id,
             func_id,
@@ -679,8 +680,8 @@ impl CraneliftBackend {
 
         // Track extern functions and stdlib wrapper functions in runtime_functions so we don't declare them twice
         if is_extern {
-            eprintln!(
-                "DEBUG: Declared new extern '{}' - MIR {:?} -> Cranelift {:?}",
+            debug!(
+            ": Declared new extern '{}' - MIR {:?} -> Cranelift {:?}",
                 func_name, mir_func_id, func_id
             );
             self.runtime_functions.insert(func_name, func_id);
@@ -691,8 +692,8 @@ impl CraneliftBackend {
                 .find_by_runtime_name(&function.name)
                 .is_some();
             if is_stdlib_mir_wrapper {
-                eprintln!(
-                    "DEBUG: Declared new stdlib wrapper '{}' - MIR {:?} -> Cranelift {:?}",
+                debug!(
+            ": Declared new stdlib wrapper '{}' - MIR {:?} -> Cranelift {:?}",
                     func_name, mir_func_id, func_id
                 );
                 self.runtime_functions.insert(func_name, func_id);
@@ -745,8 +746,8 @@ impl CraneliftBackend {
             .declare_function(name, Linkage::Import, &sig)
             .map_err(|e| format!("Failed to declare libc function {}: {}", name, e))?;
 
-        eprintln!(
-            "DEBUG: Declared libc {} as Cranelift func_id: {:?}",
+        debug!(
+            ": Declared libc {} as Cranelift func_id: {:?}",
             name, func_id
         );
         self.runtime_functions.insert(name.to_string(), func_id);
@@ -772,8 +773,8 @@ impl CraneliftBackend {
         // We track by Cranelift FuncId (not MIR name) because different modules can have
         // functions with the same MIR name (e.g., 'new') but different Cranelift symbols
         if self.defined_functions.contains(&func_id) {
-            eprintln!(
-                "DEBUG: Skipping already-defined function '{}' (MIR {:?}, Cranelift {:?})",
+            debug!(
+            ": Skipping already-defined function '{}' (MIR {:?}, Cranelift {:?})",
                 function.name, mir_func_id, func_id
             );
             return Ok(());
@@ -812,14 +813,14 @@ impl CraneliftBackend {
         }
 
         // Add parameters to signature
-        eprintln!(
-            "DEBUG Cranelift: Function '{}' has {} parameters",
+        debug!(
+            " Cranelift: Function '{}' has {} parameters",
             function.name,
             function.signature.parameters.len()
         );
         for (i, param) in function.signature.parameters.iter().enumerate() {
-            eprintln!(
-                "DEBUG Cranelift:   param[{}]: {} ({})",
+            debug!(
+            " Cranelift:   param[{}]: {} ({})",
                 i, param.name, param.ty
             );
             let cranelift_type = self.mir_type_to_cranelift(&param.ty)?;
@@ -914,9 +915,9 @@ impl CraneliftBackend {
 
         // First pass: Create all Cranelift blocks for MIR blocks
         let mut block_map = std::collections::HashMap::new();
-        // eprintln!("DEBUG Cranelift: Function {} has {} blocks in CFG", function.name, function.cfg.blocks.len());
+        // debug!("Cranelift: Function {} has {} blocks in CFG", function.name, function.cfg.blocks.len());
         for (mir_block_id, mir_block) in &function.cfg.blocks {
-            // eprintln!("DEBUG Cranelift:   Block {:?} has {} phi nodes, {} instructions",
+            // debug!("Cranelift:   Block {:?} has {} phi nodes, {} instructions",
             //  mir_block_id, mir_block.phi_nodes.len(), mir_block.instructions.len());
             // Skip entry block as we already created it
             if mir_block_id.is_entry() {
@@ -944,7 +945,7 @@ impl CraneliftBackend {
             builder.switch_to_block(cl_block);
 
             // Translate phi nodes first
-            // eprintln!("DEBUG Cranelift: Block {:?} has {} phi nodes", mir_block_id, mir_block.phi_nodes.len());
+            // debug!("Cranelift: Block {:?} has {} phi nodes", mir_block_id, mir_block.phi_nodes.len());
             for phi_node in &mir_block.phi_nodes {
                 // eprintln!("  Phi node: dest={:?}, ty={:?}", phi_node.dest, phi_node.ty);
                 // eprintln!("  Incoming edges ({}):", phi_node.incoming.len());
@@ -980,7 +981,7 @@ impl CraneliftBackend {
             }
 
             // Translate terminator
-            // eprintln!("DEBUG Cranelift: MIR terminator for block {:?}: {:?}", mir_block_id, mir_block.terminator);
+            // debug!("Cranelift: MIR terminator for block {:?}: {:?}", mir_block_id, mir_block.terminator);
             if let Err(e) = Self::translate_terminator_static(
                 &mut self.value_map,
                 &mut builder,
@@ -989,13 +990,13 @@ impl CraneliftBackend {
                 function,
                 sret_ptr,
             ) {
-                eprintln!(
+                debug!(
                     "\n!!! Error translating terminator in function '{}' block {:?}: {}",
                     function.name, mir_block_id, e
                 );
-                eprintln!("=== Cranelift IR so far ===");
-                eprintln!("{}", self.ctx.func.display());
-                eprintln!("=== End IR ===\n");
+                trace!("=== Cranelift IR so far ===");
+                debug!("{}", self.ctx.func.display());
+                trace!("=== End IR ===\n");
                 return Err(e);
             }
 
@@ -1015,15 +1016,15 @@ impl CraneliftBackend {
 
         // Print Cranelift IR if debug mode
         if cfg!(debug_assertions) {
-            eprintln!("\n=== Cranelift IR for {} ===", function.name);
-            eprintln!("{}", self.ctx.func.display());
-            eprintln!("=== End Cranelift IR ===\n");
+            debug!("\n=== Cranelift IR for {} ===", function.name);
+            debug!("{}", self.ctx.func.display());
+            trace!("=== End Cranelift IR ===\n");
         }
 
         // Verify the function before defining
         if let Err(errors) = cranelift_codegen::verify_function(&self.ctx.func, self.module.isa()) {
-            eprintln!("!!! Cranelift Verifier Errors for {} !!!", function.name);
-            eprintln!("{}", errors);
+            debug!("!!! Cranelift Verifier Errors for {} !!!", function.name);
+            debug!("{}", errors);
             return Err(format!("Verifier errors in {}: {}", function.name, errors));
         }
 
@@ -1034,8 +1035,8 @@ impl CraneliftBackend {
 
         // Track that this function has been defined to prevent duplicate definitions
         self.defined_functions.insert(func_id);
-        eprintln!(
-            "DEBUG: Successfully defined function '{}' (MIR {:?}, Cranelift {:?})",
+        debug!(
+            ": Successfully defined function '{}' (MIR {:?}, Cranelift {:?})",
             function.name, mir_func_id, func_id
         );
 
@@ -1102,8 +1103,8 @@ impl CraneliftBackend {
             // Check if the actual value type matches expected; coerce if not
             let actual_type = builder.func.dfg.value_type(cl_value);
             let final_value = if actual_type != expected_cl_type {
-                eprintln!(
-                    "DEBUG: Phi arg type mismatch for {:?}: actual {:?}, expected {:?}, coercing",
+                debug!(
+            ": Phi arg type mismatch for {:?}: actual {:?}, expected {:?}, coercing",
                     phi_node.dest, actual_type, expected_cl_type
                 );
                 // Coerce the value
@@ -1119,7 +1120,7 @@ impl CraneliftBackend {
                     (from, to) if from == to => cl_value,
                     // Fallback: log warning and use as-is (may cause verifier error)
                     _ => {
-                        eprintln!(
+                        debug!(
                             "WARNING: Cannot coerce phi arg from {:?} to {:?}",
                             actual_type, expected_cl_type
                         );
@@ -1196,7 +1197,7 @@ impl CraneliftBackend {
 
         // Debug: Log every instruction being lowered
         if matches!(instruction, IrInstruction::Cast { .. }) {
-            eprintln!("CRANELIFT DEBUG: Lowering Cast instruction: {:?}", instruction);
+            debug!("Cranelift: Lowering Cast instruction: {:?}", instruction);
         }
 
         match instruction {
@@ -1406,17 +1407,17 @@ impl CraneliftBackend {
                                     if let cranelift_codegen::ir::InstructionData::UnaryImm { imm, .. } = builder.func.dfg.insts[inst] {
                                         Some(imm.bits() as u32)
                                     } else {
-                                        eprintln!("WARNING: Alloc count instruction is not UnaryImm, defaulting to 1");
+                                        warn!("Alloc count instruction is not UnaryImm, defaulting to 1");
                                         Some(1)
                                     }
                                 }
                                 _ => {
-                                    eprintln!("WARNING: Alloc count value not from instruction result, defaulting to 1");
+                                    warn!("Alloc count value not from instruction result, defaulting to 1");
                                     Some(1)
                                 }
                             }
                         } else {
-                            eprintln!("WARNING: Alloc count IrId {:?} not found in value_map, defaulting to 1", count_id);
+                            warn!("Alloc count IrId {:?} not found in value_map, defaulting to 1", count_id);
                             Some(1)
                         }
                     }
@@ -1437,17 +1438,17 @@ impl CraneliftBackend {
                 // Check if this is an extern function call
                 if let Some(extern_func) = mir_module.extern_functions.get(func_id) {
                     // This is an external runtime function call
-                    eprintln!("INFO: Calling external function: {}", extern_func.name);
-                    eprintln!("DEBUG: [extern_func] calling_convention={:?}, param_count={}",
+                    info!("Calling external function: {}", extern_func.name);
+                    debug!("[extern_func] calling_convention={:?}, param_count={}",
                              extern_func.signature.calling_convention,
                              extern_func.signature.parameters.len());
                     for (i, p) in extern_func.signature.parameters.iter().enumerate() {
-                        eprintln!("DEBUG: [extern_func]   param[{}] '{}': {:?}", i, p.name, p.ty);
+                        debug!("[extern_func]   param[{}] '{}': {:?}", i, p.name, p.ty);
                     }
 
                     // Declare the external function if not already declared
                     let cl_func_id = if let Some(&id) = runtime_functions.get(&extern_func.name) {
-                        eprintln!("DEBUG: [extern_func] Already declared as {:?}", id);
+                        debug!("[extern_func] Already declared as {:?}", id);
                         id
                     } else {
                         // Declare the external runtime function dynamically
@@ -1465,7 +1466,7 @@ impl CraneliftBackend {
                             {
                                 match param.ty {
                                     crate::ir::IrType::I32 | crate::ir::IrType::U32 => {
-                                        eprintln!("!!! [DYNAMIC DECL] Extending {} param '{}' from {:?} to i64", extern_func.name, param.name, param.ty);
+                                        debug!("!!! [DYNAMIC DECL] Extending {} param '{}' from {:?} to i64", extern_func.name, param.name, param.ty);
                                         cranelift_type = types::I64;
                                     }
                                     _ => {}
@@ -1494,7 +1495,7 @@ impl CraneliftBackend {
                                 )
                             })?;
 
-                        eprintln!(
+                        info!(
                             "INFO: Declared external runtime function {} as func_id: {:?}",
                             extern_func.name, id
                         );
@@ -1531,11 +1532,11 @@ impl CraneliftBackend {
 
                             // Extend i32 to i64 if the Cranelift signature expects i64
                             if cl_value_type == types::I32 && expected_cl_type == Some(types::I64) {
-                                eprintln!("!!! [EXTERN BRANCH] Extending arg {} for {} from i32 to i64 (based on Cranelift signature)",
+                                debug!("!!! [EXTERN BRANCH] Extending arg {} for {} from i32 to i64 (based on Cranelift signature)",
                                     i, extern_func.name);
                                 cl_value = builder.ins().sextend(types::I64, cl_value);
                             } else if cl_value_type == types::I8 && expected_cl_type == Some(types::I64) {
-                                eprintln!("!!! [EXTERN BRANCH] Extending arg {} for {} from i8 to i64", i, extern_func.name);
+                                debug!("!!! [EXTERN BRANCH] Extending arg {} for {} from i8 to i64", i, extern_func.name);
                                 cl_value = builder.ins().sextend(types::I64, cl_value);
                             } else if let Some(param) = extern_func.signature.parameters.get(i) {
                                 // Fallback to MIR type-based conversions for special cases
@@ -1580,10 +1581,10 @@ impl CraneliftBackend {
                             *runtime_functions.get(&called_func.name).ok_or_else(|| {
                                 format!("libc function {} not declared", called_func.name)
                             })?;
-                        eprintln!("DEBUG: [In {}] Redirecting {} call (MIR func_id={:?}) to libc func_id: {:?}", function.name, called_func.name, func_id, libc_id);
+                        debug!("[In {}] Redirecting {} call (MIR func_id={:?}) to libc func_id: {:?}", function.name, called_func.name, func_id, libc_id);
                         let func_ref = module.declare_func_in_func(libc_id, builder.func);
-                        eprintln!(
-                            "DEBUG: [In {}] Got func_ref for {} (libc_id={:?}): {:?}",
+                        debug!(
+            ": [In {}] Got func_ref for {} (libc_id={:?}): {:?}",
                             function.name, called_func.name, libc_id, func_ref
                         );
                         (libc_id, func_ref)
@@ -1592,7 +1593,7 @@ impl CraneliftBackend {
                         let cl_func_id = *function_map.get(func_id).ok_or_else(|| {
                             format!("Function {:?} not found in function_map", func_id)
                         })?;
-                        eprintln!("DEBUG: [In {}] Regular function call to {:?} (MIR {:?} -> Cranelift {:?})", function.name, called_func.name, func_id, cl_func_id);
+                        debug!("[In {}] Regular function call to {:?} (MIR {:?} -> Cranelift {:?})", function.name, called_func.name, func_id, cl_func_id);
                         let func_ref = module.declare_func_in_func(cl_func_id, builder.func);
                         (cl_func_id, func_ref)
                     };
@@ -1631,7 +1632,7 @@ impl CraneliftBackend {
                         && !(called_func.name == "malloc"
                             || called_func.name == "realloc"
                             || called_func.name == "free");
-                    eprintln!("DEBUG: [ENV CHECK] func='{}' is_extern={} is_lambda={} is_c_cc={} calling_conv={:?} should_add_env={}",
+                    debug!("[ENV CHECK] func='{}' is_extern={} is_lambda={} is_c_cc={} calling_conv={:?} should_add_env={}",
                              called_func.name, is_extern_func, is_lambda, is_c_calling_conv, called_func.signature.calling_convention, should_add_env);
 
                     if should_add_env {
@@ -1746,7 +1747,7 @@ impl CraneliftBackend {
 
                     // Debug: print call_args length and MIR args length
                     if called_func.name == "Thread_spawn" || called_func.name == "Channel_init" || called_func.name == "Mutex_lock" {
-                        eprintln!("DEBUG: [CALL] func='{}' call_args.len()={} mir_args.len()={} mir_args={:?}",
+                        debug!("[CALL] func='{}' call_args.len()={} mir_args.len()={} mir_args={:?}",
                                  called_func.name, call_args.len(), args.len(), args);
                     }
 
@@ -1834,7 +1835,7 @@ impl CraneliftBackend {
                                     && actual_ret_ty.is_int()
                                     && mir_expected_ty.is_int()
                                 {
-                                    eprintln!("DEBUG Call return type coercion: actual={:?}, mir_expected={:?}, func={}",
+                                    debug!("Call return type coercion: actual={:?}, mir_expected={:?}, func={}",
                                     actual_ret_ty, mir_expected_ty, called_func.name);
                                     if actual_ret_ty.bits() > mir_expected_ty.bits() {
                                         // Truncate i64 -> i32
@@ -2039,7 +2040,7 @@ impl CraneliftBackend {
                             .store(MemFlags::new(), value_to_store, env_addr, offset);
                     }
 
-                    eprintln!(
+                    info!(
                         "Info: Allocated environment for {} captured variables",
                         captured_values.len()
                     );
@@ -2201,7 +2202,7 @@ impl CraneliftBackend {
                 // Get Element Pointer - compute address of field within struct
                 // This is similar to LLVM's GEP instruction
 
-                // eprintln!("DEBUG Cranelift: GetElementPtr - ptr={:?}, indices={:?}, ty={:?}", ptr, indices, ty);
+                // debug!("Cranelift: GetElementPtr - ptr={:?}, indices={:?}, ty={:?}", ptr, indices, ty);
 
                 let ptr_val = *value_map
                     .get(ptr)
@@ -2242,7 +2243,7 @@ impl CraneliftBackend {
                 // Add offset to base pointer
                 let result_ptr = builder.ins().iadd(ptr_val, offset);
 
-                // eprintln!("DEBUG Cranelift: GEP result - dest={:?}", dest);
+                // debug!("Cranelift: GEP result - dest={:?}", dest);
                 value_map.insert(*dest, result_ptr);
             }
 
@@ -2539,8 +2540,8 @@ impl CraneliftBackend {
 
         match terminator {
             IrTerminator::Return { value } => {
-                // eprintln!("DEBUG Cranelift: Translating Return terminator, value={:?}", value);
-                // eprintln!("DEBUG Cranelift: value_map has {} entries", value_map.len());
+                // debug!("Cranelift: Translating Return terminator, value={:?}", value);
+                // debug!("Cranelift: value_map has {} entries", value_map.len());
 
                 // If using sret, write the return value through the pointer and return void
                 if let Some(sret) = sret_ptr {
@@ -2597,7 +2598,7 @@ impl CraneliftBackend {
                 } else {
                     // Normal return path
                     if let Some(val_id) = value {
-                        // eprintln!("DEBUG Cranelift: Looking up return value {:?} in value_map", val_id);
+                        // debug!("Cranelift: Looking up return value {:?} in value_map", val_id);
                         let val = *value_map.get(val_id).ok_or_else(|| {
                             eprintln!("ERROR: Return value {:?} NOT FOUND in value_map!", val_id);
                             eprintln!(
@@ -2606,10 +2607,10 @@ impl CraneliftBackend {
                             );
                             format!("Return value {:?} not found", val_id)
                         })?;
-                        // eprintln!("DEBUG Cranelift: Found value, emitting return instruction");
+                        // debug!("Cranelift: Found value, emitting return instruction");
                         builder.ins().return_(&[val]);
                     } else {
-                        // eprintln!("DEBUG Cranelift: Void return, no value");
+                        // debug!("Cranelift: Void return, no value");
                         builder.ins().return_(&[]);
                     }
                 }
@@ -2889,7 +2890,7 @@ impl CraneliftBackend {
         // Get the function pointer
         let func_ptr = self.get_function_ptr(main_func.id)?;
 
-        println!("  🚀 Executing {}()...", main_func.name);
+        debug!("  🚀 Executing {}()...", main_func.name);
 
         // Call the main function (assuming it's void main() -> void)
         // This is unsafe because we're calling JIT-compiled code
@@ -2901,10 +2902,10 @@ impl CraneliftBackend {
         // CRITICAL: Wait for all spawned threads to complete before returning
         // This prevents use-after-free when threads are still executing JIT code
         // and the JIT module is dropped
-        eprintln!("  🔄 Waiting for spawned threads to complete...");
+        debug!("  🔄 Waiting for spawned threads to complete...");
         rayzor_runtime::concurrency::rayzor_wait_all_threads();
 
-        println!("  ✅ Execution completed successfully!");
+        debug!("  ✅ Execution completed successfully!");
 
         Ok(())
     }
