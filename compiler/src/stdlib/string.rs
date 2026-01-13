@@ -103,6 +103,17 @@ fn declare_string_externs(builder: &mut MirBuilder) {
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
+
+    // extern fn haxe_string_substr_ptr(s: *String, startIndex: i32, length: i32) -> *String
+    // Returns a substring starting at startIndex with given length
+    let func_id = builder.begin_function("haxe_string_substr_ptr")
+        .param("s", string_ptr_ty.clone())
+        .param("start_index", i32_ty.clone())
+        .param("length", i32_ty.clone())
+        .returns(string_ptr_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
 }
 
 /// Build: fn string_new() -> String

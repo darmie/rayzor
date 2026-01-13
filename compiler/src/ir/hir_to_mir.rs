@@ -3096,15 +3096,24 @@ impl<'a> HirToMirContext<'a> {
 
                                     if is_stdlib_method {
                                         let method_name = method_name_str.unwrap();
-                                        eprintln!("DEBUG: [DYNAMIC METHOD] Found stdlib method '{}' in mapping", method_name);
+                                        // Calculate actual param count (exclude receiver for instance methods)
+                                        let actual_param_count = args.len().saturating_sub(1);
+                                        eprintln!("DEBUG: [DYNAMIC METHOD] Found stdlib method '{}' in mapping, param_count={}", method_name, actual_param_count);
 
                                         // Query the stdlib mapping for all classes that have this method.
                                         // Results are sorted by priority (MutexGuard before Arc, etc.)
                                         let matching_classes = self.stdlib_mapping.find_classes_with_method(method_name);
-                                        eprintln!("DEBUG: [DYNAMIC STDLIB] {} classes have method '{}'", matching_classes.len(), method_name);
+                                        eprintln!("DEBUG: [DYNAMIC STDLIB] {} classes have method '{}' (before param count filter)", matching_classes.len(), method_name);
+
+                                        // Filter by param count to disambiguate overloaded methods
+                                        // e.g., Array.join(sep) with 1 param vs Thread.join() with 0 params
+                                        let filtered_classes: Vec<_> = matching_classes.into_iter()
+                                            .filter(|(_, _, call)| call.param_count == actual_param_count)
+                                            .collect();
+                                        eprintln!("DEBUG: [DYNAMIC STDLIB] {} classes after param count filter", filtered_classes.len());
 
                                         // Take the first match (highest priority class)
-                                        if let Some(&(class_name, _sig, runtime_call)) = matching_classes.first() {
+                                        if let Some(&(class_name, _sig, runtime_call)) = filtered_classes.first() {
                                             eprintln!("DEBUG: [DYNAMIC STDLIB] Using {}.{} -> {}", class_name, method_name, runtime_call.runtime_name);
                                             let runtime_func = runtime_call.runtime_name;
 
@@ -3398,21 +3407,17 @@ impl<'a> HirToMirContext<'a> {
                                 return Some(result_ptr);
                             }
 
-                            // SPECIAL CASE: Check if this is a stdlib MIR function
-                            // For these classes, we have MIR wrapper functions that forward to extern runtime functions.
-                            // The wrappers take care of calling convention differences.
-                            if self.stdlib_mapping.is_mir_wrapper_class(class_name) {
+                            // SPECIAL CASE: Check if this is a stdlib MIR wrapper function
+                            // MIR wrappers are functions that forward to extern runtime functions.
+                            // The wrappers handle calling convention differences and provide default arguments.
+                            // NOTE: We check runtime_call.is_mir_wrapper, not just is_mir_wrapper_class(),
+                            // because some methods on MIR wrapper classes (e.g., String.split) are
+                            // direct extern calls without wrappers.
+                            if runtime_call.is_mir_wrapper {
                                 // Use the runtime function name from the mapping to handle overloaded methods
                                 // For example, String.indexOf can map to String_indexOf (1-arg) or String_indexOf_2 (2-arg)
-                                // The runtime_call.runtime_name contains the correct overload-specific name
-                                let mir_func_name = if runtime_call.is_mir_wrapper {
-                                    // For MIR wrapper functions, use the exact name from the mapping
-                                    runtime_func.to_string()
-                                } else {
-                                    // For non-wrapper functions, construct the name (legacy pattern)
-                                    format!("{}_{}", class_name, method_name)
-                                };
-                                eprintln!("DEBUG: [STDLIB MIR] Detected stdlib MIR function (instance): {}", mir_func_name);
+                                let mir_func_name = runtime_func.to_string();
+                                eprintln!("DEBUG: [STDLIB MIR] Detected stdlib MIR wrapper function (instance): {}", mir_func_name);
 
                                 // Lower all arguments and collect their types
                                 let mut arg_regs = Vec::new();
