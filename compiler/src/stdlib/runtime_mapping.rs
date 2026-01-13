@@ -468,6 +468,9 @@ impl StdlibMapping {
     /// Detection: MIR wrapper functions have runtime names in the format `{Class}_{method}`
     /// (e.g., Thread_spawn, VecI32_push) rather than prefixed names like `rayzor_thread_spawn`
     /// or `haxe_string_char_at`.
+    ///
+    /// NOTE: This uses name-based detection for backward compatibility with existing class mappings.
+    /// The `is_mir_wrapper` field on RuntimeFunctionCall is more precise for per-function checks.
     pub fn is_mir_wrapper_class(&self, class_name: &str) -> bool {
         // Check if any method of this class has a MIR wrapper-style runtime name
         self.mappings.iter().any(|(sig, call)| {

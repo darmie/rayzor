@@ -42,6 +42,9 @@ pub struct IrFunction {
     /// Function attributes
     pub attributes: FunctionAttributes,
 
+    /// Classification of function origin (user-defined, MIR wrapper, extern, etc.)
+    pub kind: FunctionKind,
+
     /// Source location for debugging
     pub source_location: IrSourceLocation,
 
@@ -170,15 +173,34 @@ pub struct FunctionAttributes {
 pub enum InlineHint {
     /// Never inline
     Never,
-    
+
     /// Compiler decides
     Auto,
-    
+
     /// Prefer to inline
     Hint,
-    
+
     /// Always inline
     Always,
+}
+
+/// Classification of function origin and calling convention.
+///
+/// This enum explicitly identifies where a function comes from and how it should
+/// be handled during compilation, replacing fragile name-based detection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum FunctionKind {
+    /// User-defined function from Haxe source code
+    #[default]
+    UserDefined,
+    /// MIR wrapper function from stdlib (compiled by Cranelift, uses Haxe ABI)
+    /// Examples: Thread_spawn, Channel_send, VecI32_push
+    MirWrapper,
+    /// Extern C function declaration (linked at JIT time, uses C ABI)
+    /// Examples: haxe_string_char_at, rayzor_thread_spawn
+    ExternC,
+    /// Compiler intrinsic (special handling in codegen)
+    Intrinsic,
 }
 
 impl Default for FunctionAttributes {
@@ -212,6 +234,7 @@ impl IrFunction {
             locals: HashMap::new(),
             register_types: HashMap::new(),
             attributes: FunctionAttributes::default(),
+            kind: FunctionKind::UserDefined,
             source_location: IrSourceLocation::unknown(),
             next_reg_id: 0,
         };

@@ -41,7 +41,7 @@
 use super::{
     IrModule, IrFunction, IrFunctionId, IrFunctionSignature, IrParameter, IrType, IrTypeParam,
     IrInstruction, IrBasicBlock, IrBlockId, IrControlFlowGraph, IrTerminator,
-    IrId, IrValue, IrSourceLocation, CallingConvention, Linkage, FunctionAttributes,
+    IrId, IrValue, IrSourceLocation, CallingConvention, Linkage, FunctionAttributes, FunctionKind,
     InlineHint, AllocationHint, IrLocal, BinaryOp, UnaryOp, CompareOp,
     StructField, UnionVariant,
 };
@@ -679,6 +679,7 @@ impl<'a> FunctionBuilder<'a> {
             locals: HashMap::new(),
             register_types,
             attributes,
+            kind: FunctionKind::MirWrapper, // MIR builder creates stdlib wrapper functions
             source_location: IrSourceLocation::unknown(),
             next_reg_id,
         };

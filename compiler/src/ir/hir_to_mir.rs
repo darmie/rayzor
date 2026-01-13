@@ -12,10 +12,11 @@
 
 use crate::ir::hir::*;
 use crate::ir::{
-    BinaryOp, CallingConvention, CompareOp, EnvironmentLayout, FunctionSignatureBuilder, IrBasicBlock, IrBlockId,
-    IrBuilder, IrEnumVariant, IrField, IrFunction, IrFunctionId, IrFunctionSignature, IrGlobal,
-    IrGlobalId, IrId, IrInstruction, IrLocal, IrModule, IrParameter, IrPhiNode, IrSourceLocation,
-    IrTerminator, IrType, IrTypeDef, IrTypeDefId, IrTypeDefinition, IrValue, Linkage, UnaryOp,
+    BinaryOp, CallingConvention, CompareOp, EnvironmentLayout, FunctionKind, FunctionSignatureBuilder,
+    IrBasicBlock, IrBlockId, IrBuilder, IrEnumVariant, IrField, IrFunction, IrFunctionId,
+    IrFunctionSignature, IrGlobal, IrGlobalId, IrId, IrInstruction, IrLocal, IrModule, IrParameter,
+    IrPhiNode, IrSourceLocation, IrTerminator, IrType, IrTypeDef, IrTypeDefId, IrTypeDefinition,
+    IrValue, Linkage, UnaryOp,
 };
 use crate::stdlib::{MethodSignature, StdlibMapping};
 use crate::tast::{
@@ -1847,6 +1848,7 @@ impl<'a> HirToMirContext<'a> {
             locals: HashMap::new(),
             register_types: HashMap::new(),
             attributes,
+            kind: FunctionKind::MirWrapper, // Stdlib MIR function
             source_location: IrSourceLocation::unknown(),
             next_reg_id: 0,
         };
@@ -2028,6 +2030,7 @@ impl<'a> HirToMirContext<'a> {
             locals: std::collections::HashMap::new(),
             register_types: std::collections::HashMap::new(),
             attributes: crate::ir::functions::FunctionAttributes::default(),
+            kind: crate::ir::functions::FunctionKind::ExternC, // Extern C function
             source_location: IrSourceLocation::unknown(),
             next_reg_id: 0,
         };
