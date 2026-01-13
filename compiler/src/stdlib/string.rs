@@ -31,6 +31,10 @@ pub fn build_string_type(builder: &mut MirBuilder) {
     // 2-arg versions pass through the explicit startIndex
     build_string_indexof_2_wrapper(builder);
     build_string_lastindexof_2_wrapper(builder);
+
+    // MIR wrappers for charAt and substring
+    build_string_charat_wrapper(builder);
+    build_string_substring_wrapper(builder);
 }
 
 /// Declare extern runtime functions for string operations
@@ -75,6 +79,27 @@ fn declare_string_externs(builder: &mut MirBuilder) {
         .param("needle", string_ptr_ty.clone())
         .param("start_index", i32_ty.clone())
         .returns(i32_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // extern fn haxe_string_char_at_ptr(s: *String, index: i32) -> *String
+    // Returns a single-character string at the given index
+    let func_id = builder.begin_function("haxe_string_char_at_ptr")
+        .param("s", string_ptr_ty.clone())
+        .param("index", i32_ty.clone())
+        .returns(string_ptr_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // extern fn haxe_string_substring_ptr(s: *String, startIndex: i32, endIndex: i32) -> *String
+    // Returns a substring from startIndex to endIndex (exclusive)
+    let func_id = builder.begin_function("haxe_string_substring_ptr")
+        .param("s", string_ptr_ty.clone())
+        .param("start_index", i32_ty.clone())
+        .param("end_index", i32_ty.clone())
+        .returns(string_ptr_ty.clone())
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
@@ -532,6 +557,66 @@ fn build_string_lastindexof_2_wrapper(builder: &mut MirBuilder) {
     let extern_id = builder.get_function_by_name("haxe_string_last_index_of_ptr")
         .expect("haxe_string_last_index_of_ptr not found");
     let result = builder.call(extern_id, vec![s, needle, start_index]).unwrap();
+
+    builder.ret(Some(result));
+}
+
+/// Build: fn String_charAt(s: *String, index: i32) -> *String
+/// MIR wrapper for String.charAt that forwards to the runtime function
+fn build_string_charat_wrapper(builder: &mut MirBuilder) {
+    let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
+    let i32_ty = IrType::I32;
+
+    let func_id = builder.begin_function("String_charAt")
+        .param("s", string_ptr_ty.clone())
+        .param("index", i32_ty.clone())
+        .returns(string_ptr_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let s = builder.get_param(0);
+    let index = builder.get_param(1);
+
+    // Forward to the runtime function
+    let extern_id = builder.get_function_by_name("haxe_string_char_at_ptr")
+        .expect("haxe_string_char_at_ptr not found");
+    let result = builder.call(extern_id, vec![s, index]).unwrap();
+
+    builder.ret(Some(result));
+}
+
+/// Build: fn String_substring(s: *String, startIndex: i32, endIndex: i32) -> *String
+/// MIR wrapper for String.substring that forwards to the runtime function
+fn build_string_substring_wrapper(builder: &mut MirBuilder) {
+    let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
+    let i32_ty = IrType::I32;
+
+    let func_id = builder.begin_function("String_substring")
+        .param("s", string_ptr_ty.clone())
+        .param("start_index", i32_ty.clone())
+        .param("end_index", i32_ty.clone())
+        .returns(string_ptr_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let s = builder.get_param(0);
+    let start_index = builder.get_param(1);
+    let end_index = builder.get_param(2);
+
+    // Forward to the runtime function
+    let extern_id = builder.get_function_by_name("haxe_string_substring_ptr")
+        .expect("haxe_string_substring_ptr not found");
+    let result = builder.call(extern_id, vec![s, start_index, end_index]).unwrap();
 
     builder.ret(Some(result));
 }

@@ -3402,9 +3402,16 @@ impl<'a> HirToMirContext<'a> {
                             // For these classes, we have MIR wrapper functions that forward to extern runtime functions.
                             // The wrappers take care of calling convention differences.
                             if self.stdlib_mapping.is_mir_wrapper_class(class_name) {
-                                // Use PascalCase class name to match stdlib MIR wrapper naming convention
-                                // e.g., VecI32_first, Thread_join, Channel_send
-                                let mir_func_name = format!("{}_{}", class_name, method_name);
+                                // Use the runtime function name from the mapping to handle overloaded methods
+                                // For example, String.indexOf can map to String_indexOf (1-arg) or String_indexOf_2 (2-arg)
+                                // The runtime_call.runtime_name contains the correct overload-specific name
+                                let mir_func_name = if runtime_call.is_mir_wrapper {
+                                    // For MIR wrapper functions, use the exact name from the mapping
+                                    runtime_func.to_string()
+                                } else {
+                                    // For non-wrapper functions, construct the name (legacy pattern)
+                                    format!("{}_{}", class_name, method_name)
+                                };
                                 eprintln!("DEBUG: [STDLIB MIR] Detected stdlib MIR function (instance): {}", mir_func_name);
 
                                 // Lower all arguments and collect their types

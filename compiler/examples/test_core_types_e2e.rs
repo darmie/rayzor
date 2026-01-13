@@ -229,32 +229,32 @@ impl E2ETestCase {
     }
 
     fn validate_mir_modules(&self, modules: &[std::sync::Arc<IrModule>]) -> Result<(), String> {
-        let mut all_extern_functions = std::collections::HashSet::new();
+        let mut all_functions = std::collections::HashSet::new();
         for module in modules {
+            // Collect extern functions
             for (_, ef) in &module.extern_functions {
-                all_extern_functions.insert(ef.name.clone());
+                all_functions.insert(ef.name.clone());
             }
+            // Collect ALL regular functions (including MIR wrappers)
             for (_, func) in &module.functions {
-                if func.cfg.blocks.is_empty() {
-                    all_extern_functions.insert(func.name.clone());
-                }
+                all_functions.insert(func.name.clone());
             }
         }
 
         if !self.expected_mir_calls.is_empty() {
             for expected_call in &self.expected_mir_calls {
-                let found = all_extern_functions
+                let found = all_functions
                     .iter()
                     .any(|name| name.contains(expected_call));
                 if !found {
                     return Err(format!(
-                        "Expected extern function '{}' not found in MIR. Available: {:?}",
+                        "Expected function '{}' not found in MIR. Available: {:?}",
                         expected_call,
-                        all_extern_functions.iter().collect::<Vec<_>>()
+                        all_functions.iter().collect::<Vec<_>>()
                     ));
                 }
             }
-            println!("  ✓ All expected extern functions found");
+            println!("  ✓ All expected functions found");
         }
 
         println!("  ✓ All functions have valid structure");
@@ -435,7 +435,7 @@ class Main {
 }
 "#,
         )
-        .expect_mir_calls(vec!["haxe_string_char_at"])
+        .expect_mir_calls(vec!["String_charAt"])
         .expect_level(TestLevel::Execution),
     );
 
@@ -456,7 +456,7 @@ class Main {
 }
 "#,
         )
-        .expect_mir_calls(vec!["haxe_string_index_of"])
+        .expect_mir_calls(vec!["String_indexOf_2"])
         .expect_level(TestLevel::Execution),
     );
 
@@ -477,7 +477,7 @@ class Main {
 }
 "#,
         )
-        .expect_mir_calls(vec!["haxe_string_substring"])
+        .expect_mir_calls(vec!["String_substring"])
         .expect_level(TestLevel::Execution),
     );
 

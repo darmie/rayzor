@@ -46,6 +46,7 @@
 
 use crate::ir::mir_builder::MirBuilder;
 use crate::stdlib::{MethodSignature, RuntimeFunctionCall, StdlibMapping};
+use crate::stdlib::{memory, vec_u8, string, array, stdtypes, thread, channel, sync, vec};
 
 /// Trait for compiler plugins that provide stdlib method mappings.
 ///
@@ -176,6 +177,96 @@ impl Default for CompilerPluginRegistry {
     }
 }
 
+// ============================================================================
+// BuiltinPlugin - Default rayzor stdlib plugin
+// ============================================================================
+
+/// Built-in plugin providing the rayzor standard library.
+///
+/// This plugin wraps the existing `StdlibMapping` and stdlib MIR building
+/// functions, providing them through the unified `CompilerPlugin` interface.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use compiler::compiler_plugin::{CompilerPluginRegistry, BuiltinPlugin};
+///
+/// let mut registry = CompilerPluginRegistry::new();
+/// registry.register(Box::new(BuiltinPlugin::new()));
+///
+/// let mapping = registry.build_combined_mapping();
+/// ```
+pub struct BuiltinPlugin {
+    /// The standard library method mappings
+    mapping: StdlibMapping,
+}
+
+impl BuiltinPlugin {
+    /// Create a new builtin plugin with all standard library mappings.
+    pub fn new() -> Self {
+        Self {
+            mapping: StdlibMapping::new(),
+        }
+    }
+}
+
+impl Default for BuiltinPlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CompilerPlugin for BuiltinPlugin {
+    fn name(&self) -> &str {
+        "builtin"
+    }
+
+    fn method_mappings(&self) -> Vec<(MethodSignature, RuntimeFunctionCall)> {
+        self.mapping.all_mappings()
+    }
+
+    fn declare_externs(&self, builder: &mut MirBuilder) {
+        // Extern declarations are handled by the MIR building functions below.
+        // Memory extern functions (malloc, realloc, free)
+        memory::build_memory_functions(builder);
+
+        // Vec<u8> externs
+        vec_u8::build_vec_u8_type(builder);
+
+        // String externs
+        string::build_string_type(builder);
+
+        // Array externs
+        array::build_array_type(builder);
+
+        // Standard types externs
+        stdtypes::build_std_types(builder);
+
+        // Concurrent primitives externs
+        thread::build_thread_type(builder);
+        channel::build_channel_type(builder);
+        sync::build_sync_types(builder);
+
+        // Vec<T> monomorphized externs
+        vec::build_vec_externs(builder);
+    }
+
+    fn build_mir_wrappers(&self, _builder: &mut MirBuilder) {
+        // MIR wrappers are built as part of declare_externs() by the stdlib modules.
+        // The stdlib building functions (like thread::build_thread_type) create both
+        // extern declarations AND MIR wrapper functions in a single pass.
+        //
+        // This method exists for plugins that separate extern declaration from
+        // MIR wrapper construction (e.g., HDLL plugins might declare externs first,
+        // then build wrappers based on loaded library metadata).
+    }
+
+    fn priority(&self) -> i32 {
+        // Built-in has lowest priority (0), allowing other plugins to override
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,5 +314,38 @@ mod tests {
 
         assert_eq!(registry.len(), 2);
         assert_eq!(registry.plugin_names(), vec!["test1", "test2"]);
+    }
+
+    #[test]
+    fn test_builtin_plugin() {
+        let plugin = BuiltinPlugin::new();
+
+        assert_eq!(plugin.name(), "builtin");
+        assert_eq!(plugin.priority(), 0);
+
+        // BuiltinPlugin should have many mappings from StdlibMapping
+        let mappings = plugin.method_mappings();
+        assert!(!mappings.is_empty(), "BuiltinPlugin should have method mappings");
+
+        // Verify some known mappings exist
+        let has_string_method = mappings.iter().any(|(sig, _)| sig.class == "String");
+        assert!(has_string_method, "BuiltinPlugin should have String methods");
+
+        let has_array_method = mappings.iter().any(|(sig, _)| sig.class == "Array");
+        assert!(has_array_method, "BuiltinPlugin should have Array methods");
+    }
+
+    #[test]
+    fn test_builtin_plugin_in_registry() {
+        let mut registry = CompilerPluginRegistry::new();
+        registry.register(Box::new(BuiltinPlugin::new()));
+
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.plugin_names(), vec!["builtin"]);
+
+        // Build combined mapping should work
+        let mapping = registry.build_combined_mapping();
+        assert!(mapping.is_stdlib_class("String"), "Combined mapping should have String class");
+        assert!(mapping.is_stdlib_class("Array"), "Combined mapping should have Array class");
     }
 }

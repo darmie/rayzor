@@ -495,6 +495,16 @@ impl StdlibMapping {
     pub fn register_mapping(&mut self, sig: MethodSignature, call: RuntimeFunctionCall) {
         self.mappings.insert(sig, call);
     }
+
+    /// Get all mappings as a vector of (signature, call) tuples.
+    ///
+    /// This is used by `BuiltinPlugin` to export mappings to the plugin registry.
+    pub fn all_mappings(&self) -> Vec<(MethodSignature, RuntimeFunctionCall)> {
+        self.mappings
+            .iter()
+            .map(|(sig, call)| (sig.clone(), call.clone()))
+            .collect()
+    }
 }
 
 /// Macro to register stdlib methods more concisely
@@ -1263,7 +1273,8 @@ impl StdlibMapping {
 
             // Instance methods - character access
             // charAt returns String pointer (empty string for out of bounds)
-            map_method!(instance "String", "charAt" => "haxe_string_char_at_ptr", params: 1, returns: primitive,
+            // Uses MIR wrapper that forwards to haxe_string_char_at_ptr
+            map_method!(instance "String", "charAt" => "String_charAt", params: 1, mir_wrapper,
                 types: &[PtrString, I32] => PtrString),
             // charCodeAt returns Null<Int> (-1 for out of bounds, which we represent as i32)
             map_method!(instance "String", "charCodeAt" => "haxe_string_char_code_at_ptr", params: 1, returns: primitive,
@@ -1291,7 +1302,8 @@ impl StdlibMapping {
                 types: &[PtrString, PtrString] => PtrVoid),
             map_method!(instance "String", "substr" => "haxe_string_substr_ptr", params: 2, returns: primitive,
                 types: &[PtrString, I32, I32] => PtrString),
-            map_method!(instance "String", "substring" => "haxe_string_substring_ptr", params: 2, returns: primitive,
+            // substring uses MIR wrapper that forwards to haxe_string_substring_ptr
+            map_method!(instance "String", "substring" => "String_substring", params: 2, mir_wrapper,
                 types: &[PtrString, I32, I32] => PtrString),
             // toLowerCase/toUpperCase use pointer-returning wrapper functions (not out-param style)
             map_method!(instance "String", "toLowerCase" => "haxe_string_lower", params: 0, returns: primitive,
