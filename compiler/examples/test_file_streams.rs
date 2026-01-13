@@ -21,15 +21,15 @@ class Main {
     static function main() {
         var testPath = "/tmp/rayzor_stream_test.txt";
 
-        // Write bytes using FileOutput
-        var output:FileOutput = File.write(testPath, true);
+        // Write bytes using FileOutput (inferred type)
+        var output = File.write(testPath, true);
         output.writeByte(72);  // 'H'
         output.writeByte(105); // 'i'
         output.writeByte(33);  // '!'
         output.close();
 
-        // Read bytes using FileInput
-        var input:FileInput = File.read(testPath, true);
+        // Read bytes using FileInput (inferred type)
+        var input = File.read(testPath, true);
         var b1 = input.readByte();
         var b2 = input.readByte();
         var b3 = input.readByte();
@@ -61,8 +61,8 @@ class Main {
         // Create a file with known content
         File.saveContent(testPath, "ABCDEFGHIJ");
 
-        // Open for reading
-        var input:FileInput = File.read(testPath, true);
+        // Open for reading (inferred type)
+        var input = File.read(testPath, true);
 
         // Check initial position
         trace(input.tell());  // 0
@@ -99,7 +99,7 @@ class Main {
         // Create a small file
         File.saveContent(testPath, "AB");
 
-        var input:FileInput = File.read(testPath, true);
+        var input = File.read(testPath, true);
 
         // Not at EOF yet
         trace(input.eof());  // false
@@ -132,7 +132,7 @@ class Main {
     static function main() {
         var testPath = "/tmp/rayzor_output_tell_test.txt";
 
-        var output:FileOutput = File.write(testPath, true);
+        var output = File.write(testPath, true);
         trace(output.tell());  // 0
 
         output.writeByte(65);  // 'A'
@@ -169,8 +169,8 @@ class Main {
         // Create initial file
         File.saveContent(testPath, "Hello");
 
-        // Append to it
-        var output:FileOutput = File.append(testPath, true);
+        // Append to it (inferred type)
+        var output = File.append(testPath, true);
         output.writeByte(32);  // ' '
         output.writeByte(87);  // 'W'
         output.writeByte(111); // 'o'
@@ -201,7 +201,7 @@ class Main {
     static function main() {
         var testPath = "/tmp/rayzor_flush_test.txt";
 
-        var output:FileOutput = File.write(testPath, true);
+        var output = File.write(testPath, true);
         output.writeByte(84);  // 'T'
         output.writeByte(101); // 'e'
         output.writeByte(115); // 's'

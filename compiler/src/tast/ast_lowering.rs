@@ -4450,13 +4450,27 @@ impl<'a> AstLowering<'a> {
                                                 type_arguments: Vec::new(),
                                             };
 
-                                        // Get method return type
+                                        // Get method return type by extracting from function signature
                                         let expr_type = if let Some(symbol) = self
                                             .context
                                             .symbol_table
                                             .get_symbol(method_symbol)
                                         {
-                                            symbol.type_id
+                                            let type_table = self.context.type_table.borrow();
+                                            if let Some(method_type) = type_table.get(symbol.type_id) {
+                                                match &method_type.kind {
+                                                    crate::tast::core::TypeKind::Function { return_type, .. } => {
+                                                        *return_type
+                                                    }
+                                                    _ => {
+                                                        // Not a function type, use the type directly
+                                                        symbol.type_id
+                                                    }
+                                                }
+                                            } else {
+                                                // Type not in table, use dynamic
+                                                type_table.dynamic_type()
+                                            }
                                         } else {
                                             self.context
                                                 .type_table

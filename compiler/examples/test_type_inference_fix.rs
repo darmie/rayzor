@@ -1,4 +1,5 @@
-//! Simple test for File.read/write
+//! Test case for type inference bug fix
+//! This test should work WITHOUT explicit type annotations
 
 use compiler::codegen::CraneliftBackend;
 use compiler::compilation::{CompilationConfig, CompilationUnit};
@@ -7,55 +8,46 @@ use rayzor_runtime;
 use std::sync::Arc;
 
 fn main() {
-    println!("=== Simple File Stream Test ===\n");
+    println!("=== Type Inference Fix Test ===\n");
 
-    // Test File.write and writeByte, File.read and readByte
-    println!("Test: FileOutput and FileInput stream operations");
+    // Test with ONLY inferred type - no explicit type annotation
+    println!("Test: File.write() with ONLY inferred type (no workaround)");
     let source = r#"
 import sys.io.File;
-import sys.io.FileOutput;
-import sys.io.FileInput;
 import sys.FileSystem;
 
 class Main {
     static function main() {
-        trace("=== Test FileOutput ===");
-        // Now using INFERRED TYPE (was: var output:FileOutput = ...)
-        var output = File.write("/tmp/rayzor_simple_test.txt", true);
+        trace("Starting...");
 
-        // Write some bytes
+        // Only inferred type - this should work without needing explicit types
+        var output = File.write("/tmp/rayzor_infer_only_test.txt", true);
+        trace("Got output from File.write()");
+
         output.writeByte(72);  // 'H'
         output.writeByte(105); // 'i'
-        output.writeByte(33);  // '!'
+        trace("writeByte calls succeeded");
+
         output.close();
-        trace("Wrote Hi!");
+        trace("close succeeded");
 
-        trace("=== Test FileInput ===");
-        // Now using INFERRED TYPE (was: var input:FileInput = ...)
-        var input = File.read("/tmp/rayzor_simple_test.txt", true);
+        // Verify the file was written
+        var content = File.getContent("/tmp/rayzor_infer_only_test.txt");
+        trace(content);
 
-        // Read bytes
-        var b1 = input.readByte();
-        var b2 = input.readByte();
-        var b3 = input.readByte();
-        input.close();
-
-        trace(b1);  // 72
-        trace(b2);  // 105
-        trace(b3);  // 33
-
-        FileSystem.deleteFile("/tmp/rayzor_simple_test.txt");
+        FileSystem.deleteFile("/tmp/rayzor_infer_only_test.txt");
         trace("Done!");
     }
 }
 "#;
 
-    match compile_and_run(source, "simple_test") {
+    match compile_and_run(source, "infer_only_test") {
         Ok(()) => {
-            println!("✅ Test completed");
+            println!("✅ Type inference fix WORKING - test passed without explicit types!");
         }
         Err(e) => {
             println!("❌ FAILED: {}", e);
+            std::process::exit(1);
         }
     }
 }
