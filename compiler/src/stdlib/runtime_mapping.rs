@@ -2167,84 +2167,170 @@ impl StdlibMapping {
     fn register_bytes_methods(&mut self) {
         // NOTE: These mappings are for rayzor.Bytes extern class ONLY.
         // Using qualified name "rayzor_Bytes" to avoid capturing haxe.io.Bytes
+        //
+        // Bytes is a pointer type (PtrVoid) - all methods that return Bytes return PtrVoid
         let mappings = vec![
             // Static methods
             // rayzor.Bytes.alloc(size: Int): Bytes
-            map_method!(static "rayzor_Bytes", "alloc" => "haxe_bytes_alloc", params: 1, returns: primitive),
+            map_method!(static "rayzor_Bytes", "alloc" => "haxe_bytes_alloc", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::I32] => IrTypeDescriptor::PtrVoid),
             // rayzor.Bytes.ofString(s: String): Bytes
-            map_method!(static "rayzor_Bytes", "ofString" => "haxe_bytes_of_string", params: 1, returns: primitive),
+            map_method!(static "rayzor_Bytes", "ofString" => "haxe_bytes_of_string", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrString] => IrTypeDescriptor::PtrVoid),
 
             // Property accessor
             // bytes.length: Int
-            map_method!(instance "rayzor_Bytes", "length" => "haxe_bytes_length", params: 0, returns: primitive),
+            map_method!(instance "rayzor_Bytes", "length" => "haxe_bytes_length", params: 0, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid] => IrTypeDescriptor::I32),
 
             // Instance methods
             // bytes.get(pos: Int): Int
-            map_method!(instance "rayzor_Bytes", "get" => "haxe_bytes_get", params: 1, returns: primitive),
+            map_method!(instance "rayzor_Bytes", "get" => "haxe_bytes_get", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32] => IrTypeDescriptor::I32),
             // bytes.set(pos: Int, value: Int): Void
-            map_method!(instance "rayzor_Bytes", "set" => "haxe_bytes_set", params: 2, returns: void),
+            map_method!(instance "rayzor_Bytes", "set" => "haxe_bytes_set", params: 2, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I32]),
             // bytes.sub(pos: Int, len: Int): Bytes
-            map_method!(instance "rayzor_Bytes", "sub" => "haxe_bytes_sub", params: 2, returns: primitive),
+            map_method!(instance "rayzor_Bytes", "sub" => "haxe_bytes_sub", params: 2, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I32] => IrTypeDescriptor::PtrVoid),
             // bytes.blit(srcPos: Int, dest: Bytes, destPos: Int, len: Int): Void
-            map_method!(instance "rayzor_Bytes", "blit" => "haxe_bytes_blit", params: 4, returns: void),
+            map_method!(instance "rayzor_Bytes", "blit" => "haxe_bytes_blit", params: 4, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I32]),
             // bytes.fill(pos: Int, len: Int, value: Int): Void
-            map_method!(instance "rayzor_Bytes", "fill" => "haxe_bytes_fill", params: 3, returns: void),
+            map_method!(instance "rayzor_Bytes", "fill" => "haxe_bytes_fill", params: 3, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I32, IrTypeDescriptor::I32]),
             // bytes.compare(other: Bytes): Int
-            map_method!(instance "rayzor_Bytes", "compare" => "haxe_bytes_compare", params: 1, returns: primitive),
+            map_method!(instance "rayzor_Bytes", "compare" => "haxe_bytes_compare", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::PtrVoid] => IrTypeDescriptor::I32),
             // bytes.toString(): String
-            map_method!(instance "rayzor_Bytes", "toString" => "haxe_bytes_to_string", params: 0, returns: primitive),
+            map_method!(instance "rayzor_Bytes", "toString" => "haxe_bytes_to_string", params: 0, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid] => IrTypeDescriptor::PtrString),
 
             // Integer getters (little-endian)
             // bytes.getInt16(pos: Int): Int
-            map_method!(instance "rayzor_Bytes", "getInt16" => "haxe_bytes_get_int16", params: 1, returns: primitive),
+            map_method!(instance "rayzor_Bytes", "getInt16" => "haxe_bytes_get_int16", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32] => IrTypeDescriptor::I32),
             // bytes.getInt32(pos: Int): Int
-            map_method!(instance "rayzor_Bytes", "getInt32" => "haxe_bytes_get_int32", params: 1, returns: primitive),
+            map_method!(instance "rayzor_Bytes", "getInt32" => "haxe_bytes_get_int32", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32] => IrTypeDescriptor::I32),
             // bytes.getInt64(pos: Int): Int64
-            map_method!(instance "rayzor_Bytes", "getInt64" => "haxe_bytes_get_int64", params: 1, returns: primitive),
+            map_method!(instance "rayzor_Bytes", "getInt64" => "haxe_bytes_get_int64", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32] => IrTypeDescriptor::I64),
 
             // Float getters (little-endian)
             // bytes.getFloat(pos: Int): Float
-            map_method!(instance "rayzor_Bytes", "getFloat" => "haxe_bytes_get_float", params: 1, returns: primitive),
+            map_method!(instance "rayzor_Bytes", "getFloat" => "haxe_bytes_get_float", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32] => IrTypeDescriptor::F32),
             // bytes.getDouble(pos: Int): Float
-            map_method!(instance "rayzor_Bytes", "getDouble" => "haxe_bytes_get_double", params: 1, returns: primitive),
+            map_method!(instance "rayzor_Bytes", "getDouble" => "haxe_bytes_get_double", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32] => IrTypeDescriptor::F64),
 
             // Integer setters (little-endian)
             // bytes.setInt16(pos: Int, value: Int): Void
-            map_method!(instance "rayzor_Bytes", "setInt16" => "haxe_bytes_set_int16", params: 2, returns: void),
+            map_method!(instance "rayzor_Bytes", "setInt16" => "haxe_bytes_set_int16", params: 2, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I32]),
             // bytes.setInt32(pos: Int, value: Int): Void
-            map_method!(instance "rayzor_Bytes", "setInt32" => "haxe_bytes_set_int32", params: 2, returns: void),
+            map_method!(instance "rayzor_Bytes", "setInt32" => "haxe_bytes_set_int32", params: 2, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I32]),
             // bytes.setInt64(pos: Int, value: Int64): Void
-            map_method!(instance "rayzor_Bytes", "setInt64" => "haxe_bytes_set_int64", params: 2, returns: void),
+            map_method!(instance "rayzor_Bytes", "setInt64" => "haxe_bytes_set_int64", params: 2, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I64]),
 
             // Float setters (little-endian)
             // bytes.setFloat(pos: Int, value: Float): Void
-            map_method!(instance "rayzor_Bytes", "setFloat" => "haxe_bytes_set_float", params: 2, returns: void),
+            map_method!(instance "rayzor_Bytes", "setFloat" => "haxe_bytes_set_float", params: 2, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::F32]),
             // bytes.setDouble(pos: Int, value: Float): Void
-            map_method!(instance "rayzor_Bytes", "setDouble" => "haxe_bytes_set_double", params: 2, returns: void),
+            map_method!(instance "rayzor_Bytes", "setDouble" => "haxe_bytes_set_double", params: 2, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::F64]),
 
             // ==== haxe.io.Bytes (typedef to rayzor.Bytes) ====
             // When haxe.io.Bytes is used as a typedef, the type resolves to "haxe_io_Bytes"
             // so we need to map those as well. All point to the same runtime functions.
-            map_method!(static "haxe_io_Bytes", "alloc" => "haxe_bytes_alloc", params: 1, returns: primitive),
-            map_method!(static "haxe_io_Bytes", "ofString" => "haxe_bytes_of_string", params: 1, returns: primitive),
-            map_method!(instance "haxe_io_Bytes", "length" => "haxe_bytes_length", params: 0, returns: primitive),
-            map_method!(instance "haxe_io_Bytes", "get" => "haxe_bytes_get", params: 1, returns: primitive),
-            map_method!(instance "haxe_io_Bytes", "set" => "haxe_bytes_set", params: 2, returns: void),
-            map_method!(instance "haxe_io_Bytes", "sub" => "haxe_bytes_sub", params: 2, returns: primitive),
-            map_method!(instance "haxe_io_Bytes", "blit" => "haxe_bytes_blit", params: 4, returns: void),
-            map_method!(instance "haxe_io_Bytes", "fill" => "haxe_bytes_fill", params: 3, returns: void),
-            map_method!(instance "haxe_io_Bytes", "compare" => "haxe_bytes_compare", params: 1, returns: primitive),
-            map_method!(instance "haxe_io_Bytes", "toString" => "haxe_bytes_to_string", params: 0, returns: primitive),
-            map_method!(instance "haxe_io_Bytes", "getInt16" => "haxe_bytes_get_int16", params: 1, returns: primitive),
-            map_method!(instance "haxe_io_Bytes", "getInt32" => "haxe_bytes_get_int32", params: 1, returns: primitive),
-            map_method!(instance "haxe_io_Bytes", "getInt64" => "haxe_bytes_get_int64", params: 1, returns: primitive),
-            map_method!(instance "haxe_io_Bytes", "getFloat" => "haxe_bytes_get_float", params: 1, returns: primitive),
-            map_method!(instance "haxe_io_Bytes", "getDouble" => "haxe_bytes_get_double", params: 1, returns: primitive),
-            map_method!(instance "haxe_io_Bytes", "setInt16" => "haxe_bytes_set_int16", params: 2, returns: void),
-            map_method!(instance "haxe_io_Bytes", "setInt32" => "haxe_bytes_set_int32", params: 2, returns: void),
-            map_method!(instance "haxe_io_Bytes", "setInt64" => "haxe_bytes_set_int64", params: 2, returns: void),
-            map_method!(instance "haxe_io_Bytes", "setFloat" => "haxe_bytes_set_float", params: 2, returns: void),
-            map_method!(instance "haxe_io_Bytes", "setDouble" => "haxe_bytes_set_double", params: 2, returns: void),
+            map_method!(static "haxe_io_Bytes", "alloc" => "haxe_bytes_alloc", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::I32] => IrTypeDescriptor::PtrVoid),
+            map_method!(static "haxe_io_Bytes", "ofString" => "haxe_bytes_of_string", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrString] => IrTypeDescriptor::PtrVoid),
+            map_method!(instance "haxe_io_Bytes", "length" => "haxe_bytes_length", params: 0, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid] => IrTypeDescriptor::I32),
+            map_method!(instance "haxe_io_Bytes", "get" => "haxe_bytes_get", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32] => IrTypeDescriptor::I32),
+            map_method!(instance "haxe_io_Bytes", "set" => "haxe_bytes_set", params: 2, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I32]),
+            map_method!(instance "haxe_io_Bytes", "sub" => "haxe_bytes_sub", params: 2, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I32] => IrTypeDescriptor::PtrVoid),
+            map_method!(instance "haxe_io_Bytes", "blit" => "haxe_bytes_blit", params: 4, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I32]),
+            map_method!(instance "haxe_io_Bytes", "fill" => "haxe_bytes_fill", params: 3, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I32, IrTypeDescriptor::I32]),
+            map_method!(instance "haxe_io_Bytes", "compare" => "haxe_bytes_compare", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::PtrVoid] => IrTypeDescriptor::I32),
+            map_method!(instance "haxe_io_Bytes", "toString" => "haxe_bytes_to_string", params: 0, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid] => IrTypeDescriptor::PtrString),
+            map_method!(instance "haxe_io_Bytes", "getInt16" => "haxe_bytes_get_int16", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32] => IrTypeDescriptor::I32),
+            map_method!(instance "haxe_io_Bytes", "getInt32" => "haxe_bytes_get_int32", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32] => IrTypeDescriptor::I32),
+            map_method!(instance "haxe_io_Bytes", "getInt64" => "haxe_bytes_get_int64", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32] => IrTypeDescriptor::I64),
+            map_method!(instance "haxe_io_Bytes", "getFloat" => "haxe_bytes_get_float", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32] => IrTypeDescriptor::F32),
+            map_method!(instance "haxe_io_Bytes", "getDouble" => "haxe_bytes_get_double", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32] => IrTypeDescriptor::F64),
+            map_method!(instance "haxe_io_Bytes", "setInt16" => "haxe_bytes_set_int16", params: 2, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I32]),
+            map_method!(instance "haxe_io_Bytes", "setInt32" => "haxe_bytes_set_int32", params: 2, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I32]),
+            map_method!(instance "haxe_io_Bytes", "setInt64" => "haxe_bytes_set_int64", params: 2, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I64]),
+            map_method!(instance "haxe_io_Bytes", "setFloat" => "haxe_bytes_set_float", params: 2, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::F32]),
+            map_method!(instance "haxe_io_Bytes", "setDouble" => "haxe_bytes_set_double", params: 2, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::F64]),
+
+            // ==== Simple "Bytes" class name (fallback when qualified_name isn't available) ====
+            // The symbol table may not always have the fully qualified name (rayzor_Bytes),
+            // so we need to support lookup by simple class name "Bytes" as well.
+            map_method!(static "Bytes", "alloc" => "haxe_bytes_alloc", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::I32] => IrTypeDescriptor::PtrVoid),
+            map_method!(static "Bytes", "ofString" => "haxe_bytes_of_string", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrString] => IrTypeDescriptor::PtrVoid),
+            map_method!(instance "Bytes", "length" => "haxe_bytes_length", params: 0, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid] => IrTypeDescriptor::I32),
+            map_method!(instance "Bytes", "get" => "haxe_bytes_get", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32] => IrTypeDescriptor::I32),
+            map_method!(instance "Bytes", "set" => "haxe_bytes_set", params: 2, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I32]),
+            map_method!(instance "Bytes", "sub" => "haxe_bytes_sub", params: 2, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I32] => IrTypeDescriptor::PtrVoid),
+            map_method!(instance "Bytes", "blit" => "haxe_bytes_blit", params: 4, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I32]),
+            map_method!(instance "Bytes", "fill" => "haxe_bytes_fill", params: 3, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I32, IrTypeDescriptor::I32]),
+            map_method!(instance "Bytes", "compare" => "haxe_bytes_compare", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::PtrVoid] => IrTypeDescriptor::I32),
+            map_method!(instance "Bytes", "toString" => "haxe_bytes_to_string", params: 0, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid] => IrTypeDescriptor::PtrString),
+            map_method!(instance "Bytes", "getInt16" => "haxe_bytes_get_int16", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32] => IrTypeDescriptor::I32),
+            map_method!(instance "Bytes", "getInt32" => "haxe_bytes_get_int32", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32] => IrTypeDescriptor::I32),
+            map_method!(instance "Bytes", "getInt64" => "haxe_bytes_get_int64", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32] => IrTypeDescriptor::I64),
+            map_method!(instance "Bytes", "getFloat" => "haxe_bytes_get_float", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32] => IrTypeDescriptor::F32),
+            map_method!(instance "Bytes", "getDouble" => "haxe_bytes_get_double", params: 1, returns: primitive,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32] => IrTypeDescriptor::F64),
+            map_method!(instance "Bytes", "setInt16" => "haxe_bytes_set_int16", params: 2, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I32]),
+            map_method!(instance "Bytes", "setInt32" => "haxe_bytes_set_int32", params: 2, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I32]),
+            map_method!(instance "Bytes", "setInt64" => "haxe_bytes_set_int64", params: 2, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I64]),
+            map_method!(instance "Bytes", "setFloat" => "haxe_bytes_set_float", params: 2, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::F32]),
+            map_method!(instance "Bytes", "setDouble" => "haxe_bytes_set_double", params: 2, returns: void,
+                types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::F64]),
         ];
 
         self.register_from_tuples(mappings);
