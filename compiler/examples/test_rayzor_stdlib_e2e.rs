@@ -753,67 +753,71 @@ class Main {
     // ============================================================================
     // TEST 8: Integration - Arc<Mutex<T>>
     // ============================================================================
-    // TEMPORARILY DISABLED: Execution hangs/fails - needs investigation
-    // TODO: Re-enable once loop/iterator runtime issues are fixed
-    /*
-        suite.add_test(
-            E2ETestCase::new(
-                "arc_mutex_integration",
-                "Arc and Mutex combined for thread-safe shared state",
-                r#"
-    package test;
+    // Note: Explicit unlock() is required since Rayzor doesn't have automatic
+    // drop semantics for RAII types like MutexGuard (unlike Rust).
+    suite.add_test(
+        E2ETestCase::new(
+            "arc_mutex_integration",
+            "Arc and Mutex combined for thread-safe shared state",
+            r#"
+package test;
 
-    import rayzor.concurrent.Thread;
-    import rayzor.concurrent.Arc;
-    import rayzor.concurrent.Mutex;
+import rayzor.concurrent.Thread;
+import rayzor.concurrent.Arc;
+import rayzor.concurrent.Mutex;
 
-    @:derive([Send])
-    class SharedCounter {
-        public var value: Int;
+@:derive([Send])
+class SharedCounter {
+    public var value: Int;
 
-        public function new() {
-            this.value = 0;
-        }
-
-        public function increment():Void {
-            this.value++;
-        }
+    public function new() {
+        this.value = 0;
     }
 
-    class Main {
-        static function main() {
-            var counter = Arc.init(Mutex.init(new SharedCounter()));
-
-            var handles = new Array<Thread<Void>>();
-
-            var i = 0;
-            while (i < 3) {
-                var counter_clone = counter.clone();
-                var handle = Thread.spawn(() -> {
-                    var j = 0;
-                    while (j < 10) {
-                        var guard = counter_clone.lock();
-                        guard.increment();
-                        j++;
-                    }
-                });
-                handles.push(handle);
-                i++;
-            }
-
-            for (handle in handles) {
-                handle.join();
-            }
-
-            var final_guard = counter.lock();
-            // Should be 30 (3 threads * 10 increments)
-        }
+    public function increment():Void {
+        this.value++;
     }
-    "#,
-            )
-            .expect_mir_calls(vec!["rayzor_arc_init", "rayzor_arc_clone", "rayzor_mutex_init", "rayzor_mutex_lock", "rayzor_thread_spawn"]),
-        );
-        */
+}
+
+class Main {
+    static function main() {
+        var counter = Arc.init(Mutex.init(new SharedCounter()));
+
+        var handles = new Array<Thread<Int>>();
+
+        var i = 0;
+        while (i < 3) {
+            var counter_clone = counter.clone();
+            var handle = Thread.spawn(() -> {
+                var j = 0;
+                while (j < 10) {
+                    var guard = counter_clone.get().lock();  // get() Mutex, then lock()
+                    guard.get().increment();
+                    guard.unlock();  // Explicit unlock required!
+                    j++;
+                }
+                return j;
+            });
+            handles.push(handle);
+            i++;
+        }
+
+        // Join all threads using indexed loop (for-in on handles has issues)
+        var k = 0;
+        while (k < handles.length) {
+            handles[k].join();
+            k++;
+        }
+
+        var final_guard = counter.get().lock();  // get() Mutex, then lock()
+        trace(final_guard.get().value);  // Should be 30 (3 threads * 10 increments)
+        final_guard.unlock();
+    }
+}
+"#,
+        )
+        .expect_mir_calls(vec!["rayzor_arc_init", "rayzor_arc_clone", "rayzor_mutex_init", "rayzor_mutex_lock", "rayzor_thread_spawn"]),
+    );
 
     // ============================================================================
     // Run all tests
