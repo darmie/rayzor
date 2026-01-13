@@ -1564,18 +1564,31 @@ impl<'a> HirToMirContext<'a> {
             drop(type_table);
             eprintln!("DEBUG: [get_stdlib_runtime_info] receiver_type {:?} not in type_table, qualified_name={:?}", receiver_type, qualified_name);
             if let Some(qname) = qualified_name {
-                // Pattern: "rayzor.Vec.get" or "test.Main.method"
+                // Pattern: "rayzor.Vec.get" or "rayzor.concurrent.MutexGuard.get"
                 let parts: Vec<&str> = qname.split('.').collect();
                 if parts.len() >= 2 {
-                    // Check if second-to-last part is "Vec"
+                    // Check if second-to-last part is a known stdlib class
                     if let Some(&class_name) = parts.iter().rev().nth(1) {
-                        if class_name == "Vec" {
-                            // For Vec without type info, we can't monomorphize here
-                            // Try Vec variants in the mapping
-                            for variant in &["VecI32", "VecI64", "VecF64", "VecPtr", "VecBool"] {
-                                if let Some((sig, mapping)) = self.stdlib_mapping.find_by_name(variant, method_name) {
-                                    eprintln!("DEBUG: [FALLBACK] Found Vec method {} in {} mapping", method_name, variant);
-                                    // Return the first match - caller will need to handle type selection
+                        // Try direct class name lookup for common stdlib classes
+                        let stdlib_classes = [
+                            "Vec", "VecI32", "VecI64", "VecF64", "VecPtr", "VecBool",
+                            "Arc", "Mutex", "MutexGuard", "Channel", "Thread",
+                            "Lock", "Semaphore", "Condition", "Deque",
+                        ];
+
+                        if stdlib_classes.contains(&class_name) {
+                            // For Vec without type info, try variants
+                            if class_name == "Vec" {
+                                for variant in &["VecI32", "VecI64", "VecF64", "VecPtr", "VecBool"] {
+                                    if let Some((sig, mapping)) = self.stdlib_mapping.find_by_name(variant, method_name) {
+                                        eprintln!("DEBUG: [FALLBACK] Found Vec method {} in {} mapping", method_name, variant);
+                                        return Some((sig.class, sig.method, mapping));
+                                    }
+                                }
+                            } else {
+                                // Direct lookup for other stdlib classes
+                                if let Some((sig, mapping)) = self.stdlib_mapping.find_by_name(class_name, method_name) {
+                                    eprintln!("DEBUG: [FALLBACK] Found {}.{} method via qualified name fallback", class_name, method_name);
                                     return Some((sig.class, sig.method, mapping));
                                 }
                             }
@@ -3323,70 +3336,172 @@ impl<'a> HirToMirContext<'a> {
                                 if matches!(type_info.kind, TypeKind::Dynamic) {
                                     drop(type_table);
 
-                                    // Look up method by name in function_map
-                                    let method_name = self.symbol_table.get_symbol(*symbol).map(|s| s.name);
-                                    if let Some(name) = method_name {
-                                        let mut found_func = None;
-                                        for (sym, &func_id) in &self.function_map {
-                                            if let Some(sym_info) = self.symbol_table.get_symbol(*sym) {
-                                                if sym_info.name == name {
-                                                    found_func = Some(func_id);
-                                                    break;
-                                                }
+                                    // First, check if this might be a stdlib method call
+                                    // by checking if the receiver expression comes from a stdlib function
+                                    // (i.e., its result type would be Ptr(Void) for MIR wrappers)
+                                    let method_name_str = self.symbol_table.get_symbol(*symbol)
+                                        .and_then(|s| self.string_interner.get(s.name));
+
+                                    // For common stdlib methods like "get", "lock", "unlock", etc.,
+                                    // skip the generic Dynamic dispatch and let the stdlib-aware
+                                    // resolution handle it. This prevents incorrect method binding
+                                    // when multiple classes have methods with the same name.
+                                    let is_stdlib_method = method_name_str.map(|m| {
+                                        matches!(m, "get" | "lock" | "unlock" | "tryLock" | "send" |
+                                                 "receive" | "clone" | "init" | "spawn" | "join" |
+                                                 "wait" | "signal" | "broadcast" | "acquire" | "release" |
+                                                 "tryAcquire" | "add" | "push" | "pop")
+                                    }).unwrap_or(false);
+
+                                    if is_stdlib_method {
+                                        eprintln!("DEBUG: [DYNAMIC METHOD] Skipping generic dispatch for stdlib method '{:?}'", method_name_str);
+
+                                        // For stdlib methods on Dynamic receivers, try to find the method
+                                        // in known stdlib classes. This handles cases like:
+                                        // - MutexGuard.get() vs Arc.get() - both have "get" but are different
+                                        // - Mutex.lock() returning Dynamic typed as MutexGuard
+                                        //
+                                        // Priority order: MutexGuard, Arc, Mutex, Channel, Thread, etc.
+                                        // This ensures MutexGuard.get() is found before Arc.get() when
+                                        // the receiver came from Mutex.lock() (which returns MutexGuard)
+                                        let stdlib_classes_priority = [
+                                            "MutexGuard", "Arc", "Mutex", "Channel", "Thread",
+                                            "Lock", "Semaphore", "Condition", "Deque",
+                                        ];
+
+                                        let method_name = method_name_str.unwrap();
+                                        let mut found_mapping = None;
+
+                                        // Try each stdlib class in priority order
+                                        for class_name in &stdlib_classes_priority {
+                                            if let Some((sig, mapping)) = self.stdlib_mapping.find_by_name(class_name, method_name) {
+                                                eprintln!("DEBUG: [DYNAMIC STDLIB] Found {}.{} -> {}", class_name, method_name, mapping.runtime_name);
+                                                found_mapping = Some((sig.class, sig.method, mapping));
+                                                break;
                                             }
                                         }
 
-                                        if let Some(func_id) = found_func {
-                                            // Lower the receiver
-                                            let receiver_reg = self.lower_expression(&args[0])?;
+                                        if let Some((class_name, _method_name, runtime_call)) = found_mapping {
+                                            let runtime_func = runtime_call.runtime_name;
 
-                                            // Check if the receiver was boxed by examining its MIR register type.
-                                            // Boxing creates a Ptr(U8) value. If the receiver has a different
-                                            // pointer type (like Ptr(Void) from a stdlib function return),
-                                            // it wasn't boxed and shouldn't be unboxed.
-                                            let receiver_mir_type = self.builder.get_register_type(receiver_reg);
-                                            let should_unbox = receiver_mir_type.as_ref()
-                                                .map(|t| {
-                                                    // A boxed value has type Ptr(U8) from box_* functions
-                                                    // Unboxed stdlib returns typically have Ptr(Void)
-                                                    matches!(t, IrType::Ptr(inner) if matches!(**inner, IrType::U8))
-                                                })
-                                                .unwrap_or(true); // Assume boxed if type unknown
+                                            // Check if this is a MIR wrapper class
+                                            if self.stdlib_mapping.is_mir_wrapper_class(class_name) {
+                                                let mir_func_name = format!("{}_{}", class_name, method_name);
+                                                eprintln!("DEBUG: [DYNAMIC STDLIB MIR] Using MIR wrapper: {}", mir_func_name);
 
-                                            eprintln!("DEBUG: [DYNAMIC METHOD] receiver_mir_type: {:?}, should_unbox: {}",
-                                                     receiver_mir_type, should_unbox);
+                                                // Lower all arguments
+                                                let mut arg_regs = Vec::new();
+                                                let mut param_types = Vec::new();
+                                                for arg in args {
+                                                    if let Some(reg) = self.lower_expression(arg) {
+                                                        arg_regs.push(reg);
+                                                        param_types.push(self.convert_type(arg.ty));
+                                                    }
+                                                }
 
-                                            let actual_receiver = if should_unbox {
-                                                // Unbox the Dynamic to get the actual object pointer
+                                                // Register forward reference
+                                                let mir_func_id = self.register_stdlib_mir_forward_ref(
+                                                    &mir_func_name,
+                                                    param_types,
+                                                    result_type.clone(),
+                                                );
+
+                                                return self.builder.build_call_direct(
+                                                    mir_func_id,
+                                                    arg_regs,
+                                                    result_type.clone(),
+                                                );
+                                            } else {
+                                                // Direct extern call
                                                 let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
-                                                let unbox_func_id = self.get_or_register_extern_function(
-                                                    "haxe_unbox_reference_ptr",
-                                                    vec![ptr_u8.clone()],
+
+                                                // Lower all arguments
+                                                let arg_regs: Vec<_> = args
+                                                    .iter()
+                                                    .filter_map(|a| self.lower_expression(a))
+                                                    .collect();
+
+                                                // Build param types
+                                                let param_types: Vec<_> = arg_regs.iter()
+                                                    .map(|_| ptr_u8.clone())
+                                                    .collect();
+
+                                                let extern_func_id = self.get_or_register_extern_function(
+                                                    runtime_func,
+                                                    param_types,
                                                     ptr_u8.clone(),
                                                 );
-                                                self.builder.build_call_direct(
-                                                    unbox_func_id,
-                                                    vec![receiver_reg],
-                                                    ptr_u8,
-                                                )?
-                                            } else {
-                                                eprintln!("DEBUG: [DYNAMIC METHOD] Skipping unbox - stdlib container method");
-                                                receiver_reg
-                                            };
 
-                                            // Lower the rest of arguments (skip receiver at index 0)
-                                            let arg_regs: Vec<_> = std::iter::once(actual_receiver)
-                                                .chain(args[1..].iter().filter_map(|a| self.lower_expression(a)))
-                                                .collect();
+                                                return self.builder.build_call_direct(extern_func_id, arg_regs, ptr_u8);
+                                            }
+                                        }
+                                        // If no mapping found, fall through to regular dispatch
+                                    } else {
+                                        // Look up method by name in function_map (generic Dynamic dispatch)
+                                        let method_name = self.symbol_table.get_symbol(*symbol).map(|s| s.name);
+                                        if let Some(name) = method_name {
+                                            let mut found_func = None;
+                                            for (sym, &func_id) in &self.function_map {
+                                                if let Some(sym_info) = self.symbol_table.get_symbol(*sym) {
+                                                    if sym_info.name == name {
+                                                        found_func = Some(func_id);
+                                                        break;
+                                                    }
+                                                }
+                                            }
 
-                                            // Get the function's actual return type
-                                            let actual_return_type = if let Some(func) = self.builder.module.functions.get(&func_id) {
-                                                func.signature.return_type.clone()
-                                            } else {
-                                                result_type.clone()
-                                            };
+                                            if let Some(func_id) = found_func {
+                                                // Lower the receiver
+                                                let receiver_reg = self.lower_expression(&args[0])?;
 
-                                            return self.builder.build_call_direct(func_id, arg_regs, actual_return_type);
+                                                // Check if the receiver was boxed by examining its MIR register type.
+                                                // Boxing creates a Ptr(U8) value. If the receiver has a different
+                                                // pointer type (like Ptr(Void) from a stdlib function return),
+                                                // it wasn't boxed and shouldn't be unboxed.
+                                                let receiver_mir_type = self.builder.get_register_type(receiver_reg);
+                                                let should_unbox = receiver_mir_type.as_ref()
+                                                    .map(|t| {
+                                                        // A boxed value has type Ptr(U8) from box_* functions
+                                                        // Unboxed stdlib returns typically have Ptr(Void)
+                                                        matches!(t, IrType::Ptr(inner) if matches!(**inner, IrType::U8))
+                                                    })
+                                                    .unwrap_or(true); // Assume boxed if type unknown
+
+                                                eprintln!("DEBUG: [DYNAMIC METHOD] receiver_mir_type: {:?}, should_unbox: {}",
+                                                         receiver_mir_type, should_unbox);
+
+                                                let actual_receiver = if should_unbox {
+                                                    // Unbox the Dynamic to get the actual object pointer
+                                                    let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
+                                                    let unbox_func_id = self.get_or_register_extern_function(
+                                                        "haxe_unbox_reference_ptr",
+                                                        vec![ptr_u8.clone()],
+                                                        ptr_u8.clone(),
+                                                    );
+                                                    self.builder.build_call_direct(
+                                                        unbox_func_id,
+                                                        vec![receiver_reg],
+                                                        ptr_u8,
+                                                    )?
+                                                } else {
+                                                    eprintln!("DEBUG: [DYNAMIC METHOD] Skipping unbox - stdlib container method");
+                                                    receiver_reg
+                                                };
+
+                                                // Lower the rest of arguments (skip receiver at index 0)
+                                                let arg_regs: Vec<_> = std::iter::once(actual_receiver)
+                                                    .chain(args[1..].iter().filter_map(|a| self.lower_expression(a)))
+                                                    .collect();
+
+                                                // Get the function's actual return type
+                                                let actual_return_type = if let Some(func) = self.builder.module.functions.get(&func_id) {
+                                                    func.signature.return_type.clone()
+                                                } else {
+                                                    result_type.clone()
+                                                };
+
+                                                return self.builder.build_call_direct(func_id, arg_regs, actual_return_type);
+                                            }
                                         }
                                     }
                                 }
