@@ -1517,10 +1517,14 @@ impl StdlibMapping {
             // Constructor: new Deque<T>() -> Deque<T>
             map_method!(constructor "sys_thread_Deque", "new" => "sys_deque_alloc", params: 0, returns: primitive),
             // deque.add(item: T) -> Void
-            map_method!(instance "sys_thread_Deque", "add" => "sys_deque_add", params: 1, returns: void),
+            // param 0 = self, param 1 = item (needs boxing for generic type T)
+            // ptr_params: 0b10 = 2 means param index 1 needs ptr conversion (boxing)
+            map_method!(instance "sys_thread_Deque", "add" => "sys_deque_add", params: 1, returns: void, ptr_params: 2),
             // deque.push(item: T) -> Void
-            map_method!(instance "sys_thread_Deque", "push" => "sys_deque_push", params: 1, returns: void),
+            // Same as add - param 1 needs boxing
+            map_method!(instance "sys_thread_Deque", "push" => "sys_deque_push", params: 1, returns: void, ptr_params: 2),
             // deque.pop(block: Bool) -> Null<T>
+            // Returns boxed DynamicValue* which trace() can handle
             map_method!(instance "sys_thread_Deque", "pop" => "sys_deque_pop", params: 1, returns: primitive),
         ];
 

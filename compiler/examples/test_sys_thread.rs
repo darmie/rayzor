@@ -703,15 +703,9 @@ class Main {
     );
 
     // ============================================================================
-    // DEQUE TESTS (DISABLED - misaligned pointer crash in runtime)
+    // DEQUE TESTS
     // ============================================================================
 
-    // TODO: Fix deque runtime crash before re-enabling these tests
-    // The deque tests are causing a misaligned pointer crash:
-    // "misaligned pointer dereference: address must be a multiple of 0x8 but is 0x1"
-    // This is a separate issue from the thread/mutex/semaphore functionality.
-
-    /*
     // TEST 13: Basic Deque
     suite.add_test(
         E2ETestCase::new(
@@ -800,7 +794,6 @@ class Main {
         )
         .expect_mir_calls(vec!["sys_deque_add", "sys_deque_pop"]),
     );
-    */
 
     // ============================================================================
     // CONDITION TESTS

@@ -2607,26 +2607,52 @@ impl<'a> HirToMirContext<'a> {
                             let runtime_func = runtime_call.runtime_name;
                             eprintln!("DEBUG: [Extern method redirect] {}.{} -> {} (param_count={})", class_name, method_name, runtime_func, runtime_call.param_count);
 
+                            // Get expected parameter types from the extern function signature
+                            // This is critical for generic classes like Deque<T> where the runtime
+                            // expects boxed pointers but HIR types may be primitives
+                            let (expected_param_types, actual_return_type) = self.get_stdlib_mir_wrapper_signature(runtime_func)
+                                .map(|(params, ret)| (params, ret))
+                                .unwrap_or_else(|| {
+                                    // Fallback: derive from arguments (old behavior)
+                                    let mut params = vec![IrType::Ptr(Box::new(IrType::U8))];
+                                    for arg in args {
+                                        params.push(self.convert_type(arg.ty));
+                                    }
+                                    (params, result_type.clone())
+                                });
+                            eprintln!("DEBUG: [Extern method redirect] expected params: {:?}, return type: {:?}", expected_param_types, actual_return_type);
+
                             // Lower the object (this will be the first parameter)
                             let obj_reg = self.lower_expression(object)?;
 
-                            // Lower the arguments
-                            let arg_regs: Vec<_> = std::iter::once(obj_reg)  // Add 'this' as first arg
-                                .chain(args.iter().filter_map(|a| self.lower_expression(a)))
-                                .collect();
+                            // Lower the arguments and auto-box if needed for generic extern classes
+                            let mut arg_regs = vec![obj_reg];  // 'this' as first arg
+                            for (i, arg) in args.iter().enumerate() {
+                                let arg_reg = self.lower_expression(arg)?;
+                                let actual_ty = self.convert_type(arg.ty);
 
-                            // Determine parameter types from arguments
-                            let mut param_types = vec![IrType::Ptr(Box::new(IrType::U8))]; // 'this' is always a pointer
-                            for arg in args {
-                                param_types.push(self.convert_type(arg.ty));
+                                // Get expected type for this argument (offset by 1 for 'this')
+                                let expected_ty = expected_param_types.get(i + 1)
+                                    .cloned()
+                                    .unwrap_or_else(|| actual_ty.clone());
+
+                                // Auto-box if needed (e.g., Int -> Ptr(U8) for Deque<Int>.add())
+                                let final_reg = self.maybe_box_for_extern_call(arg_reg, &actual_ty, &expected_ty)?;
+                                arg_regs.push(final_reg);
                             }
 
-                            // IMPORTANT: For MIR wrappers, use their actual return type instead of HIR type
-                            // HIR type may be Dynamic/Ptr(Void) but the wrapper returns a concrete type (e.g., Bool)
-                            let actual_return_type = self.get_stdlib_mir_wrapper_signature(runtime_func)
-                                .map(|(_, ret_ty)| ret_ty)
-                                .unwrap_or_else(|| result_type.clone());
-                            eprintln!("DEBUG: [Extern method redirect] return type: HIR={:?}, actual={:?}", result_type, actual_return_type);
+                            // Use the expected parameter types for the extern function registration
+                            // This ensures the signature matches what the runtime expects
+                            let param_types = if expected_param_types.len() == arg_regs.len() {
+                                expected_param_types.clone()
+                            } else {
+                                // Fallback if lengths don't match
+                                let mut params = vec![IrType::Ptr(Box::new(IrType::U8))];
+                                for arg in args {
+                                    params.push(self.convert_type(arg.ty));
+                                }
+                                params
+                            };
 
                             // Register the extern function
                             let extern_func_id = self.get_or_register_extern_function(
@@ -2657,24 +2683,42 @@ impl<'a> HirToMirContext<'a> {
                                         let runtime_func = mapping.runtime_name;
                                         eprintln!("DEBUG: [Extern method redirect via qualified_name] {}.{} -> {}", qualified_class, mir_method_name, runtime_func);
 
+                                        // Get expected parameter types from the extern function signature
+                                        let (expected_param_types, actual_return_type) = self.get_stdlib_mir_wrapper_signature(runtime_func)
+                                            .map(|(params, ret)| (params, ret))
+                                            .unwrap_or_else(|| {
+                                                let mut params = vec![IrType::Ptr(Box::new(IrType::U8))];
+                                                for arg in args {
+                                                    params.push(self.convert_type(arg.ty));
+                                                }
+                                                (params, result_type.clone())
+                                            });
+
                                         // Lower the object (this will be the first parameter)
                                         let obj_reg = self.lower_expression(object)?;
 
-                                        // Lower the arguments
-                                        let arg_regs: Vec<_> = std::iter::once(obj_reg)
-                                            .chain(args.iter().filter_map(|a| self.lower_expression(a)))
-                                            .collect();
-
-                                        // Determine parameter types from arguments
-                                        let mut param_types = vec![IrType::Ptr(Box::new(IrType::U8))];
-                                        for arg in args {
-                                            param_types.push(self.convert_type(arg.ty));
+                                        // Lower the arguments and auto-box if needed
+                                        let mut arg_regs = vec![obj_reg];
+                                        for (i, arg) in args.iter().enumerate() {
+                                            let arg_reg = self.lower_expression(arg)?;
+                                            let actual_ty = self.convert_type(arg.ty);
+                                            let expected_ty = expected_param_types.get(i + 1)
+                                                .cloned()
+                                                .unwrap_or_else(|| actual_ty.clone());
+                                            let final_reg = self.maybe_box_for_extern_call(arg_reg, &actual_ty, &expected_ty)?;
+                                            arg_regs.push(final_reg);
                                         }
 
-                                        // IMPORTANT: For MIR wrappers, use their actual return type instead of HIR type
-                                        let actual_return_type = self.get_stdlib_mir_wrapper_signature(runtime_func)
-                                            .map(|(_, ret_ty)| ret_ty)
-                                            .unwrap_or_else(|| result_type.clone());
+                                        // Use expected parameter types for registration
+                                        let param_types = if expected_param_types.len() == arg_regs.len() {
+                                            expected_param_types.clone()
+                                        } else {
+                                            let mut params = vec![IrType::Ptr(Box::new(IrType::U8))];
+                                            for arg in args {
+                                                params.push(self.convert_type(arg.ty));
+                                            }
+                                            params
+                                        };
 
                                         // Register the extern function
                                         let extern_func_id = self.get_or_register_extern_function(
@@ -6978,6 +7022,64 @@ impl<'a> HirToMirContext<'a> {
             _ => {
                 eprintln!("DEBUG: [UNBOXING] Unsupported type for unboxing: {:?}", target_kind_cloned);
                 Some(value) // Skip unboxing for unsupported types
+            }
+        }
+    }
+
+    /// Box a value for extern function calls when the expected type is a pointer but the actual type is a primitive.
+    /// This is needed for generic extern classes like Deque<T> where the runtime expects boxed pointers
+    /// but the compiler generates primitive values for concrete type parameters like Int.
+    ///
+    /// Returns the (potentially boxed) value register.
+    fn maybe_box_for_extern_call(&mut self, value: IrId, actual_ty: &IrType, expected_ty: &IrType) -> Option<IrId> {
+        // Only box if expected is Ptr(U8) and actual is a primitive
+        let expected_is_ptr_u8 = matches!(expected_ty, IrType::Ptr(inner) if matches!(**inner, IrType::U8 | IrType::Void));
+
+        if !expected_is_ptr_u8 {
+            return Some(value);
+        }
+
+        // Check if actual type is a primitive that needs boxing
+        let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
+
+        match actual_ty {
+            IrType::I32 => {
+                eprintln!("DEBUG: [EXTERN BOXING] Boxing I32 to Ptr(U8) for extern call");
+                // First sign-extend i32 to i64, then call haxe_box_int_ptr
+                let extended = self.builder.build_cast(value, IrType::I32, IrType::I64)?;
+                let box_func_id = self.get_or_register_extern_function("haxe_box_int_ptr", vec![IrType::I64], ptr_u8.clone());
+                self.builder.build_call_direct(box_func_id, vec![extended], ptr_u8)
+            }
+            IrType::I64 => {
+                eprintln!("DEBUG: [EXTERN BOXING] Boxing I64 to Ptr(U8) for extern call");
+                let box_func_id = self.get_or_register_extern_function("haxe_box_int_ptr", vec![IrType::I64], ptr_u8.clone());
+                self.builder.build_call_direct(box_func_id, vec![value], ptr_u8)
+            }
+            IrType::Bool => {
+                eprintln!("DEBUG: [EXTERN BOXING] Boxing Bool to Ptr(U8) for extern call");
+                let box_func_id = self.get_or_register_extern_function("haxe_box_bool_ptr", vec![IrType::Bool], ptr_u8.clone());
+                self.builder.build_call_direct(box_func_id, vec![value], ptr_u8)
+            }
+            IrType::F32 => {
+                eprintln!("DEBUG: [EXTERN BOXING] Boxing F32 to Ptr(U8) for extern call");
+                // Promote f32 to f64
+                let promoted = self.builder.build_cast(value, IrType::F32, IrType::F64)?;
+                let box_func_id = self.get_or_register_extern_function("haxe_box_float_ptr", vec![IrType::F64], ptr_u8.clone());
+                self.builder.build_call_direct(box_func_id, vec![promoted], ptr_u8)
+            }
+            IrType::F64 => {
+                eprintln!("DEBUG: [EXTERN BOXING] Boxing F64 to Ptr(U8) for extern call");
+                let box_func_id = self.get_or_register_extern_function("haxe_box_float_ptr", vec![IrType::F64], ptr_u8.clone());
+                self.builder.build_call_direct(box_func_id, vec![value], ptr_u8)
+            }
+            // Already a pointer type - no boxing needed
+            IrType::Ptr(_) | IrType::String | IrType::Any => {
+                Some(value)
+            }
+            // Other types - pass through without boxing (may cause issues, but let's see)
+            _ => {
+                eprintln!("DEBUG: [EXTERN BOXING] Skipping boxing for type {:?}", actual_ty);
+                Some(value)
             }
         }
     }
