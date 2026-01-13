@@ -18,6 +18,100 @@
 //! ```
 
 use std::collections::HashMap;
+use crate::ir::IrType;
+
+// ============================================================================
+// Type Descriptors for Function Signatures
+// ============================================================================
+
+/// Compact type descriptor for function signatures.
+///
+/// This enum provides a const-compatible way to describe parameter and return types
+/// in the runtime mapping. Unlike `IrType`, these can be used in static/const contexts.
+///
+/// The goal is to eliminate hardcoded signature tables in `hir_to_mir.rs` by having
+/// all type information flow from the registration site (here) rather than being
+/// duplicated in lookup functions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IrTypeDescriptor {
+    /// void - no return value
+    Void,
+    /// bool - 1-bit boolean
+    Bool,
+    /// u8 - unsigned byte
+    U8,
+    /// i32 - 32-bit signed integer (Haxe Int)
+    I32,
+    /// i64 - 64-bit signed integer
+    I64,
+    /// u64 - 64-bit unsigned integer (raw value storage)
+    U64,
+    /// f32 - 32-bit float
+    F32,
+    /// f64 - 64-bit float (Haxe Float)
+    F64,
+    /// String - Haxe string value type
+    String,
+    /// Ptr(Void) - opaque pointer/handle (Thread, Channel, Mutex, etc.)
+    PtrVoid,
+    /// Ptr(U8) - byte pointer (*u8)
+    PtrU8,
+    /// Ptr(String) - string pointer reference
+    PtrString,
+    /// Ptr(I32) - pointer to i32
+    PtrI32,
+    /// Ptr(I64) - pointer to i64
+    PtrI64,
+}
+
+impl IrTypeDescriptor {
+    /// Convert to the full `IrType` used by MIR/codegen.
+    pub fn to_ir_type(&self) -> IrType {
+        match self {
+            IrTypeDescriptor::Void => IrType::Void,
+            IrTypeDescriptor::Bool => IrType::Bool,
+            IrTypeDescriptor::U8 => IrType::U8,
+            IrTypeDescriptor::I32 => IrType::I32,
+            IrTypeDescriptor::I64 => IrType::I64,
+            IrTypeDescriptor::U64 => IrType::U64,
+            IrTypeDescriptor::F32 => IrType::F32,
+            IrTypeDescriptor::F64 => IrType::F64,
+            IrTypeDescriptor::String => IrType::String,
+            IrTypeDescriptor::PtrVoid => IrType::Ptr(Box::new(IrType::Void)),
+            IrTypeDescriptor::PtrU8 => IrType::Ptr(Box::new(IrType::U8)),
+            IrTypeDescriptor::PtrString => IrType::Ptr(Box::new(IrType::String)),
+            IrTypeDescriptor::PtrI32 => IrType::Ptr(Box::new(IrType::I32)),
+            IrTypeDescriptor::PtrI64 => IrType::Ptr(Box::new(IrType::I64)),
+        }
+    }
+}
+
+// ============================================================================
+// Function Source Tracking
+// ============================================================================
+
+/// Indicates where a function comes from for proper handling during compilation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FunctionSource {
+    /// Built-in rayzor stdlib with Rust runtime implementation
+    Builtin,
+    /// MIR wrapper function that forwards to an extern
+    MirWrapper,
+    /// Direct extern C function (linked at runtime)
+    ExternC,
+    /// Hashlink HDLL dynamic library function
+    Hdll,
+}
+
+impl Default for FunctionSource {
+    fn default() -> Self {
+        FunctionSource::Builtin
+    }
+}
+
+// ============================================================================
+// Runtime Function Call Descriptor
+// ============================================================================
 
 /// Describes how to call a runtime function
 #[derive(Debug, Clone)]
@@ -59,6 +153,28 @@ pub struct RuntimeFunctionCall {
     /// This is a bitmask where bit N indicates parameter N should be extended.
     /// Used for IntMap key parameters which are Haxe Int (i32) but runtime expects i64.
     pub extend_to_i64_params: u32,
+
+    // ========================================================================
+    // NEW: Type information for eliminating hardcoded signature tables
+    // ========================================================================
+
+    /// Actual parameter types for this function.
+    /// When Some, this is the authoritative source of type information.
+    /// When None, falls back to legacy inference in hir_to_mir.rs.
+    pub param_types: Option<&'static [IrTypeDescriptor]>,
+
+    /// Actual return type for this function.
+    /// When Some, this is the authoritative source of return type.
+    /// When None, falls back to legacy inference in hir_to_mir.rs.
+    pub return_type: Option<IrTypeDescriptor>,
+
+    /// Whether this is a MIR wrapper function (vs direct extern C call).
+    /// MIR wrappers have full CFG and are compiled by Cranelift.
+    /// Extern C functions are linked at JIT time.
+    pub is_mir_wrapper: bool,
+
+    /// Where this function comes from (builtin, HDLL, etc.)
+    pub source: FunctionSource,
 }
 
 /// Method signature in Haxe stdlib
@@ -196,6 +312,70 @@ impl StdlibMapping {
         classes
     }
 
+    /// Find all classes that have a method with the given name (for Dynamic dispatch)
+    /// Returns a list of (class_name, signature, mapping) tuples
+    /// The results are ordered to prioritize more specific types dynamically:
+    /// - Classes without constructors (return-only types like MutexGuard) have highest priority
+    /// - Classes with fewer methods are more specific (MutexGuard < Arc)
+    pub fn find_classes_with_method(&self, method: &str) -> Vec<(&'static str, &MethodSignature, &RuntimeFunctionCall)> {
+        let mut results: Vec<_> = self.mappings.iter()
+            .filter(|(sig, _)| sig.method == method && !sig.is_static && !sig.is_constructor)
+            .map(|(sig, mapping)| (sig.class, sig, mapping))
+            .collect();
+
+        // Sort using dynamic priority based on class characteristics
+        results.sort_by(|a, b| {
+            self.class_priority(a.0).cmp(&self.class_priority(b.0))
+        });
+
+        results
+    }
+
+    /// Calculate priority for a class based on its characteristics in the mapping
+    /// Lower value = higher priority
+    /// - Return-only classes (no constructors) get highest priority (0-9)
+    /// - Classes with fewer methods are more specific (10-19)
+    /// - Everything else (20+)
+    fn class_priority(&self, class: &str) -> u32 {
+        // Check if class has any constructor mappings
+        let has_constructor = self.mappings.keys().any(|sig| sig.class == class && sig.is_constructor);
+
+        // Check if class has any static "init" or "new" factory methods
+        let has_factory = self.mappings.keys().any(|sig| {
+            sig.class == class && sig.is_static && (sig.method == "init" || sig.method == "new")
+        });
+
+        // Count total methods for this class (fewer = more specific)
+        let method_count = self.mappings.keys().filter(|sig| sig.class == class).count();
+
+        // Return-only types (can't be constructed, only returned from other methods)
+        // These should have highest priority as they can only exist from specific contexts
+        if !has_constructor && !has_factory {
+            return method_count.min(9) as u32;
+        }
+
+        // Types with constructors/factories but fewer methods
+        10 + method_count.min(9) as u32
+    }
+
+    /// Check if any stdlib class has a method with the given name
+    /// This is used to detect stdlib method calls on Dynamic receivers
+    pub fn any_class_has_method(&self, method: &str) -> bool {
+        self.mappings.keys().any(|sig| sig.method == method && !sig.is_static && !sig.is_constructor)
+    }
+
+    /// Get all monomorphized variants of a generic class (e.g., Vec -> VecI32, VecI64, etc.)
+    /// This is used for looking up methods on generic classes without type info
+    pub fn get_monomorphized_variants(&self, base_class: &str) -> Vec<&'static str> {
+        let mut variants: Vec<&'static str> = self.mappings.keys()
+            .filter(|sig| sig.class.starts_with(base_class) && sig.class != base_class)
+            .map(|sig| sig.class)
+            .collect();
+        variants.sort_unstable();
+        variants.dedup();
+        variants
+    }
+
     /// Find a constructor mapping for a class (method="new", is_constructor=true)
     /// Returns the MethodSignature and RuntimeFunctionCall if found
     pub fn find_constructor(&self, class: &str) -> Option<(&MethodSignature, &RuntimeFunctionCall)> {
@@ -208,6 +388,39 @@ impl StdlibMapping {
     /// Returns the RuntimeFunctionCall metadata if found
     pub fn find_by_runtime_name(&self, runtime_name: &str) -> Option<&RuntimeFunctionCall> {
         self.mappings.values().find(|call| call.runtime_name == runtime_name)
+    }
+
+    /// Get the function signature (param types, return type) for a runtime function.
+    /// Returns Some((params, return_type)) if the function has explicit type info,
+    /// None if the function uses legacy inference.
+    ///
+    /// This is the primary API for hir_to_mir.rs to query function signatures
+    /// without needing hardcoded lookup tables.
+    pub fn get_function_signature(&self, runtime_name: &str) -> Option<(Vec<IrType>, IrType)> {
+        let call = self.find_by_runtime_name(runtime_name)?;
+
+        // Check if this function has explicit type information
+        let param_types = call.param_types?;
+        let return_type = call.return_type?;
+
+        // Convert IrTypeDescriptor slices to Vec<IrType>
+        let params: Vec<IrType> = param_types.iter().map(|t| t.to_ir_type()).collect();
+        let ret = return_type.to_ir_type();
+
+        Some((params, ret))
+    }
+
+    /// Check if a runtime function is a MIR wrapper (vs direct extern).
+    /// MIR wrappers are compiled by Cranelift; externs are linked at JIT time.
+    pub fn is_mir_wrapper_function(&self, runtime_name: &str) -> bool {
+        self.find_by_runtime_name(runtime_name)
+            .map(|call| call.is_mir_wrapper)
+            .unwrap_or(false)
+    }
+
+    /// Get the source type of a runtime function.
+    pub fn get_function_source(&self, runtime_name: &str) -> Option<FunctionSource> {
+        self.find_by_runtime_name(runtime_name).map(|call| call.source)
     }
 
     /// Check if a class name is a generic stdlib class that requires monomorphization
@@ -243,20 +456,6 @@ impl StdlibMapping {
                 }
             }
             _ => None,
-        }
-    }
-
-    /// Get all monomorphized variants for a generic stdlib class
-    /// E.g., "Vec" -> ["VecI32", "VecI64", "VecF64", "VecPtr", "VecBool"]
-    pub fn get_monomorphized_variants(&self, class_name: &str) -> Vec<&'static str> {
-        match class_name {
-            "Vec" => {
-                vec!["VecI32", "VecI64", "VecF64", "VecPtr", "VecBool"]
-                    .into_iter()
-                    .filter(|v| self.is_stdlib_class(v))
-                    .collect()
-            }
-            _ => vec![],
         }
     }
 
@@ -308,6 +507,10 @@ macro_rules! map_method {
                 raw_value_params: 0,
                 returns_raw_value: false,
                 extend_to_i64_params: 0,
+                param_types: None,
+                return_type: None,
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
             }
         )
     };
@@ -333,6 +536,10 @@ macro_rules! map_method {
                 raw_value_params: 0,
                 returns_raw_value: false,
                 extend_to_i64_params: 0,
+                param_types: None,
+                return_type: None,
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
             }
         )
     };
@@ -357,6 +564,10 @@ macro_rules! map_method {
                 raw_value_params: 0,
                 returns_raw_value: false,
                 extend_to_i64_params: 0,
+                param_types: None,
+                return_type: None,
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
             }
         )
     };
@@ -382,6 +593,10 @@ macro_rules! map_method {
                 raw_value_params: 0,
                 returns_raw_value: false,
                 extend_to_i64_params: $extend_mask,
+                param_types: None,
+                return_type: None,
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
             }
         )
     };
@@ -407,6 +622,10 @@ macro_rules! map_method {
                 raw_value_params: 0,
                 returns_raw_value: true,
                 extend_to_i64_params: 0,
+                param_types: None,
+                return_type: None,
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
             }
         )
     };
@@ -432,6 +651,10 @@ macro_rules! map_method {
                 raw_value_params: 0,
                 returns_raw_value: true,
                 extend_to_i64_params: $extend_mask,
+                param_types: None,
+                return_type: None,
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
             }
         )
     };
@@ -456,6 +679,10 @@ macro_rules! map_method {
                 raw_value_params: 0,
                 returns_raw_value: false,
                 extend_to_i64_params: 0,
+                param_types: None,
+                return_type: None,
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
             }
         )
     };
@@ -480,6 +707,10 @@ macro_rules! map_method {
                 raw_value_params: 0,
                 returns_raw_value: false,
                 extend_to_i64_params: 0,
+                param_types: None,
+                return_type: None,
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
             }
         )
     };
@@ -504,6 +735,10 @@ macro_rules! map_method {
                 raw_value_params: 0,
                 returns_raw_value: false,
                 extend_to_i64_params: 0,
+                param_types: None,
+                return_type: None,
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
             }
         )
     };
@@ -528,6 +763,10 @@ macro_rules! map_method {
                 raw_value_params: 0,
                 returns_raw_value: false,
                 extend_to_i64_params: 0,
+                param_types: None,
+                return_type: None,
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
             }
         )
     };
@@ -552,6 +791,10 @@ macro_rules! map_method {
                 raw_value_params: $raw_mask,
                 returns_raw_value: false,
                 extend_to_i64_params: 0,
+                param_types: None,
+                return_type: None,
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
             }
         )
     };
@@ -577,6 +820,10 @@ macro_rules! map_method {
                 raw_value_params: $raw_mask,
                 returns_raw_value: false,
                 extend_to_i64_params: $extend_mask,
+                param_types: None,
+                return_type: None,
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
             }
         )
     };
@@ -601,6 +848,10 @@ macro_rules! map_method {
                 raw_value_params: 0,
                 returns_raw_value: false,
                 extend_to_i64_params: 0,
+                param_types: None,
+                return_type: None,
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
             }
         )
     };
@@ -625,6 +876,10 @@ macro_rules! map_method {
                 raw_value_params: 0,
                 returns_raw_value: false,
                 extend_to_i64_params: 0,
+                param_types: None,
+                return_type: None,
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
             }
         )
     };
@@ -649,6 +904,267 @@ macro_rules! map_method {
                 raw_value_params: 0,
                 returns_raw_value: false,
                 extend_to_i64_params: 0,
+                param_types: None,
+                return_type: None,
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
+            }
+        )
+    };
+
+    // ========================================================================
+    // TYPED VARIANTS - Include explicit type information for new extern system
+    // ========================================================================
+
+    // Instance method with explicit types - primitive return
+    // types: (&[...], ReturnType) - param types include self, return is the type
+    (instance $class:expr, $method:expr => $runtime:expr, params: $params:expr, returns: primitive, types: $param_types:expr => $ret_type:expr) => {
+        (
+            MethodSignature {
+                class: $class,
+                method: $method,
+                is_static: false,
+                is_constructor: false,
+                param_count: $params,
+            },
+            RuntimeFunctionCall {
+                runtime_name: $runtime,
+                needs_out_param: false,
+                has_self_param: true,
+                param_count: $params,
+                has_return: true,
+                params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
+                param_types: Some($param_types),
+                return_type: Some($ret_type),
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
+            }
+        )
+    };
+
+    // Instance method with explicit types - void return
+    (instance $class:expr, $method:expr => $runtime:expr, params: $params:expr, returns: void, types: $param_types:expr) => {
+        (
+            MethodSignature {
+                class: $class,
+                method: $method,
+                is_static: false,
+                is_constructor: false,
+                param_count: $params,
+            },
+            RuntimeFunctionCall {
+                runtime_name: $runtime,
+                needs_out_param: false,
+                has_self_param: true,
+                param_count: $params,
+                has_return: false,
+                params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
+                param_types: Some($param_types),
+                return_type: Some(IrTypeDescriptor::Void),
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
+            }
+        )
+    };
+
+    // Static method with explicit types - primitive return
+    (static $class:expr, $method:expr => $runtime:expr, params: $params:expr, returns: primitive, types: $param_types:expr => $ret_type:expr) => {
+        (
+            MethodSignature {
+                class: $class,
+                method: $method,
+                is_static: true,
+                is_constructor: false,
+                param_count: $params,
+            },
+            RuntimeFunctionCall {
+                runtime_name: $runtime,
+                needs_out_param: false,
+                has_self_param: false,
+                param_count: $params,
+                has_return: true,
+                params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
+                param_types: Some($param_types),
+                return_type: Some($ret_type),
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
+            }
+        )
+    };
+
+    // Constructor with explicit types - direct extern (returns handle directly)
+    (constructor $class:expr, $method:expr => $runtime:expr, params: $params:expr, returns: primitive, types: $param_types:expr => $ret_type:expr) => {
+        (
+            MethodSignature {
+                class: $class,
+                method: $method,
+                is_static: true,
+                is_constructor: true,
+                param_count: $params,
+            },
+            RuntimeFunctionCall {
+                runtime_name: $runtime,
+                needs_out_param: false,
+                has_self_param: false,
+                param_count: $params,
+                has_return: true,
+                params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
+                param_types: Some($param_types),
+                return_type: Some($ret_type),
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
+            }
+        )
+    };
+
+    // Constructor with explicit types - MIR wrapper (returns handle directly)
+    (constructor $class:expr, $method:expr => $runtime:expr, params: $params:expr, mir_wrapper, types: $param_types:expr => $ret_type:expr) => {
+        (
+            MethodSignature {
+                class: $class,
+                method: $method,
+                is_static: true,
+                is_constructor: true,
+                param_count: $params,
+            },
+            RuntimeFunctionCall {
+                runtime_name: $runtime,
+                needs_out_param: false,
+                has_self_param: false,
+                param_count: $params,
+                has_return: true,
+                params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
+                param_types: Some($param_types),
+                return_type: Some($ret_type),
+                is_mir_wrapper: true,
+                source: FunctionSource::MirWrapper,
+            }
+        )
+    };
+
+    // Instance method with explicit types - MIR wrapper primitive return
+    (instance $class:expr, $method:expr => $runtime:expr, params: $params:expr, mir_wrapper, types: $param_types:expr => $ret_type:expr) => {
+        (
+            MethodSignature {
+                class: $class,
+                method: $method,
+                is_static: false,
+                is_constructor: false,
+                param_count: $params,
+            },
+            RuntimeFunctionCall {
+                runtime_name: $runtime,
+                needs_out_param: false,
+                has_self_param: true,
+                param_count: $params,
+                has_return: true,
+                params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
+                param_types: Some($param_types),
+                return_type: Some($ret_type),
+                is_mir_wrapper: true,
+                source: FunctionSource::MirWrapper,
+            }
+        )
+    };
+
+    // Instance method with explicit types - MIR wrapper void return
+    (instance $class:expr, $method:expr => $runtime:expr, params: $params:expr, mir_wrapper, types: $param_types:expr) => {
+        (
+            MethodSignature {
+                class: $class,
+                method: $method,
+                is_static: false,
+                is_constructor: false,
+                param_count: $params,
+            },
+            RuntimeFunctionCall {
+                runtime_name: $runtime,
+                needs_out_param: false,
+                has_self_param: true,
+                param_count: $params,
+                has_return: false,
+                params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
+                param_types: Some($param_types),
+                return_type: Some(IrTypeDescriptor::Void),
+                is_mir_wrapper: true,
+                source: FunctionSource::MirWrapper,
+            }
+        )
+    };
+
+    // Static method with explicit types - MIR wrapper primitive return
+    (static $class:expr, $method:expr => $runtime:expr, params: $params:expr, mir_wrapper, types: $param_types:expr => $ret_type:expr) => {
+        (
+            MethodSignature {
+                class: $class,
+                method: $method,
+                is_static: true,
+                is_constructor: false,
+                param_count: $params,
+            },
+            RuntimeFunctionCall {
+                runtime_name: $runtime,
+                needs_out_param: false,
+                has_self_param: false,
+                param_count: $params,
+                has_return: true,
+                params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
+                param_types: Some($param_types),
+                return_type: Some($ret_type),
+                is_mir_wrapper: true,
+                source: FunctionSource::MirWrapper,
+            }
+        )
+    };
+
+    // Static method with explicit types - MIR wrapper void return
+    (static $class:expr, $method:expr => $runtime:expr, params: $params:expr, mir_wrapper, types: $param_types:expr) => {
+        (
+            MethodSignature {
+                class: $class,
+                method: $method,
+                is_static: true,
+                is_constructor: false,
+                param_count: $params,
+            },
+            RuntimeFunctionCall {
+                runtime_name: $runtime,
+                needs_out_param: false,
+                has_self_param: false,
+                param_count: $params,
+                has_return: false,
+                params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
+                param_types: Some($param_types),
+                return_type: Some(IrTypeDescriptor::Void),
+                is_mir_wrapper: true,
+                source: FunctionSource::MirWrapper,
             }
         )
     };
@@ -978,21 +1494,42 @@ impl StdlibMapping {
     // NOTE: Thread methods are implemented as MIR wrappers in compiler/src/stdlib/thread.rs
     // These are NOT extern functions - they are MIR functions that get merged into the module.
     // We register them here so the compiler knows they exist and can generate forward references.
+    //
+    // Type signatures are now explicitly declared using IrTypeDescriptor for the new extern system.
 
     fn register_thread_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
         let mappings = vec![
             // Thread::spawn<T>(f: Void -> T) -> Thread<T>
-            map_method!(static "Thread", "spawn" => "Thread_spawn", params: 1, returns: complex),
+            // MIR wrapper: takes closure (*u8), returns thread handle (*u8)
+            map_method!(static "Thread", "spawn" => "Thread_spawn", params: 1, mir_wrapper,
+                types: &[PtrU8] => PtrU8),
+
             // Thread<T>::join() -> T
-            map_method!(instance "Thread", "join" => "Thread_join", params: 0, returns: complex),
+            // MIR wrapper: takes thread handle (*u8), returns result (*u8 for Dynamic)
+            map_method!(instance "Thread", "join" => "Thread_join", params: 0, mir_wrapper,
+                types: &[PtrU8] => PtrU8),
+
             // Thread<T>::isFinished() -> Bool
-            map_method!(instance "Thread", "isFinished" => "Thread_isFinished", params: 0, returns: primitive),
+            // MIR wrapper: takes thread handle (*u8), returns bool
+            map_method!(instance "Thread", "isFinished" => "Thread_isFinished", params: 0, mir_wrapper,
+                types: &[PtrU8] => Bool),
+
             // Thread::sleep(millis: Int) -> Void
-            map_method!(static "Thread", "sleep" => "Thread_sleep", params: 1, returns: void),
+            // MIR wrapper: takes millis (i32), returns void
+            map_method!(static "Thread", "sleep" => "Thread_sleep", params: 1, mir_wrapper,
+                types: &[I32]),
+
             // Thread::yieldNow() -> Void
-            map_method!(static "Thread", "yieldNow" => "Thread_yieldNow", params: 0, returns: void),
+            // MIR wrapper: no params, returns void
+            map_method!(static "Thread", "yieldNow" => "Thread_yieldNow", params: 0, mir_wrapper,
+                types: &[]),
+
             // Thread::currentId() -> Int
-            map_method!(static "Thread", "currentId" => "Thread_currentId", params: 0, returns: primitive),
+            // MIR wrapper: no params, returns thread id (i64)
+            map_method!(static "Thread", "currentId" => "Thread_currentId", params: 0, mir_wrapper,
+                types: &[] => I64),
         ];
 
         self.register_from_tuples(mappings);
@@ -1470,20 +2007,32 @@ impl StdlibMapping {
     //
     // A Lock is essentially a semaphore initialized to 0.
     // release() increments, wait() decrements (blocking if 0).
+    //
+    // Type signatures explicitly declared for new extern system.
 
     fn register_sys_lock_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
         let mappings = vec![
             // Constructor: new Lock() -> Lock
-            // Creates a semaphore with initial value 0 via Lock_init wrapper
-            map_method!(constructor "sys_thread_Lock", "new" => "Lock_init", params: 0, returns: complex),
+            // MIR wrapper: creates semaphore with initial value 0, returns handle
+            map_method!(constructor "sys_thread_Lock", "new" => "Lock_init", params: 0, mir_wrapper,
+                types: &[] => PtrU8),
+
             // lock.wait() -> Bool (no timeout, blocks indefinitely until released)
-            // Uses Lock_wait MIR wrapper which calls rayzor_semaphore_acquire
-            map_method!(instance "sys_thread_Lock", "wait" => "Lock_wait", params: 0, returns: primitive),
+            // MIR wrapper: takes handle, always returns true
+            map_method!(instance "sys_thread_Lock", "wait" => "Lock_wait", params: 0, mir_wrapper,
+                types: &[PtrU8] => Bool),
+
             // lock.wait(timeout: Float) -> Bool (with timeout)
-            // Uses Lock_wait_timeout MIR wrapper which calls rayzor_semaphore_try_acquire
-            map_method!(instance "sys_thread_Lock", "wait" => "Lock_wait_timeout", params: 1, returns: primitive),
+            // MIR wrapper: takes handle + timeout (f64), returns true if acquired
+            map_method!(instance "sys_thread_Lock", "wait" => "Lock_wait_timeout", params: 1, mir_wrapper,
+                types: &[PtrU8, F64] => Bool),
+
             // lock.release() -> Void
-            map_method!(instance "sys_thread_Lock", "release" => "rayzor_semaphore_release", params: 0, returns: void),
+            // Direct extern call: takes handle
+            map_method!(instance "sys_thread_Lock", "release" => "rayzor_semaphore_release", params: 0, returns: void,
+                types: &[PtrU8]),
         ];
 
         self.register_from_tuples(mappings);
@@ -1492,21 +2041,37 @@ impl StdlibMapping {
     // ============================================================================
     // sys.thread.Semaphore Methods (standard Haxe semaphore API)
     // ============================================================================
+    //
+    // Type signatures explicitly declared for new extern system.
 
     fn register_sys_semaphore_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
         let mappings = vec![
             // Constructor: new Semaphore(value: Int) -> Semaphore
-            map_method!(constructor "sys_thread_Semaphore", "new" => "rayzor_semaphore_init", params: 1, returns: primitive),
+            // Direct extern: takes initial count (i32), returns handle
+            map_method!(constructor "sys_thread_Semaphore", "new" => "rayzor_semaphore_init", params: 1, returns: primitive,
+                types: &[I32] => PtrU8),
+
             // semaphore.acquire() -> Void
-            map_method!(instance "sys_thread_Semaphore", "acquire" => "rayzor_semaphore_acquire", params: 0, returns: void),
+            // Direct extern: takes handle, blocks until acquired
+            map_method!(instance "sys_thread_Semaphore", "acquire" => "rayzor_semaphore_acquire", params: 0, returns: void,
+                types: &[PtrU8]),
+
             // semaphore.tryAcquire() -> Bool (non-blocking, no timeout)
-            // Uses Semaphore_tryAcquire MIR wrapper which calls sys_semaphore_try_acquire_nowait
-            map_method!(instance "sys_thread_Semaphore", "tryAcquire" => "Semaphore_tryAcquire", params: 0, returns: primitive),
+            // MIR wrapper: takes handle, returns true if acquired
+            map_method!(instance "sys_thread_Semaphore", "tryAcquire" => "Semaphore_tryAcquire", params: 0, mir_wrapper,
+                types: &[PtrU8] => Bool),
+
             // semaphore.tryAcquire(timeout: Float) -> Bool (with timeout)
-            // Uses Semaphore_tryAcquire_timeout MIR wrapper which calls rayzor_semaphore_try_acquire
-            map_method!(instance "sys_thread_Semaphore", "tryAcquire" => "Semaphore_tryAcquire_timeout", params: 1, returns: primitive),
+            // MIR wrapper: takes handle + timeout (f64), returns true if acquired
+            map_method!(instance "sys_thread_Semaphore", "tryAcquire" => "Semaphore_tryAcquire_timeout", params: 1, mir_wrapper,
+                types: &[PtrU8, F64] => Bool),
+
             // semaphore.release() -> Void
-            map_method!(instance "sys_thread_Semaphore", "release" => "rayzor_semaphore_release", params: 0, returns: void),
+            // Direct extern: takes handle
+            map_method!(instance "sys_thread_Semaphore", "release" => "rayzor_semaphore_release", params: 0, returns: void,
+                types: &[PtrU8]),
         ];
 
         self.register_from_tuples(mappings);

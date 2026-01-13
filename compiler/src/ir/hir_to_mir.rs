@@ -1567,30 +1567,20 @@ impl<'a> HirToMirContext<'a> {
                 // Pattern: "rayzor.Vec.get" or "rayzor.concurrent.MutexGuard.get"
                 let parts: Vec<&str> = qname.split('.').collect();
                 if parts.len() >= 2 {
-                    // Check if second-to-last part is a known stdlib class
+                    // Check if second-to-last part is a stdlib class (dynamically from mapping)
                     if let Some(&class_name) = parts.iter().rev().nth(1) {
-                        // Try direct class name lookup for common stdlib classes
-                        let stdlib_classes = [
-                            "Vec", "VecI32", "VecI64", "VecF64", "VecPtr", "VecBool",
-                            "Arc", "Mutex", "MutexGuard", "Channel", "Thread",
-                            "Lock", "Semaphore", "Condition", "Deque",
-                        ];
+                        // First try direct class lookup
+                        if let Some((sig, mapping)) = self.stdlib_mapping.find_by_name(class_name, method_name) {
+                            eprintln!("DEBUG: [FALLBACK] Found {}.{} method via qualified name fallback", class_name, method_name);
+                            return Some((sig.class, sig.method, mapping));
+                        }
 
-                        if stdlib_classes.contains(&class_name) {
-                            // For Vec without type info, try variants
-                            if class_name == "Vec" {
-                                for variant in &["VecI32", "VecI64", "VecF64", "VecPtr", "VecBool"] {
-                                    if let Some((sig, mapping)) = self.stdlib_mapping.find_by_name(variant, method_name) {
-                                        eprintln!("DEBUG: [FALLBACK] Found Vec method {} in {} mapping", method_name, variant);
-                                        return Some((sig.class, sig.method, mapping));
-                                    }
-                                }
-                            } else {
-                                // Direct lookup for other stdlib classes
-                                if let Some((sig, mapping)) = self.stdlib_mapping.find_by_name(class_name, method_name) {
-                                    eprintln!("DEBUG: [FALLBACK] Found {}.{} method via qualified name fallback", class_name, method_name);
-                                    return Some((sig.class, sig.method, mapping));
-                                }
+                        // If not found, try monomorphized variants (e.g., Vec -> VecI32, VecI64, etc.)
+                        let variants = self.stdlib_mapping.get_monomorphized_variants(class_name);
+                        for variant in variants {
+                            if let Some((sig, mapping)) = self.stdlib_mapping.find_by_name(variant, method_name) {
+                                eprintln!("DEBUG: [FALLBACK] Found {}.{} method in {} variant", class_name, method_name, variant);
+                                return Some((sig.class, sig.method, mapping));
                             }
                         }
                     }
@@ -1775,6 +1765,14 @@ impl<'a> HirToMirContext<'a> {
     /// These signatures MUST match what's defined in compiler/src/stdlib/{thread,channel,sync}.rs
     /// Returns (param_types, return_type) or None if not a known MIR wrapper.
     fn get_stdlib_mir_wrapper_signature(&self, name: &str) -> Option<(Vec<IrType>, IrType)> {
+        // NEW: First try the runtime_mapping.rs type registry
+        // This is the new path for functions with explicit type information
+        if let Some(sig) = self.stdlib_mapping.get_function_signature(name) {
+            return Some(sig);
+        }
+
+        // LEGACY: Fall back to hardcoded match for functions not yet migrated
+        // TODO: Remove these once all functions have types in runtime_mapping.rs
         let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
         let i32_type = IrType::I32;
         let bool_type = IrType::Bool;
@@ -1782,23 +1780,6 @@ impl<'a> HirToMirContext<'a> {
         let void_type = IrType::Void;
 
         match name {
-            // Thread methods - all take/return pointers to opaque handles
-            "Thread_spawn" => Some((vec![ptr_u8.clone()], ptr_u8.clone())),  // (closure_obj) -> handle
-            "Thread_join" => Some((vec![ptr_u8.clone()], ptr_u8.clone())),    // (handle) -> result
-            "Thread_isFinished" => Some((vec![ptr_u8.clone()], bool_type)),   // (handle) -> bool
-            "Thread_sleep" => Some((vec![i32_type.clone()], void_type)),      // (millis) -> void
-            "Thread_yieldNow" => Some((vec![], void_type)),                   // () -> void
-            "Thread_currentId" => Some((vec![], u64_type)),                   // () -> id
-
-            // Lock MIR wrappers (backed by semaphore)
-            "Lock_init" => Some((vec![], ptr_u8.clone())),                    // () -> handle
-            "Lock_wait" => Some((vec![ptr_u8.clone()], bool_type)),           // (handle) -> bool
-            "Lock_wait_timeout" => Some((vec![ptr_u8.clone(), IrType::F64], bool_type)), // (handle, timeout) -> bool
-
-            // Semaphore MIR wrappers
-            "Semaphore_tryAcquire" => Some((vec![ptr_u8.clone()], bool_type)), // (handle) -> bool
-            "Semaphore_tryAcquire_timeout" => Some((vec![ptr_u8.clone(), IrType::F64], bool_type)), // (handle, timeout) -> bool
-
             // Channel methods
             "Channel_init" => Some((vec![i32_type.clone()], ptr_u8.clone())),       // (capacity) -> channel
             "Channel_send" => Some((vec![ptr_u8.clone(), ptr_u8.clone()], void_type)), // (channel, value) -> void
@@ -1901,6 +1882,14 @@ impl<'a> HirToMirContext<'a> {
     /// Get known signature for extern runtime functions (not MIR wrappers)
     /// This is used to override inferred types for functions like Math that need f64
     fn get_extern_function_signature(&self, name: &str) -> Option<(Vec<IrType>, IrType)> {
+        // NEW: First try the runtime_mapping.rs type registry
+        // This is the new path for functions with explicit type information
+        if let Some(sig) = self.stdlib_mapping.get_function_signature(name) {
+            return Some(sig);
+        }
+
+        // LEGACY: Fall back to hardcoded match for functions not yet migrated
+        // TODO: Remove these once all functions have types in runtime_mapping.rs
         let bool_type = IrType::Bool;
 
         match name {
@@ -1944,6 +1933,29 @@ impl<'a> HirToMirContext<'a> {
             "haxe_std_parse_int" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::I64)),
             "haxe_std_parse_float" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::F64)),
             "haxe_std_random" => Some((vec![IrType::I64], IrType::I64)),
+
+            // String instance methods - these take (string_ptr, ..args) and return various types
+            // The first param is always the receiver string pointer
+            "haxe_string_char_at_ptr" => Some((vec![IrType::Ptr(Box::new(IrType::String)), IrType::I32], IrType::Ptr(Box::new(IrType::String)))),
+            "haxe_string_char_code_at_ptr" => Some((vec![IrType::Ptr(Box::new(IrType::String)), IrType::I32], IrType::I32)),
+            "haxe_string_index_of_ptr" => Some((vec![IrType::Ptr(Box::new(IrType::String)), IrType::Ptr(Box::new(IrType::String))], IrType::I32)),
+            "haxe_string_index_of_ptr_offset" => Some((vec![IrType::Ptr(Box::new(IrType::String)), IrType::Ptr(Box::new(IrType::String)), IrType::I32], IrType::I32)),
+            "haxe_string_last_index_of_ptr" => Some((vec![IrType::Ptr(Box::new(IrType::String)), IrType::Ptr(Box::new(IrType::String))], IrType::I32)),
+            "haxe_string_last_index_of_ptr_offset" => Some((vec![IrType::Ptr(Box::new(IrType::String)), IrType::Ptr(Box::new(IrType::String)), IrType::I32], IrType::I32)),
+            "haxe_string_substr_ptr" => Some((vec![IrType::Ptr(Box::new(IrType::String)), IrType::I32, IrType::I32], IrType::Ptr(Box::new(IrType::String)))),
+            "haxe_string_substring_ptr" => Some((vec![IrType::Ptr(Box::new(IrType::String)), IrType::I32, IrType::I32], IrType::Ptr(Box::new(IrType::String)))),
+            "haxe_string_to_lower_case" => Some((vec![IrType::Ptr(Box::new(IrType::String))], IrType::Ptr(Box::new(IrType::String)))),
+            "haxe_string_to_upper_case" => Some((vec![IrType::Ptr(Box::new(IrType::String))], IrType::Ptr(Box::new(IrType::String)))),
+            "haxe_string_concat" => Some((vec![IrType::Ptr(Box::new(IrType::String)), IrType::Ptr(Box::new(IrType::String))], IrType::Ptr(Box::new(IrType::String)))),
+            "string_length" => Some((vec![IrType::Ptr(Box::new(IrType::String))], IrType::I32)),
+
+            // StringTools static methods - take (string, ..args)
+            "haxe_string_starts_with" => Some((vec![IrType::Ptr(Box::new(IrType::String)), IrType::Ptr(Box::new(IrType::String))], IrType::Bool)),
+            "haxe_string_ends_with" => Some((vec![IrType::Ptr(Box::new(IrType::String)), IrType::Ptr(Box::new(IrType::String))], IrType::Bool)),
+            "haxe_string_contains" => Some((vec![IrType::Ptr(Box::new(IrType::String)), IrType::Ptr(Box::new(IrType::String))], IrType::Bool)),
+            "haxe_string_replace" => Some((vec![IrType::Ptr(Box::new(IrType::String)), IrType::Ptr(Box::new(IrType::String)), IrType::Ptr(Box::new(IrType::String))], IrType::Ptr(Box::new(IrType::String)))),
+            "haxe_string_lpad" => Some((vec![IrType::Ptr(Box::new(IrType::String)), IrType::Ptr(Box::new(IrType::String)), IrType::I32], IrType::Ptr(Box::new(IrType::String)))),
+            "haxe_string_rpad" => Some((vec![IrType::Ptr(Box::new(IrType::String)), IrType::Ptr(Box::new(IrType::String)), IrType::I32], IrType::Ptr(Box::new(IrType::String)))),
 
             // File I/O functions (sys.io.File)
             "haxe_file_get_content" => Some((vec![IrType::Ptr(Box::new(IrType::Void))], IrType::Ptr(Box::new(IrType::Void)))),
@@ -2006,15 +2018,8 @@ impl<'a> HirToMirContext<'a> {
             "sys_mutex_try_acquire" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Bool)),
             "sys_mutex_release" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Void)),
 
-            // sys.thread.Lock wrapper
-            "sys_lock_wait" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Bool)),
-
-            // sys.thread.Semaphore functions
-            "sys_semaphore_try_acquire_nowait" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Bool)),
-            "rayzor_semaphore_init" => Some((vec![IrType::I32], IrType::Ptr(Box::new(IrType::U8)))),
-            "rayzor_semaphore_acquire" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Void)),
-            "rayzor_semaphore_try_acquire" => Some((vec![IrType::Ptr(Box::new(IrType::U8)), IrType::F64], IrType::Bool)),
-            "rayzor_semaphore_release" => Some((vec![IrType::Ptr(Box::new(IrType::U8))], IrType::Void)),
+            // sys.thread.Lock/Semaphore - migrated to runtime_mapping.rs with explicit types
+            // sys_lock_wait, rayzor_semaphore_* functions now use get_function_signature()
 
             // sys.thread.Deque functions
             "sys_deque_alloc" => Some((vec![], IrType::Ptr(Box::new(IrType::U8)))),
@@ -3342,46 +3347,26 @@ impl<'a> HirToMirContext<'a> {
                                     let method_name_str = self.symbol_table.get_symbol(*symbol)
                                         .and_then(|s| self.string_interner.get(s.name));
 
-                                    // For common stdlib methods like "get", "lock", "unlock", etc.,
-                                    // skip the generic Dynamic dispatch and let the stdlib-aware
-                                    // resolution handle it. This prevents incorrect method binding
-                                    // when multiple classes have methods with the same name.
-                                    let is_stdlib_method = method_name_str.map(|m| {
-                                        matches!(m, "get" | "lock" | "unlock" | "tryLock" | "send" |
-                                                 "receive" | "clone" | "init" | "spawn" | "join" |
-                                                 "wait" | "signal" | "broadcast" | "acquire" | "release" |
-                                                 "tryAcquire" | "add" | "push" | "pop")
-                                    }).unwrap_or(false);
+                                    // Check if any stdlib class has this method - use the mapping dynamically
+                                    // instead of hardcoding method names. This handles cases like:
+                                    // - MutexGuard.get() vs Arc.get() - both have "get" but are different
+                                    // - Mutex.lock() returning Dynamic typed as MutexGuard
+                                    let is_stdlib_method = method_name_str
+                                        .map(|m| self.stdlib_mapping.any_class_has_method(m))
+                                        .unwrap_or(false);
 
                                     if is_stdlib_method {
-                                        eprintln!("DEBUG: [DYNAMIC METHOD] Skipping generic dispatch for stdlib method '{:?}'", method_name_str);
-
-                                        // For stdlib methods on Dynamic receivers, try to find the method
-                                        // in known stdlib classes. This handles cases like:
-                                        // - MutexGuard.get() vs Arc.get() - both have "get" but are different
-                                        // - Mutex.lock() returning Dynamic typed as MutexGuard
-                                        //
-                                        // Priority order: MutexGuard, Arc, Mutex, Channel, Thread, etc.
-                                        // This ensures MutexGuard.get() is found before Arc.get() when
-                                        // the receiver came from Mutex.lock() (which returns MutexGuard)
-                                        let stdlib_classes_priority = [
-                                            "MutexGuard", "Arc", "Mutex", "Channel", "Thread",
-                                            "Lock", "Semaphore", "Condition", "Deque",
-                                        ];
-
                                         let method_name = method_name_str.unwrap();
-                                        let mut found_mapping = None;
+                                        eprintln!("DEBUG: [DYNAMIC METHOD] Found stdlib method '{}' in mapping", method_name);
 
-                                        // Try each stdlib class in priority order
-                                        for class_name in &stdlib_classes_priority {
-                                            if let Some((sig, mapping)) = self.stdlib_mapping.find_by_name(class_name, method_name) {
-                                                eprintln!("DEBUG: [DYNAMIC STDLIB] Found {}.{} -> {}", class_name, method_name, mapping.runtime_name);
-                                                found_mapping = Some((sig.class, sig.method, mapping));
-                                                break;
-                                            }
-                                        }
+                                        // Query the stdlib mapping for all classes that have this method.
+                                        // Results are sorted by priority (MutexGuard before Arc, etc.)
+                                        let matching_classes = self.stdlib_mapping.find_classes_with_method(method_name);
+                                        eprintln!("DEBUG: [DYNAMIC STDLIB] {} classes have method '{}'", matching_classes.len(), method_name);
 
-                                        if let Some((class_name, _method_name, runtime_call)) = found_mapping {
+                                        // Take the first match (highest priority class)
+                                        if let Some(&(class_name, _sig, runtime_call)) = matching_classes.first() {
+                                            eprintln!("DEBUG: [DYNAMIC STDLIB] Using {}.{} -> {}", class_name, method_name, runtime_call.runtime_name);
                                             let runtime_func = runtime_call.runtime_name;
 
                                             // Check if this is a MIR wrapper class
@@ -3508,197 +3493,15 @@ impl<'a> HirToMirContext<'a> {
                             }
                         }
 
-                        // SPECIAL CASE: Handle MutexGuard method calls (Deref-like semantics)
-                        // When calling a method on MutexGuard<T> that doesn't exist on MutexGuard,
-                        // we need to auto-call .get() to get the inner T and then call the method on T
-                        {
-                            let type_table = self.type_table.borrow();
-                            if let Some(type_info) = type_table.get(receiver_type) {
-                                // Check if receiver is MutexGuard class
-                                if let TypeKind::Class { symbol_id, .. } = &type_info.kind {
-                                    // Get class name from symbol
-                                    let is_mutex_guard = self.symbol_table.get_symbol(*symbol_id)
-                                        .and_then(|s| self.string_interner.get(s.name))
-                                        .map(|n| n == "MutexGuard")
-                                        .unwrap_or(false);
+                        // NOTE: MutexGuard method calls are handled through the general stdlib mechanism:
+                        // 1. Dynamic dispatch uses find_classes_with_method() with dynamic priority
+                        // 2. MutexGuard is prioritized (return-only type with no constructor)
+                        // 3. MutexGuard_get MIR wrapper is called via stdlib_mapping
 
-                                    if is_mutex_guard {
-                                        // Get the method name being called
-                                        let method_name = self.symbol_table.get_symbol(*symbol)
-                                            .and_then(|s| self.string_interner.get(s.name))
-                                            .map(|s| s.to_string());
-
-                                        // Check if this is a MutexGuard method (get, unlock) or an inner type method
-                                        let is_mutex_guard_method = method_name.as_ref()
-                                            .map(|n| n == "get" || n == "unlock")
-                                            .unwrap_or(false);
-
-                                        if !is_mutex_guard_method {
-                                            // Not a MutexGuard method - need to call .get() first
-                                            eprintln!("DEBUG: [MUTEX_GUARD DEREF] Calling .get() before method '{}' on MutexGuard",
-                                                     method_name.as_deref().unwrap_or("?"));
-
-                                            drop(type_table);
-
-                                            // Lower the MutexGuard receiver
-                                            let guard_reg = self.lower_expression(&args[0])?;
-
-                                            // Call MutexGuard_get to get the inner value
-                                            // First find the MutexGuard_get function
-                                            let mut guard_get_func = None;
-                                            for (sym, &func_id) in &self.function_map {
-                                                if let Some(sym_info) = self.symbol_table.get_symbol(*sym) {
-                                                    if let Some(name) = self.string_interner.get(sym_info.name) {
-                                                        if name == "MutexGuard_get" || name == "get" {
-                                                            // Check if this is for MutexGuard
-                                                            guard_get_func = Some(func_id);
-                                                            break;
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            // Also try stdlib mapping
-                                            if guard_get_func.is_none() {
-                                                if let Some((_sig, mapping)) = self.stdlib_mapping.find_by_name("MutexGuard", "get") {
-                                                    let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
-                                                    guard_get_func = Some(self.get_or_register_extern_function(
-                                                        mapping.runtime_name,
-                                                        vec![ptr_u8.clone()],
-                                                        ptr_u8,
-                                                    ));
-                                                }
-                                            }
-
-                                            if let Some(get_func_id) = guard_get_func {
-                                                // Call .get() to get the inner value
-                                                let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
-                                                let inner_value = self.builder.build_call_direct(
-                                                    get_func_id,
-                                                    vec![guard_reg],
-                                                    ptr_u8,
-                                                )?;
-
-                                                // Now call the actual method on the inner value
-                                                // Lower the rest of arguments (skip receiver at index 0)
-                                                let arg_regs: Vec<_> = std::iter::once(inner_value)
-                                                    .chain(args[1..].iter().filter_map(|a| self.lower_expression(a)))
-                                                    .collect();
-
-                                                // Get the method function ID (local or external)
-                                                if let Some(func_id) = self.get_function_id(symbol) {
-                                                    let actual_return_type = if let Some(func) = self.builder.module.functions.get(&func_id) {
-                                                        func.signature.return_type.clone()
-                                                    } else {
-                                                        result_type.clone()
-                                                    };
-
-                                                    return self.builder.build_call_direct(func_id, arg_regs, actual_return_type);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // SPECIAL CASE: Handle String method calls
-                        // String methods like toUpperCase(), toLowerCase() need special routing
-                        {
-                            let type_table = self.type_table.borrow();
-                            if let Some(type_info) = type_table.get(receiver_type) {
-                                if matches!(type_info.kind, TypeKind::String) {
-                                    // Get the method name
-                                    let method_name = self.symbol_table.get_symbol(*symbol)
-                                        .and_then(|s| self.string_interner.get(s.name));
-
-                                    if let Some(method_name) = method_name {
-                                        // For String methods with optional params (indexOf, lastIndexOf),
-                                        // look up the mapping by param count (args[1..] is the method args)
-                                        let arg_count = args.len().saturating_sub(1); // Exclude receiver
-                                        eprintln!("DEBUG: [String arg_count] method={}, args.len()={}, arg_count={}", method_name, args.len(), arg_count);
-                                        let mapping_opt = self.stdlib_mapping
-                                            .find_by_name_and_params("String", method_name, arg_count)
-                                            .or_else(|| self.stdlib_mapping.find_by_name("String", method_name));
-
-                                        // Look up the runtime function for this String method
-                                        if let Some((_sig, mapping)) = mapping_opt {
-                                            let runtime_func = mapping.runtime_name;
-
-                                            eprintln!("DEBUG: [STRING METHOD] Variable path - Found String.{} -> {}",
-                                                     method_name, runtime_func);
-
-                                            drop(type_table);
-
-                                            // Lower the receiver (the String pointer, which is args[0])
-                                            let obj_reg = self.lower_expression(&args[0])?;
-
-                                            // Lower the method arguments (skip the receiver at index 0)
-                                            let method_arg_regs: Vec<_> = args[1..]
-                                                .iter()
-                                                .filter_map(|a| self.lower_expression(a))
-                                                .collect();
-
-                                            // Build param types: string_ptr, ...args
-                                            // Use TAST expression types for accuracy
-                                            let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
-                                            let mut param_types = vec![string_ptr_ty.clone()];
-                                            for (i, arg) in args[1..].iter().enumerate() {
-                                                // Get type from TAST expression
-                                                let arg_ty = self.convert_type(arg.ty);
-                                                // For String args, convert to Ptr(String)
-                                                let param_ty = if arg_ty == IrType::String {
-                                                    string_ptr_ty.clone()
-                                                } else {
-                                                    // Fall back to register type if TAST gives us something unusual
-                                                    if matches!(arg_ty, IrType::Any | IrType::Void) {
-                                                        method_arg_regs.get(i)
-                                                            .and_then(|r| self.builder.get_register_type(*r))
-                                                            .unwrap_or(IrType::I32)
-                                                    } else {
-                                                        arg_ty
-                                                    }
-                                                };
-                                                param_types.push(param_ty);
-                                            }
-
-                                            // Determine return type based on method
-                                            // Methods that return Int (i32): length, charCodeAt, indexOf, lastIndexOf
-                                            // Methods that return String (Ptr<String>): charAt, substr, substring, toLowerCase, toUpperCase, toString
-                                            // Methods that return Array (Ptr<Void>): split
-                                            let return_type = match method_name {
-                                                "length" | "charCodeAt" | "indexOf" | "lastIndexOf" => IrType::I32,
-                                                "split" => {
-                                                    // split returns Array<String>, convert to Ptr(Void)
-                                                    IrType::Ptr(Box::new(IrType::Void))
-                                                }
-                                                _ => string_ptr_ty.clone(),
-                                            };
-
-                                            let runtime_func_id = self.get_or_register_extern_function(
-                                                runtime_func,
-                                                param_types,
-                                                return_type.clone(),
-                                            );
-
-                                            let mut call_args = vec![obj_reg];
-                                            call_args.extend(method_arg_regs);
-
-                                            return self.builder.build_call_direct(
-                                                runtime_func_id,
-                                                call_args,
-                                                return_type,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // eprintln!(
-                        //     "DEBUG: Instance method path - receiver_type={:?}",
-                        //     receiver_type
-                        // );
+                        // NOTE: String method calls are handled through the general stdlib mechanism:
+                        // 1. get_stdlib_runtime_info() maps TypeKind::String to class name "String"
+                        // 2. stdlib_mapping lookup finds the correct runtime function
+                        // 3. The general path handles param types and return types
 
                         // PRIORITY CHECK: For extern generic classes like Vec<T>, the receiver type
                         // may be TypeId::MAX (invalid). In this case, try to use the tracked
@@ -3776,10 +3579,10 @@ impl<'a> HirToMirContext<'a> {
                                         self.symbol_table.get_symbol(*symbol_id)
                                             .and_then(|s| self.string_interner.get(s.name))
                                             .map(|name| {
-                                                // Check if it's Thread/Channel/Mutex/Arc/String
-                                                let is_mir_wrapper = ["Thread", "Channel", "Mutex", "MutexGuard", "Arc", "String"].contains(&name);
+                                                // Use dynamic check via stdlib_mapping instead of hardcoded list
+                                                let is_mir_wrapper = self.stdlib_mapping.is_mir_wrapper_class(name);
                                                 if is_mir_wrapper {
-                                                    eprintln!("DEBUG: [GUARD] Receiver type is {} class, skipping instance method path", name);
+                                                    eprintln!("DEBUG: [GUARD] Receiver type is {} class (MIR wrapper), skipping instance method path", name);
                                                 }
                                                 is_mir_wrapper
                                             })
@@ -4729,8 +4532,9 @@ impl<'a> HirToMirContext<'a> {
 
                                             // Check if this is a rayzor.concurrent.* class (NOT sys.thread.*)
                                             // sys.thread.Thread uses runtime mapping directly, not MIR wrappers
+                                            // Use dynamic check via stdlib_mapping instead of hardcoded list
                                             let is_rayzor_concurrent = qual_name_str.starts_with("rayzor.concurrent.");
-                                            if is_rayzor_concurrent && ["Thread", "Channel", "Mutex", "Arc"].contains(&class_name) {
+                                            if is_rayzor_concurrent && self.stdlib_mapping.is_mir_wrapper_class(class_name) {
                                                 // Use capitalized class names for rayzor.concurrent (Thread, Channel, etc.)
                                                 let mir_func_name = format!("{}_{}", class_name, method_name);
                                                 eprintln!("DEBUG: [STDLIB MIR] Detected stdlib MIR function: {}, args.len()={}", mir_func_name, args.len());
