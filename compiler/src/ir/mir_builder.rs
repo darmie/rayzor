@@ -552,12 +552,14 @@ impl MirBuilder {
         });
     }
 
-    /// Mark a function as extern by clearing its CFG blocks and setting External linkage
+    /// Mark a function as extern by clearing its CFG blocks, setting External linkage,
+    /// and setting FunctionKind to ExternC.
     /// This is used for runtime intrinsics like malloc/realloc/free and extern C functions
     pub fn mark_as_extern(&mut self, func_id: IrFunctionId) {
         if let Some(func) = self.module.functions.get_mut(&func_id) {
             func.cfg.blocks.clear();
             func.attributes.linkage = crate::ir::Linkage::External;
+            func.kind = crate::ir::functions::FunctionKind::ExternC;
         }
     }
 
