@@ -234,16 +234,6 @@ pub fn parse_haxe_file_with_diagnostics(file_name: &str, input: &str) -> Result<
     let preprocessor_config = crate::preprocessor::PreprocessorConfig::default();
     let preprocessed_source = crate::preprocessor::preprocess(input, &preprocessor_config);
 
-    // Debug: check if haxe.io.Bytes got the typedef
-    if file_name.contains("Bytes") && file_name.contains("haxe") {
-        eprintln!("DEBUG [parse_haxe_file_with_diagnostics] file={}", file_name);
-        if preprocessed_source.contains("typedef Bytes") {
-            eprintln!("DEBUG [parse_haxe_file_with_diagnostics] ✅ Contains 'typedef Bytes'");
-        } else if preprocessed_source.contains("class Bytes") {
-            eprintln!("DEBUG [parse_haxe_file_with_diagnostics] ❌ Contains 'class Bytes'");
-        }
-    }
-
     // Check if this is an import.hx file
     let is_import_file = file_name.ends_with("import.hx") || file_name.ends_with("/import.hx") || file_name == "import.hx";
 
