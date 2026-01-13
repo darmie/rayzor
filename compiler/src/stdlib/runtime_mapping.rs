@@ -235,6 +235,8 @@ impl StdlibMapping {
         mapping.register_sys_semaphore_methods();
         mapping.register_sys_deque_methods();
         mapping.register_sys_condition_methods();
+        // Boxing/unboxing and other internal extern functions
+        mapping.register_internal_extern_functions();
 
         mapping
     }
@@ -1168,6 +1170,62 @@ macro_rules! map_method {
             }
         )
     };
+
+    // Static method with explicit types - void return (direct extern)
+    (static $class:expr, $method:expr => $runtime:expr, params: $params:expr, returns: void, types: $param_types:expr) => {
+        (
+            MethodSignature {
+                class: $class,
+                method: $method,
+                is_static: true,
+                is_constructor: false,
+                param_count: $params,
+            },
+            RuntimeFunctionCall {
+                runtime_name: $runtime,
+                needs_out_param: false,
+                has_self_param: false,
+                param_count: $params,
+                has_return: false,
+                params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
+                param_types: Some($param_types),
+                return_type: Some(IrTypeDescriptor::Void),
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
+            }
+        )
+    };
+
+    // Static method with explicit types - complex return (needs out param, direct extern)
+    (static $class:expr, $method:expr => $runtime:expr, params: $params:expr, returns: complex, types: $param_types:expr => $ret_type:expr) => {
+        (
+            MethodSignature {
+                class: $class,
+                method: $method,
+                is_static: true,
+                is_constructor: false,
+                param_count: $params,
+            },
+            RuntimeFunctionCall {
+                runtime_name: $runtime,
+                needs_out_param: true,
+                has_self_param: false,
+                param_count: $params,
+                has_return: true,
+                params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
+                param_types: Some($param_types),
+                return_type: Some($ret_type),
+                is_mir_wrapper: false,
+                source: FunctionSource::Builtin,
+            }
+        )
+    };
 }
 
 impl StdlibMapping {
@@ -1182,39 +1240,59 @@ impl StdlibMapping {
     // ============================================================================
 
     fn register_string_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
         let mappings = vec![
             // Static methods
-            map_method!(static "String", "fromCharCode" => "haxe_string_from_char_code", params: 1, returns: primitive),
+            map_method!(static "String", "fromCharCode" => "haxe_string_from_char_code", params: 1, returns: primitive,
+                types: &[I32] => PtrString),
 
             // Properties (treated as getters with 0 params)
-            map_method!(instance "String", "length" => "string_length", params: 0, returns: primitive),
+            map_method!(instance "String", "length" => "string_length", params: 0, returns: primitive,
+                types: &[PtrString] => I32),
 
             // Instance methods - character access
             // charAt returns String pointer (empty string for out of bounds)
-            map_method!(instance "String", "charAt" => "haxe_string_char_at_ptr", params: 1, returns: primitive),
-            // charCodeAt returns Null<Int> (-1 for out of bounds, which we represent as i64)
-            map_method!(instance "String", "charCodeAt" => "haxe_string_char_code_at_ptr", params: 1, returns: primitive),
+            map_method!(instance "String", "charAt" => "haxe_string_char_at_ptr", params: 1, returns: primitive,
+                types: &[PtrString, I32] => PtrString),
+            // charCodeAt returns Null<Int> (-1 for out of bounds, which we represent as i32)
+            map_method!(instance "String", "charCodeAt" => "haxe_string_char_code_at_ptr", params: 1, returns: primitive,
+                types: &[PtrString, I32] => I32),
             // cca is an internal alias for charCodeAt used in StringTools.unsafeCodeAt
-            map_method!(instance "String", "cca" => "haxe_string_char_code_at_ptr", params: 1, returns: primitive),
+            map_method!(instance "String", "cca" => "haxe_string_char_code_at_ptr", params: 1, returns: primitive,
+                types: &[PtrString, I32] => I32),
 
             // Search operations
             // indexOf and lastIndexOf have optional startIndex parameter, so we have two mappings each:
             // - 1-arg versions use MIR wrappers that provide default startIndex (0 for indexOf, -1 for lastIndexOf)
             // - 2-arg versions use MIR wrappers that forward the explicit startIndex
             // The caller uses find_by_name_and_params() to select the right mapping based on arg count
-            map_method!(instance "String", "indexOf" => "String_indexOf", params: 1, returns: primitive),
-            map_method!(instance "String", "indexOf" => "String_indexOf_2", params: 2, returns: primitive),
-            map_method!(instance "String", "lastIndexOf" => "String_lastIndexOf", params: 1, returns: primitive),
-            map_method!(instance "String", "lastIndexOf" => "String_lastIndexOf_2", params: 2, returns: primitive),
+            map_method!(instance "String", "indexOf" => "String_indexOf", params: 1, mir_wrapper,
+                types: &[PtrString, PtrString] => I32),
+            map_method!(instance "String", "indexOf" => "String_indexOf_2", params: 2, mir_wrapper,
+                types: &[PtrString, PtrString, I32] => I32),
+            map_method!(instance "String", "lastIndexOf" => "String_lastIndexOf", params: 1, mir_wrapper,
+                types: &[PtrString, PtrString] => I32),
+            map_method!(instance "String", "lastIndexOf" => "String_lastIndexOf_2", params: 2, mir_wrapper,
+                types: &[PtrString, PtrString, I32] => I32),
 
             // String transformations
-            map_method!(instance "String", "split" => "haxe_string_split_array", params: 1, returns: primitive),
-            map_method!(instance "String", "substr" => "haxe_string_substr_ptr", params: 2, returns: primitive),
-            map_method!(instance "String", "substring" => "haxe_string_substring_ptr", params: 2, returns: primitive),
+            map_method!(instance "String", "split" => "haxe_string_split_array", params: 1, returns: primitive,
+                types: &[PtrString, PtrString] => PtrVoid),
+            map_method!(instance "String", "substr" => "haxe_string_substr_ptr", params: 2, returns: primitive,
+                types: &[PtrString, I32, I32] => PtrString),
+            map_method!(instance "String", "substring" => "haxe_string_substring_ptr", params: 2, returns: primitive,
+                types: &[PtrString, I32, I32] => PtrString),
             // toLowerCase/toUpperCase use pointer-returning wrapper functions (not out-param style)
-            map_method!(instance "String", "toLowerCase" => "haxe_string_lower", params: 0, returns: primitive),
-            map_method!(instance "String", "toUpperCase" => "haxe_string_upper", params: 0, returns: primitive),
-            map_method!(instance "String", "toString" => "haxe_string_copy", params: 0, returns: primitive),
+            map_method!(instance "String", "toLowerCase" => "haxe_string_lower", params: 0, returns: primitive,
+                types: &[PtrString] => PtrString),
+            map_method!(instance "String", "toUpperCase" => "haxe_string_upper", params: 0, returns: primitive,
+                types: &[PtrString] => PtrString),
+            map_method!(instance "String", "toString" => "haxe_string_copy", params: 0, returns: primitive,
+                types: &[PtrString] => PtrString),
+            // concat for string concatenation
+            map_method!(instance "String", "concat" => "haxe_string_concat", params: 1, returns: primitive,
+                types: &[PtrString, PtrString] => PtrString),
         ];
 
         self.register_from_tuples(mappings);
@@ -1231,21 +1309,29 @@ impl StdlibMapping {
     // These are all static methods that take (String, ...) and return Bool/Int/String.
 
     fn register_stringtools_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
         let mappings = vec![
             // StringTools.startsWith(s: String, start: String) -> Bool
-            map_method!(static "StringTools", "startsWith" => "haxe_string_starts_with", params: 2, returns: primitive),
+            map_method!(static "StringTools", "startsWith" => "haxe_string_starts_with", params: 2, returns: primitive,
+                types: &[PtrString, PtrString] => Bool),
             // StringTools.endsWith(s: String, end: String) -> Bool
-            map_method!(static "StringTools", "endsWith" => "haxe_string_ends_with", params: 2, returns: primitive),
+            map_method!(static "StringTools", "endsWith" => "haxe_string_ends_with", params: 2, returns: primitive,
+                types: &[PtrString, PtrString] => Bool),
             // StringTools.contains(s: String, search: String) -> Bool
-            map_method!(static "StringTools", "contains" => "haxe_string_contains", params: 2, returns: primitive),
+            map_method!(static "StringTools", "contains" => "haxe_string_contains", params: 2, returns: primitive,
+                types: &[PtrString, PtrString] => Bool),
             // StringTools.trim, ltrim, rtrim, isSpace are implemented in Haxe, don't map to runtime
             // They use charCodeAt, substr, etc. which ARE mapped
             // StringTools.replace(s: String, sub: String, by: String) -> String
-            map_method!(static "StringTools", "replace" => "haxe_string_replace", params: 3, returns: primitive),
+            map_method!(static "StringTools", "replace" => "haxe_string_replace", params: 3, returns: primitive,
+                types: &[PtrString, PtrString, PtrString] => PtrString),
             // StringTools.lpad(s: String, c: String, l: Int) -> String
-            map_method!(static "StringTools", "lpad" => "haxe_string_lpad", params: 3, returns: primitive),
+            map_method!(static "StringTools", "lpad" => "haxe_string_lpad", params: 3, returns: primitive,
+                types: &[PtrString, PtrString, I32] => PtrString),
             // StringTools.rpad(s: String, c: String, l: Int) -> String
-            map_method!(static "StringTools", "rpad" => "haxe_string_rpad", params: 3, returns: primitive),
+            map_method!(static "StringTools", "rpad" => "haxe_string_rpad", params: 3, returns: primitive,
+                types: &[PtrString, PtrString, I32] => PtrString),
         ];
 
         self.register_from_tuples(mappings);
@@ -1296,34 +1382,58 @@ impl StdlibMapping {
     // ============================================================================
 
     fn register_math_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
         let mappings = vec![
-            // Basic operations
-            map_method!(static "Math", "abs" => "haxe_math_abs", params: 1, returns: primitive),
-            map_method!(static "Math", "min" => "haxe_math_min", params: 2, returns: primitive),
-            map_method!(static "Math", "max" => "haxe_math_max", params: 2, returns: primitive),
-            map_method!(static "Math", "floor" => "haxe_math_floor", params: 1, returns: primitive),
-            map_method!(static "Math", "ceil" => "haxe_math_ceil", params: 1, returns: primitive),
-            map_method!(static "Math", "round" => "haxe_math_round", params: 1, returns: primitive),
+            // Basic operations - all work with f64
+            map_method!(static "Math", "abs" => "haxe_math_abs", params: 1, returns: primitive,
+                types: &[F64] => F64),
+            map_method!(static "Math", "min" => "haxe_math_min", params: 2, returns: primitive,
+                types: &[F64, F64] => F64),
+            map_method!(static "Math", "max" => "haxe_math_max", params: 2, returns: primitive,
+                types: &[F64, F64] => F64),
+            map_method!(static "Math", "floor" => "haxe_math_floor", params: 1, returns: primitive,
+                types: &[F64] => F64),
+            map_method!(static "Math", "ceil" => "haxe_math_ceil", params: 1, returns: primitive,
+                types: &[F64] => F64),
+            map_method!(static "Math", "round" => "haxe_math_round", params: 1, returns: primitive,
+                types: &[F64] => F64),
+            map_method!(static "Math", "fround" => "haxe_math_fround", params: 1, returns: primitive,
+                types: &[F64] => F64),
 
             // Trigonometric
-            map_method!(static "Math", "sin" => "haxe_math_sin", params: 1, returns: primitive),
-            map_method!(static "Math", "cos" => "haxe_math_cos", params: 1, returns: primitive),
-            map_method!(static "Math", "tan" => "haxe_math_tan", params: 1, returns: primitive),
-            map_method!(static "Math", "asin" => "haxe_math_asin", params: 1, returns: primitive),
-            map_method!(static "Math", "acos" => "haxe_math_acos", params: 1, returns: primitive),
-            map_method!(static "Math", "atan" => "haxe_math_atan", params: 1, returns: primitive),
-            map_method!(static "Math", "atan2" => "haxe_math_atan2", params: 2, returns: primitive),
+            map_method!(static "Math", "sin" => "haxe_math_sin", params: 1, returns: primitive,
+                types: &[F64] => F64),
+            map_method!(static "Math", "cos" => "haxe_math_cos", params: 1, returns: primitive,
+                types: &[F64] => F64),
+            map_method!(static "Math", "tan" => "haxe_math_tan", params: 1, returns: primitive,
+                types: &[F64] => F64),
+            map_method!(static "Math", "asin" => "haxe_math_asin", params: 1, returns: primitive,
+                types: &[F64] => F64),
+            map_method!(static "Math", "acos" => "haxe_math_acos", params: 1, returns: primitive,
+                types: &[F64] => F64),
+            map_method!(static "Math", "atan" => "haxe_math_atan", params: 1, returns: primitive,
+                types: &[F64] => F64),
+            map_method!(static "Math", "atan2" => "haxe_math_atan2", params: 2, returns: primitive,
+                types: &[F64, F64] => F64),
 
             // Exponential and logarithmic
-            map_method!(static "Math", "exp" => "haxe_math_exp", params: 1, returns: primitive),
-            map_method!(static "Math", "log" => "haxe_math_log", params: 1, returns: primitive),
-            map_method!(static "Math", "pow" => "haxe_math_pow", params: 2, returns: primitive),
-            map_method!(static "Math", "sqrt" => "haxe_math_sqrt", params: 1, returns: primitive),
+            map_method!(static "Math", "exp" => "haxe_math_exp", params: 1, returns: primitive,
+                types: &[F64] => F64),
+            map_method!(static "Math", "log" => "haxe_math_log", params: 1, returns: primitive,
+                types: &[F64] => F64),
+            map_method!(static "Math", "pow" => "haxe_math_pow", params: 2, returns: primitive,
+                types: &[F64, F64] => F64),
+            map_method!(static "Math", "sqrt" => "haxe_math_sqrt", params: 1, returns: primitive,
+                types: &[F64] => F64),
 
             // Special
-            map_method!(static "Math", "isNaN" => "haxe_math_is_nan", params: 1, returns: primitive),
-            map_method!(static "Math", "isFinite" => "haxe_math_is_finite", params: 1, returns: primitive),
-            map_method!(static "Math", "random" => "haxe_math_random", params: 0, returns: primitive),
+            map_method!(static "Math", "isNaN" => "haxe_math_is_nan", params: 1, returns: primitive,
+                types: &[F64] => Bool),
+            map_method!(static "Math", "isFinite" => "haxe_math_is_finite", params: 1, returns: primitive,
+                types: &[F64] => Bool),
+            map_method!(static "Math", "random" => "haxe_math_random", params: 0, returns: primitive,
+                types: &[] => F64),
         ];
 
         self.register_from_tuples(mappings);
@@ -1334,29 +1444,46 @@ impl StdlibMapping {
     // ============================================================================
 
     fn register_sys_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
         let mappings = vec![
             // I/O
-            map_method!(static "Sys", "print" => "haxe_string_print", params: 1, returns: void),
-            map_method!(static "Sys", "println" => "haxe_sys_println", params: 0, returns: void),
+            map_method!(static "Sys", "print" => "haxe_string_print", params: 1, returns: void,
+                types: &[PtrVoid]),
+            map_method!(static "Sys", "println" => "haxe_sys_println", params: 0, returns: void,
+                types: &[]),
             // Program control
-            map_method!(static "Sys", "exit" => "haxe_sys_exit", params: 1, returns: void),
-            map_method!(static "Sys", "time" => "haxe_sys_time", params: 0, returns: primitive),
-            map_method!(static "Sys", "cpuTime" => "haxe_sys_cpu_time", params: 0, returns: primitive),
+            map_method!(static "Sys", "exit" => "haxe_sys_exit", params: 1, returns: void,
+                types: &[I64]),
+            map_method!(static "Sys", "time" => "haxe_sys_time", params: 0, returns: primitive,
+                types: &[] => F64),
+            map_method!(static "Sys", "cpuTime" => "haxe_sys_cpu_time", params: 0, returns: primitive,
+                types: &[] => F64),
             // Environment
-            map_method!(static "Sys", "getEnv" => "haxe_sys_get_env", params: 1, returns: complex),
-            map_method!(static "Sys", "putEnv" => "haxe_sys_put_env", params: 2, returns: void),
+            map_method!(static "Sys", "getEnv" => "haxe_sys_get_env", params: 1, returns: complex,
+                types: &[PtrVoid] => PtrVoid),
+            map_method!(static "Sys", "putEnv" => "haxe_sys_put_env", params: 2, returns: void,
+                types: &[PtrVoid, PtrVoid]),
             // Working directory
-            map_method!(static "Sys", "getCwd" => "haxe_sys_get_cwd", params: 0, returns: complex),
-            map_method!(static "Sys", "setCwd" => "haxe_sys_set_cwd", params: 1, returns: void),
+            map_method!(static "Sys", "getCwd" => "haxe_sys_get_cwd", params: 0, returns: complex,
+                types: &[] => PtrVoid),
+            map_method!(static "Sys", "setCwd" => "haxe_sys_set_cwd", params: 1, returns: void,
+                types: &[PtrVoid]),
             // Sleep
-            map_method!(static "Sys", "sleep" => "haxe_sys_sleep", params: 1, returns: void),
+            map_method!(static "Sys", "sleep" => "haxe_sys_sleep", params: 1, returns: void,
+                types: &[F64]),
             // System info
-            map_method!(static "Sys", "systemName" => "haxe_sys_system_name", params: 0, returns: complex),
-            map_method!(static "Sys", "programPath" => "haxe_sys_program_path", params: 0, returns: complex),
-            map_method!(static "Sys", "executablePath" => "haxe_sys_program_path", params: 0, returns: complex),
+            map_method!(static "Sys", "systemName" => "haxe_sys_system_name", params: 0, returns: complex,
+                types: &[] => PtrVoid),
+            map_method!(static "Sys", "programPath" => "haxe_sys_program_path", params: 0, returns: complex,
+                types: &[] => PtrVoid),
+            map_method!(static "Sys", "executablePath" => "haxe_sys_program_path", params: 0, returns: complex,
+                types: &[] => PtrVoid),
             // Command execution
-            map_method!(static "Sys", "command" => "haxe_sys_command", params: 1, returns: primitive),
-            map_method!(static "Sys", "getChar" => "haxe_sys_get_char", params: 1, returns: primitive),
+            map_method!(static "Sys", "command" => "haxe_sys_command", params: 1, returns: primitive,
+                types: &[PtrVoid] => I32),
+            map_method!(static "Sys", "getChar" => "haxe_sys_get_char", params: 1, returns: primitive,
+                types: &[Bool] => I32),
         ];
 
         self.register_from_tuples(mappings);
@@ -1367,17 +1494,24 @@ impl StdlibMapping {
     // ============================================================================
 
     fn register_std_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
         let mappings = vec![
             // Std.string(v: Dynamic) -> String
-            map_method!(static "Std", "string" => "haxe_std_string_ptr", params: 1, returns: complex),
+            map_method!(static "Std", "string" => "haxe_std_string_ptr", params: 1, returns: complex,
+                types: &[PtrVoid] => PtrVoid),
             // Std.int(x: Float) -> Int
-            map_method!(static "Std", "int" => "haxe_std_int", params: 1, returns: primitive),
+            map_method!(static "Std", "int" => "haxe_std_int", params: 1, returns: primitive,
+                types: &[F64] => I64),
             // Std.parseInt(x: String) -> Null<Int>
-            map_method!(static "Std", "parseInt" => "haxe_std_parse_int", params: 1, returns: primitive),
+            map_method!(static "Std", "parseInt" => "haxe_std_parse_int", params: 1, returns: primitive,
+                types: &[PtrVoid] => I64),
             // Std.parseFloat(x: String) -> Float
-            map_method!(static "Std", "parseFloat" => "haxe_std_parse_float", params: 1, returns: primitive),
+            map_method!(static "Std", "parseFloat" => "haxe_std_parse_float", params: 1, returns: primitive,
+                types: &[PtrVoid] => F64),
             // Std.random(x: Int) -> Int
-            map_method!(static "Std", "random" => "haxe_std_random", params: 1, returns: primitive),
+            map_method!(static "Std", "random" => "haxe_std_random", params: 1, returns: primitive,
+                types: &[I64] => I64),
         ];
 
         self.register_from_tuples(mappings);
@@ -1388,25 +1522,36 @@ impl StdlibMapping {
     // ============================================================================
 
     fn register_file_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
         let mappings = vec![
             // File.getContent(path: String) -> String
-            map_method!(static "File", "getContent" => "haxe_file_get_content", params: 1, returns: complex),
+            map_method!(static "File", "getContent" => "haxe_file_get_content", params: 1, returns: complex,
+                types: &[PtrVoid] => PtrVoid),
             // File.saveContent(path: String, content: String) -> Void
-            map_method!(static "File", "saveContent" => "haxe_file_save_content", params: 2, returns: void),
+            map_method!(static "File", "saveContent" => "haxe_file_save_content", params: 2, returns: void,
+                types: &[PtrVoid, PtrVoid]),
             // File.copy(srcPath: String, dstPath: String) -> Void
-            map_method!(static "File", "copy" => "haxe_file_copy", params: 2, returns: void),
+            map_method!(static "File", "copy" => "haxe_file_copy", params: 2, returns: void,
+                types: &[PtrVoid, PtrVoid]),
             // File.read(path: String, binary: Bool) -> FileInput
-            map_method!(static "File", "read" => "haxe_file_read", params: 2, returns: primitive),
+            map_method!(static "File", "read" => "haxe_file_read", params: 2, returns: primitive,
+                types: &[PtrVoid, Bool] => PtrVoid),
             // File.write(path: String, binary: Bool) -> FileOutput
-            map_method!(static "File", "write" => "haxe_file_write", params: 2, returns: primitive),
+            map_method!(static "File", "write" => "haxe_file_write", params: 2, returns: primitive,
+                types: &[PtrVoid, Bool] => PtrVoid),
             // File.append(path: String, binary: Bool) -> FileOutput
-            map_method!(static "File", "append" => "haxe_file_append", params: 2, returns: primitive),
+            map_method!(static "File", "append" => "haxe_file_append", params: 2, returns: primitive,
+                types: &[PtrVoid, Bool] => PtrVoid),
             // File.update(path: String, binary: Bool) -> FileOutput
-            map_method!(static "File", "update" => "haxe_file_update", params: 2, returns: primitive),
+            map_method!(static "File", "update" => "haxe_file_update", params: 2, returns: primitive,
+                types: &[PtrVoid, Bool] => PtrVoid),
             // File.getBytes(path: String) -> haxe.io.Bytes
-            map_method!(static "File", "getBytes" => "haxe_file_get_bytes", params: 1, returns: primitive),
+            map_method!(static "File", "getBytes" => "haxe_file_get_bytes", params: 1, returns: primitive,
+                types: &[PtrVoid] => PtrVoid),
             // File.saveBytes(path: String, bytes: haxe.io.Bytes) -> Void
-            map_method!(static "File", "saveBytes" => "haxe_file_save_bytes", params: 2, returns: void),
+            map_method!(static "File", "saveBytes" => "haxe_file_save_bytes", params: 2, returns: void,
+                types: &[PtrVoid, PtrVoid]),
         ];
 
         self.register_from_tuples(mappings);
@@ -1417,17 +1562,24 @@ impl StdlibMapping {
     // ============================================================================
 
     fn register_fileinput_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
         let mappings = vec![
             // FileInput.readByte() -> Int
-            map_method!(instance "FileInput", "readByte" => "haxe_fileinput_read_byte", params: 0, returns: primitive),
+            map_method!(instance "FileInput", "readByte" => "haxe_fileinput_read_byte", params: 0, returns: primitive,
+                types: &[PtrVoid] => I32),
             // FileInput.seek(p: Int, pos: FileSeek) -> Void
-            map_method!(instance "FileInput", "seek" => "haxe_fileinput_seek", params: 2, returns: void),
+            map_method!(instance "FileInput", "seek" => "haxe_fileinput_seek", params: 2, returns: void,
+                types: &[PtrVoid, I64, I32]),
             // FileInput.tell() -> Int
-            map_method!(instance "FileInput", "tell" => "haxe_fileinput_tell", params: 0, returns: primitive),
+            map_method!(instance "FileInput", "tell" => "haxe_fileinput_tell", params: 0, returns: primitive,
+                types: &[PtrVoid] => I64),
             // FileInput.eof() -> Bool
-            map_method!(instance "FileInput", "eof" => "haxe_fileinput_eof", params: 0, returns: primitive),
+            map_method!(instance "FileInput", "eof" => "haxe_fileinput_eof", params: 0, returns: primitive,
+                types: &[PtrVoid] => Bool),
             // FileInput.close() -> Void
-            map_method!(instance "FileInput", "close" => "haxe_fileinput_close", params: 0, returns: void),
+            map_method!(instance "FileInput", "close" => "haxe_fileinput_close", params: 0, returns: void,
+                types: &[PtrVoid]),
         ];
 
         self.register_from_tuples(mappings);
@@ -1438,17 +1590,24 @@ impl StdlibMapping {
     // ============================================================================
 
     fn register_fileoutput_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
         let mappings = vec![
             // FileOutput.writeByte(c: Int) -> Void
-            map_method!(instance "FileOutput", "writeByte" => "haxe_fileoutput_write_byte", params: 1, returns: void),
+            map_method!(instance "FileOutput", "writeByte" => "haxe_fileoutput_write_byte", params: 1, returns: void,
+                types: &[PtrVoid, I32]),
             // FileOutput.seek(p: Int, pos: FileSeek) -> Void
-            map_method!(instance "FileOutput", "seek" => "haxe_fileoutput_seek", params: 2, returns: void),
+            map_method!(instance "FileOutput", "seek" => "haxe_fileoutput_seek", params: 2, returns: void,
+                types: &[PtrVoid, I64, I32]),
             // FileOutput.tell() -> Int
-            map_method!(instance "FileOutput", "tell" => "haxe_fileoutput_tell", params: 0, returns: primitive),
+            map_method!(instance "FileOutput", "tell" => "haxe_fileoutput_tell", params: 0, returns: primitive,
+                types: &[PtrVoid] => I64),
             // FileOutput.flush() -> Void
-            map_method!(instance "FileOutput", "flush" => "haxe_fileoutput_flush", params: 0, returns: void),
+            map_method!(instance "FileOutput", "flush" => "haxe_fileoutput_flush", params: 0, returns: void,
+                types: &[PtrVoid]),
             // FileOutput.close() -> Void
-            map_method!(instance "FileOutput", "close" => "haxe_fileoutput_close", params: 0, returns: void),
+            map_method!(instance "FileOutput", "close" => "haxe_fileoutput_close", params: 0, returns: void,
+                types: &[PtrVoid]),
         ];
 
         self.register_from_tuples(mappings);
@@ -1459,29 +1618,42 @@ impl StdlibMapping {
     // ============================================================================
 
     fn register_filesystem_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
         let mappings = vec![
             // FileSystem.exists(path: String) -> Bool
-            map_method!(static "FileSystem", "exists" => "haxe_filesystem_exists", params: 1, returns: primitive),
+            map_method!(static "FileSystem", "exists" => "haxe_filesystem_exists", params: 1, returns: primitive,
+                types: &[PtrVoid] => Bool),
             // FileSystem.isDirectory(path: String) -> Bool
-            map_method!(static "FileSystem", "isDirectory" => "haxe_filesystem_is_directory", params: 1, returns: primitive),
+            map_method!(static "FileSystem", "isDirectory" => "haxe_filesystem_is_directory", params: 1, returns: primitive,
+                types: &[PtrVoid] => Bool),
             // FileSystem.isFile(path: String) -> Bool (extension - not in standard Haxe)
-            map_method!(static "FileSystem", "isFile" => "haxe_filesystem_is_file", params: 1, returns: primitive),
+            map_method!(static "FileSystem", "isFile" => "haxe_filesystem_is_file", params: 1, returns: primitive,
+                types: &[PtrVoid] => Bool),
             // FileSystem.createDirectory(path: String) -> Void
-            map_method!(static "FileSystem", "createDirectory" => "haxe_filesystem_create_directory", params: 1, returns: void),
+            map_method!(static "FileSystem", "createDirectory" => "haxe_filesystem_create_directory", params: 1, returns: void,
+                types: &[PtrVoid]),
             // FileSystem.deleteFile(path: String) -> Void
-            map_method!(static "FileSystem", "deleteFile" => "haxe_filesystem_delete_file", params: 1, returns: void),
+            map_method!(static "FileSystem", "deleteFile" => "haxe_filesystem_delete_file", params: 1, returns: void,
+                types: &[PtrVoid]),
             // FileSystem.deleteDirectory(path: String) -> Void
-            map_method!(static "FileSystem", "deleteDirectory" => "haxe_filesystem_delete_directory", params: 1, returns: void),
+            map_method!(static "FileSystem", "deleteDirectory" => "haxe_filesystem_delete_directory", params: 1, returns: void,
+                types: &[PtrVoid]),
             // FileSystem.rename(path: String, newPath: String) -> Void
-            map_method!(static "FileSystem", "rename" => "haxe_filesystem_rename", params: 2, returns: void),
+            map_method!(static "FileSystem", "rename" => "haxe_filesystem_rename", params: 2, returns: void,
+                types: &[PtrVoid, PtrVoid]),
             // FileSystem.fullPath(relPath: String) -> String (returns pointer directly)
-            map_method!(static "FileSystem", "fullPath" => "haxe_filesystem_full_path", params: 1, returns: primitive),
+            map_method!(static "FileSystem", "fullPath" => "haxe_filesystem_full_path", params: 1, returns: primitive,
+                types: &[PtrVoid] => PtrVoid),
             // FileSystem.absolutePath(relPath: String) -> String (returns pointer directly)
-            map_method!(static "FileSystem", "absolutePath" => "haxe_filesystem_absolute_path", params: 1, returns: primitive),
+            map_method!(static "FileSystem", "absolutePath" => "haxe_filesystem_absolute_path", params: 1, returns: primitive,
+                types: &[PtrVoid] => PtrVoid),
             // FileSystem.stat(path: String) -> FileStat (returns pointer directly)
-            map_method!(static "FileSystem", "stat" => "haxe_filesystem_stat", params: 1, returns: primitive),
+            map_method!(static "FileSystem", "stat" => "haxe_filesystem_stat", params: 1, returns: primitive,
+                types: &[PtrVoid] => PtrVoid),
             // FileSystem.readDirectory(path: String) -> Array<String> (returns pointer directly)
-            map_method!(static "FileSystem", "readDirectory" => "haxe_filesystem_read_directory", params: 1, returns: primitive),
+            map_method!(static "FileSystem", "readDirectory" => "haxe_filesystem_read_directory", params: 1, returns: primitive,
+                types: &[PtrVoid] => PtrVoid),
         ];
 
         self.register_from_tuples(mappings);
@@ -1544,31 +1716,56 @@ impl StdlibMapping {
     // The MIR wrappers call the extern runtime functions (rayzor_channel_*).
 
     fn register_channel_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
         let mappings = vec![
             // Constructor: new Channel<T>(capacity: Int) -> Channel<T>
-            map_method!(constructor "Channel", "new" => "Channel_init", params: 1, returns: complex),
+            // MIR wrapper: takes capacity (i32), returns channel handle (*u8)
+            map_method!(constructor "Channel", "new" => "Channel_init", params: 1, mir_wrapper,
+                types: &[I32] => PtrU8),
             // Channel::init<T>(capacity: Int) -> Channel<T> (for backwards compatibility)
-            map_method!(static "Channel", "init" => "Channel_init", params: 1, returns: complex),
+            map_method!(static "Channel", "init" => "Channel_init", params: 1, mir_wrapper,
+                types: &[I32] => PtrU8),
             // Channel<T>::send(value: T) -> Void
-            map_method!(instance "Channel", "send" => "Channel_send", params: 1, returns: void),
+            // MIR wrapper: takes channel handle + value ptr
+            map_method!(instance "Channel", "send" => "Channel_send", params: 1, mir_wrapper,
+                types: &[PtrU8, PtrU8]),
             // Channel<T>::trySend(value: T) -> Bool
-            map_method!(instance "Channel", "trySend" => "Channel_trySend", params: 1, returns: primitive),
+            // MIR wrapper: takes channel handle + value ptr, returns bool
+            map_method!(instance "Channel", "trySend" => "Channel_trySend", params: 1, mir_wrapper,
+                types: &[PtrU8, PtrU8] => Bool),
             // Channel<T>::receive() -> T
-            map_method!(instance "Channel", "receive" => "Channel_receive", params: 0, returns: complex),
+            // MIR wrapper: takes channel handle, returns value ptr
+            map_method!(instance "Channel", "receive" => "Channel_receive", params: 0, mir_wrapper,
+                types: &[PtrU8] => PtrU8),
             // Channel<T>::tryReceive() -> Null<T>
-            map_method!(instance "Channel", "tryReceive" => "Channel_tryReceive", params: 0, returns: complex),
+            // MIR wrapper: takes channel handle, returns value ptr (or null)
+            map_method!(instance "Channel", "tryReceive" => "Channel_tryReceive", params: 0, mir_wrapper,
+                types: &[PtrU8] => PtrU8),
             // Channel<T>::close() -> Void
-            map_method!(instance "Channel", "close" => "Channel_close", params: 0, returns: void),
+            // MIR wrapper: takes channel handle
+            map_method!(instance "Channel", "close" => "Channel_close", params: 0, mir_wrapper,
+                types: &[PtrU8]),
             // Channel<T>::isClosed() -> Bool
-            map_method!(instance "Channel", "isClosed" => "Channel_isClosed", params: 0, returns: primitive),
+            // MIR wrapper: takes channel handle, returns bool
+            map_method!(instance "Channel", "isClosed" => "Channel_isClosed", params: 0, mir_wrapper,
+                types: &[PtrU8] => Bool),
             // Channel<T>::len() -> Int
-            map_method!(instance "Channel", "len" => "Channel_len", params: 0, returns: primitive),
+            // MIR wrapper: takes channel handle, returns i32
+            map_method!(instance "Channel", "len" => "Channel_len", params: 0, mir_wrapper,
+                types: &[PtrU8] => I32),
             // Channel<T>::capacity() -> Int
-            map_method!(instance "Channel", "capacity" => "Channel_capacity", params: 0, returns: primitive),
+            // MIR wrapper: takes channel handle, returns i32
+            map_method!(instance "Channel", "capacity" => "Channel_capacity", params: 0, mir_wrapper,
+                types: &[PtrU8] => I32),
             // Channel<T>::isEmpty() -> Bool
-            map_method!(instance "Channel", "isEmpty" => "Channel_isEmpty", params: 0, returns: primitive),
+            // MIR wrapper: takes channel handle, returns bool
+            map_method!(instance "Channel", "isEmpty" => "Channel_isEmpty", params: 0, mir_wrapper,
+                types: &[PtrU8] => Bool),
             // Channel<T>::isFull() -> Bool
-            map_method!(instance "Channel", "isFull" => "Channel_isFull", params: 0, returns: primitive),
+            // MIR wrapper: takes channel handle, returns bool
+            map_method!(instance "Channel", "isFull" => "Channel_isFull", params: 0, mir_wrapper,
+                types: &[PtrU8] => Bool),
         ];
 
         self.register_from_tuples(mappings);
@@ -1579,21 +1776,36 @@ impl StdlibMapping {
     // ============================================================================
 
     fn register_arc_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
         let mappings = vec![
             // Constructor: new Arc<T>(value: T) -> Arc<T>
-            map_method!(constructor "Arc", "new" => "Arc_init", params: 1, returns: complex),
+            // MIR wrapper: takes value ptr, returns arc handle (*u8)
+            map_method!(constructor "Arc", "new" => "Arc_init", params: 1, mir_wrapper,
+                types: &[PtrU8] => PtrU8),
             // Arc::init<T>(value: T) -> Arc<T> (for backwards compatibility)
-            map_method!(static "Arc", "init" => "Arc_init", params: 1, returns: complex),
+            map_method!(static "Arc", "init" => "Arc_init", params: 1, mir_wrapper,
+                types: &[PtrU8] => PtrU8),
             // Arc<T>::clone() -> Arc<T>
-            map_method!(instance "Arc", "clone" => "Arc_clone", params: 0, returns: complex),
+            // MIR wrapper: takes arc handle, returns cloned arc handle
+            map_method!(instance "Arc", "clone" => "Arc_clone", params: 0, mir_wrapper,
+                types: &[PtrU8] => PtrU8),
             // Arc<T>::get() -> T
-            map_method!(instance "Arc", "get" => "Arc_get", params: 0, returns: complex),
+            // MIR wrapper: takes arc handle, returns value ptr
+            map_method!(instance "Arc", "get" => "Arc_get", params: 0, mir_wrapper,
+                types: &[PtrU8] => PtrU8),
             // Arc<T>::strongCount() -> Int
-            map_method!(instance "Arc", "strongCount" => "Arc_strongCount", params: 0, returns: primitive),
+            // MIR wrapper: takes arc handle, returns count (u64)
+            map_method!(instance "Arc", "strongCount" => "Arc_strongCount", params: 0, mir_wrapper,
+                types: &[PtrU8] => U64),
             // Arc<T>::tryUnwrap() -> Null<T>
-            map_method!(instance "Arc", "tryUnwrap" => "Arc_tryUnwrap", params: 0, returns: complex),
+            // MIR wrapper: takes arc handle, returns value ptr (or null)
+            map_method!(instance "Arc", "tryUnwrap" => "Arc_tryUnwrap", params: 0, mir_wrapper,
+                types: &[PtrU8] => PtrU8),
             // Arc<T>::asPtr() -> Int
-            map_method!(instance "Arc", "asPtr" => "Arc_asPtr", params: 0, returns: primitive),
+            // MIR wrapper: takes arc handle, returns ptr as u64
+            map_method!(instance "Arc", "asPtr" => "Arc_asPtr", params: 0, mir_wrapper,
+                types: &[PtrU8] => U64),
         ];
 
         self.register_from_tuples(mappings);
@@ -1604,21 +1816,36 @@ impl StdlibMapping {
     // ============================================================================
 
     fn register_mutex_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
         let mappings = vec![
             // Constructor: new Mutex<T>(value: T) -> Mutex<T>
-            map_method!(constructor "Mutex", "new" => "Mutex_init", params: 1, returns: complex),
+            // MIR wrapper: takes value ptr, returns mutex handle (*u8)
+            map_method!(constructor "Mutex", "new" => "Mutex_init", params: 1, mir_wrapper,
+                types: &[PtrU8] => PtrU8),
             // Mutex::init<T>(value: T) -> Mutex<T> (for backwards compatibility)
-            map_method!(static "Mutex", "init" => "Mutex_init", params: 1, returns: complex),
+            map_method!(static "Mutex", "init" => "Mutex_init", params: 1, mir_wrapper,
+                types: &[PtrU8] => PtrU8),
             // Mutex<T>::lock() -> MutexGuard<T>
-            map_method!(instance "Mutex", "lock" => "Mutex_lock", params: 0, returns: complex),
+            // MIR wrapper: takes mutex handle, returns guard handle (*u8)
+            map_method!(instance "Mutex", "lock" => "Mutex_lock", params: 0, mir_wrapper,
+                types: &[PtrU8] => PtrU8),
             // Mutex<T>::tryLock() -> Null<MutexGuard<T>>
-            map_method!(instance "Mutex", "tryLock" => "Mutex_tryLock", params: 0, returns: complex),
+            // MIR wrapper: takes mutex handle, returns guard handle (or null)
+            map_method!(instance "Mutex", "tryLock" => "Mutex_tryLock", params: 0, mir_wrapper,
+                types: &[PtrU8] => PtrU8),
             // Mutex<T>::isLocked() -> Bool
-            map_method!(instance "Mutex", "isLocked" => "Mutex_isLocked", params: 0, returns: primitive),
+            // MIR wrapper: takes mutex handle, returns bool
+            map_method!(instance "Mutex", "isLocked" => "Mutex_isLocked", params: 0, mir_wrapper,
+                types: &[PtrU8] => Bool),
             // MutexGuard<T>::get() -> T
-            map_method!(instance "MutexGuard", "get" => "MutexGuard_get", params: 0, returns: complex),
+            // MIR wrapper: takes guard handle, returns value ptr
+            map_method!(instance "MutexGuard", "get" => "MutexGuard_get", params: 0, mir_wrapper,
+                types: &[PtrU8] => PtrU8),
             // MutexGuard<T>::unlock() -> Void
-            map_method!(instance "MutexGuard", "unlock" => "MutexGuard_unlock", params: 0, returns: void),
+            // MIR wrapper: takes guard handle
+            map_method!(instance "MutexGuard", "unlock" => "MutexGuard_unlock", params: 0, mir_wrapper,
+                types: &[PtrU8]),
         ];
 
         self.register_from_tuples(mappings);
@@ -1640,83 +1867,139 @@ impl StdlibMapping {
     // - "VecBool" for Vec<Bool>
 
     fn register_vec_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
         // Vec<Int> -> VecI32
         // These map to MIR wrapper functions (VecI32_*) NOT directly to runtime functions
         let vec_i32_mappings = vec![
-            map_method!(constructor "VecI32", "new" => "VecI32_new", params: 0, returns: complex),
-            map_method!(instance "VecI32", "push" => "VecI32_push", params: 1, returns: void),
-            map_method!(instance "VecI32", "pop" => "VecI32_pop", params: 0, returns: primitive),
-            map_method!(instance "VecI32", "get" => "VecI32_get", params: 1, returns: primitive),
-            map_method!(instance "VecI32", "set" => "VecI32_set", params: 2, returns: void),
-            map_method!(instance "VecI32", "length" => "VecI32_length", params: 0, returns: primitive),
-            map_method!(instance "VecI32", "capacity" => "VecI32_capacity", params: 0, returns: primitive),
-            map_method!(instance "VecI32", "isEmpty" => "VecI32_isEmpty", params: 0, returns: primitive),
-            map_method!(instance "VecI32", "clear" => "VecI32_clear", params: 0, returns: void),
-            map_method!(instance "VecI32", "first" => "VecI32_first", params: 0, returns: primitive),
-            map_method!(instance "VecI32", "last" => "VecI32_last", params: 0, returns: primitive),
-            map_method!(instance "VecI32", "sort" => "VecI32_sort", params: 0, returns: void),
-            map_method!(instance "VecI32", "sortBy" => "VecI32_sortBy", params: 2, returns: void),
+            map_method!(constructor "VecI32", "new" => "VecI32_new", params: 0, mir_wrapper,
+                types: &[] => PtrU8),
+            map_method!(instance "VecI32", "push" => "VecI32_push", params: 1, mir_wrapper,
+                types: &[PtrU8, I32]),
+            map_method!(instance "VecI32", "pop" => "VecI32_pop", params: 0, mir_wrapper,
+                types: &[PtrU8] => I32),
+            map_method!(instance "VecI32", "get" => "VecI32_get", params: 1, mir_wrapper,
+                types: &[PtrU8, I64] => I32),
+            map_method!(instance "VecI32", "set" => "VecI32_set", params: 2, mir_wrapper,
+                types: &[PtrU8, I64, I32]),
+            map_method!(instance "VecI32", "length" => "VecI32_length", params: 0, mir_wrapper,
+                types: &[PtrU8] => I64),
+            map_method!(instance "VecI32", "capacity" => "VecI32_capacity", params: 0, mir_wrapper,
+                types: &[PtrU8] => I64),
+            map_method!(instance "VecI32", "isEmpty" => "VecI32_isEmpty", params: 0, mir_wrapper,
+                types: &[PtrU8] => Bool),
+            map_method!(instance "VecI32", "clear" => "VecI32_clear", params: 0, mir_wrapper,
+                types: &[PtrU8]),
+            map_method!(instance "VecI32", "first" => "VecI32_first", params: 0, mir_wrapper,
+                types: &[PtrU8] => I32),
+            map_method!(instance "VecI32", "last" => "VecI32_last", params: 0, mir_wrapper,
+                types: &[PtrU8] => I32),
+            map_method!(instance "VecI32", "sort" => "VecI32_sort", params: 0, mir_wrapper,
+                types: &[PtrU8]),
+            map_method!(instance "VecI32", "sortBy" => "VecI32_sortBy", params: 2, mir_wrapper,
+                types: &[PtrU8, PtrU8, PtrU8]),
         ];
         self.register_from_tuples(vec_i32_mappings);
 
         // Vec<Int64> -> VecI64
         let vec_i64_mappings = vec![
-            map_method!(constructor "VecI64", "new" => "VecI64_new", params: 0, returns: complex),
-            map_method!(instance "VecI64", "push" => "VecI64_push", params: 1, returns: void),
-            map_method!(instance "VecI64", "pop" => "VecI64_pop", params: 0, returns: primitive),
-            map_method!(instance "VecI64", "get" => "VecI64_get", params: 1, returns: primitive),
-            map_method!(instance "VecI64", "set" => "VecI64_set", params: 2, returns: void),
-            map_method!(instance "VecI64", "length" => "VecI64_length", params: 0, returns: primitive),
-            map_method!(instance "VecI64", "isEmpty" => "VecI64_isEmpty", params: 0, returns: primitive),
-            map_method!(instance "VecI64", "clear" => "VecI64_clear", params: 0, returns: void),
-            map_method!(instance "VecI64", "first" => "VecI64_first", params: 0, returns: primitive),
-            map_method!(instance "VecI64", "last" => "VecI64_last", params: 0, returns: primitive),
+            map_method!(constructor "VecI64", "new" => "VecI64_new", params: 0, mir_wrapper,
+                types: &[] => PtrU8),
+            map_method!(instance "VecI64", "push" => "VecI64_push", params: 1, mir_wrapper,
+                types: &[PtrU8, I64]),
+            map_method!(instance "VecI64", "pop" => "VecI64_pop", params: 0, mir_wrapper,
+                types: &[PtrU8] => I64),
+            map_method!(instance "VecI64", "get" => "VecI64_get", params: 1, mir_wrapper,
+                types: &[PtrU8, I64] => I64),
+            map_method!(instance "VecI64", "set" => "VecI64_set", params: 2, mir_wrapper,
+                types: &[PtrU8, I64, I64]),
+            map_method!(instance "VecI64", "length" => "VecI64_length", params: 0, mir_wrapper,
+                types: &[PtrU8] => I64),
+            map_method!(instance "VecI64", "isEmpty" => "VecI64_isEmpty", params: 0, mir_wrapper,
+                types: &[PtrU8] => Bool),
+            map_method!(instance "VecI64", "clear" => "VecI64_clear", params: 0, mir_wrapper,
+                types: &[PtrU8]),
+            map_method!(instance "VecI64", "first" => "VecI64_first", params: 0, mir_wrapper,
+                types: &[PtrU8] => I64),
+            map_method!(instance "VecI64", "last" => "VecI64_last", params: 0, mir_wrapper,
+                types: &[PtrU8] => I64),
         ];
         self.register_from_tuples(vec_i64_mappings);
 
         // Vec<Float> -> VecF64
         let vec_f64_mappings = vec![
-            map_method!(constructor "VecF64", "new" => "VecF64_new", params: 0, returns: complex),
-            map_method!(instance "VecF64", "push" => "VecF64_push", params: 1, returns: void),
-            map_method!(instance "VecF64", "pop" => "VecF64_pop", params: 0, returns: primitive),
-            map_method!(instance "VecF64", "get" => "VecF64_get", params: 1, returns: primitive),
-            map_method!(instance "VecF64", "set" => "VecF64_set", params: 2, returns: void),
-            map_method!(instance "VecF64", "length" => "VecF64_length", params: 0, returns: primitive),
-            map_method!(instance "VecF64", "isEmpty" => "VecF64_isEmpty", params: 0, returns: primitive),
-            map_method!(instance "VecF64", "clear" => "VecF64_clear", params: 0, returns: void),
-            map_method!(instance "VecF64", "first" => "VecF64_first", params: 0, returns: primitive),
-            map_method!(instance "VecF64", "last" => "VecF64_last", params: 0, returns: primitive),
-            map_method!(instance "VecF64", "sort" => "VecF64_sort", params: 0, returns: void),
-            map_method!(instance "VecF64", "sortBy" => "VecF64_sortBy", params: 2, returns: void),
+            map_method!(constructor "VecF64", "new" => "VecF64_new", params: 0, mir_wrapper,
+                types: &[] => PtrU8),
+            map_method!(instance "VecF64", "push" => "VecF64_push", params: 1, mir_wrapper,
+                types: &[PtrU8, F64]),
+            map_method!(instance "VecF64", "pop" => "VecF64_pop", params: 0, mir_wrapper,
+                types: &[PtrU8] => F64),
+            map_method!(instance "VecF64", "get" => "VecF64_get", params: 1, mir_wrapper,
+                types: &[PtrU8, I64] => F64),
+            map_method!(instance "VecF64", "set" => "VecF64_set", params: 2, mir_wrapper,
+                types: &[PtrU8, I64, F64]),
+            map_method!(instance "VecF64", "length" => "VecF64_length", params: 0, mir_wrapper,
+                types: &[PtrU8] => I64),
+            map_method!(instance "VecF64", "isEmpty" => "VecF64_isEmpty", params: 0, mir_wrapper,
+                types: &[PtrU8] => Bool),
+            map_method!(instance "VecF64", "clear" => "VecF64_clear", params: 0, mir_wrapper,
+                types: &[PtrU8]),
+            map_method!(instance "VecF64", "first" => "VecF64_first", params: 0, mir_wrapper,
+                types: &[PtrU8] => F64),
+            map_method!(instance "VecF64", "last" => "VecF64_last", params: 0, mir_wrapper,
+                types: &[PtrU8] => F64),
+            map_method!(instance "VecF64", "sort" => "VecF64_sort", params: 0, mir_wrapper,
+                types: &[PtrU8]),
+            map_method!(instance "VecF64", "sortBy" => "VecF64_sortBy", params: 2, mir_wrapper,
+                types: &[PtrU8, PtrU8, PtrU8]),
         ];
         self.register_from_tuples(vec_f64_mappings);
 
         // Vec<T> where T is reference type -> VecPtr
         let vec_ptr_mappings = vec![
-            map_method!(constructor "VecPtr", "new" => "VecPtr_new", params: 0, returns: complex),
-            map_method!(instance "VecPtr", "push" => "VecPtr_push", params: 1, returns: void),
-            map_method!(instance "VecPtr", "pop" => "VecPtr_pop", params: 0, returns: complex),
-            map_method!(instance "VecPtr", "get" => "VecPtr_get", params: 1, returns: complex),
-            map_method!(instance "VecPtr", "set" => "VecPtr_set", params: 2, returns: void),
-            map_method!(instance "VecPtr", "length" => "VecPtr_length", params: 0, returns: primitive),
-            map_method!(instance "VecPtr", "isEmpty" => "VecPtr_isEmpty", params: 0, returns: primitive),
-            map_method!(instance "VecPtr", "clear" => "VecPtr_clear", params: 0, returns: void),
-            map_method!(instance "VecPtr", "first" => "VecPtr_first", params: 0, returns: complex),
-            map_method!(instance "VecPtr", "last" => "VecPtr_last", params: 0, returns: complex),
-            map_method!(instance "VecPtr", "sortBy" => "VecPtr_sortBy", params: 2, returns: void),
+            map_method!(constructor "VecPtr", "new" => "VecPtr_new", params: 0, mir_wrapper,
+                types: &[] => PtrU8),
+            map_method!(instance "VecPtr", "push" => "VecPtr_push", params: 1, mir_wrapper,
+                types: &[PtrU8, PtrU8]),
+            map_method!(instance "VecPtr", "pop" => "VecPtr_pop", params: 0, mir_wrapper,
+                types: &[PtrU8] => PtrU8),
+            map_method!(instance "VecPtr", "get" => "VecPtr_get", params: 1, mir_wrapper,
+                types: &[PtrU8, I64] => PtrU8),
+            map_method!(instance "VecPtr", "set" => "VecPtr_set", params: 2, mir_wrapper,
+                types: &[PtrU8, I64, PtrU8]),
+            map_method!(instance "VecPtr", "length" => "VecPtr_length", params: 0, mir_wrapper,
+                types: &[PtrU8] => I64),
+            map_method!(instance "VecPtr", "isEmpty" => "VecPtr_isEmpty", params: 0, mir_wrapper,
+                types: &[PtrU8] => Bool),
+            map_method!(instance "VecPtr", "clear" => "VecPtr_clear", params: 0, mir_wrapper,
+                types: &[PtrU8]),
+            map_method!(instance "VecPtr", "first" => "VecPtr_first", params: 0, mir_wrapper,
+                types: &[PtrU8] => PtrU8),
+            map_method!(instance "VecPtr", "last" => "VecPtr_last", params: 0, mir_wrapper,
+                types: &[PtrU8] => PtrU8),
+            map_method!(instance "VecPtr", "sortBy" => "VecPtr_sortBy", params: 2, mir_wrapper,
+                types: &[PtrU8, PtrU8, PtrU8]),
         ];
         self.register_from_tuples(vec_ptr_mappings);
 
         // Vec<Bool> -> VecBool
         let vec_bool_mappings = vec![
-            map_method!(constructor "VecBool", "new" => "VecBool_new", params: 0, returns: complex),
-            map_method!(instance "VecBool", "push" => "VecBool_push", params: 1, returns: void),
-            map_method!(instance "VecBool", "pop" => "VecBool_pop", params: 0, returns: primitive),
-            map_method!(instance "VecBool", "get" => "VecBool_get", params: 1, returns: primitive),
-            map_method!(instance "VecBool", "set" => "VecBool_set", params: 2, returns: void),
-            map_method!(instance "VecBool", "length" => "VecBool_length", params: 0, returns: primitive),
-            map_method!(instance "VecBool", "isEmpty" => "VecBool_isEmpty", params: 0, returns: primitive),
-            map_method!(instance "VecBool", "clear" => "VecBool_clear", params: 0, returns: void),
+            map_method!(constructor "VecBool", "new" => "VecBool_new", params: 0, mir_wrapper,
+                types: &[] => PtrU8),
+            map_method!(instance "VecBool", "push" => "VecBool_push", params: 1, mir_wrapper,
+                types: &[PtrU8, Bool]),
+            map_method!(instance "VecBool", "pop" => "VecBool_pop", params: 0, mir_wrapper,
+                types: &[PtrU8] => Bool),
+            map_method!(instance "VecBool", "get" => "VecBool_get", params: 1, mir_wrapper,
+                types: &[PtrU8, I64] => Bool),
+            map_method!(instance "VecBool", "set" => "VecBool_set", params: 2, mir_wrapper,
+                types: &[PtrU8, I64, Bool]),
+            map_method!(instance "VecBool", "length" => "VecBool_length", params: 0, mir_wrapper,
+                types: &[PtrU8] => I64),
+            map_method!(instance "VecBool", "isEmpty" => "VecBool_isEmpty", params: 0, mir_wrapper,
+                types: &[PtrU8] => Bool),
+            map_method!(instance "VecBool", "clear" => "VecBool_clear", params: 0, mir_wrapper,
+                types: &[PtrU8]),
         ];
         self.register_from_tuples(vec_bool_mappings);
     }
@@ -1953,27 +2236,38 @@ impl StdlibMapping {
     // This provides compatibility with standard Haxe threading code.
 
     fn register_sys_thread_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
         let mappings = vec![
             // sys.thread.Thread.create(job: Void->Void) -> Thread
             // Uses Thread_spawn wrapper which extracts fn_ptr and env_ptr from closure object
-            map_method!(static "sys_thread_Thread", "create" => "Thread_spawn", params: 1, returns: complex),
+            map_method!(static "sys_thread_Thread", "create" => "Thread_spawn", params: 1, mir_wrapper,
+                types: &[PtrU8] => PtrU8),
             // sys.thread.Thread.current() -> Thread
-            map_method!(static "sys_thread_Thread", "current" => "sys_thread_current", params: 0, returns: complex),
+            map_method!(static "sys_thread_Thread", "current" => "sys_thread_current", params: 0, returns: complex,
+                types: &[] => PtrU8),
             // sys.thread.Thread.readMessage(block: Bool) -> Dynamic
             // Note: Message passing uses channels internally
-            map_method!(static "sys_thread_Thread", "readMessage" => "sys_thread_read_message", params: 1, returns: complex),
+            map_method!(static "sys_thread_Thread", "readMessage" => "sys_thread_read_message", params: 1, returns: complex,
+                types: &[Bool] => PtrU8),
             // thread.sendMessage(msg: Dynamic) -> Void
-            map_method!(instance "sys_thread_Thread", "sendMessage" => "sys_thread_send_message", params: 1, returns: void),
+            map_method!(instance "sys_thread_Thread", "sendMessage" => "sys_thread_send_message", params: 1, returns: void,
+                types: &[PtrU8, PtrU8]),
             // thread.isFinished() -> Bool
-            map_method!(instance "sys_thread_Thread", "isFinished" => "sys_thread_is_finished", params: 0, returns: primitive),
+            map_method!(instance "sys_thread_Thread", "isFinished" => "sys_thread_is_finished", params: 0, returns: primitive,
+                types: &[PtrU8] => Bool),
             // thread.join() -> Void
-            map_method!(instance "sys_thread_Thread", "join" => "sys_thread_join", params: 0, returns: void),
+            map_method!(instance "sys_thread_Thread", "join" => "sys_thread_join", params: 0, returns: void,
+                types: &[PtrU8]),
             // Thread.yield() -> Void
-            map_method!(static "sys_thread_Thread", "yield" => "sys_thread_yield", params: 0, returns: void),
+            map_method!(static "sys_thread_Thread", "yield" => "sys_thread_yield", params: 0, returns: void,
+                types: &[]),
             // Thread.sleep(seconds: Float) -> Void
-            map_method!(static "sys_thread_Thread", "sleep" => "sys_thread_sleep", params: 1, returns: void),
+            map_method!(static "sys_thread_Thread", "sleep" => "sys_thread_sleep", params: 1, returns: void,
+                types: &[F64]),
             // Thread.currentId() -> Int
-            map_method!(static "sys_thread_Thread", "currentId" => "rayzor_thread_current_id", params: 0, returns: primitive),
+            map_method!(static "sys_thread_Thread", "currentId" => "rayzor_thread_current_id", params: 0, returns: primitive,
+                types: &[] => I64),
         ];
 
         self.register_from_tuples(mappings);
@@ -1987,15 +2281,21 @@ impl StdlibMapping {
     // Unlike rayzor.concurrent.Mutex<T>, this is a simple lock without an inner value.
 
     fn register_sys_mutex_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
         let mappings = vec![
             // Constructor: new Mutex() -> Mutex
-            map_method!(constructor "sys_thread_Mutex", "new" => "sys_mutex_alloc", params: 0, returns: primitive),
+            map_method!(constructor "sys_thread_Mutex", "new" => "sys_mutex_alloc", params: 0, returns: primitive,
+                types: &[] => PtrU8),
             // mutex.acquire() -> Void (blocking)
-            map_method!(instance "sys_thread_Mutex", "acquire" => "sys_mutex_acquire", params: 0, returns: void),
+            map_method!(instance "sys_thread_Mutex", "acquire" => "sys_mutex_acquire", params: 0, returns: void,
+                types: &[PtrU8]),
             // mutex.tryAcquire() -> Bool
-            map_method!(instance "sys_thread_Mutex", "tryAcquire" => "sys_mutex_try_acquire", params: 0, returns: primitive),
+            map_method!(instance "sys_thread_Mutex", "tryAcquire" => "sys_mutex_try_acquire", params: 0, returns: primitive,
+                types: &[PtrU8] => Bool),
             // mutex.release() -> Void
-            map_method!(instance "sys_thread_Mutex", "release" => "sys_mutex_release", params: 0, returns: void),
+            map_method!(instance "sys_thread_Mutex", "release" => "sys_mutex_release", params: 0, returns: void,
+                types: &[PtrU8]),
         ];
 
         self.register_from_tuples(mappings);
@@ -2078,9 +2378,12 @@ impl StdlibMapping {
     }
 
     fn register_sys_deque_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
         let mappings = vec![
             // Constructor: new Deque<T>() -> Deque<T>
-            map_method!(constructor "sys_thread_Deque", "new" => "sys_deque_alloc", params: 0, returns: primitive),
+            map_method!(constructor "sys_thread_Deque", "new" => "sys_deque_alloc", params: 0, returns: primitive,
+                types: &[] => PtrU8),
             // deque.add(item: T) -> Void
             // param 0 = self, param 1 = item (needs boxing for generic type T)
             // ptr_params: 0b10 = 2 means param index 1 needs ptr conversion (boxing)
@@ -2090,28 +2393,102 @@ impl StdlibMapping {
             map_method!(instance "sys_thread_Deque", "push" => "sys_deque_push", params: 1, returns: void, ptr_params: 2),
             // deque.pop(block: Bool) -> Null<T>
             // Returns boxed DynamicValue* which trace() can handle
-            map_method!(instance "sys_thread_Deque", "pop" => "sys_deque_pop", params: 1, returns: primitive),
+            map_method!(instance "sys_thread_Deque", "pop" => "sys_deque_pop", params: 1, returns: primitive,
+                types: &[PtrU8, Bool] => PtrU8),
         ];
 
         self.register_from_tuples(mappings);
     }
 
     fn register_sys_condition_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
         let mappings = vec![
             // Constructor: new Condition() -> Condition
-            map_method!(constructor "sys_thread_Condition", "new" => "sys_condition_alloc", params: 0, returns: primitive),
+            map_method!(constructor "sys_thread_Condition", "new" => "sys_condition_alloc", params: 0, returns: primitive,
+                types: &[] => PtrU8),
             // condition.acquire() -> Void
-            map_method!(instance "sys_thread_Condition", "acquire" => "sys_condition_acquire", params: 0, returns: void),
+            map_method!(instance "sys_thread_Condition", "acquire" => "sys_condition_acquire", params: 0, returns: void,
+                types: &[PtrU8]),
             // condition.tryAcquire() -> Bool
-            map_method!(instance "sys_thread_Condition", "tryAcquire" => "sys_condition_try_acquire", params: 0, returns: primitive),
+            map_method!(instance "sys_thread_Condition", "tryAcquire" => "sys_condition_try_acquire", params: 0, returns: primitive,
+                types: &[PtrU8] => Bool),
             // condition.release() -> Void
-            map_method!(instance "sys_thread_Condition", "release" => "sys_condition_release", params: 0, returns: void),
+            map_method!(instance "sys_thread_Condition", "release" => "sys_condition_release", params: 0, returns: void,
+                types: &[PtrU8]),
             // condition.wait() -> Void
-            map_method!(instance "sys_thread_Condition", "wait" => "sys_condition_wait", params: 0, returns: void),
+            map_method!(instance "sys_thread_Condition", "wait" => "sys_condition_wait", params: 0, returns: void,
+                types: &[PtrU8]),
             // condition.signal() -> Void
-            map_method!(instance "sys_thread_Condition", "signal" => "sys_condition_signal", params: 0, returns: void),
+            map_method!(instance "sys_thread_Condition", "signal" => "sys_condition_signal", params: 0, returns: void,
+                types: &[PtrU8]),
             // condition.broadcast() -> Void
-            map_method!(instance "sys_thread_Condition", "broadcast" => "sys_condition_broadcast", params: 0, returns: void),
+            map_method!(instance "sys_thread_Condition", "broadcast" => "sys_condition_broadcast", params: 0, returns: void,
+                types: &[PtrU8]),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // Internal Extern Functions (not Haxe-method-mapped)
+    // ============================================================================
+    //
+    // These are internal runtime functions that are not called as Haxe methods,
+    // but are used directly by the compiler for boxing, unboxing, etc.
+    // We register them with a pseudo-class "_Internal" so they can be looked up
+    // by runtime name.
+
+    fn register_internal_extern_functions(&mut self) {
+        use IrTypeDescriptor::*;
+
+        let mappings = vec![
+            // Boxing functions - convert primitives to boxed Dynamic pointers
+            // On ARM64, bools are extended to i64 in C ABI
+            map_method!(static "_Internal", "box_int" => "haxe_box_int_ptr", params: 1, returns: primitive,
+                types: &[I64] => PtrU8),
+            map_method!(static "_Internal", "box_float" => "haxe_box_float_ptr", params: 1, returns: primitive,
+                types: &[F64] => PtrU8),
+            map_method!(static "_Internal", "box_bool" => "haxe_box_bool_ptr", params: 1, returns: primitive,
+                types: &[I64] => PtrU8),  // Bool extended to i64 on ARM64
+
+            // Unboxing functions - convert boxed Dynamic pointers back to primitives
+            map_method!(static "_Internal", "unbox_int" => "haxe_unbox_int_ptr", params: 1, returns: primitive,
+                types: &[PtrU8] => I64),
+            map_method!(static "_Internal", "unbox_float" => "haxe_unbox_float_ptr", params: 1, returns: primitive,
+                types: &[PtrU8] => F64),
+            map_method!(static "_Internal", "unbox_bool" => "haxe_unbox_bool_ptr", params: 1, returns: primitive,
+                types: &[PtrU8] => I64),  // Bool extended to i64 on ARM64
+
+            // String length (used directly, not always method-mapped)
+            map_method!(static "_Internal", "string_length" => "string_length", params: 1, returns: primitive,
+                types: &[PtrString] => I32),
+
+            // String index_of variants for MIR wrapper support
+            map_method!(static "_Internal", "index_of_ptr" => "haxe_string_index_of_ptr", params: 2, returns: primitive,
+                types: &[PtrString, PtrString] => I32),
+            map_method!(static "_Internal", "index_of_ptr_offset" => "haxe_string_index_of_ptr_offset", params: 3, returns: primitive,
+                types: &[PtrString, PtrString, I32] => I32),
+            map_method!(static "_Internal", "last_index_of_ptr" => "haxe_string_last_index_of_ptr", params: 2, returns: primitive,
+                types: &[PtrString, PtrString] => I32),
+            map_method!(static "_Internal", "last_index_of_ptr_offset" => "haxe_string_last_index_of_ptr_offset", params: 3, returns: primitive,
+                types: &[PtrString, PtrString, I32] => I32),
+
+            // String toLowerCase/toUpperCase backing functions
+            map_method!(static "_Internal", "to_lower_case" => "haxe_string_to_lower_case", params: 1, returns: primitive,
+                types: &[PtrString] => PtrString),
+            map_method!(static "_Internal", "to_upper_case" => "haxe_string_to_upper_case", params: 1, returns: primitive,
+                types: &[PtrString] => PtrString),
+
+            // StringMap/IntMap count functions
+            map_method!(static "_Internal", "stringmap_count" => "haxe_stringmap_count", params: 1, returns: primitive,
+                types: &[PtrVoid] => I64),
+            map_method!(static "_Internal", "stringmap_keys" => "haxe_stringmap_keys", params: 2, returns: primitive,
+                types: &[PtrVoid, PtrI64] => PtrVoid),
+            map_method!(static "_Internal", "intmap_count" => "haxe_intmap_count", params: 1, returns: primitive,
+                types: &[PtrVoid] => I64),
+            map_method!(static "_Internal", "intmap_keys" => "haxe_intmap_keys", params: 2, returns: primitive,
+                types: &[PtrVoid, PtrI64] => PtrI64),
         ];
 
         self.register_from_tuples(mappings);
@@ -2212,6 +2589,7 @@ mod tests {
             method: "new",
             is_static: true,
             is_constructor: true,
+            param_count: 1
         };
         let call = mapping.get(&sig).expect("Channel constructor should be mapped");
         assert_eq!(call.runtime_name, "Channel_init");
@@ -2230,6 +2608,7 @@ mod tests {
             method: "new",
             is_static: true,
             is_constructor: true,
+            param_count: 0
         };
         let call = mapping.get(&sig).expect("VecI32 constructor should be mapped");
         assert_eq!(call.runtime_name, "rayzor_vec_i32_new");
