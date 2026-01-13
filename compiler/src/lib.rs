@@ -9,6 +9,7 @@ pub mod dependency_graph;
 pub mod hxml;
 pub mod stdlib;  // MIR-based standard library
 pub mod compiler_plugin;  // Compiler-level plugin system for stdlib method mappings
+pub mod logging;  // Logging configuration utilities
 
 // Re-export plugin system from separate crate (avoids cyclic dependency)
 pub use rayzor_plugin as plugin;

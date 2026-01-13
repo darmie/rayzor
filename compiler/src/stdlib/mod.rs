@@ -40,10 +40,18 @@ pub mod thread;
 pub mod channel;
 pub mod sync;
 
+// Hashlink compatibility
+pub mod hl_types;
+pub mod hdll_plugin;
+
 use crate::ir::{IrModule, mir_builder::MirBuilder};
 
 // Re-export runtime mapping types
 pub use runtime_mapping::{StdlibMapping, MethodSignature, RuntimeFunctionCall, FunctionSource, IrTypeDescriptor};
+
+// Re-export Hashlink compatibility types
+pub use hl_types::HlTypeKind;
+pub use hdll_plugin::{HdllPlugin, HdllError, HdllManifest};
 
 /// Build the complete standard library as an MIR module
 ///

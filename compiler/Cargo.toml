@@ -12,6 +12,7 @@ rayzor-runtime = { path = "../runtime" }
 rayzor-plugin = { path = "../plugin" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+libloading = "0.8"  # For HDLL dynamic library loading
 postcard = { version = "1.0", features = ["alloc"] }
 fxhash = "0.2.1"
 log = "0.4"
