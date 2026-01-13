@@ -2371,6 +2371,26 @@ impl<'a> HirToMirContext<'a> {
                     return self.builder.build_function_ptr(func_id);
                 }
 
+                // IMPORTANT: If we're inside a lambda and this is a captured variable,
+                // we must RELOAD from the environment on each access. This ensures that:
+                // 1. Updates from other threads (e.g., main thread setting `ready = true`)
+                //    are visible to the lambda (thread reading `ready` in a while loop)
+                // 2. Mutable captured variables have proper by-reference semantics
+                //
+                // Without this reload, the captured variable would be cached in an SSA register
+                // at lambda entry and never refreshed, causing hangs in condition variable patterns.
+                if let Some(ref env_layout) = self.current_env_layout {
+                    if let Some(_field) = env_layout.find_field(*symbol) {
+                        // This is a captured variable - reload from environment
+                        let env_ptr = IrId::new(0);  // First parameter in lambda is environment pointer
+                        let loaded = env_layout.load_field(&mut self.builder, env_ptr, *symbol)?;
+                        eprintln!("DEBUG: Reloading captured variable {:?} from environment, got {:?}", symbol, loaded);
+                        // Update symbol_map so subsequent operations use the new value
+                        self.symbol_map.insert(*symbol, loaded);
+                        return Some(loaded);
+                    }
+                }
+
                 // Try to get from symbol_map first (local variables, parameters)
                 if let Some(&reg) = self.symbol_map.get(symbol) {
                     // Check if we need to convert the type
@@ -9420,9 +9440,23 @@ impl<'a> HirToMirContext<'a> {
         // Step 1: Collect captured values from current scope FIRST
         // (before generate_lambda_function which saves/restores state)
         let mut captured_values = Vec::new();
-        eprintln!("DEBUG: Collecting {} captured values", captures.len());
+        // Filter captures to only include actual variables, not global functions
+        // Global functions (like `trace`) don't need to be captured - they're resolved by name
+        let filtered_captures: Vec<_> = captures.iter().filter(|c| {
+            if let Some(sym) = self.symbol_table.get_symbol(c.symbol) {
+                // Skip Function symbols - they don't need capturing
+                if sym.kind == crate::tast::SymbolKind::Function {
+                    eprintln!("DEBUG: Skipping function capture {:?} (name={:?})",
+                             c.symbol, self.string_interner.get(sym.name));
+                    return false;
+                }
+            }
+            true
+        }).collect();
+
+        eprintln!("DEBUG: Collecting {} captured values (filtered from {})", filtered_captures.len(), captures.len());
         eprintln!("DEBUG: symbol_map has {} entries", self.symbol_map.len());
-        for capture in captures {
+        for capture in &filtered_captures {
             eprintln!("DEBUG: Looking for captured symbol {:?}", capture.symbol);
             if let Some(&captured_val) = self.symbol_map.get(&capture.symbol) {
                 eprintln!("DEBUG:   Found! Register: {:?}", captured_val);
@@ -9442,7 +9476,9 @@ impl<'a> HirToMirContext<'a> {
         }
 
         // Step 2: Generate the lambda function
-        let lambda_func_id = self.generate_lambda_function(params, body, captures, lambda_type)?;
+        // Pass filtered captures so the lambda doesn't try to load global functions from env
+        let filtered_captures_slice: Vec<HirCapture> = filtered_captures.iter().map(|c| (*c).clone()).collect();
+        let lambda_func_id = self.generate_lambda_function(params, body, &filtered_captures_slice, lambda_type)?;
 
         // Step 3: Use MakeClosure instruction to create closure
         self.builder
