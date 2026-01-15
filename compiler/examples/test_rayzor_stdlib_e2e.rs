@@ -358,7 +358,7 @@ impl E2ETestSuite {
             } else {
                 println!("\n❌ {} FAILED", test_name);
             }
-            sleep(Duration::from_secs(1));
+            // sleep(Duration::from_secs(1));
         }
 
         results

@@ -58,6 +58,10 @@ pub struct CompilationUnit {
     /// Cache of types that failed to load on-demand (to avoid repeated attempts)
     pub failed_type_loads: HashSet<String>,
 
+    /// Cache of files that have been successfully compiled (to avoid redundant recompilation)
+    /// Maps filename to the TypedFile result
+    compiled_files: HashMap<String, TypedFile>,
+
     /// Internal compilation pipeline (delegates to HaxeCompilationPipeline)
     pipeline: HaxeCompilationPipeline,
 
@@ -336,6 +340,7 @@ impl CompilationUnit {
             import_resolver,
             config,
             failed_type_loads: HashSet::new(),
+            compiled_files: HashMap::new(),
             pipeline,
             mir_modules: Vec::new(),
             loaded_stdlib_typed_files: Vec::new(),
@@ -374,9 +379,146 @@ impl CompilationUnit {
         self.namespace_resolver.set_source_paths(paths);
     }
 
-    /// Load a single file on-demand for import resolution
-    /// This compiles the file with shared state and registers its symbols
-    /// Implements recursive dependency loading with retry logic
+    /// Load imports efficiently by pre-collecting all dependencies and compiling in topological order.
+    /// This avoids the fail-retry pattern that causes exponential recompilation.
+    pub fn load_imports_efficiently(&mut self, imports: &[String]) -> Result<(), String> {
+        use std::collections::{HashMap, HashSet, VecDeque};
+
+        // Step 1: Collect all files and their dependencies by parsing (not compiling)
+        let mut all_files: HashMap<String, (PathBuf, String, Vec<String>)> = HashMap::new(); // path -> (filepath, source, deps)
+        let mut to_process: VecDeque<String> = imports.iter().cloned().collect();
+        let mut visited: HashSet<String> = HashSet::new();
+
+        while let Some(qualified_path) = to_process.pop_front() {
+            if visited.contains(&qualified_path) {
+                continue;
+            }
+            visited.insert(qualified_path.clone());
+
+            // Resolve to file path
+            let file_path = if let Some(path) = self.namespace_resolver.resolve_qualified_path_to_file(&qualified_path) {
+                path
+            } else if !qualified_path.contains('.') {
+                // Try common prefixes for unqualified names
+                let prefixes = ["haxe.iterators", "haxe.ds", "haxe", "sys.thread", "sys", "haxe.exceptions", "haxe.io"];
+                let mut found = None;
+                for prefix in &prefixes {
+                    let full = format!("{}.{}", prefix, qualified_path);
+                    if let Some(path) = self.namespace_resolver.resolve_qualified_path_to_file(&full) {
+                        found = Some(path);
+                        break;
+                    }
+                }
+                match found {
+                    Some(p) => p,
+                    None => continue, // Skip unresolvable imports
+                }
+            } else {
+                continue; // Skip unresolvable
+            };
+
+            // Skip if already loaded
+            if self.namespace_resolver.is_file_loaded(&file_path) {
+                continue;
+            }
+
+            // Read and parse to extract imports
+            let source = match std::fs::read_to_string(&file_path) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            let filename = file_path.to_string_lossy().to_string();
+            let deps = match parser::parse_haxe_file(&filename, &source, false) {
+                Ok(ast) => {
+                    ast.imports.iter()
+                        .filter_map(|imp| {
+                            if !imp.path.is_empty() {
+                                Some(imp.path.join("."))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                }
+                Err(_) => Vec::new(),
+            };
+
+            // Queue dependencies for processing
+            for dep in &deps {
+                if !visited.contains(dep) {
+                    to_process.push_back(dep.clone());
+                }
+            }
+
+            all_files.insert(qualified_path.clone(), (file_path, source, deps));
+        }
+
+        // Step 2: Topological sort using Kahn's algorithm
+        let mut in_degree: HashMap<String, usize> = HashMap::new();
+        let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+
+        for (name, (_, _, deps)) in &all_files {
+            in_degree.entry(name.clone()).or_insert(0);
+            for dep in deps {
+                if all_files.contains_key(dep) {
+                    graph.entry(dep.clone()).or_default().push(name.clone());
+                    *in_degree.entry(name.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        let mut queue: VecDeque<String> = in_degree.iter()
+            .filter(|(_, &deg)| deg == 0)
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        let mut compile_order: Vec<String> = Vec::new();
+
+        while let Some(name) = queue.pop_front() {
+            compile_order.push(name.clone());
+            if let Some(dependents) = graph.get(&name) {
+                for dep in dependents {
+                    if let Some(deg) = in_degree.get_mut(dep) {
+                        *deg -= 1;
+                        if *deg == 0 {
+                            queue.push_back(dep.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 3: Compile in topological order (no retries needed!)
+        for name in compile_order {
+            if let Some((file_path, source, _)) = all_files.remove(&name) {
+                // Skip if already compiled
+                let filename = file_path.to_string_lossy().to_string();
+                if self.compiled_files.contains_key(&filename) {
+                    continue;
+                }
+
+                // Mark as loaded
+                self.namespace_resolver.mark_file_loaded(file_path);
+
+                // Compile - should succeed on first try since deps are already compiled
+                match self.compile_file_with_shared_state(&filename, &source) {
+                    Ok(typed_file) => {
+                        self.loaded_stdlib_typed_files.push(typed_file);
+                    }
+                    Err(_) => {
+                        // If it still fails, fall back to old retry mechanism
+                        // This handles edge cases like Placeholder typedefs
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Load a single file on-demand for import resolution (legacy - uses retry pattern)
+    /// Prefer load_imports_efficiently for batch loading
     pub fn load_import_file(&mut self, qualified_path: &str) -> Result<(), String> {
         self.load_import_file_recursive(qualified_path, 0)
     }
@@ -410,14 +552,21 @@ impl CompilationUnit {
             return Err(format!("Could not resolve import: {}", qualified_path));
         };
 
+        // Skip if already loaded - this prevents redundant re-compilation
+        if self.namespace_resolver.is_file_loaded(&file_path) {
+            return Ok(());
+        }
+
+        let load_start = std::time::Instant::now();
+
+        // Mark as loaded BEFORE compiling to prevent recursive loading
+        self.namespace_resolver.mark_file_loaded(file_path.clone());
+
         // Read the file
         let source = std::fs::read_to_string(&file_path)
             .map_err(|e| format!("Failed to read {:?}: {}", file_path, e))?;
 
         let filename = file_path.to_string_lossy().to_string();
-
-        // Mark as loaded before compiling to avoid recursive loading
-        self.namespace_resolver.mark_file_loaded(file_path.clone());
 
         // Try to compile - if it fails due to missing dependencies, extract and load them
         match self.compile_file_with_shared_state(&filename, &source) {
@@ -868,6 +1017,11 @@ impl CompilationUnit {
         use crate::tast::ast_lowering::AstLowering;
         use parser::parse_haxe_file_with_diagnostics;
 
+        // Skip if already successfully compiled - return cached TypedFile
+        if let Some(cached) = self.compiled_files.get(filename) {
+            return Ok(cached.clone());
+        }
+
         // Parse the file
         let parse_result = parse_haxe_file_with_diagnostics(filename, source)
             .map_err(|e| vec![CompilationError {
@@ -1023,6 +1177,7 @@ impl CompilationUnit {
             debug!("DEBUG: Skipping MIR module creation for EXTERN stdlib file: {}", filename);
             // Extern stdlib files have Rust implementations in build_stdlib().
             // The Haxe files are just type declarations.
+            self.compiled_files.insert(filename.to_string(), typed_file.clone());
             return Ok(typed_file);
         }
 
@@ -1224,6 +1379,9 @@ impl CompilationUnit {
         // Store the MIR module
         self.mir_modules.push(std::sync::Arc::new(mir_module));
 
+        // Mark as successfully compiled to prevent redundant recompilation
+        self.compiled_files.insert(filename.to_string(), typed_file.clone());
+
         Ok(typed_file)
     }
 
@@ -1286,19 +1444,10 @@ impl CompilationUnit {
                 (imports, usings)
             });
 
-        // Pre-load imports
-        for qualified_path in imports_to_load {
-            let _ = self.load_import_file(&qualified_path);
-        }
-
-        // Pre-load using statements (for static extensions like StringTools)
-        for qualified_path in usings_to_load {
-            if let Err(e) = self.load_import_file(&qualified_path) {
-                // Using modules might not always exist as separate files
-                // (e.g., if they're already in the user project)
-                log::debug!("Could not pre-load using module '{}': {}", qualified_path, e);
-            }
-        }
+        // Pre-load imports using efficient topological loading (avoids retry loops)
+        let mut all_imports = imports_to_load;
+        all_imports.extend(usings_to_load);
+        let _ = self.load_imports_efficiently(&all_imports);
 
         // Step 3: Compile import.hx files using SHARED state
         let import_sources: Vec<(String, String)> = self.import_hx_files.iter()

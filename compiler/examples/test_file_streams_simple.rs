@@ -9,8 +9,21 @@ use std::sync::Arc;
 fn main() {
     println!("=== Simple File Stream Test ===\n");
 
+    // Baseline: simple program without sys.io
+    println!("Test 0: Baseline (no sys.io imports)");
+    let baseline = r#"
+class Main {
+    static function main() {
+        trace("Hello");
+        var x = 1 + 2;
+        trace(x);
+    }
+}
+"#;
+    let _ = compile_and_run(baseline, "baseline");
+
     // Test File.write and writeByte, File.read and readByte
-    println!("Test: FileOutput and FileInput stream operations");
+    println!("\nTest 1: FileOutput and FileInput stream operations");
     let source = r#"
 import sys.io.File;
 import sys.io.FileOutput;
@@ -59,21 +72,34 @@ class Main {
 }
 
 fn compile_and_run(source: &str, name: &str) -> Result<(), String> {
+    use std::time::Instant;
+
+    let t0 = Instant::now();
     let mut unit = CompilationUnit::new(CompilationConfig::default());
     unit.load_stdlib()?;
     unit.add_file(source, &format!("{}.hx", name))?;
+    eprintln!("[PROFILE] Load stdlib + add file: {:?}", t0.elapsed());
 
+    let t1 = Instant::now();
     let _typed_files = unit.lower_to_tast().map_err(|errors| {
         format!("TAST lowering failed: {:?}", errors)
     })?;
+    eprintln!("[PROFILE] TAST lowering: {:?}", t1.elapsed());
 
+    let t2 = Instant::now();
     let mir_modules = unit.get_mir_modules();
     if mir_modules.is_empty() {
         return Err("No MIR modules generated".to_string());
     }
+    eprintln!("[PROFILE] Get MIR modules: {:?}", t2.elapsed());
 
+    let t3 = Instant::now();
     let mut backend = compile_to_native(&mir_modules)?;
+    eprintln!("[PROFILE] Compile to native: {:?}", t3.elapsed());
+
+    let t4 = Instant::now();
     execute_main(&mut backend, &mir_modules)?;
+    eprintln!("[PROFILE] Execute: {:?}", t4.elapsed());
 
     Ok(())
 }
