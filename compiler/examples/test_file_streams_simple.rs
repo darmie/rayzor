@@ -69,9 +69,34 @@ class Main {
             println!("❌ FAILED: {}", e);
         }
     }
+
+    // Compare speed vs fast compilation modes
+    println!("\n=== Cranelift Mode Comparison ===");
+
+    let comparison_source = r#"
+class Main {
+    static function main() {
+        var sum = 0;
+        for (i in 0...100) {
+            sum += i;
+        }
+        trace(sum);
+    }
+}
+"#;
+
+    println!("\nTest 2a: Speed mode (optimized)");
+    let _ = compile_and_run_with_mode(comparison_source, "speed_test", false);
+
+    println!("\nTest 2b: Fast mode (no optimization)");
+    let _ = compile_and_run_with_mode(comparison_source, "fast_test", true);
 }
 
 fn compile_and_run(source: &str, name: &str) -> Result<(), String> {
+    compile_and_run_with_mode(source, name, false)
+}
+
+fn compile_and_run_with_mode(source: &str, name: &str, fast_mode: bool) -> Result<(), String> {
     use std::time::Instant;
 
     let t0 = Instant::now();
@@ -94,7 +119,7 @@ fn compile_and_run(source: &str, name: &str) -> Result<(), String> {
     eprintln!("[PROFILE] Get MIR modules: {:?}", t2.elapsed());
 
     let t3 = Instant::now();
-    let mut backend = compile_to_native(&mir_modules)?;
+    let mut backend = compile_to_native_with_mode(&mir_modules, fast_mode)?;
     eprintln!("[PROFILE] Compile to native: {:?}", t3.elapsed());
 
     let t4 = Instant::now();
@@ -105,15 +130,39 @@ fn compile_and_run(source: &str, name: &str) -> Result<(), String> {
 }
 
 fn compile_to_native(modules: &[Arc<IrModule>]) -> Result<CraneliftBackend, String> {
+    compile_to_native_with_mode(modules, false)
+}
+
+fn compile_to_native_with_mode(modules: &[Arc<IrModule>], fast_mode: bool) -> Result<CraneliftBackend, String> {
+    use std::time::Instant;
+
+    let t0 = Instant::now();
     let plugin = rayzor_runtime::plugin_impl::get_plugin();
     let symbols = plugin.runtime_symbols();
     let symbols_ref: Vec<(&str, *const u8)> = symbols.iter().map(|(n, p)| (*n, *p)).collect();
 
-    let mut backend = CraneliftBackend::with_symbols(&symbols_ref)?;
+    let mut backend = if fast_mode {
+        CraneliftBackend::with_fast_compilation(&symbols_ref)?
+    } else {
+        CraneliftBackend::with_symbols(&symbols_ref)?
+    };
+    let mode_str = if fast_mode { "fast" } else { "speed" };
+    eprintln!("  [Cranelift-{}] Backend creation: {:?}", mode_str, t0.elapsed());
 
-    for module in modules {
+    let mut total_funcs = 0;
+    let mut total_impl_funcs = 0;
+    for (i, module) in modules.iter().enumerate() {
+        let t1 = Instant::now();
+        let func_count = module.functions.len();
+        let impl_count = module.functions.values().filter(|f| !f.cfg.blocks.is_empty()).count();
+        total_funcs += func_count;
+        total_impl_funcs += impl_count;
         backend.compile_module(module)?;
+        eprintln!("  [Cranelift-{}] Module {} '{}': {} funcs ({} impl) in {:?}",
+                  mode_str, i, module.name, func_count, impl_count, t1.elapsed());
     }
+    eprintln!("  [Cranelift-{}] Total: {} modules, {} funcs ({} impl)",
+              mode_str, modules.len(), total_funcs, total_impl_funcs);
 
     Ok(backend)
 }

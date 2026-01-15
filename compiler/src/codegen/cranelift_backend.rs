@@ -97,6 +97,14 @@ impl CraneliftBackend {
         Self::with_symbols_and_opt(opt_level, &[])
     }
 
+    /// Create a fast compilation backend for development (no optimization)
+    ///
+    /// This uses "none" optimization level for fastest compilation.
+    /// Suitable for development iteration where compile time matters more than runtime speed.
+    pub fn with_fast_compilation(symbols: &[(&str, *const u8)]) -> Result<Self, String> {
+        Self::with_symbols_and_opt("none", symbols)
+    }
+
     /// Internal: Create backend with symbols and optimization level
     fn with_symbols_and_opt(
         opt_level: &str,
@@ -121,9 +129,15 @@ impl CraneliftBackend {
             .set("opt_level", opt_level)
             .map_err(|e| format!("Failed to set opt_level: {}", e))?;
 
-        // Enable verifier for detailed error messages during development
+        // Enable verifier only in debug builds for detailed error messages
+        // Verifier adds overhead, so disable in release for faster compilation
+        #[cfg(debug_assertions)]
         flag_builder
             .set("enable_verifier", "true")
+            .map_err(|e| format!("Failed to set enable_verifier: {}", e))?;
+        #[cfg(not(debug_assertions))]
+        flag_builder
+            .set("enable_verifier", "false")
             .map_err(|e| format!("Failed to set enable_verifier: {}", e))?;
 
         // Create ISA for the current platform
@@ -1021,7 +1035,9 @@ impl CraneliftBackend {
             trace!("=== End Cranelift IR ===\n");
         }
 
-        // Verify the function before defining
+        // Verify the function before defining (debug builds only)
+        // This catches IR errors early but adds compilation overhead
+        #[cfg(debug_assertions)]
         if let Err(errors) = cranelift_codegen::verify_function(&self.ctx.func, self.module.isa()) {
             debug!("!!! Cranelift Verifier Errors for {} !!!", function.name);
             debug!("{}", errors);
