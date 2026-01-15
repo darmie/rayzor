@@ -20,8 +20,7 @@ import sys.FileSystem;
 class Main {
     static function main() {
         trace("=== Test FileOutput ===");
-        // Now using INFERRED TYPE (was: var output:FileOutput = ...)
-        var output = File.write("/tmp/rayzor_simple_test.txt", true);
+        var output:FileOutput = File.write("/tmp/rayzor_simple_test.txt", true);
 
         // Write some bytes
         output.writeByte(72);  // 'H'
@@ -31,8 +30,7 @@ class Main {
         trace("Wrote Hi!");
 
         trace("=== Test FileInput ===");
-        // Now using INFERRED TYPE (was: var input:FileInput = ...)
-        var input = File.read("/tmp/rayzor_simple_test.txt", true);
+        var input:FileInput = File.read("/tmp/rayzor_simple_test.txt", true);
 
         // Read bytes
         var b1 = input.readByte();
