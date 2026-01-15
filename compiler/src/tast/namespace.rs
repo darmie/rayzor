@@ -225,7 +225,11 @@ impl NamespaceResolver {
         // First check source paths (user workspace)
         for source_path in &self.source_paths {
             let full_path = source_path.join(&file_path);
-            if full_path.exists() && !self.is_file_loaded(&full_path) {
+            if full_path.exists() {
+                if self.is_file_loaded(&full_path) {
+                    // Already loaded from cache - skip
+                    return None;
+                }
                 return Some(full_path);
             }
         }
@@ -233,7 +237,11 @@ impl NamespaceResolver {
         // Then check stdlib paths
         for stdlib_path in &self.stdlib_paths {
             let full_path = stdlib_path.join(&file_path);
-            if full_path.exists() && !self.is_file_loaded(&full_path) {
+            if full_path.exists() {
+                if self.is_file_loaded(&full_path) {
+                    // Already loaded from cache - skip
+                    return None;
+                }
                 return Some(full_path);
             }
         }

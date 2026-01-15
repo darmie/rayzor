@@ -23,6 +23,7 @@ target
 # Rayzor build artifacts
 /target/
 *.blade
+*.bsym
 
 # Haxe platform-specific standard libraries (not needed for Rayzor target)
 compiler/haxe-std/cpp/

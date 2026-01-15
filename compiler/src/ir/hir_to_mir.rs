@@ -383,15 +383,17 @@ impl<'a> HirToMirContext<'a> {
                         // methods are handled by the runtime mapping system, not by MIR stubs.
                         let should_skip_method = if method.function.body.is_none() {
                             // Method has no body - check if it has a runtime mapping
-                            // First try qualified name (e.g., "rayzor_Bytes"), then fall back to simple name
-                            let has_mapping = if let Some(ref qn) = qualified_class_name {
-                                if let Some(method_name) = self.string_interner.get(method.function.name) {
-                                    self.stdlib_mapping.has_mapping(qn, method_name, method.is_static)
-                                } else {
-                                    false
-                                }
-                            } else if let Some(class_name_str) = class_name {
-                                if let Some(method_name) = self.string_interner.get(method.function.name) {
+                            // Try qualified name first (e.g., "rayzor_Bytes"), then fall back to simple name
+                            let has_mapping = if let Some(method_name) = self.string_interner.get(method.function.name) {
+                                // Try qualified name first
+                                let found_in_qualified = qualified_class_name.as_ref()
+                                    .map(|qn| self.stdlib_mapping.has_mapping(qn, method_name, method.is_static))
+                                    .unwrap_or(false);
+
+                                if found_in_qualified {
+                                    true
+                                } else if let Some(class_name_str) = class_name {
+                                    // Fall back to simple class name (e.g., "FileSystem" instead of "sys_FileSystem")
                                     self.stdlib_mapping.has_mapping(class_name_str, method_name, method.is_static)
                                 } else {
                                     false
@@ -436,46 +438,44 @@ impl<'a> HirToMirContext<'a> {
                         // with a runtime mapping for "new". For extern classes like Channel, Thread, etc.,
                         // the "new" constructor is handled by the runtime mapping system, not by
                         // generating a MIR constructor function.
-                        // Use qualified class name first (e.g., "rayzor_Bytes"), then fall back to simple name
-                        let should_skip_constructor = if let Some(ref qn) = qualified_class_name {
-                            // Check if this class has a "new" constructor in the runtime mapping
-                            if let Some(class_name_static) = self.stdlib_mapping.get_class_static_str(qn) {
-                                let method_sig = crate::stdlib::runtime_mapping::MethodSignature {
-                                    class: class_name_static,
-                                    method: "new",
-                                    is_static: true,
-                                    is_constructor: true,
-                                    param_count: 0,
-                                };
-                                let has_runtime_constructor = self.stdlib_mapping.get(&method_sig).is_some();
-                                if has_runtime_constructor {
-                                    debug!("Skipping constructor lowering for extern class '{}' - using runtime mapping", qn);
+                        // Try qualified class name first (e.g., "rayzor_Bytes"), then fall back to simple name
+                        let should_skip_constructor = {
+                            // Helper to check runtime mapping for a class name
+                            let check_class_runtime = |name: &str| -> bool {
+                                if let Some(class_name_static) = self.stdlib_mapping.get_class_static_str(name) {
+                                    let method_sig = crate::stdlib::runtime_mapping::MethodSignature {
+                                        class: class_name_static,
+                                        method: "new",
+                                        is_static: true,
+                                        is_constructor: true,
+                                        param_count: 0,
+                                    };
+                                    if self.stdlib_mapping.get(&method_sig).is_some() {
+                                        debug!("Skipping constructor lowering for extern class '{}' - using runtime mapping", name);
+                                        return true;
+                                    }
                                 }
-                                has_runtime_constructor
+                                false
+                            };
+
+                            // Try qualified name first, then fall back to simple name
+                            let found_in_qualified = qualified_class_name.as_ref()
+                                .map(|qn| check_class_runtime(qn))
+                                .unwrap_or(false);
+
+                            if found_in_qualified {
+                                true
+                            } else if let Some(class_name_str) = class_name {
+                                // Fallback to simple class name (e.g., "Thread" instead of "rayzor_concurrent_Thread")
+                                if check_class_runtime(class_name_str) {
+                                    true
+                                } else {
+                                    // Also skip if this is a generic stdlib class (like Vec<T>)
+                                    self.stdlib_mapping.is_generic_stdlib_class(class_name_str)
+                                }
                             } else {
                                 false
                             }
-                        } else if let Some(class_name_str) = class_name {
-                            // Fallback to simple class name
-                            if let Some(class_name_static) = self.stdlib_mapping.get_class_static_str(class_name_str) {
-                                let method_sig = crate::stdlib::runtime_mapping::MethodSignature {
-                                    class: class_name_static,
-                                    method: "new",
-                                    is_static: true,
-                                    is_constructor: true,
-                                    param_count: 0,
-                                };
-                                let has_runtime_constructor = self.stdlib_mapping.get(&method_sig).is_some();
-                                if has_runtime_constructor {
-                                    debug!("Skipping constructor lowering for extern class '{}' - using runtime mapping", class_name_str);
-                                }
-                                has_runtime_constructor
-                            } else {
-                                // Also skip if this is a generic stdlib class (like Vec<T>)
-                                self.stdlib_mapping.is_generic_stdlib_class(class_name_str)
-                            }
-                        } else {
-                            false
                         };
 
                         if !should_skip_constructor {

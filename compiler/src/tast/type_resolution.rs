@@ -604,12 +604,74 @@ impl<'a> TypeResolver<'a> {
                             "String" => Ok(self.type_table.borrow().string_type()),
                             "Void" => Ok(self.type_table.borrow().void_type()),
                             "Dynamic" => Ok(self.type_table.borrow().dynamic_type()),
-                            _ => Err(TypeResolutionError::UnresolvedType {
-                                name: name.clone(),
-                                location: SourceLocation::unknown(),
-                            }),
+                            _ => {
+                                // Fallback: Try direct symbol lookup for BLADE-cached types
+                                if let Some((symbol, _scope_id)) = self.resolve_symbol(interned_name) {
+                                    if let Some(symbol) = self.symbol_table.get_symbol(symbol.id) {
+                                        use crate::tast::SymbolKind;
+                                        let type_id = match symbol.kind {
+                                            SymbolKind::Class => {
+                                                self.type_table.borrow_mut().create_class_type(symbol.id, vec![])
+                                            }
+                                            SymbolKind::Interface => {
+                                                self.type_table.borrow_mut().create_interface_type(symbol.id, vec![])
+                                            }
+                                            SymbolKind::Enum => {
+                                                self.type_table.borrow_mut().create_enum_type(symbol.id, vec![])
+                                            }
+                                            SymbolKind::Abstract => {
+                                                self.type_table.borrow_mut().create_abstract_type(symbol.id, None, vec![])
+                                            }
+                                            _ => {
+                                                self.type_table.borrow_mut().create_class_type(symbol.id, vec![])
+                                            }
+                                        };
+                                        return Ok(type_id);
+                                    }
+                                }
+                                Err(TypeResolutionError::UnresolvedType {
+                                    name: name.clone(),
+                                    location: SourceLocation::unknown(),
+                                })
+                            },
                         }
                     } else {
+                        // Qualified name not in forward_references
+                        // Fallback: Try direct symbol lookup for BLADE-cached types
+                        if let Some((symbol, _scope_id)) = self.resolve_symbol(interned_name) {
+                            // Process type arguments if present
+                            let type_args = if !params.is_empty() {
+                                let mut args = Vec::new();
+                                for param in params {
+                                    args.push(self.resolve_type_reference(param)?);
+                                }
+                                args
+                            } else {
+                                Vec::new()
+                            };
+
+                            if let Some(symbol) = self.symbol_table.get_symbol(symbol.id) {
+                                use crate::tast::SymbolKind;
+                                let type_id = match symbol.kind {
+                                    SymbolKind::Class => {
+                                        self.type_table.borrow_mut().create_class_type(symbol.id, type_args)
+                                    }
+                                    SymbolKind::Interface => {
+                                        self.type_table.borrow_mut().create_interface_type(symbol.id, type_args)
+                                    }
+                                    SymbolKind::Enum => {
+                                        self.type_table.borrow_mut().create_enum_type(symbol.id, type_args)
+                                    }
+                                    SymbolKind::Abstract => {
+                                        self.type_table.borrow_mut().create_abstract_type(symbol.id, None, type_args)
+                                    }
+                                    _ => {
+                                        self.type_table.borrow_mut().create_class_type(symbol.id, type_args)
+                                    }
+                                };
+                                return Ok(type_id);
+                            }
+                        }
                         Err(TypeResolutionError::UnresolvedType {
                             name,
                             location: SourceLocation::unknown(),

@@ -18,7 +18,7 @@ use crate::pipeline::{
 use crate::dependency_graph::{DependencyGraph, DependencyAnalysis, CircularDependency};
 use crate::ir::{IrModule, IrInstruction, Monomorphizer, blade::{
     save_blade, load_blade, BladeMetadata, load_symbol_manifest, BladeSymbolManifest,
-    BladeClassInfo, BladeEnumInfo, BladeTypeAliasInfo,
+    BladeClassInfo, BladeEnumInfo, BladeTypeAliasInfo, BladeAbstractInfo, BladeMethodInfo,
 }};
 use parser::{HaxeFile, parse_haxe_file, parse_haxe_file_with_debug};
 use std::rc::Rc;
@@ -131,7 +131,7 @@ impl Default for CompilationConfig {
             load_stdlib: true,
             stdlib_root_package: Some("haxe".to_string()), // Prefix stdlib with "haxe.*" namespace
             global_import_hx_files: Vec::new(), // No global import.hx by default
-            enable_cache: false, // Cache disabled by default
+            enable_cache: true, // Cache enabled - BLADE manifest now includes Math, Std, Date, etc.
             cache_dir: None, // Auto-discover cache directory when needed
             pipeline_config: PipelineConfig::default(),
         }
@@ -272,12 +272,8 @@ impl CompilationConfig {
             return cache_dir.clone();
         }
 
-        // Default: target/<arch>-<os>/debug/cache
-        let triple = Self::get_target_triple();
-        let default_cache = PathBuf::from("target")
-            .join(&triple)
-            .join("debug")
-            .join("cache");
+        // Default: .rayzor/blade/cache (separate from Rust target folder)
+        let default_cache = PathBuf::from(".rayzor/blade/cache");
 
         // Try to create it if it doesn't exist
         if !default_cache.exists() {
@@ -371,6 +367,15 @@ impl CompilationUnit {
         // Configure namespace resolver with stdlib paths for on-demand loading
         self.namespace_resolver.set_stdlib_paths(self.config.stdlib_paths.clone());
 
+        // Load pre-compiled symbols from BLADE manifest if caching is enabled
+        if self.config.enable_cache {
+            if self.load_stdlib_symbols() {
+                debug!("BLADE symbols loaded, stdlib configured for cached resolution");
+            } else {
+                debug!("No BLADE symbols available, falling back to on-demand loading");
+            }
+        }
+
         // DON'T load stdlib files upfront - rely entirely on on-demand loading
         // Files will be loaded via load_import_file() when imports or qualified names are encountered
         debug!("Stdlib configured for pure on-demand loading (no files loaded at startup)");
@@ -388,7 +393,8 @@ impl CompilationUnit {
 
     /// Get the BLADE cache path for a source file
     fn blade_cache_path(&self, source_path: &str) -> Option<PathBuf> {
-        let cache_dir = self.config.cache_dir.as_ref()?;
+        // Use get_cache_dir() to auto-discover the cache directory
+        let cache_dir = self.config.get_cache_dir();
 
         // Convert source path to a cache-safe filename
         // e.g., "compiler/haxe-std/haxe/io/Bytes.hx" -> "haxe.io.Bytes.blade"
@@ -510,6 +516,8 @@ impl CompilationUnit {
             Ok(manifest) => {
                 info!("[BLADE] Loading {} modules from symbol manifest", manifest.modules.len());
                 self.register_symbols_from_manifest(&manifest);
+                // Also register builtin globals like 'trace' that aren't in the manifest
+                self.register_builtin_globals();
                 true
             }
             Err(e) => {
@@ -519,16 +527,97 @@ impl CompilationUnit {
         }
     }
 
+    /// Register built-in global symbols like 'trace' that aren't in the BLADE manifest
+    fn register_builtin_globals(&mut self) {
+        use crate::tast::{Symbol, SymbolKind, SymbolFlags, Visibility, Mutability, LifetimeId, SourceLocation};
+
+        // Register built-in global functions
+        let builtin_functions = [
+            ("trace", vec!["Dynamic"], "Void"), // trace(value: Dynamic): Void
+        ];
+
+        for (func_name, param_types, return_type_str) in builtin_functions {
+            let func_name_interned = self.string_interner.intern(func_name);
+
+            // Create parameter types
+            let param_type_ids: Vec<TypeId> = param_types.iter()
+                .map(|param_type_name| match *param_type_name {
+                    "Dynamic" => self.type_table.borrow().dynamic_type(),
+                    "Int" => self.type_table.borrow().int_type(),
+                    "String" => self.type_table.borrow().string_type(),
+                    "Float" => self.type_table.borrow().float_type(),
+                    "Bool" => self.type_table.borrow().bool_type(),
+                    "Void" => self.type_table.borrow().void_type(),
+                    _ => self.type_table.borrow().dynamic_type(),
+                })
+                .collect();
+
+            // Create return type
+            let return_type_id = match return_type_str {
+                "Dynamic" => self.type_table.borrow().dynamic_type(),
+                "Int" => self.type_table.borrow().int_type(),
+                "String" => self.type_table.borrow().string_type(),
+                "Float" => self.type_table.borrow().float_type(),
+                "Bool" => self.type_table.borrow().bool_type(),
+                "Void" => self.type_table.borrow().void_type(),
+                _ => self.type_table.borrow().dynamic_type(),
+            };
+
+            // Create function type
+            let function_type_id = self.type_table.borrow_mut()
+                .create_function_type(param_type_ids, return_type_id);
+
+            // Create function symbol
+            let func_symbol_id = SymbolId::from_raw(self.symbol_table.len() as u32);
+            let func_symbol = Symbol {
+                id: func_symbol_id,
+                name: func_name_interned,
+                kind: SymbolKind::Function,
+                type_id: function_type_id,
+                scope_id: ScopeId::first(),
+                lifetime_id: LifetimeId::invalid(),
+                visibility: Visibility::Public,
+                mutability: Mutability::Immutable,
+                definition_location: SourceLocation::unknown(),
+                is_used: false,
+                is_exported: false,
+                documentation: None,
+                flags: SymbolFlags::NONE,
+                package_id: None,
+                qualified_name: None,
+            };
+
+            // Add symbol to symbol table
+            self.symbol_table.add_symbol(func_symbol);
+
+            // Add to root scope for global resolution
+            if let Some(scope) = self.scope_tree.get_scope_mut(ScopeId::first()) {
+                scope.add_symbol(func_symbol_id, func_name_interned);
+            }
+
+            trace!("[BLADE] Registered builtin: {}", func_name);
+        }
+    }
+
     /// Register all symbols from a loaded manifest
     fn register_symbols_from_manifest(&mut self, manifest: &BladeSymbolManifest) {
         let mut total_classes = 0;
         let mut total_enums = 0;
         let mut total_aliases = 0;
+        let mut total_abstracts = 0;
+        let mut total_methods = 0;
 
         for module in &manifest.modules {
+            // Mark this file as "loaded" so load_import_file_recursive will skip it
+            // This prevents redundant re-parsing of files whose symbols are already cached
+            let source_path = PathBuf::from(&module.source_path);
+            self.namespace_resolver.mark_file_loaded(source_path);
+
             for class_info in &module.types.classes {
+                let method_count = class_info.methods.len() + class_info.static_methods.len();
                 self.register_class_from_blade(class_info);
                 total_classes += 1;
+                total_methods += method_count;
             }
             for enum_info in &module.types.enums {
                 self.register_enum_from_blade(enum_info);
@@ -538,10 +627,16 @@ impl CompilationUnit {
                 self.register_type_alias_from_blade(alias_info);
                 total_aliases += 1;
             }
+            for abstract_info in &module.types.abstracts {
+                let method_count = abstract_info.methods.len() + abstract_info.static_methods.len();
+                self.register_abstract_from_blade(abstract_info);
+                total_abstracts += 1;
+                total_methods += method_count;
+            }
         }
 
-        debug!("[BLADE] Registered {} classes, {} enums, {} aliases from manifest",
-            total_classes, total_enums, total_aliases);
+        debug!("[BLADE] Registered {} classes, {} enums, {} aliases, {} abstracts ({} methods) from manifest",
+            total_classes, total_enums, total_aliases, total_abstracts, total_methods);
     }
 
     /// Register a class from BLADE symbol info
@@ -554,13 +649,17 @@ impl CompilationUnit {
         };
         let qualified_interned = self.string_interner.intern(&qualified_name);
 
+        // Create a scope for the class members
+        let class_scope = self.scope_tree.create_scope(Some(ScopeId::first()));
+
         // Create class symbol using the existing helper method
         let symbol_id = self.symbol_table.create_class_in_scope(short_name, ScopeId::first());
 
-        // Update symbol metadata
+        // Update symbol metadata including the class scope
         if let Some(sym) = self.symbol_table.get_symbol_mut(symbol_id) {
             sym.qualified_name = Some(qualified_interned);
             sym.is_exported = true;
+            sym.scope_id = class_scope; // Set the scope where members are registered
             if class_info.is_extern {
                 sym.flags = sym.flags.union(SymbolFlags::EXTERN);
             }
@@ -584,10 +683,117 @@ impl CompilationUnit {
         // Register qualified name alias
         self.symbol_table.add_symbol_alias(symbol_id, ScopeId::first(), qualified_interned);
 
-        trace!("[BLADE] Registered class: {} ({} methods, {} fields)",
-            qualified_name, class_info.methods.len(), class_info.fields.len());
+        // Register instance methods
+        for method in &class_info.methods {
+            self.register_method_from_blade(method, symbol_id, class_scope, false);
+        }
+
+        // Register static methods
+        for method in &class_info.static_methods {
+            self.register_method_from_blade(method, symbol_id, class_scope, true);
+        }
+
+        // Register constructor if present
+        if let Some(ctor) = &class_info.constructor {
+            self.register_method_from_blade(ctor, symbol_id, class_scope, false);
+        }
+
+        // Register fields
+        for field in &class_info.fields {
+            self.register_field_from_blade(field, symbol_id, class_scope);
+        }
+
+        // Register static fields
+        for field in &class_info.static_fields {
+            self.register_field_from_blade(field, symbol_id, class_scope);
+        }
+
+        trace!("[BLADE] Registered class: {} ({} methods, {} fields) in scope {:?}",
+            qualified_name, class_info.methods.len() + class_info.static_methods.len(),
+            class_info.fields.len() + class_info.static_fields.len(), class_scope);
 
         symbol_id
+    }
+
+    /// Register a method from BLADE info into a class scope
+    fn register_method_from_blade(
+        &mut self,
+        method: &BladeMethodInfo,
+        _class_symbol: SymbolId,
+        class_scope: ScopeId,
+        is_static: bool,
+    ) -> SymbolId {
+        let method_name = self.string_interner.intern(&method.name);
+
+        // Create the function symbol
+        let method_symbol = self.symbol_table.create_function_in_scope(method_name, class_scope);
+
+        // Parse parameter types and return type to create a function type
+        let param_types: Vec<TypeId> = method.params.iter()
+            .map(|p| self.parse_type_string(&p.param_type))
+            .collect();
+        let return_type = self.parse_type_string(&method.return_type);
+
+        // Create function type
+        let func_type = self.type_table.borrow_mut().create_type(
+            TypeKind::Function {
+                params: param_types,
+                return_type,
+                effects: crate::tast::core::FunctionEffects::default(),
+            }
+        );
+
+        // Update symbol with type and flags
+        if let Some(sym) = self.symbol_table.get_symbol_mut(method_symbol) {
+            sym.type_id = func_type;
+            if is_static {
+                sym.flags = sym.flags.union(SymbolFlags::STATIC);
+            }
+            if !method.is_public {
+                sym.visibility = crate::tast::symbols::Visibility::Private;
+            }
+        }
+
+        // Add to scope
+        let _ = self.scope_tree.add_symbol_to_scope(class_scope, method_symbol);
+
+        method_symbol
+    }
+
+    /// Register a field from BLADE info into a class scope
+    fn register_field_from_blade(
+        &mut self,
+        field: &crate::ir::blade::BladeFieldInfo,
+        _class_symbol: SymbolId,
+        class_scope: ScopeId,
+    ) -> SymbolId {
+        let field_name = self.string_interner.intern(&field.name);
+
+        // Create the field symbol
+        let field_symbol = self.symbol_table.create_field(field_name);
+
+        // Parse field type
+        let field_type = self.parse_type_string(&field.field_type);
+
+        // Update symbol with type and flags
+        if let Some(sym) = self.symbol_table.get_symbol_mut(field_symbol) {
+            sym.type_id = field_type;
+            sym.scope_id = class_scope;
+            if field.is_static {
+                sym.flags = sym.flags.union(SymbolFlags::STATIC);
+            }
+            if field.is_final {
+                sym.mutability = crate::tast::symbols::Mutability::Immutable;
+            }
+            if !field.is_public {
+                sym.visibility = crate::tast::symbols::Visibility::Private;
+            }
+        }
+
+        // Add to scope
+        let _ = self.scope_tree.add_symbol_to_scope(class_scope, field_symbol);
+
+        field_symbol
     }
 
     /// Register an enum from BLADE symbol info
@@ -676,6 +882,66 @@ impl CompilationUnit {
         symbol_id
     }
 
+    /// Register an abstract type from BLADE symbol info
+    fn register_abstract_from_blade(&mut self, abstract_info: &BladeAbstractInfo) -> SymbolId {
+        let short_name = self.string_interner.intern(&abstract_info.name);
+        let qualified_name = if abstract_info.package.is_empty() {
+            abstract_info.name.clone()
+        } else {
+            format!("{}.{}", abstract_info.package.join("."), abstract_info.name)
+        };
+        let qualified_interned = self.string_interner.intern(&qualified_name);
+
+        // Create a scope for the abstract's methods
+        let abstract_scope = self.scope_tree.create_scope(Some(ScopeId::first()));
+
+        // Create abstract symbol using the existing helper method
+        let symbol_id = self.symbol_table.create_abstract_in_scope(short_name, ScopeId::first());
+
+        // Parse the underlying type
+        let underlying_type = self.parse_type_string(&abstract_info.underlying_type);
+
+        // Update symbol metadata including the abstract scope
+        if let Some(sym) = self.symbol_table.get_symbol_mut(symbol_id) {
+            sym.qualified_name = Some(qualified_interned);
+            sym.is_exported = true;
+            sym.scope_id = abstract_scope; // Set the scope where methods are registered
+        }
+
+        // Create abstract type
+        let abstract_type = self.type_table.borrow_mut().create_type(
+            TypeKind::Abstract {
+                symbol_id,
+                underlying: Some(underlying_type),
+                type_args: vec![],
+            }
+        );
+
+        // Update symbol with type
+        self.symbol_table.update_symbol_type(symbol_id, abstract_type);
+
+        // Register type-symbol mapping
+        self.symbol_table.register_type_symbol_mapping(abstract_type, symbol_id);
+
+        // Register qualified name alias
+        self.symbol_table.add_symbol_alias(symbol_id, ScopeId::first(), qualified_interned);
+
+        // Register instance methods
+        for method in &abstract_info.methods {
+            self.register_method_from_blade(method, symbol_id, abstract_scope, false);
+        }
+
+        // Register static methods
+        for method in &abstract_info.static_methods {
+            self.register_method_from_blade(method, symbol_id, abstract_scope, true);
+        }
+
+        trace!("[BLADE] Registered abstract: {} ({} methods) in scope {:?}",
+            qualified_name, abstract_info.methods.len() + abstract_info.static_methods.len(), abstract_scope);
+
+        symbol_id
+    }
+
     /// Parse a type string (e.g., "Array<Int>", "String", "Null<Float>") and return a TypeId
     fn parse_type_string(&mut self, type_str: &str) -> TypeId {
         let type_str = type_str.trim();
@@ -718,15 +984,34 @@ impl CompilationUnit {
         }
 
         // Handle generic types: ClassName<T, U>
+        // Need to find the matching close bracket, not just the last '>'
         if let Some(open) = type_str.find('<') {
-            if let Some(close) = type_str.rfind('>') {
-                let base_name = &type_str[..open];
-                let args_str = &type_str[open+1..close];
-                let type_args = self.parse_type_list(args_str);
+            // Find the matching closing bracket
+            let mut depth = 0;
+            let mut close = None;
+            for (i, ch) in type_str.char_indices() {
+                match ch {
+                    '<' => depth += 1,
+                    '>' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(close) = close {
+                if open < close {
+                    let base_name = &type_str[..open];
+                    let args_str = &type_str[open+1..close];
+                    let type_args = self.parse_type_list(args_str);
 
-                // Look up the base type
-                if let Some(symbol_id) = self.lookup_type_symbol(base_name) {
-                    return self.type_table.borrow_mut().create_class_type(symbol_id, type_args);
+                    // Look up the base type
+                    if let Some(symbol_id) = self.lookup_type_symbol(base_name) {
+                        return self.type_table.borrow_mut().create_class_type(symbol_id, type_args);
+                    }
                 }
             }
         }
@@ -1481,6 +1766,12 @@ impl CompilationUnit {
 
         // Skip pre-registration if requested (types already registered by CompilationUnit)
         lowering.set_skip_pre_registration(skip_pre_registration);
+
+        // Skip stdlib loading during lowering if BLADE cache is enabled
+        // (methods and types were already registered from the BLADE manifest)
+        if self.config.enable_cache {
+            lowering.set_skip_stdlib_loading(true);
+        }
 
         lowering.initialize_span_converter_with_filename(
             file_id.as_usize() as u32,

@@ -354,6 +354,10 @@ pub struct BladeAbstractInfo {
     pub from_types: Vec<String>,
     /// To types (implicit conversions to)
     pub to_types: Vec<String>,
+    /// Methods defined on the abstract
+    pub methods: Vec<BladeMethodInfo>,
+    /// Static methods defined on the abstract
+    pub static_methods: Vec<BladeMethodInfo>,
 }
 
 /// All type information for a module
