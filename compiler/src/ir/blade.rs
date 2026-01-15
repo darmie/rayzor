@@ -208,6 +208,250 @@ pub fn load_blade(path: impl AsRef<Path>) -> Result<(IrModule, BladeMetadata), B
     Ok((blade.mir, blade.metadata))
 }
 
+// ============================================================================
+// BLADE Symbol Format - Pre-resolved symbol storage for fast startup
+// ============================================================================
+
+/// Magic number for symbol manifest files
+const SYMBOL_MAGIC: &[u8; 4] = b"BSYM";
+
+/// Current symbol format version
+const SYMBOL_VERSION: u32 = 1;
+
+/// Complete symbol information for a field
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BladeFieldInfo {
+    /// Field name
+    pub name: String,
+    /// Field type as string (e.g., "Int", "Array<String>")
+    pub field_type: String,
+    /// Is this field public?
+    pub is_public: bool,
+    /// Is this a static field?
+    pub is_static: bool,
+    /// Is this field final/immutable?
+    pub is_final: bool,
+    /// Does this field have a default value?
+    pub has_default: bool,
+}
+
+/// Parameter information for methods
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BladeParamInfo {
+    /// Parameter name
+    pub name: String,
+    /// Parameter type as string
+    pub param_type: String,
+    /// Does this parameter have a default value?
+    pub has_default: bool,
+    /// Is this parameter optional (nullable)?
+    pub is_optional: bool,
+}
+
+/// Complete symbol information for a method
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BladeMethodInfo {
+    /// Method name
+    pub name: String,
+    /// Method parameters
+    pub params: Vec<BladeParamInfo>,
+    /// Return type as string
+    pub return_type: String,
+    /// Is this method public?
+    pub is_public: bool,
+    /// Is this a static method?
+    pub is_static: bool,
+    /// Is this an inline method?
+    pub is_inline: bool,
+    /// Type parameters for generic methods
+    pub type_params: Vec<String>,
+}
+
+/// Complete symbol information for a class
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BladeClassInfo {
+    /// Class name (short name, e.g., "Bytes")
+    pub name: String,
+    /// Package path (e.g., ["haxe", "io"])
+    pub package: Vec<String>,
+    /// Superclass qualified name (if any)
+    pub extends: Option<String>,
+    /// Implemented interfaces
+    pub implements: Vec<String>,
+    /// Type parameters (e.g., ["T", "U"])
+    pub type_params: Vec<String>,
+    /// Is this an extern class?
+    pub is_extern: bool,
+    /// Is this an abstract class?
+    pub is_abstract: bool,
+    /// Is this a final class?
+    pub is_final: bool,
+    /// Instance fields
+    pub fields: Vec<BladeFieldInfo>,
+    /// Instance methods
+    pub methods: Vec<BladeMethodInfo>,
+    /// Static fields
+    pub static_fields: Vec<BladeFieldInfo>,
+    /// Static methods
+    pub static_methods: Vec<BladeMethodInfo>,
+    /// Constructor info (if any)
+    pub constructor: Option<BladeMethodInfo>,
+}
+
+/// Enum variant information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BladeEnumVariantInfo {
+    /// Variant name
+    pub name: String,
+    /// Constructor parameters (for variants with data)
+    pub params: Vec<BladeParamInfo>,
+    /// Ordinal index
+    pub index: usize,
+}
+
+/// Complete symbol information for an enum
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BladeEnumInfo {
+    /// Enum name
+    pub name: String,
+    /// Package path
+    pub package: Vec<String>,
+    /// Type parameters
+    pub type_params: Vec<String>,
+    /// Enum variants
+    pub variants: Vec<BladeEnumVariantInfo>,
+    /// Is this an extern enum?
+    pub is_extern: bool,
+}
+
+/// Type alias information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BladeTypeAliasInfo {
+    /// Alias name
+    pub name: String,
+    /// Package path
+    pub package: Vec<String>,
+    /// Type parameters
+    pub type_params: Vec<String>,
+    /// Target type as string
+    pub target_type: String,
+}
+
+/// Abstract type information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BladeAbstractInfo {
+    /// Abstract name
+    pub name: String,
+    /// Package path
+    pub package: Vec<String>,
+    /// Type parameters
+    pub type_params: Vec<String>,
+    /// Underlying type
+    pub underlying_type: String,
+    /// Forward fields (from @:forward)
+    pub forward_fields: Vec<String>,
+    /// From types (implicit conversions from)
+    pub from_types: Vec<String>,
+    /// To types (implicit conversions to)
+    pub to_types: Vec<String>,
+}
+
+/// All type information for a module
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BladeTypeInfo {
+    /// Classes defined in this module
+    pub classes: Vec<BladeClassInfo>,
+    /// Enums defined in this module
+    pub enums: Vec<BladeEnumInfo>,
+    /// Type aliases defined in this module
+    pub type_aliases: Vec<BladeTypeAliasInfo>,
+    /// Abstract types defined in this module
+    pub abstracts: Vec<BladeAbstractInfo>,
+}
+
+impl Default for BladeTypeInfo {
+    fn default() -> Self {
+        Self {
+            classes: Vec::new(),
+            enums: Vec::new(),
+            type_aliases: Vec::new(),
+            abstracts: Vec::new(),
+        }
+    }
+}
+
+/// Symbol manifest for all pre-compiled stdlib symbols
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BladeSymbolManifest {
+    /// Magic number for validation
+    magic: [u8; 4],
+    /// Format version
+    version: u32,
+    /// Compiler version
+    pub compiler_version: String,
+    /// Build timestamp
+    pub build_timestamp: u64,
+    /// All modules in this manifest
+    pub modules: Vec<BladeModuleSymbols>,
+}
+
+/// Symbols for a single module
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BladeModuleSymbols {
+    /// Module name (e.g., "haxe.io.Bytes")
+    pub name: String,
+    /// Source file path
+    pub source_path: String,
+    /// Source hash for cache validation
+    pub source_hash: u64,
+    /// Type information
+    pub types: BladeTypeInfo,
+    /// Dependencies (other modules this depends on)
+    pub dependencies: Vec<String>,
+}
+
+/// Save a symbol manifest to file
+pub fn save_symbol_manifest(
+    path: impl AsRef<Path>,
+    modules: Vec<BladeModuleSymbols>,
+) -> Result<(), BladeError> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let manifest = BladeSymbolManifest {
+        magic: *SYMBOL_MAGIC,
+        version: SYMBOL_VERSION,
+        compiler_version: env!("CARGO_PKG_VERSION").to_string(),
+        build_timestamp: now,
+        modules,
+    };
+
+    let bytes = postcard::to_allocvec(&manifest)?;
+    fs::write(path, bytes)?;
+
+    Ok(())
+}
+
+/// Load a symbol manifest from file
+pub fn load_symbol_manifest(path: impl AsRef<Path>) -> Result<BladeSymbolManifest, BladeError> {
+    let bytes = fs::read(path)?;
+    let manifest: BladeSymbolManifest = postcard::from_bytes(&bytes)?;
+
+    if &manifest.magic != SYMBOL_MAGIC {
+        return Err(BladeError::InvalidMagic);
+    }
+
+    if manifest.version != SYMBOL_VERSION {
+        return Err(BladeError::UnsupportedVersion(manifest.version));
+    }
+
+    Ok(manifest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

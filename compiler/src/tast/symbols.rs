@@ -704,6 +704,17 @@ impl SymbolTable {
         self.symbols_by_name.contains_key(&(scope_id, name))
     }
 
+    /// Add an alias name for an existing symbol in the same scope.
+    /// This allows a symbol to be looked up by multiple names (e.g., both short and qualified names).
+    pub fn add_symbol_alias(&mut self, symbol_id: SymbolId, scope_id: ScopeId, alias_name: InternedString) {
+        // Only add if not already present
+        if !self.symbols_by_name.contains_key(&(scope_id, alias_name)) {
+            self.symbols_by_name.insert((scope_id, alias_name), symbol_id);
+            // Invalidate cache for this name
+            self.symbol_cache.clear();
+        }
+    }
+
     /// Get all symbols (for iteration)
     pub fn all_symbols(&self) -> impl Iterator<Item = &Symbol> {
         self.symbols_by_id.values().copied()

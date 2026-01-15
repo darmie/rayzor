@@ -1944,6 +1944,12 @@ impl CompilationUnit {
     pub fn get_mir_modules(&self) -> Vec<std::sync::Arc<crate::ir::IrModule>> {
         self.mir_modules.clone()
     }
+
+    /// Get the stdlib typed files that were loaded during compilation
+    /// Returns a reference to the vector of TypedFiles from stdlib loading
+    pub fn get_stdlib_typed_files(&self) -> &[TypedFile] {
+        &self.loaded_stdlib_typed_files
+    }
 }
 
 /// Cache statistics
