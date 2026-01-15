@@ -4,25 +4,21 @@
 //! for faster incremental compilation. Pre-compiled modules can be loaded directly
 //! instead of re-parsing and re-compiling.
 //!
-//! It generates two outputs:
-//! 1. Individual .blade files for MIR (executable code)
-//! 2. A single .bsym manifest with all symbol information (types, methods, fields)
+//! It generates a .bsym manifest with all symbol information (types, methods, fields)
 //!
 //! Usage:
-//!   cargo run --bin preblade -- --stdlib-path ./compiler/haxe-std --out .rayzor/blade/stdlib
-//!   cargo run --bin preblade -- --stdlib-path ./compiler/haxe-std --out .rayzor/blade/stdlib --force
+//!   cargo run --bin preblade -- --out .rayzor/blade/stdlib
 //!   cargo run --bin preblade -- --list  # List modules that would be compiled
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use compiler::ir::blade::{
-    BladeMetadata, BladeModuleSymbols, BladeTypeInfo, BladeClassInfo, BladeEnumInfo,
+    BladeModuleSymbols, BladeTypeInfo, BladeClassInfo, BladeEnumInfo,
     BladeFieldInfo, BladeMethodInfo, BladeParamInfo, BladeEnumVariantInfo, BladeTypeAliasInfo,
-    save_blade, save_symbol_manifest,
+    save_symbol_manifest,
 };
 use compiler::tast::type_checker::format_type_for_error;
 use compiler::tast::symbols::Visibility;
@@ -35,7 +31,6 @@ fn main() {
     let mut out_path: Option<PathBuf> = None;
     let mut list_only = false;
     let mut verbose = false;
-    let mut symbols_only = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -48,13 +43,11 @@ fn main() {
             }
             "--list" | "-l" => list_only = true,
             "--verbose" | "-v" => verbose = true,
-            "--symbols-only" | "-s" => symbols_only = true,
             "--help" | "-h" => {
                 print_usage();
                 return;
             }
             _ => {
-                // Ignore unknown args for forward compatibility
                 if args[i].starts_with("-") {
                     eprintln!("Warning: Unknown argument: {}", args[i]);
                 }
@@ -65,7 +58,6 @@ fn main() {
 
     let out_path = out_path.unwrap_or_else(|| PathBuf::from(".rayzor/blade/stdlib"));
 
-    // Create output directory
     if !list_only {
         if let Err(e) = std::fs::create_dir_all(&out_path) {
             eprintln!("Error creating output directory: {}", e);
@@ -75,11 +67,9 @@ fn main() {
 
     println!("Pre-BLADE: Extracting stdlib symbols");
     println!("  Output: {}", out_path.display());
-    println!("  Symbols only: {}", symbols_only);
     println!();
 
-    // Load stdlib using the compiler's normal mechanism
-    match extract_stdlib_symbols(&out_path, verbose, symbols_only, list_only) {
+    match extract_stdlib_symbols(&out_path, verbose, list_only) {
         Ok((classes, enums, aliases)) => {
             println!();
             println!("Pre-BLADE complete:");
@@ -101,174 +91,130 @@ fn print_usage() {
     println!("  preblade [OPTIONS]");
     println!();
     println!("Options:");
-    println!("  --out, -o <PATH>      Output directory for .blade/.bsym files");
+    println!("  --out, -o <PATH>      Output directory for .bsym files");
     println!("  --list, -l            List types without generating files");
     println!("  --verbose, -v         Show detailed output");
-    println!("  --symbols-only, -s    Only generate symbol manifest (no MIR)");
     println!("  --help, -h            Show this help message");
-    println!();
-    println!("Examples:");
-    println!("  preblade --out .rayzor/blade/stdlib");
-    println!("  preblade --list");
     println!();
     println!("Output files:");
     println!("  <out>/stdlib.bsym     Symbol manifest (all types/methods/fields)");
 }
 
-/// Extract symbols from stdlib using the compiler's normal loading mechanism
+/// Discover all .hx modules in stdlib directory
+fn discover_stdlib_modules(stdlib_path: &Path) -> Vec<String> {
+    let mut modules = Vec::new();
+    discover_modules_recursive(stdlib_path, stdlib_path, &mut modules);
+    modules.sort();
+    modules
+}
+
+fn discover_modules_recursive(base_path: &Path, current_path: &Path, modules: &mut Vec<String>) {
+    let entries = match std::fs::read_dir(current_path) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        if path.is_dir() {
+            let dir_name = path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+
+            // Skip hidden and platform-specific directories
+            if dir_name.starts_with('.') || dir_name.starts_with('_') {
+                continue;
+            }
+            let skip_dirs = ["cpp", "cs", "flash", "hl", "java", "js", "lua", "neko", "php", "python", "eval"];
+            if skip_dirs.contains(&dir_name) {
+                continue;
+            }
+
+            discover_modules_recursive(base_path, &path, modules);
+        } else if path.extension().map(|e| e == "hx").unwrap_or(false) {
+            let file_name = path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+
+            // Skip import.hx files
+            if file_name == "import.hx" {
+                continue;
+            }
+
+            // Convert path to qualified module name
+            if let Ok(relative) = path.strip_prefix(base_path) {
+                let module_name = relative.to_string_lossy()
+                    .replace('/', ".")
+                    .replace('\\', ".")
+                    .replace(".hx", "");
+                modules.push(module_name);
+            }
+        }
+    }
+}
+
+/// Extract symbols from stdlib
 fn extract_stdlib_symbols(
     out_path: &Path,
     verbose: bool,
-    _symbols_only: bool,
     list_only: bool,
 ) -> Result<(usize, usize, usize), String> {
     use compiler::compilation::{CompilationConfig, CompilationUnit};
 
-    // Create compilation unit
     let mut config = CompilationConfig::default();
-    config.enable_cache = false; // We're generating the cache, not using it
+    config.enable_cache = false;
     let mut unit = CompilationUnit::new(config);
 
-    // Load stdlib configuration (paths, etc.)
-    println!("Loading stdlib...");
+    println!("Loading stdlib configuration...");
     unit.load_stdlib()
         .map_err(|e| format!("Failed to load stdlib: {:?}", e))?;
 
-    // Create a dummy file that imports common stdlib modules to trigger on-demand loading
-    let stdlib_trigger = r#"
-        // Core types
-        import Std;
-        import Math;
-        import String;
-        import Array;
-        import Date;
-        import DateTools;
-        import Reflect;
-        import Type;
-        import Lambda;
-        import StringTools;
-        import StringBuf;
-        import Map;
-        import List;
-        import EReg;
-        import Xml;
-
-        // haxe.io package
-        import haxe.io.Bytes;
-        import haxe.io.BytesBuffer;
-        import haxe.io.BytesInput;
-        import haxe.io.BytesOutput;
-        import haxe.io.Path;
-        import haxe.io.Input;
-        import haxe.io.Output;
-        import haxe.io.Eof;
-
-        // haxe.ds package
-        import haxe.ds.StringMap;
-        import haxe.ds.IntMap;
-        import haxe.ds.ObjectMap;
-        import haxe.ds.List;
-        import haxe.ds.Vector;
-        import haxe.ds.BalancedTree;
-        import haxe.ds.ArraySort;
-        import haxe.ds.GenericStack;
-        import haxe.ds.HashMap;
-        import haxe.ds.EnumValueMap;
-        import haxe.ds.Option;
-        import haxe.ds.Either;
-
-        // haxe core
-        import haxe.Exception;
-        import haxe.CallStack;
-        import haxe.PosInfos;
-        import haxe.Log;
-        import haxe.Timer;
-        import haxe.Json;
-        import haxe.Resource;
-        import haxe.Template;
-        import haxe.Serializer;
-        import haxe.Unserializer;
-        import haxe.Utf8;
-        import haxe.Int32;
-        import haxe.Int64;
-        import haxe.EnumFlags;
-        import haxe.EnumTools;
-        import haxe.DynamicAccess;
-
-        // haxe.iterators
-        import haxe.iterators.ArrayIterator;
-        import haxe.iterators.ArrayKeyValueIterator;
-        import haxe.iterators.StringIterator;
-        import haxe.iterators.StringKeyValueIterator;
-        import haxe.iterators.MapKeyValueIterator;
-
-        // haxe.crypto
-        import haxe.crypto.Md5;
-        import haxe.crypto.Sha1;
-        import haxe.crypto.Sha256;
-        import haxe.crypto.Base64;
-        import haxe.crypto.Crc32;
-        import haxe.crypto.Adler32;
-        import haxe.crypto.BaseCode;
-        import haxe.crypto.Hmac;
-
-        // haxe.format
-        import haxe.format.JsonParser;
-        import haxe.format.JsonPrinter;
-
-        // haxe.exceptions
-        import haxe.exceptions.PosException;
-        import haxe.exceptions.NotImplementedException;
-        import haxe.exceptions.ArgumentException;
-
-        // sys package
-        import sys.FileSystem;
-        import sys.io.File;
-        import sys.io.FileInput;
-        import sys.io.FileOutput;
-        import sys.io.Process;
-
-        // sys.thread
-        import sys.thread.Thread;
-        import sys.thread.Mutex;
-        import sys.thread.Lock;
-        import sys.thread.Deque;
-        import sys.thread.Semaphore;
-        import sys.thread.Condition;
-        import sys.thread.FixedThreadPool;
-
-        // haxe.atomic
-        import haxe.atomic.AtomicInt;
-        import haxe.atomic.AtomicBool;
-        import haxe.atomic.AtomicObject;
-
-        class __PrebladeStdlibLoader {
-            public function new() {}
-        }
-    "#;
-
-    println!("  Triggering stdlib loading via imports...");
-    if let Err(e) = unit.add_file(stdlib_trigger, "<preblade-trigger>") {
-        println!("  Warning: Failed to add trigger file: {}", e);
+    // Find stdlib path from the unit's configuration
+    let stdlib_path = PathBuf::from("compiler/haxe-std");
+    if !stdlib_path.exists() {
+        return Err("Could not find stdlib path".to_string());
     }
 
-    // Lower to TAST - this triggers on-demand loading of all imported modules
+    // Discover all modules
+    let all_modules = discover_stdlib_modules(&stdlib_path);
+    println!("  Discovered {} modules in stdlib", all_modules.len());
+
+    if list_only {
+        println!();
+        for module in &all_modules {
+            println!("  {}", module);
+        }
+        return Ok((all_modules.len(), 0, 0));
+    }
+
+    // Load all modules using the efficient batch loader
+    println!("  Loading all modules...");
+    if let Err(e) = unit.load_imports_efficiently(&all_modules) {
+        println!("  Warning: Some modules failed to load: {}", e);
+    }
+
+    // Now trigger full compilation to get typed files
     println!("  Compiling to TAST...");
     let typed_files = match unit.lower_to_tast() {
         Ok(files) => files,
         Err(errors) => {
-            println!("  Warning: TAST lowering had {} errors (continuing with partial results)", errors.len());
+            println!("  Warning: TAST lowering had {} errors", errors.len());
+            if verbose {
+                for (i, e) in errors.iter().take(5).enumerate() {
+                    println!("    {}: {}", i + 1, e.message);
+                }
+            }
             Vec::new()
         }
     };
-    println!("  Loaded {} typed files", typed_files.len());
+    println!("  Compiled {} typed files", typed_files.len());
 
     let mut total_classes = 0;
     let mut total_enums = 0;
     let mut total_aliases = 0;
     let mut all_module_symbols: Vec<BladeModuleSymbols> = Vec::new();
 
-    // Extract symbols from each typed file
     for typed_file in &typed_files {
         let type_info = extract_type_info_from_file(typed_file, &unit.type_table);
 
@@ -279,45 +225,15 @@ fn extract_stdlib_symbols(
         let enum_count = type_info.enums.len();
         let alias_count = type_info.type_aliases.len();
 
-        if verbose || list_only {
-            if !type_info.classes.is_empty() || !type_info.enums.is_empty() {
-                println!("  {}: {} classes, {} enums, {} aliases",
-                    module_name, class_count, enum_count, alias_count);
-
-                if list_only {
-                    for class in &type_info.classes {
-                        let qualified = if class.package.is_empty() {
-                            class.name.clone()
-                        } else {
-                            format!("{}.{}", class.package.join("."), class.name)
-                        };
-                        println!("    class {}", qualified);
-                        if verbose {
-                            for method in &class.methods {
-                                println!("      {}({}) -> {}",
-                                    method.name,
-                                    method.params.iter().map(|p| p.param_type.as_str()).collect::<Vec<_>>().join(", "),
-                                    method.return_type);
-                            }
-                        }
-                    }
-                    for enum_def in &type_info.enums {
-                        let qualified = if enum_def.package.is_empty() {
-                            enum_def.name.clone()
-                        } else {
-                            format!("{}.{}", enum_def.package.join("."), enum_def.name)
-                        };
-                        println!("    enum {}", qualified);
-                    }
-                }
-            }
+        if verbose && (class_count > 0 || enum_count > 0 || alias_count > 0) {
+            println!("  {}: {} classes, {} enums, {} aliases",
+                module_name, class_count, enum_count, alias_count);
         }
 
         total_classes += class_count;
         total_enums += enum_count;
         total_aliases += alias_count;
 
-        // Add to manifest if there's actual content
         if !type_info.classes.is_empty() || !type_info.enums.is_empty() || !type_info.type_aliases.is_empty() {
             let source_hash = hash_string(&typed_file.metadata.file_path);
             all_module_symbols.push(BladeModuleSymbols {
@@ -328,10 +244,6 @@ fn extract_stdlib_symbols(
                 dependencies: Vec::new(),
             });
         }
-    }
-
-    if list_only {
-        return Ok((total_classes, total_enums, total_aliases));
     }
 
     // Save symbol manifest
@@ -349,17 +261,15 @@ fn extract_stdlib_symbols(
     Ok((total_classes, total_enums, total_aliases))
 }
 
-/// Extract type information from a single TypedFile
+/// Extract type information from a TypedFile
 fn extract_type_info_from_file(
     typed_file: &TypedFile,
     type_table: &RefCell<compiler::tast::TypeTable>,
 ) -> BladeTypeInfo {
     let mut type_info = BladeTypeInfo::default();
     let string_interner = typed_file.string_interner.borrow();
-
     let package = typed_file.metadata.package_name.as_deref().unwrap_or("");
 
-    // Extract classes
     for class in &typed_file.classes {
         let class_name = string_interner.get(class.name).unwrap_or("").to_string();
         let package_parts: Vec<String> = package.split('.').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
@@ -376,7 +286,6 @@ fn extract_type_info_from_file(
             .filter_map(|tp| string_interner.get(tp.name).map(|s| s.to_string()))
             .collect();
 
-        // Extract fields
         let fields: Vec<BladeFieldInfo> = class.fields.iter()
             .filter(|f| !f.is_static)
             .map(|f| BladeFieldInfo {
@@ -401,7 +310,6 @@ fn extract_type_info_from_file(
             })
             .collect();
 
-        // Extract methods
         let methods: Vec<BladeMethodInfo> = class.methods.iter()
             .filter(|m| !m.is_static)
             .map(|m| extract_method_info(m, type_table, &string_interner))
@@ -412,7 +320,6 @@ fn extract_type_info_from_file(
             .map(|m| extract_method_info(m, type_table, &string_interner))
             .collect();
 
-        // Extract constructor
         let constructor = class.constructors.first().map(|c| {
             extract_method_info(c, type_table, &string_interner)
         });
@@ -423,7 +330,7 @@ fn extract_type_info_from_file(
             extends,
             implements,
             type_params,
-            is_extern: false, // TODO: detect from metadata
+            is_extern: false,
             is_abstract: false,
             is_final: false,
             fields,
@@ -434,7 +341,6 @@ fn extract_type_info_from_file(
         });
     }
 
-    // Extract enums
     for enum_def in &typed_file.enums {
         let enum_name = string_interner.get(enum_def.name).unwrap_or("").to_string();
         let package_parts: Vec<String> = package.split('.').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
@@ -472,7 +378,6 @@ fn extract_type_info_from_file(
         });
     }
 
-    // Extract type aliases
     for alias in &typed_file.type_aliases {
         let alias_name = string_interner.get(alias.name).unwrap_or("").to_string();
         let package_parts: Vec<String> = package.split('.').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
@@ -492,7 +397,6 @@ fn extract_type_info_from_file(
     type_info
 }
 
-/// Extract method information from a TypedFunction
 fn extract_method_info(
     method: &compiler::tast::node::TypedFunction,
     type_table: &RefCell<compiler::tast::TypeTable>,
