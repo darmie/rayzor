@@ -32,8 +32,10 @@ mod tests {
         let mut import_resolver = crate::tast::namespace::ImportResolver::new(&namespace_resolver);
         
         // Create AST lowering instance
+        let string_interner_rc = Rc::new(RefCell::new(StringInterner::new()));
         let mut lowering = AstLowering::new(
             &mut string_interner,
+            string_interner_rc,
             &mut symbol_table,
             &type_table,
             &mut scope_tree,

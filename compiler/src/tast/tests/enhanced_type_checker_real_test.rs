@@ -52,8 +52,10 @@ class ProblematicCode {
         match parse_haxe_file("problematic_code.hx", problematic_haxe_code, true) {
             Ok(ast) => {
                 // Lower to TAST
+                let string_interner_rc = Rc::new(RefCell::new(StringInterner::new()));
                 let mut lowerer = AstLowering::new(
                     &mut string_interner,
+                    string_interner_rc,
                     &mut symbol_table,
                     &type_table,
                     &mut scope_tree,

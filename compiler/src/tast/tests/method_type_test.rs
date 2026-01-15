@@ -42,8 +42,10 @@ class MethodTest {
         let mut import_resolver = crate::tast::namespace::ImportResolver::new(&namespace_resolver);
         
         // Lower to TAST
+        let string_interner_rc = Rc::new(RefCell::new(StringInterner::new()));
         let mut lowering = AstLowering::new(
             &mut string_interner,
+            string_interner_rc,
             &mut symbol_table,
             &type_table,
             &mut scope_tree,

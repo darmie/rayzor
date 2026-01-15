@@ -379,6 +379,117 @@ impl CompilationUnit {
         self.namespace_resolver.set_source_paths(paths);
     }
 
+    // === BLADE Caching Methods ===
+
+    /// Get the BLADE cache path for a source file
+    fn blade_cache_path(&self, source_path: &str) -> Option<PathBuf> {
+        let cache_dir = self.config.cache_dir.as_ref()?;
+
+        // Convert source path to a cache-safe filename
+        // e.g., "compiler/haxe-std/haxe/io/Bytes.hx" -> "haxe.io.Bytes.blade"
+        let module_name = source_path
+            .replace('/', ".")
+            .replace('\\', ".")
+            .replace(".hx", "")
+            .split('.')
+            .skip_while(|s| *s == "compiler" || *s == "haxe-std" || s.is_empty())
+            .collect::<Vec<_>>()
+            .join(".");
+
+        if module_name.is_empty() {
+            return None;
+        }
+
+        Some(cache_dir.join(format!("{}.blade", module_name)))
+    }
+
+    /// Compute hash of source content for cache validation
+    fn hash_source(source: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        use std::collections::hash_map::DefaultHasher;
+        let mut hasher = DefaultHasher::new();
+        source.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Try to load a cached MIR module from BLADE cache
+    /// Returns Some(IrModule) if cache is valid, None otherwise
+    fn try_load_blade_cached(&self, source_path: &str, source: &str) -> Option<IrModule> {
+        if !self.config.enable_cache {
+            return None;
+        }
+
+        let blade_path = self.blade_cache_path(source_path)?;
+        if !blade_path.exists() {
+            trace!("[BLADE] Cache miss (no file): {}", source_path);
+            return None;
+        }
+
+        match load_blade(&blade_path) {
+            Ok((mir, metadata)) => {
+                // Validate cache by checking source hash
+                let current_hash = Self::hash_source(source);
+                if metadata.source_hash == current_hash {
+                    debug!("[BLADE] Cache hit: {} -> {}", source_path, blade_path.display());
+                    Some(mir)
+                } else {
+                    trace!("[BLADE] Cache stale (hash mismatch): {}", source_path);
+                    None
+                }
+            }
+            Err(e) => {
+                trace!("[BLADE] Cache read error for {}: {}", source_path, e);
+                None
+            }
+        }
+    }
+
+    /// Save a MIR module to BLADE cache
+    fn save_blade_cached(&self, source_path: &str, source: &str, mir: &IrModule, dependencies: Vec<String>) {
+        if !self.config.enable_cache {
+            return;
+        }
+
+        let blade_path = match self.blade_cache_path(source_path) {
+            Some(p) => p,
+            None => return,
+        };
+
+        // Ensure cache directory exists
+        if let Some(parent) = blade_path.parent() {
+            if !parent.exists() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    trace!("[BLADE] Failed to create cache dir: {}", e);
+                    return;
+                }
+            }
+        }
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let metadata = BladeMetadata {
+            name: mir.name.clone(),
+            source_path: source_path.to_string(),
+            source_hash: Self::hash_source(source),
+            source_timestamp: now, // We use hash for validation, not timestamp
+            compile_timestamp: now,
+            dependencies,
+            compiler_version: env!("CARGO_PKG_VERSION").to_string(),
+        };
+
+        match save_blade(&blade_path, mir, metadata) {
+            Ok(()) => {
+                debug!("[BLADE] Cached: {} -> {}", source_path, blade_path.display());
+            }
+            Err(e) => {
+                trace!("[BLADE] Failed to cache {}: {}", source_path, e);
+            }
+        }
+    }
+
     /// Load imports efficiently by pre-collecting all dependencies and compiling in topological order.
     /// This avoids the fail-retry pattern that causes exponential recompilation.
     pub fn load_imports_efficiently(&mut self, imports: &[String]) -> Result<(), String> {
@@ -1697,10 +1808,15 @@ impl CompilationUnit {
                 .map_err(|e| format!("Failed to create cache directory: {}", e))?;
         }
 
-        // Get source file timestamp
+        // Get source file timestamp and compute hash
         let source_timestamp = std::fs::metadata(source_path)
             .and_then(|m| m.modified())
             .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs())
+            .unwrap_or(0);
+
+        // Read source for hash computation
+        let source_hash = std::fs::read_to_string(source_path)
+            .map(|s| Self::hash_source(&s))
             .unwrap_or(0);
 
         let compile_timestamp = SystemTime::now()
@@ -1712,6 +1828,7 @@ impl CompilationUnit {
         let metadata = BladeMetadata {
             name: module.name.clone(),
             source_path: source_path.to_string_lossy().to_string(),
+            source_hash,
             source_timestamp,
             compile_timestamp,
             dependencies: Vec::new(), // TODO: Track dependencies for proper invalidation

@@ -56,6 +56,10 @@ pub struct BladeMetadata {
     /// Source file path
     pub source_path: String,
 
+    /// Hash of the source content for cache validation
+    /// More reliable than timestamps for detecting changes
+    pub source_hash: u64,
+
     /// Source file modification timestamp (Unix epoch seconds)
     pub source_timestamp: u64,
 
@@ -224,6 +228,7 @@ mod tests {
         let metadata = BladeMetadata {
             name: "test_module".to_string(),
             source_path: "test.hx".to_string(),
+            source_hash: 0x12345678, // Test hash value
             source_timestamp: now,
             compile_timestamp: now,
             dependencies: vec![],

@@ -63,8 +63,10 @@ class HealthBar {
     let mut import_resolver = ImportResolver::new();
     
     // Lower ASTs
+    let string_interner_rc = Rc::new(RefCell::new(StringInterner::new()));
     let mut lowerer1 = AstLowering::new(
         &mut string_interner,
+        string_interner_rc.clone(),
         &mut symbol_table,
         &type_table,
         &mut scope_tree,
@@ -72,9 +74,11 @@ class HealthBar {
         &mut import_resolver,
     );
     let typed_file1 = lowerer1.lower_file(&ast1).expect("Failed to lower Player.hx");
-    
+
+    let string_interner_rc2 = Rc::new(RefCell::new(StringInterner::new()));
     let mut lowerer2 = AstLowering::new(
         &mut string_interner,
+        string_interner_rc2,
         &mut symbol_table,
         &type_table,
         &mut scope_tree,
@@ -145,8 +149,10 @@ class Combat {
     let mut namespace_resolver = NamespaceResolver::new(&string_interner);
     let mut import_resolver = ImportResolver::new();
     
+    let string_interner_rc = Rc::new(RefCell::new(StringInterner::new()));
     let mut lowerer = AstLowering::new(
         &mut string_interner,
+        string_interner_rc,
         &mut symbol_table,
         &type_table,
         &mut scope_tree,
@@ -214,8 +220,10 @@ class Derived {
     let mut namespace_resolver = NamespaceResolver::new(&string_interner);
     let mut import_resolver = ImportResolver::new();
     
+    let string_interner_rc = Rc::new(RefCell::new(StringInterner::new()));
     let mut lowerer1 = AstLowering::new(
         &mut string_interner,
+        string_interner_rc.clone(),
         &mut symbol_table,
         &type_table,
         &mut scope_tree,
@@ -223,9 +231,11 @@ class Derived {
         &mut import_resolver,
     );
     let typed_file1 = lowerer1.lower_file(&ast1).expect("Failed to lower Base.hx");
-    
+
+    let string_interner_rc2 = Rc::new(RefCell::new(StringInterner::new()));
     let mut lowerer2 = AstLowering::new(
         &mut string_interner,
+        string_interner_rc2,
         &mut symbol_table,
         &type_table,
         &mut scope_tree,

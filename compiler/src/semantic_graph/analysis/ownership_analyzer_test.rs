@@ -120,7 +120,7 @@ mod ownership_analysis_tests {
       
        
         assert!(has_outlive_violation, "Should detect borrow outliving owner");
-        warn("Borrow outliving owner detection: {} violations found", violations_outlive.len());
+        println!("Borrow outliving owner detection: {} violations found", violations_outlive.len());
     }
 
     /// **Test Move Semantics Detection**

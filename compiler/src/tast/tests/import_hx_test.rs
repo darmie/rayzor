@@ -64,8 +64,10 @@ mod tests {
             let mut import_resolver = crate::tast::namespace::ImportResolver::new(&namespace_resolver);
             
             // Create AST lowering instance
+            let string_interner_rc = Rc::new(RefCell::new(StringInterner::new()));
             let mut lowering = AstLowering::new(
                 &mut string_interner,
+                string_interner_rc,
                 &mut symbol_table,
                 &type_table,
                 &mut scope_tree,
@@ -153,15 +155,17 @@ typedef StringDict = StringMap<Dynamic>;"#;
             let mut namespace_resolver = crate::tast::namespace::NamespaceResolver::new(&string_interner);
             let mut import_resolver = crate::tast::namespace::ImportResolver::new(&namespace_resolver);
             
+            let string_interner_rc = Rc::new(RefCell::new(StringInterner::new()));
             let mut lowering = AstLowering::new(
                 &mut string_interner,
+                string_interner_rc,
                 &mut symbol_table,
                 &type_table,
                 &mut scope_tree,
                 &mut namespace_resolver,
                 &mut import_resolver,
             );
-            
+
             match lowering.lower_file(&test_file) {
             Ok(typed_file) => {
                 println!("✅ Successfully lowered file with import.hx imports");
