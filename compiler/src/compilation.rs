@@ -601,8 +601,9 @@ impl CompilationUnit {
         }
 
         // Step 3: Compile in topological order (no retries needed!)
+        // With BLADE caching: check cache first, compile only if needed
         for name in compile_order {
-            if let Some((file_path, source, _)) = all_files.remove(&name) {
+            if let Some((file_path, source, deps)) = all_files.remove(&name) {
                 // Skip if already compiled
                 let filename = file_path.to_string_lossy().to_string();
                 if self.compiled_files.contains_key(&filename) {
@@ -610,12 +611,29 @@ impl CompilationUnit {
                 }
 
                 // Mark as loaded
-                self.namespace_resolver.mark_file_loaded(file_path);
+                self.namespace_resolver.mark_file_loaded(file_path.clone());
 
-                // Compile - should succeed on first try since deps are already compiled
+                // Try BLADE cache first (only if caching is enabled)
+                if self.config.enable_cache {
+                    if let Some(cached_mir) = self.try_load_blade_cached(&filename, &source) {
+                        debug!("[BLADE] Loaded from cache: {}", name);
+                        // Add cached MIR to our modules
+                        self.mir_modules.push(std::sync::Arc::new(cached_mir));
+                        continue;
+                    }
+                }
+
+                // Cache miss or caching disabled - compile normally
                 match self.compile_file_with_shared_state(&filename, &source) {
                     Ok(typed_file) => {
                         self.loaded_stdlib_typed_files.push(typed_file);
+
+                        // Save to BLADE cache for next time (if caching enabled)
+                        if self.config.enable_cache {
+                            if let Some(mir) = self.mir_modules.last() {
+                                self.save_blade_cached(&filename, &source, mir, deps);
+                            }
+                        }
                     }
                     Err(_) => {
                         // If it still fails, fall back to old retry mechanism
