@@ -4,9 +4,11 @@
 //! together, including standard library loading, package management, and symbol resolution.
 
 use crate::tast::{
-    AstLowering, StringInterner, SymbolTable, TypeTable, ScopeTree, ScopeId,
+    AstLowering, StringInterner, SymbolTable, TypeTable, ScopeTree, ScopeId, TypeId, SymbolId,
+    TypeKind,
     namespace::{NamespaceResolver, ImportResolver},
     stdlib_loader::{StdLibConfig, StdLibLoader},
+    symbols::SymbolFlags,
     TypedFile, SourceLocation,
 };
 use crate::pipeline::{
@@ -14,7 +16,10 @@ use crate::pipeline::{
     PipelineConfig, CompilationResult,
 };
 use crate::dependency_graph::{DependencyGraph, DependencyAnalysis, CircularDependency};
-use crate::ir::{IrModule, IrInstruction, Monomorphizer, blade::{save_blade, load_blade, BladeMetadata}};
+use crate::ir::{IrModule, IrInstruction, Monomorphizer, blade::{
+    save_blade, load_blade, BladeMetadata, load_symbol_manifest, BladeSymbolManifest,
+    BladeClassInfo, BladeEnumInfo, BladeTypeAliasInfo,
+}};
 use parser::{HaxeFile, parse_haxe_file, parse_haxe_file_with_debug};
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -488,6 +493,299 @@ impl CompilationUnit {
                 trace!("[BLADE] Failed to cache {}: {}", source_path, e);
             }
         }
+    }
+
+    // === BLADE Symbol Loading Methods ===
+
+    /// Load pre-compiled stdlib symbols from .bsym manifest
+    /// Returns true if symbols were loaded successfully
+    pub fn load_stdlib_symbols(&mut self) -> bool {
+        let manifest_path = PathBuf::from(".rayzor/blade/stdlib/stdlib.bsym");
+        if !manifest_path.exists() {
+            debug!("[BLADE] No symbol manifest found at {}", manifest_path.display());
+            return false;
+        }
+
+        match load_symbol_manifest(&manifest_path) {
+            Ok(manifest) => {
+                info!("[BLADE] Loading {} modules from symbol manifest", manifest.modules.len());
+                self.register_symbols_from_manifest(&manifest);
+                true
+            }
+            Err(e) => {
+                debug!("[BLADE] Failed to load symbol manifest: {}", e);
+                false
+            }
+        }
+    }
+
+    /// Register all symbols from a loaded manifest
+    fn register_symbols_from_manifest(&mut self, manifest: &BladeSymbolManifest) {
+        let mut total_classes = 0;
+        let mut total_enums = 0;
+        let mut total_aliases = 0;
+
+        for module in &manifest.modules {
+            for class_info in &module.types.classes {
+                self.register_class_from_blade(class_info);
+                total_classes += 1;
+            }
+            for enum_info in &module.types.enums {
+                self.register_enum_from_blade(enum_info);
+                total_enums += 1;
+            }
+            for alias_info in &module.types.type_aliases {
+                self.register_type_alias_from_blade(alias_info);
+                total_aliases += 1;
+            }
+        }
+
+        debug!("[BLADE] Registered {} classes, {} enums, {} aliases from manifest",
+            total_classes, total_enums, total_aliases);
+    }
+
+    /// Register a class from BLADE symbol info
+    fn register_class_from_blade(&mut self, class_info: &BladeClassInfo) -> SymbolId {
+        let short_name = self.string_interner.intern(&class_info.name);
+        let qualified_name = if class_info.package.is_empty() {
+            class_info.name.clone()
+        } else {
+            format!("{}.{}", class_info.package.join("."), class_info.name)
+        };
+        let qualified_interned = self.string_interner.intern(&qualified_name);
+
+        // Create class symbol using the existing helper method
+        let symbol_id = self.symbol_table.create_class_in_scope(short_name, ScopeId::first());
+
+        // Update symbol metadata
+        if let Some(sym) = self.symbol_table.get_symbol_mut(symbol_id) {
+            sym.qualified_name = Some(qualified_interned);
+            sym.is_exported = true;
+            if class_info.is_extern {
+                sym.flags = sym.flags.union(SymbolFlags::EXTERN);
+            }
+            if class_info.is_final {
+                sym.flags = sym.flags.union(SymbolFlags::FINAL);
+            }
+            if class_info.is_abstract {
+                sym.flags = sym.flags.union(SymbolFlags::ABSTRACT);
+            }
+        }
+
+        // Create class type
+        let class_type = self.type_table.borrow_mut().create_class_type(symbol_id, vec![]);
+
+        // Update symbol with type
+        self.symbol_table.update_symbol_type(symbol_id, class_type);
+
+        // Register type-symbol mapping
+        self.symbol_table.register_type_symbol_mapping(class_type, symbol_id);
+
+        // Register qualified name alias
+        self.symbol_table.add_symbol_alias(symbol_id, ScopeId::first(), qualified_interned);
+
+        trace!("[BLADE] Registered class: {} ({} methods, {} fields)",
+            qualified_name, class_info.methods.len(), class_info.fields.len());
+
+        symbol_id
+    }
+
+    /// Register an enum from BLADE symbol info
+    fn register_enum_from_blade(&mut self, enum_info: &BladeEnumInfo) -> SymbolId {
+        let short_name = self.string_interner.intern(&enum_info.name);
+        let qualified_name = if enum_info.package.is_empty() {
+            enum_info.name.clone()
+        } else {
+            format!("{}.{}", enum_info.package.join("."), enum_info.name)
+        };
+        let qualified_interned = self.string_interner.intern(&qualified_name);
+
+        // Create enum symbol using the existing helper method
+        let symbol_id = self.symbol_table.create_enum_in_scope(short_name, ScopeId::first());
+
+        // Update symbol metadata
+        if let Some(sym) = self.symbol_table.get_symbol_mut(symbol_id) {
+            sym.qualified_name = Some(qualified_interned);
+            sym.is_exported = true;
+            if enum_info.is_extern {
+                sym.flags = sym.flags.union(SymbolFlags::EXTERN);
+            }
+        }
+
+        // Create enum type
+        let enum_type = self.type_table.borrow_mut().create_enum_type(symbol_id, vec![]);
+
+        // Update symbol with type
+        self.symbol_table.update_symbol_type(symbol_id, enum_type);
+
+        // Register type-symbol mapping
+        self.symbol_table.register_type_symbol_mapping(enum_type, symbol_id);
+
+        // Register qualified name alias
+        self.symbol_table.add_symbol_alias(symbol_id, ScopeId::first(), qualified_interned);
+
+        trace!("[BLADE] Registered enum: {} ({} variants)",
+            qualified_name, enum_info.variants.len());
+
+        symbol_id
+    }
+
+    /// Register a type alias from BLADE symbol info
+    fn register_type_alias_from_blade(&mut self, alias_info: &BladeTypeAliasInfo) -> SymbolId {
+        let short_name = self.string_interner.intern(&alias_info.name);
+        let qualified_name = if alias_info.package.is_empty() {
+            alias_info.name.clone()
+        } else {
+            format!("{}.{}", alias_info.package.join("."), alias_info.name)
+        };
+        let qualified_interned = self.string_interner.intern(&qualified_name);
+
+        // Create type alias symbol using the existing helper method
+        let symbol_id = self.symbol_table.create_type_alias_in_scope(short_name, ScopeId::first());
+
+        // Update symbol metadata
+        if let Some(sym) = self.symbol_table.get_symbol_mut(symbol_id) {
+            sym.qualified_name = Some(qualified_interned);
+            sym.is_exported = true;
+        }
+
+        // Parse the target type string and create appropriate TypeId
+        let target_type = self.parse_type_string(&alias_info.target_type);
+
+        // Create type alias type
+        let alias_type = self.type_table.borrow_mut().create_type(
+            TypeKind::TypeAlias {
+                symbol_id,
+                target_type,
+                type_args: vec![],
+            }
+        );
+
+        // Update symbol with type
+        self.symbol_table.update_symbol_type(symbol_id, alias_type);
+
+        // Register type-symbol mapping
+        self.symbol_table.register_type_symbol_mapping(alias_type, symbol_id);
+
+        // Register qualified name alias
+        self.symbol_table.add_symbol_alias(symbol_id, ScopeId::first(), qualified_interned);
+
+        trace!("[BLADE] Registered type alias: {} -> {}",
+            qualified_name, alias_info.target_type);
+
+        symbol_id
+    }
+
+    /// Parse a type string (e.g., "Array<Int>", "String", "Null<Float>") and return a TypeId
+    fn parse_type_string(&mut self, type_str: &str) -> TypeId {
+        let type_str = type_str.trim();
+
+        // Handle primitives
+        match type_str {
+            "Int" => return self.type_table.borrow().int_type(),
+            "Float" => return self.type_table.borrow().float_type(),
+            "Bool" => return self.type_table.borrow().bool_type(),
+            "String" => return self.type_table.borrow().string_type(),
+            "Void" => return self.type_table.borrow().void_type(),
+            "Dynamic" => return self.type_table.borrow().dynamic_type(),
+            _ => {}
+        }
+
+        // Handle Null<T>
+        if let Some(inner) = type_str.strip_prefix("Null<").and_then(|s| s.strip_suffix(">")) {
+            let inner_type = self.parse_type_string(inner);
+            return self.type_table.borrow_mut().create_optional_type(inner_type);
+        }
+
+        // Handle Array<T>
+        if let Some(inner) = type_str.strip_prefix("Array<").and_then(|s| s.strip_suffix(">")) {
+            let element_type = self.parse_type_string(inner);
+            return self.type_table.borrow_mut().create_array_type(element_type);
+        }
+
+        // Handle function types: (A, B) -> C
+        if type_str.starts_with("(") {
+            if let Some((params_str, return_str)) = type_str.split_once(") -> ") {
+                let params_str = params_str.trim_start_matches('(');
+                let params: Vec<TypeId> = if params_str.is_empty() {
+                    vec![]
+                } else {
+                    self.parse_type_list(params_str)
+                };
+                let return_type = self.parse_type_string(return_str);
+                return self.type_table.borrow_mut().create_function_type(params, return_type);
+            }
+        }
+
+        // Handle generic types: ClassName<T, U>
+        if let Some(open) = type_str.find('<') {
+            if let Some(close) = type_str.rfind('>') {
+                let base_name = &type_str[..open];
+                let args_str = &type_str[open+1..close];
+                let type_args = self.parse_type_list(args_str);
+
+                // Look up the base type
+                if let Some(symbol_id) = self.lookup_type_symbol(base_name) {
+                    return self.type_table.borrow_mut().create_class_type(symbol_id, type_args);
+                }
+            }
+        }
+
+        // Simple class/enum name
+        if let Some(symbol_id) = self.lookup_type_symbol(type_str) {
+            return self.type_table.borrow_mut().create_class_type(symbol_id, vec![]);
+        }
+
+        // Create a placeholder for unresolved types
+        let name = self.string_interner.intern(type_str);
+        self.type_table.borrow_mut().create_type(TypeKind::Placeholder { name })
+    }
+
+    /// Parse a comma-separated list of types, handling nested generics
+    fn parse_type_list(&mut self, types_str: &str) -> Vec<TypeId> {
+        let mut result = Vec::new();
+        let mut current = String::new();
+        let mut depth = 0;
+
+        for ch in types_str.chars() {
+            match ch {
+                '<' => {
+                    depth += 1;
+                    current.push(ch);
+                }
+                '>' => {
+                    depth -= 1;
+                    current.push(ch);
+                }
+                ',' if depth == 0 => {
+                    let trimmed = current.trim();
+                    if !trimmed.is_empty() {
+                        result.push(self.parse_type_string(trimmed));
+                    }
+                    current.clear();
+                }
+                _ => current.push(ch),
+            }
+        }
+
+        // Don't forget the last type
+        let trimmed = current.trim();
+        if !trimmed.is_empty() {
+            result.push(self.parse_type_string(trimmed));
+        }
+
+        result
+    }
+
+    /// Look up a type symbol by name (checks short name in global scope)
+    fn lookup_type_symbol(&self, name: &str) -> Option<SymbolId> {
+        // Try short name lookup in global scope
+        let interned = self.string_interner.intern(name);
+        if let Some(symbol) = self.symbol_table.lookup_symbol(ScopeId::first(), interned) {
+            return Some(symbol.id);
+        }
+
+        None
     }
 
     /// Load imports efficiently by pre-collecting all dependencies and compiling in topological order.
