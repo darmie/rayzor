@@ -86,10 +86,13 @@ impl std::fmt::Debug for NanBoxedValue {
 impl NanBoxedValue {
     /// NaN tag prefix - all special values have this prefix
     /// This is a quiet NaN that's distinct from any valid double
-    const NAN_TAG: u64 = 0x7FFC_0000_0000_0000;
+    // NaN box base: quiet NaN with no bits set in tag area (bits 48-51)
+    // 0x7FF8 ensures this is in the quiet NaN range without conflicting with tags
+    const NAN_TAG: u64 = 0x7FF8_0000_0000_0000;
 
-    /// Mask for extracting the tag (bits 48-51)
-    const TAG_MASK: u64 = 0x000F_0000_0000_0000;
+    /// Mask for extracting the tag (bits 48-50, excluding the quiet NaN bit at 51)
+    /// This gives us 8 possible tag values (0-7), which is enough for our types
+    const TAG_MASK: u64 = 0x0007_0000_0000_0000;
 
     /// Mask for extracting the payload (bits 0-47)
     const PAYLOAD_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
@@ -175,7 +178,9 @@ impl NanBoxedValue {
             return true;
         }
         // It's some kind of NaN - check if it's our tagged format
-        (self.0 & 0x7FFC_0000_0000_0000) != Self::NAN_TAG
+        // Check if the high bits indicate a quiet NaN (used for tagged values)
+        // Valid f64s have different bit patterns in the exponent+mantissa area
+        (self.0 & 0x7FF8_0000_0000_0000) != Self::NAN_TAG
     }
 
     /// Get the tag bits
@@ -648,6 +653,8 @@ impl InterpValue {
             InterpValue::I32(n) => Ok(*n != 0),
             InterpValue::I64(n) => Ok(*n != 0),
             InterpValue::Ptr(p) => Ok(*p != 0),
+            // Void and Null are falsy
+            InterpValue::Void => Ok(false),
             InterpValue::Null => Ok(false),
             _ => Err(InterpError::TypeError(format!(
                 "Cannot convert {:?} to bool",
@@ -669,6 +676,9 @@ impl InterpValue {
             InterpValue::U64(n) => Ok(*n as i64),
             InterpValue::Bool(b) => Ok(if *b { 1 } else { 0 }),
             InterpValue::Ptr(p) => Ok(*p as i64),
+            // Void and Null convert to 0 (common convention in many languages)
+            InterpValue::Void => Ok(0),
+            InterpValue::Null => Ok(0),
             _ => Err(InterpError::TypeError(format!(
                 "Cannot convert {:?} to i64",
                 self
@@ -683,6 +693,9 @@ impl InterpValue {
             InterpValue::F64(n) => Ok(*n),
             InterpValue::I32(n) => Ok(*n as f64),
             InterpValue::I64(n) => Ok(*n as f64),
+            // Void and Null convert to 0.0
+            InterpValue::Void => Ok(0.0),
+            InterpValue::Null => Ok(0.0),
             _ => Err(InterpError::TypeError(format!(
                 "Cannot convert {:?} to f64",
                 self
@@ -698,6 +711,8 @@ impl InterpValue {
             InterpValue::U64(n) => Ok(*n as usize),
             InterpValue::I32(n) => Ok(*n as usize),
             InterpValue::U32(n) => Ok(*n as usize),
+            // Void and Null convert to 0 (null pointer)
+            InterpValue::Void => Ok(0),
             InterpValue::Null => Ok(0),
             _ => Err(InterpError::TypeError(format!(
                 "Cannot convert {:?} to usize",
@@ -2390,14 +2405,24 @@ impl MirInterpreter {
         // Built-in functions (simple implementations for common operations)
         match name {
             "trace" | "haxe_print" | "print" => {
-                // Print function
+                // Print function - handle all numeric types
                 if let Some(arg) = args.first() {
                     match arg {
                         InterpValue::String(s) => println!("{}", s),
+                        InterpValue::I8(n) => println!("{}", n),
+                        InterpValue::I16(n) => println!("{}", n),
                         InterpValue::I32(n) => println!("{}", n),
                         InterpValue::I64(n) => println!("{}", n),
+                        InterpValue::U8(n) => println!("{}", n),
+                        InterpValue::U16(n) => println!("{}", n),
+                        InterpValue::U32(n) => println!("{}", n),
+                        InterpValue::U64(n) => println!("{}", n),
+                        InterpValue::F32(n) => println!("{}", n),
                         InterpValue::F64(n) => println!("{}", n),
                         InterpValue::Bool(b) => println!("{}", b),
+                        InterpValue::Ptr(p) => println!("<ptr:{:#x}>", p),
+                        InterpValue::Null => println!("null"),
+                        InterpValue::Void => println!("<void>"),
                         other => println!("{:?}", other),
                     }
                 }
