@@ -492,20 +492,26 @@ struct MirInterpreter {
 
 ## Implementation Roadmap
 
-### Week 1-2: Quick Wins
-- [ ] Enable better Cranelift optimization flags
-- [ ] Add SIMD support where available
-- [ ] Implement parallel background JIT
+### Week 1-2: Quick Wins ✅ COMPLETED
 
-### Week 3-4: NaN Boxing
-- [ ] Design NanBoxedValue type
+- [x] Enable better Cranelift optimization flags (tier-specific: single-pass regalloc, disable verifier)
+- [x] Add SIMD support where available (auto-detected via cranelift_native::builder())
+- [x] Implement parallel background JIT (rayon-based parallel compilation)
+
+### Week 3-4: NaN Boxing ✅ INFRASTRUCTURE COMPLETE
+
+- [x] Design NanBoxedValue type (64-bit tagged union)
+- [x] Add ObjectHeap for complex types (String, Array, Struct)
+- [x] Add conversion methods (InterpValue <-> NanBoxedValue)
 - [ ] Update RegisterFile to use NanBoxedValue
 - [ ] Update all binary/unary operations
 - [ ] Benchmark and tune
 
-### Week 5-6: Dispatch Optimization
-- [ ] Implement computed goto dispatch
-- [ ] Add instruction pre-decoding
+### Week 5-6: Dispatch Optimization ✅ INFRASTRUCTURE COMPLETE
+
+- [x] Implement Opcode enum (45 instruction types)
+- [x] Add instruction pre-decoding (DecodedInstruction, DecodedBlock)
+- [ ] Implement dispatch table execution
 - [ ] Benchmark different dispatch strategies
 
 ### Week 7-8: JIT Improvements
