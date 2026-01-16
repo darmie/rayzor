@@ -29,16 +29,16 @@
         new Chart(document.getElementById('chart_0'), {
             type: 'bar',
             data: {
-                labels: ['rayzor-cranelift', 'rayzor-interpreter', 'rayzor-tiered'],
+                labels: ['rayzor-cranelift', 'rayzor-interpreter', 'rayzor-llvm'],
                 datasets: [
                     {
                         label: 'Compile (ms)',
-                        data: [186.22, 22.45, 46.38],
+                        data: [18.27, 3.96, 4.16],
                         backgroundColor: 'rgba(54, 162, 235, 0.8)'
                     },
                     {
                         label: 'Execute (ms)',
-                        data: [225.48, 25627.96, 251.87],
+                        data: [225.13, 2239.27, 0.59],
                         backgroundColor: 'rgba(255, 99, 132, 0.8)'
                     }
                 ]
