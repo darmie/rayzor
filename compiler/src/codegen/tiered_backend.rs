@@ -26,6 +26,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
 
+use rayon::prelude::*;
+
 use super::cranelift_backend::CraneliftBackend;
 use super::mir_interpreter::{MirInterpreter, InterpValue, InterpError};
 use super::profiling::{ProfileData, ProfileConfig, ProfileStatistics};
@@ -592,7 +594,11 @@ impl TieredBackend {
         self.worker_handle = Some(handle);
     }
 
-    /// Background worker iteration (processes one function from queue)
+    /// Background worker iteration - processes multiple functions in parallel using rayon
+    ///
+    /// This drains up to `max_parallel_optimizations` functions from the queue and
+    /// compiles them concurrently using rayon's parallel iterators. Function pointer
+    /// installation is serialized for thread safety.
     fn background_worker_iteration(
         queue: &Arc<Mutex<VecDeque<(IrFunctionId, OptimizationTier)>>>,
         optimizing: &Arc<Mutex<HashSet<IrFunctionId>>>,
@@ -602,37 +608,116 @@ impl TieredBackend {
         profile_data: &ProfileData,
         config: &TieredConfig,
     ) {
-        let mut queue_lock = queue.lock().unwrap();
-        let mut optimizing_lock = optimizing.lock().unwrap();
+        // Drain batch of functions to compile in parallel
+        let batch: Vec<(IrFunctionId, OptimizationTier)> = {
+            let mut queue_lock = queue.lock().unwrap();
+            let mut optimizing_lock = optimizing.lock().unwrap();
 
-        // Don't start new optimizations if at capacity
-        if optimizing_lock.len() >= config.max_parallel_optimizations {
+            // Calculate how many functions we can compile in parallel
+            let available_slots = config.max_parallel_optimizations.saturating_sub(optimizing_lock.len());
+            if available_slots == 0 {
+                return;
+            }
+
+            // Drain up to available_slots functions from the queue
+            let mut batch = Vec::with_capacity(available_slots);
+            while batch.len() < available_slots {
+                if let Some((func_id, target_tier)) = queue_lock.pop_front() {
+                    optimizing_lock.insert(func_id);
+                    batch.push((func_id, target_tier));
+                } else {
+                    break;
+                }
+            }
+            batch
+        };
+
+        if batch.is_empty() {
             return;
         }
 
-        // Dequeue a function to optimize
-        if let Some((func_id, target_tier)) = queue_lock.pop_front() {
-            optimizing_lock.insert(func_id);
-            drop(queue_lock);
-            drop(optimizing_lock);
+        // Get module reference (read lock held during parallel compilation)
+        let module_lock = module.read().unwrap();
+        let module_ref = match module_lock.as_ref() {
+            Some(m) => m,
+            None => {
+                // No module, mark all as done and return
+                let mut optimizing_lock = optimizing.lock().unwrap();
+                for (func_id, _) in &batch {
+                    optimizing_lock.remove(func_id);
+                }
+                return;
+            }
+        };
 
-            // Perform optimization
-            let result = Self::worker_optimize_function(
-                func_id,
-                target_tier,
-                module,
-                function_pointers,
-                function_tiers,
-                profile_data,
-                config,
-            );
+        // Compile functions in parallel using rayon
+        // Each function gets its own Cranelift backend instance
+        let results: Vec<(IrFunctionId, OptimizationTier, Result<usize, String>)> = batch
+            .par_iter()
+            .map(|(func_id, target_tier)| {
+                let function = match module_ref.functions.get(func_id) {
+                    Some(f) => f,
+                    None => return (*func_id, *target_tier, Err(format!("Function {:?} not found", func_id))),
+                };
 
-            // Mark as done
-            optimizing.lock().unwrap().remove(&func_id);
+                if config.verbosity >= 2 {
+                    let count = profile_data.get_function_count(*func_id);
+                    debug!(
+                        "[TieredBackend] Parallel compiling {:?} at {} (count: {})",
+                        func_id,
+                        target_tier.description(),
+                        count
+                    );
+                }
 
-            if let Err(e) = result {
-                if config.verbosity >= 1 {
-                    debug!("[TieredBackend] Failed to optimize {:?}: {}", func_id, e);
+                // Compile with appropriate backend
+                let result = if target_tier.uses_llvm() {
+                    #[cfg(feature = "llvm-backend")]
+                    {
+                        Self::compile_with_llvm_static(*func_id, module_ref, function)
+                    }
+                    #[cfg(not(feature = "llvm-backend"))]
+                    {
+                        Err("LLVM backend not enabled".to_string())
+                    }
+                } else {
+                    Self::compile_with_cranelift_static(*func_id, module_ref, function, *target_tier)
+                };
+
+                (*func_id, *target_tier, result)
+            })
+            .collect();
+
+        // Drop module lock before installing results
+        drop(module_lock);
+
+        // Install compiled function pointers (serialized for thread safety)
+        {
+            let mut fp_lock = function_pointers.write().unwrap();
+            let mut ft_lock = function_tiers.write().unwrap();
+            let mut optimizing_lock = optimizing.lock().unwrap();
+
+            for (func_id, target_tier, result) in results {
+                optimizing_lock.remove(&func_id);
+
+                match result {
+                    Ok(ptr) => {
+                        fp_lock.insert(func_id, ptr);
+                        ft_lock.insert(func_id, target_tier);
+
+                        if config.verbosity >= 1 {
+                            debug!(
+                                "[TieredBackend] Installed {:?} at {}",
+                                func_id,
+                                target_tier.description()
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        if config.verbosity >= 1 {
+                            debug!("[TieredBackend] Failed to compile {:?}: {}", func_id, e);
+                        }
+                    }
                 }
             }
         }

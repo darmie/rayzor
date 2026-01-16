@@ -120,6 +120,7 @@ impl CraneliftBackend {
             .map_err(|e| format!("Failed to set use_colocated_libcalls: {}", e))?;
 
         // Disable PIC (Position Independent Code) for simpler code generation
+        // Non-PIC code is faster due to fewer indirections
         flag_builder
             .set("is_pic", "false")
             .map_err(|e| format!("Failed to set is_pic: {}", e))?;
@@ -129,18 +130,71 @@ impl CraneliftBackend {
             .set("opt_level", opt_level)
             .map_err(|e| format!("Failed to set opt_level: {}", e))?;
 
-        // Enable verifier only in debug builds for detailed error messages
-        // Verifier adds overhead, so disable in release for faster compilation
-        #[cfg(debug_assertions)]
-        flag_builder
-            .set("enable_verifier", "true")
-            .map_err(|e| format!("Failed to set enable_verifier: {}", e))?;
-        #[cfg(not(debug_assertions))]
-        flag_builder
-            .set("enable_verifier", "false")
-            .map_err(|e| format!("Failed to set enable_verifier: {}", e))?;
+        // Enable tier-specific optimizations
+        // Note: SIMD vectorization is automatically enabled through cranelift_native::builder()
+        // which detects CPU features (AVX2, NEON, etc.) at runtime
+        match opt_level {
+            "none" => {
+                // Baseline tier: fastest compilation, minimal optimization
+                // Use single-pass register allocation for faster compilation
+                flag_builder
+                    .set("regalloc_algorithm", "single_pass")
+                    .map_err(|e| format!("Failed to set regalloc_algorithm: {}", e))?;
 
-        // Create ISA for the current platform
+                // Verifier enabled in debug only for fast iteration
+                #[cfg(debug_assertions)]
+                flag_builder
+                    .set("enable_verifier", "true")
+                    .map_err(|e| format!("Failed to set enable_verifier: {}", e))?;
+                #[cfg(not(debug_assertions))]
+                flag_builder
+                    .set("enable_verifier", "false")
+                    .map_err(|e| format!("Failed to set enable_verifier: {}", e))?;
+            }
+            "speed" => {
+                // Standard tier: moderate optimization
+                // Disable verifier for faster compilation at higher tiers
+                flag_builder
+                    .set("enable_verifier", "false")
+                    .map_err(|e| format!("Failed to set enable_verifier: {}", e))?;
+
+                // Disable frame pointers for slightly smaller/faster code
+                flag_builder
+                    .set("preserve_frame_pointers", "false")
+                    .map_err(|e| format!("Failed to set preserve_frame_pointers: {}", e))?;
+            }
+            "speed_and_size" => {
+                // Optimized tier: aggressive optimization
+                // All optimizations enabled for maximum performance
+                flag_builder
+                    .set("enable_verifier", "false")
+                    .map_err(|e| format!("Failed to set enable_verifier: {}", e))?;
+
+                // Disable frame pointers for smaller/faster code
+                flag_builder
+                    .set("preserve_frame_pointers", "false")
+                    .map_err(|e| format!("Failed to set preserve_frame_pointers: {}", e))?;
+
+                // Enable probestack for large stack allocations (prevents stack overflow)
+                flag_builder
+                    .set("enable_probestack", "true")
+                    .map_err(|e| format!("Failed to set enable_probestack: {}", e))?;
+            }
+            _ => {
+                // Unknown level, use safe defaults
+                #[cfg(debug_assertions)]
+                flag_builder
+                    .set("enable_verifier", "true")
+                    .map_err(|e| format!("Failed to set enable_verifier: {}", e))?;
+                #[cfg(not(debug_assertions))]
+                flag_builder
+                    .set("enable_verifier", "false")
+                    .map_err(|e| format!("Failed to set enable_verifier: {}", e))?;
+            }
+        }
+
+        // Create ISA for the current platform with native feature detection
+        // This automatically enables CPU-specific features (AVX2, NEON, etc.)
         let isa_builder = cranelift_native::builder()
             .map_err(|e| format!("Failed to create ISA builder: {}", e))?;
         let isa = isa_builder

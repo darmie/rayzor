@@ -15,14 +15,319 @@
 //! 2. ~30% faster than stack-based (see Lua 5.x vs 4.x benchmarks)
 //! 3. Fewer instructions needed (no push/pop overhead)
 //! 4. Direct 1:1 mapping from MIR to interpreter state
+//!
+//! ## NaN Boxing (Performance Optimization)
+//! Primitive values are stored using NaN boxing - a technique that packs
+//! type tag and value into a 64-bit IEEE 754 double. This provides:
+//! - 8 bytes per value instead of 16-32 bytes
+//! - Copy semantics (no Clone overhead)
+//! - Better cache locality
+//!
+//! Layout: `[0x7FFC_0000_0000_0000 | tag:4 | payload:48]`
+//! - When exponent bits != 0x7FF, it's a regular f64
+//! - Otherwise, tag bits identify: Ptr, I32, Bool, Null, etc.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use crate::ir::{
     IrModule, IrFunction, IrFunctionId, IrInstruction, IrValue, IrType,
     IrBasicBlock, IrBlockId, IrTerminator, IrId,
     BinaryOp, UnaryOp, CompareOp, IrFunctionSignature, IrExternFunction,
     FunctionKind,
 };
+
+// ============================================================================
+// NaN Boxing Implementation
+// ============================================================================
+
+/// NaN-boxed value for efficient interpreter storage
+///
+/// Uses IEEE 754 NaN boxing to pack type tags and values into 64 bits.
+/// This eliminates heap allocation for primitives and enables Copy semantics.
+///
+/// ## Encoding
+/// - Regular doubles are stored as-is (when exponent != 0x7FF)
+/// - Special values use the NaN space: `NAN_TAG | type_tag | payload`
+///
+/// ## Type Tags (in bits 48-51)
+/// - 0x0: Pointer (48-bit address)
+/// - 0x1: I32 (32-bit signed integer)
+/// - 0x2: I64 (64-bit integer, needs 2 words for full range, we use payload)
+/// - 0x3: Bool (0 or 1)
+/// - 0x4: Null
+/// - 0x5: Void
+/// - 0x6: Function ID (32-bit)
+/// - 0x7: Heap object (index into heap table)
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct NanBoxedValue(u64);
+
+impl std::fmt::Debug for NanBoxedValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_f64() {
+            write!(f, "F64({})", self.as_f64())
+        } else {
+            let tag = self.tag();
+            match tag {
+                NanBoxedValue::TAG_PTR => write!(f, "Ptr({:#x})", self.payload()),
+                NanBoxedValue::TAG_I32 => write!(f, "I32({})", self.as_i32()),
+                NanBoxedValue::TAG_I64 => write!(f, "I64({})", self.as_i64_lossy()),
+                NanBoxedValue::TAG_BOOL => write!(f, "Bool({})", self.as_bool()),
+                NanBoxedValue::TAG_NULL => write!(f, "Null"),
+                NanBoxedValue::TAG_VOID => write!(f, "Void"),
+                NanBoxedValue::TAG_FUNC => write!(f, "Func({})", self.payload() as u32),
+                NanBoxedValue::TAG_HEAP => write!(f, "Heap({})", self.payload() as u32),
+                _ => write!(f, "Unknown({:#x})", self.0),
+            }
+        }
+    }
+}
+
+impl NanBoxedValue {
+    /// NaN tag prefix - all special values have this prefix
+    /// This is a quiet NaN that's distinct from any valid double
+    const NAN_TAG: u64 = 0x7FFC_0000_0000_0000;
+
+    /// Mask for extracting the tag (bits 48-51)
+    const TAG_MASK: u64 = 0x000F_0000_0000_0000;
+
+    /// Mask for extracting the payload (bits 0-47)
+    const PAYLOAD_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
+
+    /// Type tags
+    const TAG_PTR: u64 = 0x0000_0000_0000_0000;  // Pointer (48-bit)
+    const TAG_I32: u64 = 0x0001_0000_0000_0000;  // 32-bit signed int
+    const TAG_I64: u64 = 0x0002_0000_0000_0000;  // 64-bit int (lossy, 48 bits)
+    const TAG_BOOL: u64 = 0x0003_0000_0000_0000; // Boolean
+    const TAG_NULL: u64 = 0x0004_0000_0000_0000; // Null
+    const TAG_VOID: u64 = 0x0005_0000_0000_0000; // Void
+    const TAG_FUNC: u64 = 0x0006_0000_0000_0000; // Function ID
+    const TAG_HEAP: u64 = 0x0007_0000_0000_0000; // Heap object index
+
+    /// Create a void value
+    #[inline(always)]
+    pub const fn void() -> Self {
+        Self(Self::NAN_TAG | Self::TAG_VOID)
+    }
+
+    /// Create a null value
+    #[inline(always)]
+    pub const fn null() -> Self {
+        Self(Self::NAN_TAG | Self::TAG_NULL)
+    }
+
+    /// Create from f64 (stored directly as IEEE 754 double)
+    #[inline(always)]
+    pub fn from_f64(v: f64) -> Self {
+        Self(v.to_bits())
+    }
+
+    /// Create from f32 (converted to f64)
+    #[inline(always)]
+    pub fn from_f32(v: f32) -> Self {
+        Self::from_f64(v as f64)
+    }
+
+    /// Create from i32
+    #[inline(always)]
+    pub fn from_i32(v: i32) -> Self {
+        Self(Self::NAN_TAG | Self::TAG_I32 | (v as u32 as u64))
+    }
+
+    /// Create from i64 (lossy - only 48 bits preserved)
+    #[inline(always)]
+    pub fn from_i64(v: i64) -> Self {
+        Self(Self::NAN_TAG | Self::TAG_I64 | ((v as u64) & Self::PAYLOAD_MASK))
+    }
+
+    /// Create from bool
+    #[inline(always)]
+    pub fn from_bool(v: bool) -> Self {
+        Self(Self::NAN_TAG | Self::TAG_BOOL | (v as u64))
+    }
+
+    /// Create from raw pointer
+    #[inline(always)]
+    pub fn from_ptr(ptr: usize) -> Self {
+        // On 64-bit systems, only lower 48 bits of pointers are typically used
+        Self(Self::NAN_TAG | Self::TAG_PTR | ((ptr as u64) & Self::PAYLOAD_MASK))
+    }
+
+    /// Create from function ID
+    #[inline(always)]
+    pub fn from_func_id(id: u32) -> Self {
+        Self(Self::NAN_TAG | Self::TAG_FUNC | (id as u64))
+    }
+
+    /// Create from heap object index
+    #[inline(always)]
+    pub fn from_heap_index(index: u32) -> Self {
+        Self(Self::NAN_TAG | Self::TAG_HEAP | (index as u64))
+    }
+
+    /// Check if this is a regular f64 (not a tagged value)
+    #[inline(always)]
+    pub fn is_f64(&self) -> bool {
+        // Check if exponent bits are NOT all 1s (0x7FF)
+        // OR if it's a canonical NaN but not our tagged format
+        let exp_bits = (self.0 >> 52) & 0x7FF;
+        if exp_bits != 0x7FF {
+            return true;
+        }
+        // It's some kind of NaN - check if it's our tagged format
+        (self.0 & 0x7FFC_0000_0000_0000) != Self::NAN_TAG
+    }
+
+    /// Get the tag bits
+    #[inline(always)]
+    fn tag(&self) -> u64 {
+        self.0 & Self::TAG_MASK
+    }
+
+    /// Get the payload bits
+    #[inline(always)]
+    fn payload(&self) -> u64 {
+        self.0 & Self::PAYLOAD_MASK
+    }
+
+    /// Extract as f64
+    #[inline(always)]
+    pub fn as_f64(&self) -> f64 {
+        f64::from_bits(self.0)
+    }
+
+    /// Extract as i32
+    #[inline(always)]
+    pub fn as_i32(&self) -> i32 {
+        (self.0 & 0xFFFF_FFFF) as i32
+    }
+
+    /// Extract as i64 (lossy - sign extended from 48 bits)
+    #[inline(always)]
+    pub fn as_i64_lossy(&self) -> i64 {
+        let payload = self.payload();
+        // Sign extend from 48 bits
+        if payload & 0x0000_8000_0000_0000 != 0 {
+            (payload | 0xFFFF_0000_0000_0000) as i64
+        } else {
+            payload as i64
+        }
+    }
+
+    /// Extract as bool
+    #[inline(always)]
+    pub fn as_bool(&self) -> bool {
+        (self.0 & 1) != 0
+    }
+
+    /// Extract as pointer
+    #[inline(always)]
+    pub fn as_ptr(&self) -> usize {
+        self.payload() as usize
+    }
+
+    /// Extract as function ID
+    #[inline(always)]
+    pub fn as_func_id(&self) -> u32 {
+        self.payload() as u32
+    }
+
+    /// Extract as heap object index
+    #[inline(always)]
+    pub fn as_heap_index(&self) -> u32 {
+        self.payload() as u32
+    }
+
+    /// Check if null
+    #[inline(always)]
+    pub fn is_null(&self) -> bool {
+        self.0 == (Self::NAN_TAG | Self::TAG_NULL)
+    }
+
+    /// Check if void
+    #[inline(always)]
+    pub fn is_void(&self) -> bool {
+        self.0 == (Self::NAN_TAG | Self::TAG_VOID)
+    }
+
+    /// Check if this is a heap object
+    #[inline(always)]
+    pub fn is_heap(&self) -> bool {
+        !self.is_f64() && self.tag() == Self::TAG_HEAP
+    }
+
+    /// Check if this is a pointer
+    #[inline(always)]
+    pub fn is_ptr(&self) -> bool {
+        !self.is_f64() && self.tag() == Self::TAG_PTR
+    }
+
+    /// Check if this is an i32
+    #[inline(always)]
+    pub fn is_i32(&self) -> bool {
+        !self.is_f64() && self.tag() == Self::TAG_I32
+    }
+
+    /// Check if this is a bool
+    #[inline(always)]
+    pub fn is_bool(&self) -> bool {
+        !self.is_f64() && self.tag() == Self::TAG_BOOL
+    }
+}
+
+impl Default for NanBoxedValue {
+    fn default() -> Self {
+        Self::void()
+    }
+}
+
+/// Heap-allocated objects for complex types that don't fit in NaN boxing
+#[derive(Clone, Debug)]
+pub enum HeapObject {
+    /// String value
+    String(String),
+    /// Array of values
+    Array(Vec<NanBoxedValue>),
+    /// Struct with fields
+    Struct(Vec<NanBoxedValue>),
+    /// Full i64 when 48 bits isn't enough
+    I64(i64),
+    /// Full u64
+    U64(u64),
+}
+
+/// Heap storage for complex objects
+#[derive(Debug, Default)]
+pub struct ObjectHeap {
+    objects: Vec<HeapObject>,
+}
+
+impl ObjectHeap {
+    pub fn new() -> Self {
+        Self { objects: Vec::new() }
+    }
+
+    /// Allocate a new object and return its index
+    pub fn alloc(&mut self, obj: HeapObject) -> u32 {
+        let index = self.objects.len() as u32;
+        self.objects.push(obj);
+        index
+    }
+
+    /// Get an object by index
+    pub fn get(&self, index: u32) -> Option<&HeapObject> {
+        self.objects.get(index as usize)
+    }
+
+    /// Get a mutable object by index
+    pub fn get_mut(&mut self, index: u32) -> Option<&mut HeapObject> {
+        self.objects.get_mut(index as usize)
+    }
+}
+
+// ============================================================================
+// Legacy InterpValue (kept for compatibility, will be phased out)
+// ============================================================================
 
 /// MIR interpreter value (boxed for GC safety)
 #[derive(Clone, Debug)]
@@ -122,6 +427,131 @@ impl InterpValue {
             ))),
         }
     }
+
+    /// Convert InterpValue to NanBoxedValue for efficient storage
+    ///
+    /// Primitives are packed directly; complex types go to the heap.
+    pub fn to_nan_boxed(&self, heap: &mut ObjectHeap) -> NanBoxedValue {
+        match self {
+            InterpValue::Void => NanBoxedValue::void(),
+            InterpValue::Null => NanBoxedValue::null(),
+            InterpValue::Bool(b) => NanBoxedValue::from_bool(*b),
+            InterpValue::I8(n) => NanBoxedValue::from_i32(*n as i32),
+            InterpValue::I16(n) => NanBoxedValue::from_i32(*n as i32),
+            InterpValue::I32(n) => NanBoxedValue::from_i32(*n),
+            InterpValue::I64(n) => {
+                // Check if it fits in 48 bits
+                if *n >= -(1i64 << 47) && *n < (1i64 << 47) {
+                    NanBoxedValue::from_i64(*n)
+                } else {
+                    // Full precision i64 needs heap allocation
+                    let idx = heap.alloc(HeapObject::I64(*n));
+                    NanBoxedValue::from_heap_index(idx)
+                }
+            }
+            InterpValue::U8(n) => NanBoxedValue::from_i32(*n as i32),
+            InterpValue::U16(n) => NanBoxedValue::from_i32(*n as i32),
+            InterpValue::U32(n) => NanBoxedValue::from_i64(*n as i64),
+            InterpValue::U64(n) => {
+                // Check if it fits in 48 bits
+                if *n < (1u64 << 48) {
+                    NanBoxedValue::from_i64(*n as i64)
+                } else {
+                    let idx = heap.alloc(HeapObject::U64(*n));
+                    NanBoxedValue::from_heap_index(idx)
+                }
+            }
+            InterpValue::F32(n) => NanBoxedValue::from_f32(*n),
+            InterpValue::F64(n) => NanBoxedValue::from_f64(*n),
+            InterpValue::Ptr(p) => NanBoxedValue::from_ptr(*p),
+            InterpValue::String(s) => {
+                let idx = heap.alloc(HeapObject::String(s.clone()));
+                NanBoxedValue::from_heap_index(idx)
+            }
+            InterpValue::Array(arr) => {
+                // Convert array elements recursively
+                let boxed: Vec<NanBoxedValue> = arr.iter()
+                    .map(|v| v.to_nan_boxed(heap))
+                    .collect();
+                let idx = heap.alloc(HeapObject::Array(boxed));
+                NanBoxedValue::from_heap_index(idx)
+            }
+            InterpValue::Struct(fields) => {
+                let boxed: Vec<NanBoxedValue> = fields.iter()
+                    .map(|v| v.to_nan_boxed(heap))
+                    .collect();
+                let idx = heap.alloc(HeapObject::Struct(boxed));
+                NanBoxedValue::from_heap_index(idx)
+            }
+            InterpValue::Function(id) => NanBoxedValue::from_func_id(id.0),
+        }
+    }
+
+    /// Convert NanBoxedValue back to InterpValue
+    ///
+    /// This is used for compatibility with existing code paths.
+    pub fn from_nan_boxed(val: NanBoxedValue, heap: &ObjectHeap) -> Self {
+        if val.is_f64() {
+            return InterpValue::F64(val.as_f64());
+        }
+
+        if val.is_null() {
+            return InterpValue::Null;
+        }
+
+        if val.is_void() {
+            return InterpValue::Void;
+        }
+
+        if val.is_i32() {
+            return InterpValue::I32(val.as_i32());
+        }
+
+        if val.is_bool() {
+            return InterpValue::Bool(val.as_bool());
+        }
+
+        if val.is_ptr() {
+            return InterpValue::Ptr(val.as_ptr());
+        }
+
+        if val.is_heap() {
+            let idx = val.as_heap_index();
+            if let Some(obj) = heap.get(idx) {
+                return match obj {
+                    HeapObject::String(s) => InterpValue::String(s.clone()),
+                    HeapObject::Array(arr) => {
+                        let values: Vec<InterpValue> = arr.iter()
+                            .map(|v| InterpValue::from_nan_boxed(*v, heap))
+                            .collect();
+                        InterpValue::Array(values)
+                    }
+                    HeapObject::Struct(fields) => {
+                        let values: Vec<InterpValue> = fields.iter()
+                            .map(|v| InterpValue::from_nan_boxed(*v, heap))
+                            .collect();
+                        InterpValue::Struct(values)
+                    }
+                    HeapObject::I64(n) => InterpValue::I64(*n),
+                    HeapObject::U64(n) => InterpValue::U64(*n),
+                };
+            }
+        }
+
+        // Fallback for function IDs and other tagged values
+        let tag = val.0 & NanBoxedValue::TAG_MASK;
+        if tag == NanBoxedValue::TAG_FUNC {
+            return InterpValue::Function(IrFunctionId(val.as_func_id()));
+        }
+
+        // For i64 tagged values
+        if tag == NanBoxedValue::TAG_I64 {
+            return InterpValue::I64(val.as_i64_lossy());
+        }
+
+        // Default fallback
+        InterpValue::Void
+    }
 }
 
 /// Register file for a single function execution frame
@@ -186,6 +616,9 @@ pub struct MirInterpreter {
 
     /// Next heap allocation offset
     heap_offset: usize,
+
+    /// Object heap for NaN-boxed complex objects (strings, arrays, structs)
+    object_heap: ObjectHeap,
 }
 
 // Safety: MirInterpreter can be sent across threads
@@ -202,6 +635,7 @@ impl MirInterpreter {
             max_stack_depth: 1000,
             heap: vec![0u8; 1024 * 1024], // 1MB heap
             heap_offset: 0,
+            object_heap: ObjectHeap::new(),
         }
     }
 
