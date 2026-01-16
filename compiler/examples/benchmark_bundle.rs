@@ -359,10 +359,9 @@ fn run_bundle_interp(bundle_path: &str, symbols: &[(&str, *const u8)]) -> Result
     let entry_module = bundle.entry_module()
         .ok_or("No entry module")?;
 
-    let main_id = entry_module.functions.iter()
-        .find(|(_, f)| f.name.ends_with("_main") || f.name == "main" || f.name == bundle.entry_function())
-        .map(|(id, _)| *id)
-        .ok_or("No main function")?;
+    // Use pre-computed entry function ID (O(1) lookup)
+    let main_id = bundle.entry_function_id()
+        .ok_or("No entry function ID in bundle")?;
 
     backend.compile_module(entry_module.clone())
         .map_err(|e| format!("load: {}", e))?;
@@ -474,12 +473,16 @@ fn bundle_startup_execution_breakdown(bundle_path: &str) {
         backend.compile_module(entry.clone()).unwrap();
         let module_time = t_module.elapsed();
 
-        // 4. Find main function
+        // 4. Get main function ID (O(1) - pre-computed in bundle)
         let t_find = Instant::now();
-        let main_id = entry.functions.iter()
-            .find(|(_, f)| f.name.ends_with("_main") || f.name == "main" || f.name == bundle.entry_function())
-            .map(|(id, _)| *id)
-            .unwrap();
+        let main_id = bundle.entry_function_id()
+            .unwrap_or_else(|| {
+                // Fallback for older bundles without pre-computed ID
+                entry.functions.iter()
+                    .find(|(_, f)| f.name.ends_with("_main") || f.name == "main" || f.name == bundle.entry_function())
+                    .map(|(id, _)| *id)
+                    .unwrap()
+            });
         let find_time = t_find.elapsed();
 
         let startup_total = startup_start.elapsed();

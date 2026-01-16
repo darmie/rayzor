@@ -537,6 +537,10 @@ pub struct RayzorBundle {
     entry_module: String,
     /// Entry point function name (usually "main" or "Main_main")
     entry_function: String,
+    /// Entry point module index (for O(1) lookup)
+    entry_module_index: Option<usize>,
+    /// Entry point function ID (for O(1) lookup, avoids iterating at runtime)
+    entry_function_id: Option<crate::ir::IrFunctionId>,
     /// Module table (name -> offset/size)
     module_table: Vec<ModuleTableEntry>,
     /// All modules serialized
@@ -589,12 +593,25 @@ impl RayzorBundle {
             .map(|m| m.source_file.clone())
             .collect();
 
+        // Pre-compute entry module index and function ID at bundle creation time
+        // This eliminates runtime iteration when loading the bundle
+        let entry_module_index = modules.iter()
+            .position(|m| m.name == entry_module);
+
+        let entry_function_id = entry_module_index.and_then(|idx| {
+            modules[idx].functions.iter()
+                .find(|(_, f)| f.name == entry_function)
+                .map(|(id, _)| *id)
+        });
+
         Self {
             magic: *BUNDLE_MAGIC,
             version: BUNDLE_VERSION,
             flags: BundleFlags::default(),
             entry_module: entry_module.to_string(),
             entry_function: entry_function.to_string(),
+            entry_module_index,
+            entry_function_id,
             module_table,
             modules,
             symbols,
@@ -607,9 +624,16 @@ impl RayzorBundle {
         }
     }
 
-    /// Get the entry module
+    /// Get the entry module (O(1) using pre-computed index)
     pub fn entry_module(&self) -> Option<&IrModule> {
-        self.modules.iter().find(|m| m.name == self.entry_module)
+        self.entry_module_index
+            .and_then(|idx| self.modules.get(idx))
+    }
+
+    /// Get the entry function ID (O(1), pre-computed at bundle creation)
+    /// This eliminates the need to iterate through functions at runtime
+    pub fn entry_function_id(&self) -> Option<crate::ir::IrFunctionId> {
+        self.entry_function_id
     }
 
     /// Get a module by name
