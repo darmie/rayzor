@@ -334,7 +334,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
     /// Translate MIR type to LLVM type
     fn translate_type(&self, ty: &IrType) -> Result<BasicTypeEnum<'ctx>, String> {
         match ty {
-            IrType::Void => Err("Void type cannot be used as BasicType".to_string()),
+            IrType::Void => Err(format!("Void type cannot be used as BasicType (in {:?})", ty)),
             IrType::Bool | IrType::I8 | IrType::U8 => Ok(self.context.i8_type().into()),
             IrType::I16 | IrType::U16 => Ok(self.context.i16_type().into()),
             IrType::I32 | IrType::U32 => Ok(self.context.i32_type().into()),
@@ -425,6 +425,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             .signature
             .parameters
             .iter()
+            .filter(|param| param.ty != IrType::Void) // Skip void parameters
             .map(|param| self.translate_type(&param.ty).map(|t| t.into()))
             .collect();
         let param_types = param_types?;
@@ -459,9 +460,24 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         self.phi_map.clear();
 
         // Map function parameters to LLVM values using their actual IrIds
+        // Note: we filter out void parameters but need to handle IrIds correctly
+        let non_void_params: Vec<_> = function.signature.parameters.iter()
+            .filter(|p| p.ty != IrType::Void)
+            .collect();
+
+        // First, map void parameters to a placeholder value (they shouldn't be used)
+        for param in &function.signature.parameters {
+            if param.ty == IrType::Void {
+                // Insert a null pointer as placeholder - it shouldn't be used
+                let placeholder = self.context.i8_type().const_int(0, false).into();
+                self.value_map.insert(param.reg, placeholder);
+            }
+        }
+
+        // Then map non-void parameters to their LLVM values
         for (i, llvm_param) in llvm_func.get_param_iter().enumerate() {
-            if i < function.signature.parameters.len() {
-                let param_id = function.signature.parameters[i].reg;
+            if i < non_void_params.len() {
+                let param_id = non_void_params[i].reg;
                 self.value_map.insert(param_id, llvm_param);
             }
         }
@@ -855,14 +871,92 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             }
 
             // Union operations
-            IrInstruction::CreateUnion { .. } => {
-                return Err("CreateUnion not yet implemented in LLVM backend".to_string());
+            // Union layout: {i32 tag, [i8 x data_size]}
+            IrInstruction::CreateUnion { dest, discriminant, value, ty } => {
+                let union_ty = self.translate_type(ty)?;
+                let union_struct_ty = union_ty.into_struct_type();
+
+                // Allocate union on stack
+                let union_ptr = self.builder.build_alloca(union_struct_ty, &format!("union_alloca_{}", dest.as_u32()))
+                    .map_err(|e| format!("Failed to alloca union: {}", e))?;
+
+                // Store tag (discriminant) at field 0
+                let tag_ptr = self.builder.build_struct_gep(union_struct_ty, union_ptr, 0, "tag_ptr")
+                    .map_err(|e| format!("Failed to get tag ptr: {}", e))?;
+                let tag_val = self.context.i32_type().const_int(*discriminant as u64, false);
+                self.builder.build_store(tag_ptr, tag_val)
+                    .map_err(|e| format!("Failed to store tag: {}", e))?;
+
+                // Store value in data area (field 1)
+                let data_ptr = self.builder.build_struct_gep(union_struct_ty, union_ptr, 1, "data_ptr")
+                    .map_err(|e| format!("Failed to get data ptr: {}", e))?;
+
+                // Get the value and store it via pointer cast
+                let value_val = self.get_value(*value)?;
+                let value_ptr = self.builder.build_alloca(value_val.get_type(), "value_tmp")
+                    .map_err(|e| format!("Failed to alloca value: {}", e))?;
+                self.builder.build_store(value_ptr, value_val)
+                    .map_err(|e| format!("Failed to store value: {}", e))?;
+
+                // Memcpy value to data area
+                let i8_ptr_ty = self.context.i8_type().ptr_type(AddressSpace::default());
+                let data_ptr_cast = self.builder.build_pointer_cast(data_ptr, i8_ptr_ty, "data_ptr_cast")
+                    .map_err(|e| format!("Failed to cast data ptr: {}", e))?;
+                let value_ptr_cast = self.builder.build_pointer_cast(value_ptr, i8_ptr_ty, "value_ptr_cast")
+                    .map_err(|e| format!("Failed to cast value ptr: {}", e))?;
+
+                // Get size of value type
+                let value_size = if let Some(ref td) = self.target_data {
+                    td.get_store_size(&value_val.get_type())
+                } else {
+                    8 // Default
+                };
+                let size_val = self.context.i64_type().const_int(value_size, false);
+
+                // Build memcpy intrinsic call
+                self.builder.build_memcpy(data_ptr_cast, 1, value_ptr_cast, 1, size_val)
+                    .map_err(|e| format!("Failed to build memcpy: {}", e))?;
+
+                // Load the complete union value
+                let union_val = self.builder.build_load(union_struct_ty, union_ptr, &format!("union_{}", dest.as_u32()))
+                    .map_err(|e| format!("Failed to load union: {}", e))?;
+                self.value_map.insert(*dest, union_val);
             }
-            IrInstruction::ExtractDiscriminant { .. } => {
-                return Err("ExtractDiscriminant not yet implemented in LLVM backend".to_string());
+
+            IrInstruction::ExtractDiscriminant { dest, union_val } => {
+                let union_value = self.get_value(*union_val)?;
+
+                // Extract tag from field 0
+                let tag = self.builder.build_extract_value(union_value.into_struct_value(), 0, &format!("tag_{}", dest.as_u32()))
+                    .map_err(|e| format!("Failed to extract tag: {}", e))?;
+                self.value_map.insert(*dest, tag.into());
             }
-            IrInstruction::ExtractUnionValue { .. } => {
-                return Err("ExtractUnionValue not yet implemented in LLVM backend".to_string());
+
+            IrInstruction::ExtractUnionValue { dest, union_val, value_ty, .. } => {
+                let union_value = self.get_value(*union_val)?;
+                let target_ty = self.translate_type(value_ty)?;
+
+                // Get the union struct type for GEP
+                let union_struct_ty = union_value.get_type().into_struct_type();
+
+                // Allocate union on stack to get at data
+                let union_ptr = self.builder.build_alloca(union_struct_ty, "union_extract_tmp")
+                    .map_err(|e| format!("Failed to alloca for extract: {}", e))?;
+                self.builder.build_store(union_ptr, union_value)
+                    .map_err(|e| format!("Failed to store union for extract: {}", e))?;
+
+                // Get data pointer (field 1)
+                let data_ptr = self.builder.build_struct_gep(union_struct_ty, union_ptr, 1, "data_ptr")
+                    .map_err(|e| format!("Failed to get data ptr for extract: {}", e))?;
+
+                // Cast data pointer to target type pointer and load
+                let target_ptr_ty = target_ty.ptr_type(AddressSpace::default());
+                let typed_ptr = self.builder.build_pointer_cast(data_ptr, target_ptr_ty, "typed_data_ptr")
+                    .map_err(|e| format!("Failed to cast data ptr: {}", e))?;
+
+                let extracted = self.builder.build_load(target_ty, typed_ptr, &format!("extracted_{}", dest.as_u32()))
+                    .map_err(|e| format!("Failed to load extracted value: {}", e))?;
+                self.value_map.insert(*dest, extracted);
             }
 
             // Struct operations
