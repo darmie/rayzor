@@ -77,6 +77,9 @@ pub struct LLVMJitBackend<'ctx> {
 
     /// Target data for architecture-specific type sizes/alignment
     target_data: Option<TargetData>,
+
+    /// Runtime symbols (name -> pointer) for FFI calls
+    runtime_symbols: HashMap<String, usize>,
 }
 
 #[cfg(feature = "llvm-backend")]
@@ -126,7 +129,17 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             function_pointers: HashMap::new(),
             opt_level,
             target_data: Some(target_data),
+            runtime_symbols: HashMap::new(),
         })
+    }
+
+    /// Create a new LLVM JIT backend with runtime symbols for FFI
+    pub fn with_symbols(context: &'ctx Context, symbols: &[(&str, *const u8)]) -> Result<Self, String> {
+        let mut backend = Self::new(context)?;
+        for (name, ptr) in symbols {
+            backend.runtime_symbols.insert(name.to_string(), *ptr as usize);
+        }
+        Ok(backend)
     }
 
     /// Get the size of a type in bytes according to the target architecture
@@ -202,6 +215,95 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             .ok_or_else(|| format!("Function {:?} not compiled", func_id))
     }
 
+    /// Compile an entire MIR module
+    ///
+    /// This is the main entry point for whole-program compilation.
+    /// Compiles all functions and registers runtime symbols.
+    pub fn compile_module(&mut self, module: &IrModule) -> Result<(), String> {
+        // First, declare all runtime symbols as external functions
+        for (name, _) in &self.runtime_symbols {
+            // Declare as external void function with varargs for flexibility
+            // Runtime functions typically take varying arguments
+            self.declare_external_function(name)?;
+        }
+
+        // Phase 1: Declare all functions first (forward declarations)
+        // This allows functions to call each other regardless of order
+        for (func_id, function) in &module.functions {
+            self.declare_function(*func_id, function)?;
+        }
+
+        // Phase 2: Compile all function bodies
+        for (func_id, function) in &module.functions {
+            let llvm_func = *self.function_map.get(func_id)
+                .ok_or_else(|| format!("Function {:?} not declared", func_id))?;
+            self.compile_function_body(*func_id, function, llvm_func)?;
+        }
+
+        // Create execution engine
+        if self.execution_engine.is_none() {
+            let engine = self.module
+                .create_jit_execution_engine(self.opt_level)
+                .map_err(|e| format!("Failed to create JIT execution engine: {}", e))?;
+            self.execution_engine = Some(engine);
+        }
+
+        // Register function pointers
+        for (func_id, _) in &module.functions {
+            let func_name = Self::function_name(*func_id);
+            if let Some(ref engine) = self.execution_engine {
+                let fn_ptr = engine
+                    .get_function_address(&func_name)
+                    .map_err(|e| format!("Failed to get function address for '{}': {:?}", func_name, e))?;
+                self.function_pointers.insert(*func_id, fn_ptr as usize);
+            }
+        }
+
+        // Add global mappings for runtime symbols
+        if let Some(ref engine) = self.execution_engine {
+            for (name, addr) in &self.runtime_symbols {
+                if let Some(func) = self.module.get_function(name) {
+                    engine.add_global_mapping(&func, *addr);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Declare an external function for FFI
+    fn declare_external_function(&self, name: &str) -> Result<FunctionValue<'ctx>, String> {
+        // Check if already declared
+        if let Some(func) = self.module.get_function(name) {
+            return Ok(func);
+        }
+
+        // Declare as variadic function returning void for flexibility
+        // Runtime functions have varying signatures; LLVM will handle the ABI
+        let void_type = self.context.void_type();
+        let fn_type = void_type.fn_type(&[], true); // true = variadic
+
+        Ok(self.module.add_function(name, fn_type, None))
+    }
+
+    /// Call main function in the module
+    pub fn call_main(&mut self, module: &IrModule) -> Result<(), String> {
+        // Find main function
+        let main_id = module.functions.iter()
+            .find(|(_, f)| f.name.ends_with("_main") || f.name == "main")
+            .map(|(id, _)| *id)
+            .ok_or("No main function found")?;
+
+        let ptr = self.get_function_ptr(main_id)?;
+
+        unsafe {
+            let main_fn: extern "C" fn() = std::mem::transmute(ptr);
+            main_fn();
+        }
+
+        Ok(())
+    }
+
     /// Generate function name for LLVM
     fn function_name(func_id: IrFunctionId) -> String {
         format!("rayzor_func_{}", func_id.0)
@@ -265,11 +367,14 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
             // Structs
             IrType::Struct { fields, .. } => {
-                let field_types: Result<Vec<_>, _> = fields
-                    .iter()
-                    .map(|f| self.translate_type(&f.ty))
-                    .collect();
-                let field_types = field_types?;
+                let mut field_types = Vec::new();
+                for f in fields {
+                    // Skip void fields (they have no size)
+                    if f.ty == IrType::Void {
+                        continue;
+                    }
+                    field_types.push(self.translate_type(&f.ty)?);
+                }
                 Ok(self.context.struct_type(&field_types, false).into())
             }
 
@@ -304,6 +409,8 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             }
 
             IrType::TypeVar(_) => Err("Type variables should be monomorphized before codegen".to_string()),
+
+            IrType::Generic { .. } => Err("Generic types should be monomorphized before codegen".to_string()),
         }
     }
 
@@ -351,11 +458,11 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         self.block_map.clear();
         self.phi_map.clear();
 
-        // Map function parameters to LLVM values
-        for (i, param) in llvm_func.get_param_iter().enumerate() {
+        // Map function parameters to LLVM values using their actual IrIds
+        for (i, llvm_param) in llvm_func.get_param_iter().enumerate() {
             if i < function.signature.parameters.len() {
-                let param_id = IrId::new(i as u32);
-                self.value_map.insert(param_id, param);
+                let param_id = function.signature.parameters[i].reg;
+                self.value_map.insert(param_id, llvm_param);
             }
         }
 
@@ -558,7 +665,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 self.value_map.insert(*dest, result);
             }
 
-            IrInstruction::CallIndirect { dest, func_ptr, args, signature } => {
+            IrInstruction::CallIndirect { dest, func_ptr, args, signature, arg_ownership: _ } => {
                 let func_ptr_val = self.get_value(*func_ptr)?.into_pointer_value();
 
                 // Get argument values
@@ -709,6 +816,126 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             IrInstruction::Phi { .. } => {
                 return Err("Phi nodes should be in phi_nodes list".to_string());
             }
+
+            // Ownership/memory instructions - treat as copies for now
+            IrInstruction::Move { dest, src } => {
+                // Move is a copy in LLVM (ownership is a Rust concept)
+                let val = self.get_value(*src)?;
+                self.value_map.insert(*dest, val);
+            }
+            IrInstruction::BorrowImmutable { dest, src, .. } => {
+                // Borrow is a pointer in LLVM
+                let val = self.get_value(*src)?;
+                self.value_map.insert(*dest, val);
+            }
+            IrInstruction::BorrowMutable { dest, src, .. } => {
+                // Mutable borrow is also a pointer
+                let val = self.get_value(*src)?;
+                self.value_map.insert(*dest, val);
+            }
+            IrInstruction::EndBorrow { .. } => {
+                // End borrow is a no-op in LLVM (GC handles cleanup)
+            }
+            IrInstruction::Clone { dest, src } => {
+                // Clone is a copy in LLVM
+                let val = self.get_value(*src)?;
+                self.value_map.insert(*dest, val);
+            }
+            IrInstruction::Copy { dest, src } => {
+                let val = self.get_value(*src)?;
+                self.value_map.insert(*dest, val);
+            }
+            IrInstruction::Select { dest, condition, true_val, false_val } => {
+                let cond_val = self.get_value(*condition)?.into_int_value();
+                let true_v = self.get_value(*true_val)?;
+                let false_v = self.get_value(*false_val)?;
+                let result = self.builder.build_select(cond_val, true_v, false_v, &format!("select_{}", dest.as_u32()))
+                    .map_err(|e| format!("Failed to build select: {}", e))?;
+                self.value_map.insert(*dest, result);
+            }
+
+            // Union operations
+            IrInstruction::CreateUnion { .. } => {
+                return Err("CreateUnion not yet implemented in LLVM backend".to_string());
+            }
+            IrInstruction::ExtractDiscriminant { .. } => {
+                return Err("ExtractDiscriminant not yet implemented in LLVM backend".to_string());
+            }
+            IrInstruction::ExtractUnionValue { .. } => {
+                return Err("ExtractUnionValue not yet implemented in LLVM backend".to_string());
+            }
+
+            // Struct operations
+            IrInstruction::CreateStruct { dest, ty, fields } => {
+                let struct_ty = self.translate_type(ty)?;
+
+                // Start with an undef struct value
+                let mut struct_val = struct_ty.into_struct_type().get_undef();
+
+                // Insert each field value
+                for (i, field_id) in fields.iter().enumerate() {
+                    let field_val = self.get_value(*field_id)?;
+                    struct_val = self.builder.build_insert_value(
+                        struct_val,
+                        field_val,
+                        i as u32,
+                        &format!("struct_field_{}", i)
+                    ).map_err(|e| format!("Failed to insert struct field: {}", e))?
+                     .into_struct_value();
+                }
+
+                self.value_map.insert(*dest, struct_val.into());
+            }
+
+            // Pointer operations
+            IrInstruction::PtrAdd { dest, ptr, offset, .. } => {
+                let ptr_val = self.get_value(*ptr)?.into_pointer_value();
+                let offset_val = self.get_value(*offset)?.into_int_value();
+                let result = unsafe {
+                    self.builder.build_gep(
+                        self.context.i8_type(),
+                        ptr_val,
+                        &[offset_val],
+                        &format!("ptradj_{}", dest.as_u32())
+                    ).map_err(|e| format!("Failed to build PtrAdd: {}", e))?
+                };
+                self.value_map.insert(*dest, result.into());
+            }
+
+            // Special values
+            IrInstruction::Undef { dest, ty } => {
+                let llvm_ty = self.translate_type(ty)?;
+                let undef_val = llvm_ty.const_zero(); // Use zero as placeholder for undef
+                self.value_map.insert(*dest, undef_val);
+            }
+
+            // Function reference
+            IrInstruction::FunctionRef { dest, func_id } => {
+                let func_name = Self::function_name(*func_id);
+                if let Some(llvm_func) = self.function_map.get(func_id) {
+                    let ptr = llvm_func.as_global_value().as_pointer_value();
+                    self.value_map.insert(*dest, ptr.into());
+                } else if let Some(llvm_func) = self.module.get_function(&func_name) {
+                    let ptr = llvm_func.as_global_value().as_pointer_value();
+                    self.value_map.insert(*dest, ptr.into());
+                } else {
+                    return Err(format!("Function {:?} not found for FunctionRef", func_id));
+                }
+            }
+
+            // Free memory
+            IrInstruction::Free { ptr } => {
+                let ptr_val = self.get_value(*ptr)?.into_pointer_value();
+                // Call runtime free or just skip (GC handles it)
+                let _ = ptr_val; // Silence unused warning
+            }
+
+            // Panic
+            IrInstruction::Panic { .. } => {
+                // Build a trap/abort
+                self.builder.build_unreachable()
+                    .map_err(|e| format!("Failed to build panic: {}", e))?;
+            }
         }
 
         Ok(())
@@ -830,47 +1057,95 @@ impl<'ctx> LLVMJitBackend<'ctx> {
     ) -> Result<BasicValueEnum<'ctx>, String> {
         let name = format!("binop_{}", dest.as_u32());
 
+        // Check if operands are floats - dispatch to float operations if so
+        let is_float = left.is_float_value();
+
         match op {
-            // Integer arithmetic
+            // Arithmetic - dispatch based on operand type
             BinaryOp::Add => {
-                let result = self.builder.build_int_add(
-                    left.into_int_value(),
-                    right.into_int_value(),
-                    &name
-                ).map_err(|e| format!("Failed to build add: {}", e))?;
-                Ok(result.into())
+                if is_float {
+                    let result = self.builder.build_float_add(
+                        left.into_float_value(),
+                        right.into_float_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build fadd: {}", e))?;
+                    Ok(result.into())
+                } else {
+                    let result = self.builder.build_int_add(
+                        left.into_int_value(),
+                        right.into_int_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build add: {}", e))?;
+                    Ok(result.into())
+                }
             }
             BinaryOp::Sub => {
-                let result = self.builder.build_int_sub(
-                    left.into_int_value(),
-                    right.into_int_value(),
-                    &name
-                ).map_err(|e| format!("Failed to build sub: {}", e))?;
-                Ok(result.into())
+                if is_float {
+                    let result = self.builder.build_float_sub(
+                        left.into_float_value(),
+                        right.into_float_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build fsub: {}", e))?;
+                    Ok(result.into())
+                } else {
+                    let result = self.builder.build_int_sub(
+                        left.into_int_value(),
+                        right.into_int_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build sub: {}", e))?;
+                    Ok(result.into())
+                }
             }
             BinaryOp::Mul => {
-                let result = self.builder.build_int_mul(
-                    left.into_int_value(),
-                    right.into_int_value(),
-                    &name
-                ).map_err(|e| format!("Failed to build mul: {}", e))?;
-                Ok(result.into())
+                if is_float {
+                    let result = self.builder.build_float_mul(
+                        left.into_float_value(),
+                        right.into_float_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build fmul: {}", e))?;
+                    Ok(result.into())
+                } else {
+                    let result = self.builder.build_int_mul(
+                        left.into_int_value(),
+                        right.into_int_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build mul: {}", e))?;
+                    Ok(result.into())
+                }
             }
             BinaryOp::Div => {
-                let result = self.builder.build_int_signed_div(
-                    left.into_int_value(),
-                    right.into_int_value(),
-                    &name
-                ).map_err(|e| format!("Failed to build div: {}", e))?;
-                Ok(result.into())
+                if is_float {
+                    let result = self.builder.build_float_div(
+                        left.into_float_value(),
+                        right.into_float_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build fdiv: {}", e))?;
+                    Ok(result.into())
+                } else {
+                    let result = self.builder.build_int_signed_div(
+                        left.into_int_value(),
+                        right.into_int_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build div: {}", e))?;
+                    Ok(result.into())
+                }
             }
             BinaryOp::Rem => {
-                let result = self.builder.build_int_signed_rem(
-                    left.into_int_value(),
-                    right.into_int_value(),
-                    &name
-                ).map_err(|e| format!("Failed to build rem: {}", e))?;
-                Ok(result.into())
+                if is_float {
+                    let result = self.builder.build_float_rem(
+                        left.into_float_value(),
+                        right.into_float_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build frem: {}", e))?;
+                    Ok(result.into())
+                } else {
+                    let result = self.builder.build_int_signed_rem(
+                        left.into_int_value(),
+                        right.into_int_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build rem: {}", e))?;
+                    Ok(result.into())
+                }
             }
 
             // Bitwise operations
@@ -998,61 +1273,124 @@ impl<'ctx> LLVMJitBackend<'ctx> {
     ) -> Result<BasicValueEnum<'ctx>, String> {
         let name = format!("cmp_{}", dest.as_u32());
 
+        // Check if operands are floats - use float comparison if so
+        let is_float = left.is_float_value();
+
         match op {
-            // Integer comparisons
+            // Integer/Float comparisons - dispatch based on operand type
             CompareOp::Eq => {
-                let result = self.builder.build_int_compare(
-                    IntPredicate::EQ,
-                    left.into_int_value(),
-                    right.into_int_value(),
-                    &name
-                ).map_err(|e| format!("Failed to build eq: {}", e))?;
-                Ok(result.into())
+                if is_float {
+                    let result = self.builder.build_float_compare(
+                        FloatPredicate::OEQ,
+                        left.into_float_value(),
+                        right.into_float_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build feq: {}", e))?;
+                    Ok(result.into())
+                } else {
+                    let result = self.builder.build_int_compare(
+                        IntPredicate::EQ,
+                        left.into_int_value(),
+                        right.into_int_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build eq: {}", e))?;
+                    Ok(result.into())
+                }
             }
             CompareOp::Ne => {
-                let result = self.builder.build_int_compare(
-                    IntPredicate::NE,
-                    left.into_int_value(),
-                    right.into_int_value(),
-                    &name
-                ).map_err(|e| format!("Failed to build ne: {}", e))?;
-                Ok(result.into())
+                if is_float {
+                    let result = self.builder.build_float_compare(
+                        FloatPredicate::ONE,
+                        left.into_float_value(),
+                        right.into_float_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build fne: {}", e))?;
+                    Ok(result.into())
+                } else {
+                    let result = self.builder.build_int_compare(
+                        IntPredicate::NE,
+                        left.into_int_value(),
+                        right.into_int_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build ne: {}", e))?;
+                    Ok(result.into())
+                }
             }
             CompareOp::Lt => {
-                let result = self.builder.build_int_compare(
-                    IntPredicate::SLT,
-                    left.into_int_value(),
-                    right.into_int_value(),
-                    &name
-                ).map_err(|e| format!("Failed to build lt: {}", e))?;
-                Ok(result.into())
+                if is_float {
+                    let result = self.builder.build_float_compare(
+                        FloatPredicate::OLT,
+                        left.into_float_value(),
+                        right.into_float_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build flt: {}", e))?;
+                    Ok(result.into())
+                } else {
+                    let result = self.builder.build_int_compare(
+                        IntPredicate::SLT,
+                        left.into_int_value(),
+                        right.into_int_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build lt: {}", e))?;
+                    Ok(result.into())
+                }
             }
             CompareOp::Le => {
-                let result = self.builder.build_int_compare(
-                    IntPredicate::SLE,
-                    left.into_int_value(),
-                    right.into_int_value(),
-                    &name
-                ).map_err(|e| format!("Failed to build le: {}", e))?;
-                Ok(result.into())
+                if is_float {
+                    let result = self.builder.build_float_compare(
+                        FloatPredicate::OLE,
+                        left.into_float_value(),
+                        right.into_float_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build fle: {}", e))?;
+                    Ok(result.into())
+                } else {
+                    let result = self.builder.build_int_compare(
+                        IntPredicate::SLE,
+                        left.into_int_value(),
+                        right.into_int_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build le: {}", e))?;
+                    Ok(result.into())
+                }
             }
             CompareOp::Gt => {
-                let result = self.builder.build_int_compare(
-                    IntPredicate::SGT,
-                    left.into_int_value(),
-                    right.into_int_value(),
-                    &name
-                ).map_err(|e| format!("Failed to build gt: {}", e))?;
-                Ok(result.into())
+                if is_float {
+                    let result = self.builder.build_float_compare(
+                        FloatPredicate::OGT,
+                        left.into_float_value(),
+                        right.into_float_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build fgt: {}", e))?;
+                    Ok(result.into())
+                } else {
+                    let result = self.builder.build_int_compare(
+                        IntPredicate::SGT,
+                        left.into_int_value(),
+                        right.into_int_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build gt: {}", e))?;
+                    Ok(result.into())
+                }
             }
             CompareOp::Ge => {
-                let result = self.builder.build_int_compare(
-                    IntPredicate::SGE,
-                    left.into_int_value(),
-                    right.into_int_value(),
-                    &name
-                ).map_err(|e| format!("Failed to build ge: {}", e))?;
-                Ok(result.into())
+                if is_float {
+                    let result = self.builder.build_float_compare(
+                        FloatPredicate::OGE,
+                        left.into_float_value(),
+                        right.into_float_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build fge: {}", e))?;
+                    Ok(result.into())
+                } else {
+                    let result = self.builder.build_int_compare(
+                        IntPredicate::SGE,
+                        left.into_int_value(),
+                        right.into_int_value(),
+                        &name
+                    ).map_err(|e| format!("Failed to build ge: {}", e))?;
+                    Ok(result.into())
+                }
             }
 
             // Unsigned comparisons
@@ -1272,6 +1610,28 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
             let result = self.builder.build_pointer_cast(src_ptr, target_ptr_ty, &name)
                 .map_err(|e| format!("Failed to build pointer cast: {}", e))?;
+
+            return Ok(result.into());
+        }
+
+        // Pointer to integer
+        if from_ty.is_pointer() && to_ty.is_integer() {
+            let src_ptr = src.into_pointer_value();
+            let target_int_ty = target_llvm_ty.into_int_type();
+
+            let result = self.builder.build_ptr_to_int(src_ptr, target_int_ty, &name)
+                .map_err(|e| format!("Failed to build ptr to int: {}", e))?;
+
+            return Ok(result.into());
+        }
+
+        // Integer to pointer
+        if from_ty.is_integer() && to_ty.is_pointer() {
+            let src_int = src.into_int_value();
+            let target_ptr_ty = target_llvm_ty.into_pointer_type();
+
+            let result = self.builder.build_int_to_ptr(src_int, target_ptr_ty, &name)
+                .map_err(|e| format!("Failed to build int to ptr: {}", e))?;
 
             return Ok(result.into());
         }
