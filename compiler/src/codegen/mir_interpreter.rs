@@ -21,6 +21,7 @@ use crate::ir::{
     IrModule, IrFunction, IrFunctionId, IrInstruction, IrValue, IrType,
     IrBasicBlock, IrBlockId, IrTerminator, IrId,
     BinaryOp, UnaryOp, CompareOp, IrFunctionSignature, IrExternFunction,
+    FunctionKind,
 };
 
 /// MIR interpreter value (boxed for GC safety)
@@ -499,9 +500,23 @@ impl MirInterpreter {
                     .collect();
 
                 // Check if it's a user function or extern
-                let result = if module.functions.contains_key(func_id) {
-                    // Recursive call to user function
-                    self.execute(module, *func_id, arg_values)?
+                let result = if let Some(func) = module.functions.get(func_id) {
+                    // Check the function kind - ExternC functions need FFI
+                    if func.kind == FunctionKind::ExternC {
+                        // Extern function - use FFI with the function's signature
+                        self.call_ffi_for_function(func, &arg_values)?
+                    } else if func.cfg.blocks.is_empty() {
+                        // Function with no blocks - try extern_functions or FFI
+                        if let Some(extern_fn) = module.extern_functions.get(func_id) {
+                            self.call_extern_with_signature(extern_fn, &arg_values)?
+                        } else {
+                            // Try runtime symbols as fallback
+                            self.call_ffi_for_function(func, &arg_values)?
+                        }
+                    } else {
+                        // Regular user function - execute recursively
+                        self.execute(module, *func_id, arg_values)?
+                    }
                 } else if let Some(extern_fn) = module.extern_functions.get(func_id) {
                     // FFI call to extern function with full signature info
                     self.call_extern_with_signature(extern_fn, &arg_values)?
@@ -1373,6 +1388,34 @@ impl MirInterpreter {
                 Ok(InterpValue::Void)
             }
         }
+    }
+
+    /// Call an IrFunction as FFI (for extern functions with empty blocks)
+    fn call_ffi_for_function(
+        &mut self,
+        func: &IrFunction,
+        args: &[InterpValue],
+    ) -> Result<InterpValue, InterpError> {
+        // First check built-ins
+        let builtin_result = self.call_extern(&func.name, args);
+        if let Ok(ref val) = builtin_result {
+            if !matches!(val, InterpValue::Void) || func.signature.return_type == IrType::Void {
+                // If we got a non-void result, or the function is supposed to return void,
+                // use the builtin result
+                if !func.name.starts_with("Unknown") {
+                    return builtin_result;
+                }
+            }
+        }
+
+        // Check if we have a registered symbol
+        if let Some(&ptr) = self.runtime_symbols.get(&func.name) {
+            return self.call_ffi_with_signature(ptr as usize, args, &func.signature);
+        }
+
+        // No symbol found - return default value (warning already logged by builtin check)
+        tracing::warn!("Function symbol not found for FFI: {}", func.name);
+        Ok(self.default_value_for_type(&func.signature.return_type))
     }
 
     /// Call an extern function with its full signature for proper FFI
