@@ -128,7 +128,8 @@ fn run_benchmark_cranelift(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> 
     // Compile
     let compile_start = Instant::now();
 
-    let mut unit = CompilationUnit::new(CompilationConfig::default());
+    // Use fast() for lazy stdlib - avoids trace resolution issues
+    let mut unit = CompilationUnit::new(CompilationConfig::fast());
     unit.load_stdlib().map_err(|e| format!("stdlib: {}", e))?;
     unit.add_file(&bench.source, &format!("{}.hx", bench.name))
         .map_err(|e| format!("parse: {}", e))?;
@@ -328,7 +329,8 @@ fn run_benchmark_llvm(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> Resul
     // Compile
     let compile_start = Instant::now();
 
-    let mut unit = CompilationUnit::new(CompilationConfig::default());
+    // Use fast() for lazy stdlib like interpreter - avoids trace resolution issues
+    let mut unit = CompilationUnit::new(CompilationConfig::fast());
     unit.load_stdlib().map_err(|e| format!("stdlib: {}", e))?;
     unit.add_file(&bench.source, &format!("{}.hx", bench.name))
         .map_err(|e| format!("parse: {}", e))?;
