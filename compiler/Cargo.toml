@@ -20,6 +20,7 @@ env_logger = "0.11"
 indexmap = "2"
 tracing = '0.1.44'
 rayon = "1.10"  # Parallel iteration for background JIT compilation
+chrono = "0.4"  # Date/time for benchmark results
 
 # Cranelift JIT compilation - fork with ARM64 PLT fixes + MAP_JIT for 100% stability
 cranelift = { git = "https://github.com/darmie/wasmtime", branch = "fix-plt-aarch64", package = "cranelift", features = ["jit", "module", "native"] }
@@ -81,3 +82,11 @@ path = "examples/test_class_boxing.rs"
 [[example]]
 name = "test_dynamic_field_access"
 path = "examples/test_dynamic_field_access.rs"
+
+[[example]]
+name = "benchmark_runner"
+path = "examples/benchmark_runner.rs"
+
+[[example]]
+name = "benchmark_bundle"
+path = "examples/benchmark_bundle.rs"

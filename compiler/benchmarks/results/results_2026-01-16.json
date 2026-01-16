@@ -1,0 +1,34 @@
+{
+  "date": "2026-01-16",
+  "benchmarks": [
+    {
+      "name": "arithmetic",
+      "results": [
+        {
+          "name": "arithmetic",
+          "target": "rayzor-cranelift",
+          "compile_time_ms": 186.224166,
+          "runtime_ms": 225.48012500000002,
+          "total_time_ms": 411.704291,
+          "iterations": 10
+        },
+        {
+          "name": "arithmetic",
+          "target": "rayzor-interpreter",
+          "compile_time_ms": 22.453999999999997,
+          "runtime_ms": 25627.957458,
+          "total_time_ms": 25650.411458000002,
+          "iterations": 10
+        },
+        {
+          "name": "arithmetic",
+          "target": "rayzor-tiered",
+          "compile_time_ms": 46.3835,
+          "runtime_ms": 251.866792,
+          "total_time_ms": 298.25029199999994,
+          "iterations": 10
+        }
+      ]
+    }
+  ]
+}

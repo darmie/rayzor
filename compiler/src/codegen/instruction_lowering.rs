@@ -61,7 +61,20 @@ impl CraneliftBackend {
             expected_ty
         };
 
-        let lhs = if lhs_ty != operation_ty && lhs_ty.is_int() && operation_ty.is_int() {
+        // Determine if we're doing float operations based on operand types
+        let use_float_ops = lhs_ty.is_float() || rhs_ty.is_float() || operation_ty.is_float();
+
+        // Coerce operands to the correct type for the operation
+        let lhs = if use_float_ops && lhs_ty.is_int() {
+            // Convert integer to float
+            let float_ty = if rhs_ty.is_float() { rhs_ty } else { types::F64 };
+            if ty.is_signed() || lhs_ty == types::I32 || lhs_ty == types::I64 {
+                builder.ins().fcvt_from_sint(float_ty, lhs)
+            } else {
+                builder.ins().fcvt_from_uint(float_ty, lhs)
+            }
+        } else if lhs_ty != operation_ty && lhs_ty.is_int() && operation_ty.is_int() {
+            // Extend integer to larger integer
             if ty.is_signed() {
                 builder.ins().sextend(operation_ty, lhs)
             } else {
@@ -71,7 +84,16 @@ impl CraneliftBackend {
             lhs
         };
 
-        let rhs = if rhs_ty != operation_ty && rhs_ty.is_int() && operation_ty.is_int() {
+        let rhs = if use_float_ops && rhs_ty.is_int() {
+            // Convert integer to float
+            let float_ty = if lhs_ty.is_float() { lhs_ty } else { types::F64 };
+            if ty.is_signed() || rhs_ty == types::I32 || rhs_ty == types::I64 {
+                builder.ins().fcvt_from_sint(float_ty, rhs)
+            } else {
+                builder.ins().fcvt_from_uint(float_ty, rhs)
+            }
+        } else if rhs_ty != operation_ty && rhs_ty.is_int() && operation_ty.is_int() {
+            // Extend integer to larger integer
             if ty.is_signed() {
                 builder.ins().sextend(operation_ty, rhs)
             } else {
@@ -80,10 +102,6 @@ impl CraneliftBackend {
         } else {
             rhs
         };
-
-        // Use the actual operation_ty (Cranelift type) to decide float vs int operations.
-        // This handles cases where MIR type might incorrectly be a float but operands are integers.
-        let use_float_ops = operation_ty.is_float();
 
         let value = match op {
             BinaryOp::Add => {
@@ -117,7 +135,18 @@ impl CraneliftBackend {
                 }
             }
             BinaryOp::Rem => {
-                if ty.is_signed() {
+                // Get actual types AFTER coercion (lhs/rhs may have been converted above)
+                let actual_lhs_ty = builder.func.dfg.value_type(lhs);
+                let actual_rhs_ty = builder.func.dfg.value_type(rhs);
+
+                if actual_lhs_ty.is_float() || actual_rhs_ty.is_float() {
+                    // Float modulo: a % b = a - floor(a/b) * b
+                    // lhs and rhs are already converted to float by the general coercion above
+                    let div = builder.ins().fdiv(lhs, rhs);
+                    let floored = builder.ins().floor(div);
+                    let mul = builder.ins().fmul(floored, rhs);
+                    builder.ins().fsub(lhs, mul)
+                } else if ty.is_signed() {
                     builder.ins().srem(lhs, rhs)
                 } else {
                     builder.ins().urem(lhs, rhs)
@@ -140,12 +169,56 @@ impl CraneliftBackend {
             BinaryOp::FMul => builder.ins().fmul(lhs, rhs),
             BinaryOp::FDiv => builder.ins().fdiv(lhs, rhs),
             BinaryOp::FRem => {
-                // TODO: Cranelift doesn't have frem, would need libm fmod
-                builder.ins().fdiv(lhs, rhs) // Placeholder
+                // Float modulo: a % b = a - floor(a/b) * b
+                // Get actual types AFTER coercion (lhs/rhs may have been converted above)
+                let actual_lhs_ty = builder.func.dfg.value_type(lhs);
+                let actual_rhs_ty = builder.func.dfg.value_type(rhs);
+
+                // Ensure we have float values - convert if needed
+                let float_ty = if actual_lhs_ty.is_float() { actual_lhs_ty } else if actual_rhs_ty.is_float() { actual_rhs_ty } else { types::F64 };
+
+                let lhs_f = if actual_lhs_ty.is_int() {
+                    builder.ins().fcvt_from_sint(float_ty, lhs)
+                } else { lhs };
+
+                let rhs_f = if actual_rhs_ty.is_int() {
+                    builder.ins().fcvt_from_sint(float_ty, rhs)
+                } else { rhs };
+
+                let div = builder.ins().fdiv(lhs_f, rhs_f);
+                let floored = builder.ins().floor(div);
+                let mul = builder.ins().fmul(floored, rhs_f);
+                builder.ins().fsub(lhs_f, mul)
             }
         };
 
-        Ok(value)
+        // Convert result back to expected type if there's a type mismatch
+        // This handles cases where we did float ops but expected an integer result
+        let result_ty = builder.func.dfg.value_type(value);
+        let final_value = if result_ty.is_float() && expected_ty.is_int() {
+            // Convert float result to integer (truncate towards zero)
+            if ty.is_signed() {
+                builder.ins().fcvt_to_sint(expected_ty, value)
+            } else {
+                builder.ins().fcvt_to_uint(expected_ty, value)
+            }
+        } else if result_ty.is_int() && expected_ty.is_int() && result_ty != expected_ty {
+            // Integer size mismatch - extend or truncate
+            if result_ty.bits() < expected_ty.bits() {
+                if ty.is_signed() {
+                    builder.ins().sextend(expected_ty, value)
+                } else {
+                    builder.ins().uextend(expected_ty, value)
+                }
+            } else {
+                // Truncate (this is rare but can happen)
+                builder.ins().ireduce(expected_ty, value)
+            }
+        } else {
+            value
+        };
+
+        Ok(final_value)
     }
 
     /// Lower a comparison operation to Cranelift IR
@@ -350,8 +423,20 @@ impl CraneliftBackend {
             expected_ty
         };
 
-        let lhs = if lhs_ty != operation_ty && lhs_ty.is_int() && operation_ty.is_int() {
-            // Always extend, never reduce
+        // Determine if we're doing float operations based on operand types
+        let use_float_ops = lhs_ty.is_float() || rhs_ty.is_float() || operation_ty.is_float();
+
+        // Coerce operands to the correct type for the operation
+        let lhs = if use_float_ops && lhs_ty.is_int() {
+            // Convert integer to float
+            let float_ty = if rhs_ty.is_float() { rhs_ty } else { types::F64 };
+            if ty.is_signed() || lhs_ty == types::I32 || lhs_ty == types::I64 {
+                builder.ins().fcvt_from_sint(float_ty, lhs)
+            } else {
+                builder.ins().fcvt_from_uint(float_ty, lhs)
+            }
+        } else if lhs_ty != operation_ty && lhs_ty.is_int() && operation_ty.is_int() {
+            // Extend integer to larger integer
             if ty.is_signed() {
                 builder.ins().sextend(operation_ty, lhs)
             } else {
@@ -361,8 +446,16 @@ impl CraneliftBackend {
             lhs
         };
 
-        let rhs = if rhs_ty != operation_ty && rhs_ty.is_int() && operation_ty.is_int() {
-            // Always extend, never reduce
+        let rhs = if use_float_ops && rhs_ty.is_int() {
+            // Convert integer to float
+            let float_ty = if lhs_ty.is_float() { lhs_ty } else { types::F64 };
+            if ty.is_signed() || rhs_ty == types::I32 || rhs_ty == types::I64 {
+                builder.ins().fcvt_from_sint(float_ty, rhs)
+            } else {
+                builder.ins().fcvt_from_uint(float_ty, rhs)
+            }
+        } else if rhs_ty != operation_ty && rhs_ty.is_int() && operation_ty.is_int() {
+            // Extend integer to larger integer
             if ty.is_signed() {
                 builder.ins().sextend(operation_ty, rhs)
             } else {
@@ -371,12 +464,6 @@ impl CraneliftBackend {
         } else {
             rhs
         };
-
-        // Use the actual operation_ty (Cranelift type) to decide float vs int operations.
-        // This handles cases where MIR type might incorrectly be a float but operands are integers.
-        // For example, when dealing with Dynamic types that resolve to Ptr(Void), the MIR type
-        // might be wrong, but the actual operand types tell us the truth.
-        let use_float_ops = operation_ty.is_float();
 
         let value = match op {
             BinaryOp::Add => {
@@ -410,7 +497,18 @@ impl CraneliftBackend {
                 }
             }
             BinaryOp::Rem => {
-                if ty.is_signed() {
+                // Get actual types AFTER coercion (lhs/rhs may have been converted above)
+                let actual_lhs_ty = builder.func.dfg.value_type(lhs);
+                let actual_rhs_ty = builder.func.dfg.value_type(rhs);
+
+                if actual_lhs_ty.is_float() || actual_rhs_ty.is_float() {
+                    // Float modulo: a % b = a - floor(a/b) * b
+                    // lhs and rhs are already converted to float by the general coercion above
+                    let div = builder.ins().fdiv(lhs, rhs);
+                    let floored = builder.ins().floor(div);
+                    let mul = builder.ins().fmul(floored, rhs);
+                    builder.ins().fsub(lhs, mul)
+                } else if ty.is_signed() {
                     builder.ins().srem(lhs, rhs)
                 } else {
                     builder.ins().urem(lhs, rhs)
@@ -431,10 +529,57 @@ impl CraneliftBackend {
             BinaryOp::FSub => builder.ins().fsub(lhs, rhs),
             BinaryOp::FMul => builder.ins().fmul(lhs, rhs),
             BinaryOp::FDiv => builder.ins().fdiv(lhs, rhs),
-            BinaryOp::FRem => builder.ins().fdiv(lhs, rhs), // TODO: Implement proper frem
+            BinaryOp::FRem => {
+                // Float modulo: a % b = a - floor(a/b) * b
+                // Get actual types AFTER coercion (lhs/rhs may have been converted above)
+                let actual_lhs_ty = builder.func.dfg.value_type(lhs);
+                let actual_rhs_ty = builder.func.dfg.value_type(rhs);
+
+                // Ensure we have float values - convert if needed
+                let float_ty = if actual_lhs_ty.is_float() { actual_lhs_ty } else if actual_rhs_ty.is_float() { actual_rhs_ty } else { types::F64 };
+
+                let lhs_f = if actual_lhs_ty.is_int() {
+                    builder.ins().fcvt_from_sint(float_ty, lhs)
+                } else { lhs };
+
+                let rhs_f = if actual_rhs_ty.is_int() {
+                    builder.ins().fcvt_from_sint(float_ty, rhs)
+                } else { rhs };
+
+                let div = builder.ins().fdiv(lhs_f, rhs_f);
+                let floored = builder.ins().floor(div);
+                let mul = builder.ins().fmul(floored, rhs_f);
+                builder.ins().fsub(lhs_f, mul)
+            }
         };
 
-        Ok(value)
+        // Convert result back to expected type if there's a type mismatch
+        // This handles cases where we did float ops but expected an integer result
+        let result_ty = builder.func.dfg.value_type(value);
+        let final_value = if result_ty.is_float() && expected_ty.is_int() {
+            // Convert float result to integer (truncate towards zero)
+            if ty.is_signed() {
+                builder.ins().fcvt_to_sint(expected_ty, value)
+            } else {
+                builder.ins().fcvt_to_uint(expected_ty, value)
+            }
+        } else if result_ty.is_int() && expected_ty.is_int() && result_ty != expected_ty {
+            // Integer size mismatch - extend or truncate
+            if result_ty.bits() < expected_ty.bits() {
+                if ty.is_signed() {
+                    builder.ins().sextend(expected_ty, value)
+                } else {
+                    builder.ins().uextend(expected_ty, value)
+                }
+            } else {
+                // Truncate (this is rare but can happen)
+                builder.ins().ireduce(expected_ty, value)
+            }
+        } else {
+            value
+        };
+
+        Ok(final_value)
     }
 
     /// Lower a comparison operation (static version)

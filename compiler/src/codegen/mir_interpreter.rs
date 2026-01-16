@@ -676,6 +676,9 @@ impl InterpValue {
             InterpValue::U64(n) => Ok(*n as i64),
             InterpValue::Bool(b) => Ok(if *b { 1 } else { 0 }),
             InterpValue::Ptr(p) => Ok(*p as i64),
+            // Float to int truncates the decimal part
+            InterpValue::F32(f) => Ok(*f as i64),
+            InterpValue::F64(f) => Ok(*f as i64),
             // Void and Null convert to 0 (common convention in many languages)
             InterpValue::Void => Ok(0),
             InterpValue::Null => Ok(0),

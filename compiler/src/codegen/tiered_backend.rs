@@ -335,10 +335,31 @@ impl TieredBackend {
             interp.execute(module_ref, func_id, args)
                 .map_err(|e| format!("Interpreter error: {}", e))
         } else {
-            // For JIT-compiled code, we can't easily call it with InterpValue args
-            // This would require marshaling - for now, return an error
-            // In a full implementation, we'd use libffi or similar
-            Err("Direct execution of JIT-compiled functions with InterpValue args not yet supported. Use get_function_pointer() for native calls.".to_string())
+            // JIT-compiled code - call via function pointer
+            let func_ptr = self.get_function_pointer(func_id)
+                .ok_or_else(|| format!("JIT function {:?} not found in function_pointers", func_id))?;
+
+            // For functions with no args (like main), call directly
+            // For functions with args, we'd need to marshal InterpValue -> native types
+            if args.is_empty() {
+                unsafe {
+                    let jit_fn: extern "C" fn() = std::mem::transmute(func_ptr);
+                    jit_fn();
+                }
+                Ok(InterpValue::Void)
+            } else {
+                // TODO: Implement argument marshaling for JIT calls
+                // For now, fall back to interpreter for functions with args
+                // This is a limitation - in practice, hot inner functions often have args
+                if self.config.verbosity >= 1 {
+                    debug!("[TieredBackend] JIT function with args - falling back to interpreter");
+                }
+                let module = self.module.read().unwrap();
+                let module_ref = module.as_ref().ok_or("Module not loaded")?;
+                let mut interp = self.interpreter.lock().unwrap();
+                interp.execute(module_ref, func_id, args)
+                    .map_err(|e| format!("Interpreter error: {}", e))
+            }
         }
     }
 
