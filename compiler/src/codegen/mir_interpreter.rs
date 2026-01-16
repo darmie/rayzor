@@ -1539,8 +1539,88 @@ impl MirInterpreter {
         }
     }
 
-    /// Evaluate a binary operation
+    /// Evaluate a binary operation with specialized fast paths
+    ///
+    /// Uses type-specialized handlers for common integer operations
+    /// to avoid the overhead of generic type conversion.
     fn eval_binary_op(
+        &self,
+        op: BinaryOp,
+        left: InterpValue,
+        right: InterpValue,
+    ) -> Result<InterpValue, InterpError> {
+        // Fast path: both operands are i32 (most common case in Haxe)
+        if let (InterpValue::I32(l), InterpValue::I32(r)) = (&left, &right) {
+            return match op {
+                BinaryOp::Add => Ok(InterpValue::I32(l.wrapping_add(*r))),
+                BinaryOp::Sub => Ok(InterpValue::I32(l.wrapping_sub(*r))),
+                BinaryOp::Mul => Ok(InterpValue::I32(l.wrapping_mul(*r))),
+                BinaryOp::Div => {
+                    if *r == 0 {
+                        return Err(InterpError::RuntimeError("Division by zero".to_string()));
+                    }
+                    Ok(InterpValue::I32(l / r))
+                }
+                BinaryOp::Rem => {
+                    if *r == 0 {
+                        return Err(InterpError::RuntimeError("Modulo by zero".to_string()));
+                    }
+                    Ok(InterpValue::I32(l % r))
+                }
+                BinaryOp::And => Ok(InterpValue::I32(l & r)),
+                BinaryOp::Or => Ok(InterpValue::I32(l | r)),
+                BinaryOp::Xor => Ok(InterpValue::I32(l ^ r)),
+                BinaryOp::Shl => Ok(InterpValue::I32(l << (r & 31))),
+                BinaryOp::Shr => Ok(InterpValue::I32(l >> (r & 31))),
+                _ => self.eval_binary_op_slow(op, left, right),
+            };
+        }
+
+        // Fast path: both operands are i64
+        if let (InterpValue::I64(l), InterpValue::I64(r)) = (&left, &right) {
+            return match op {
+                BinaryOp::Add => Ok(InterpValue::I64(l.wrapping_add(*r))),
+                BinaryOp::Sub => Ok(InterpValue::I64(l.wrapping_sub(*r))),
+                BinaryOp::Mul => Ok(InterpValue::I64(l.wrapping_mul(*r))),
+                BinaryOp::Div => {
+                    if *r == 0 {
+                        return Err(InterpError::RuntimeError("Division by zero".to_string()));
+                    }
+                    Ok(InterpValue::I64(l / r))
+                }
+                BinaryOp::Rem => {
+                    if *r == 0 {
+                        return Err(InterpError::RuntimeError("Modulo by zero".to_string()));
+                    }
+                    Ok(InterpValue::I64(l % r))
+                }
+                BinaryOp::And => Ok(InterpValue::I64(l & r)),
+                BinaryOp::Or => Ok(InterpValue::I64(l | r)),
+                BinaryOp::Xor => Ok(InterpValue::I64(l ^ r)),
+                BinaryOp::Shl => Ok(InterpValue::I64(l << (r & 63))),
+                BinaryOp::Shr => Ok(InterpValue::I64(l >> (r & 63))),
+                _ => self.eval_binary_op_slow(op, left, right),
+            };
+        }
+
+        // Fast path: both operands are f64
+        if let (InterpValue::F64(l), InterpValue::F64(r)) = (&left, &right) {
+            return match op {
+                BinaryOp::Add | BinaryOp::FAdd => Ok(InterpValue::F64(l + r)),
+                BinaryOp::Sub | BinaryOp::FSub => Ok(InterpValue::F64(l - r)),
+                BinaryOp::Mul | BinaryOp::FMul => Ok(InterpValue::F64(l * r)),
+                BinaryOp::Div | BinaryOp::FDiv => Ok(InterpValue::F64(l / r)),
+                BinaryOp::Rem | BinaryOp::FRem => Ok(InterpValue::F64(l % r)),
+                _ => self.eval_binary_op_slow(op, left, right),
+            };
+        }
+
+        // Slow path: mixed types or less common types
+        self.eval_binary_op_slow(op, left, right)
+    }
+
+    /// Slow path for binary operations (type conversion required)
+    fn eval_binary_op_slow(
         &self,
         op: BinaryOp,
         left: InterpValue,
