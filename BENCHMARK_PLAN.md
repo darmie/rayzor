@@ -22,9 +22,12 @@ This plan outlines a benchmark suite to compare Rayzor against the highest-perfo
 | Target | Description | Expected Performance |
 |--------|-------------|---------------------|
 | **Rayzor Interpreter** | MIR interpreter (Phase 0) | ~10-50x slower than C++ |
-| **Rayzor Cranelift** | JIT via Cranelift | ~2-5x slower than C++ |
+| **Rayzor Cranelift** | JIT via Cranelift (Phase 1) | ~2-5x slower than C++ |
+| **Rayzor Tiered** | Interpreter → Cranelift tier-up | Starts slow, converges to JIT |
 | **Rayzor Bundle** | Pre-compiled .rzb bundle | Same as interpreter (instant startup) |
 | **Rayzor LLVM** | (Future) LLVM backend | Match C++ performance |
+
+**Note:** Rayzor Tiered is comparable to JVM's tiered compilation (C1 → C2). It starts in interpreter mode for instant startup, then JIT-compiles hot functions with Cranelift after N calls.
 
 ---
 
@@ -478,7 +481,7 @@ Generate HTML charts similar to benchs.haxe.org using:
 ### Bar Chart: Runtime Comparison
 
 ```
-Mandelbrot (875x500, 1000 iter)
+Mandelbrot (875x500, 1000 iter) - Single Run
 ═══════════════════════════════════════════════════════
 
 C++            ████████████████████ 89ms (baseline)
@@ -486,8 +489,26 @@ HashLink/C     █████████████████████�
 HashLink       ████████████████████████████████ 178ms (2.0x)
 Rayzor JIT     ████████████████████████████████████ 223ms (2.5x)
 JVM            ████████████████████████████████████████ 267ms (3.0x)
+Rayzor Tiered  ██████████████████████████████████████████████████ 445ms (5.0x) *
 Rayzor Interp  ██████████████████████████████████████████████████████████████ 890ms (10x)
 NodeJS         ████████████████████████████████████████████████████████████████████ 1120ms (12.6x)
+
+* Rayzor Tiered: First run includes JIT warmup. Subsequent runs match Rayzor JIT.
+```
+
+### Bar Chart: Repeated Runs (shows tier-up benefit)
+
+```
+Mandelbrot × 10 iterations (total time)
+═══════════════════════════════════════════════════════
+
+C++            ████████████████████ 890ms (baseline)
+Rayzor JIT     ████████████████████████████████████ 2230ms (2.5x)
+Rayzor Tiered  ████████████████████████████████████████ 2450ms (2.8x) *
+JVM            ████████████████████████████████████████████ 2670ms (3.0x)
+Rayzor Interp  ██████████████████████████████████████████████████████████████ 8900ms (10x)
+
+* Rayzor Tiered converges to JIT speed after first iteration
 ```
 
 ### Line Chart: Startup Time
