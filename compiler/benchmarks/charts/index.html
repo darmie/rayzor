@@ -17,7 +17,7 @@
     <div class="summary">
         <h3>Summary</h3>
         <ul>
-            <li><strong>arithmetic</strong>: 3 targets measured</li>
+            <li><strong>arithmetic</strong>: 4 targets measured</li>
         </ul>
     </div>
 
@@ -29,16 +29,16 @@
         new Chart(document.getElementById('chart_0'), {
             type: 'bar',
             data: {
-                labels: ['rayzor-cranelift', 'rayzor-interpreter', 'rayzor-llvm'],
+                labels: ['rayzor-cranelift', 'rayzor-interpreter', 'rayzor-tiered', 'rayzor-llvm'],
                 datasets: [
                     {
                         label: 'Compile (ms)',
-                        data: [18.27, 3.96, 4.16],
+                        data: [18.08, 3.98, 4.00, 4.01],
                         backgroundColor: 'rgba(54, 162, 235, 0.8)'
                     },
                     {
                         label: 'Execute (ms)',
-                        data: [225.13, 2239.27, 0.59],
+                        data: [224.17, 2227.35, 251.44, 0.58],
                         backgroundColor: 'rgba(255, 99, 132, 0.8)'
                     }
                 ]

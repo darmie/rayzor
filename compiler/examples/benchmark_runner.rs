@@ -221,7 +221,8 @@ struct TieredBenchmarkState {
 fn setup_tiered_benchmark(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> Result<TieredBenchmarkState, String> {
     let compile_start = Instant::now();
 
-    let mut unit = CompilationUnit::new(CompilationConfig::default());
+    // Use fast() for lazy stdlib - avoids trace resolution issues
+    let mut unit = CompilationUnit::new(CompilationConfig::fast());
     unit.load_stdlib().map_err(|e| format!("stdlib: {}", e))?;
     unit.add_file(&bench.source, &format!("{}.hx", bench.name))
         .map_err(|e| format!("parse: {}", e))?;
@@ -275,7 +276,8 @@ fn run_benchmark_tiered(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> Res
     // For single-iteration compatibility, create fresh backend
     let compile_start = Instant::now();
 
-    let mut unit = CompilationUnit::new(CompilationConfig::default());
+    // Use fast() for lazy stdlib - avoids trace resolution issues
+    let mut unit = CompilationUnit::new(CompilationConfig::fast());
     unit.load_stdlib().map_err(|e| format!("stdlib: {}", e))?;
     unit.add_file(&bench.source, &format!("{}.hx", bench.name))
         .map_err(|e| format!("parse: {}", e))?;

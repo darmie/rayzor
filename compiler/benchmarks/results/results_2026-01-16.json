@@ -7,25 +7,33 @@
         {
           "name": "arithmetic",
           "target": "rayzor-cranelift",
-          "compile_time_ms": 18.267042,
-          "runtime_ms": 225.129958,
-          "total_time_ms": 243.397,
+          "compile_time_ms": 18.079833,
+          "runtime_ms": 224.165958,
+          "total_time_ms": 242.245791,
           "iterations": 10
         },
         {
           "name": "arithmetic",
           "target": "rayzor-interpreter",
-          "compile_time_ms": 3.957625,
-          "runtime_ms": 2239.2695,
-          "total_time_ms": 2243.227125,
+          "compile_time_ms": 3.9767500000000005,
+          "runtime_ms": 2227.3465840000003,
+          "total_time_ms": 2231.3233339999997,
+          "iterations": 10
+        },
+        {
+          "name": "arithmetic",
+          "target": "rayzor-tiered",
+          "compile_time_ms": 4.004792,
+          "runtime_ms": 251.44466599999998,
+          "total_time_ms": 255.44945800000002,
           "iterations": 10
         },
         {
           "name": "arithmetic",
           "target": "rayzor-llvm",
-          "compile_time_ms": 4.159166,
-          "runtime_ms": 0.58825,
-          "total_time_ms": 4.747416,
+          "compile_time_ms": 4.008208,
+          "runtime_ms": 0.580084,
+          "total_time_ms": 4.588292,
           "iterations": 10
         }
       ]
