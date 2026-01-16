@@ -19,7 +19,11 @@ mod instruction_lowering;
 pub mod apple_jit_memory;
 
 pub use cranelift_backend::CraneliftBackend;
-pub use mir_interpreter::{MirInterpreter, InterpValue, InterpError};
+pub use mir_interpreter::{
+    MirInterpreter, InterpValue, InterpError,
+    NanBoxedValue, HeapObject, ObjectHeap,
+    Opcode, DecodedInstruction, DecodedBlock,
+};
 pub use profiling::{HotnessLevel, ProfileConfig, ProfileData, ProfileStatistics};
 pub use tiered_backend::{OptimizationTier, TieredBackend, TieredConfig, TieredStatistics};
 

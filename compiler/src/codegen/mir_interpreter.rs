@@ -326,6 +326,157 @@ impl ObjectHeap {
 }
 
 // ============================================================================
+// Opcode-Based Dispatch (Performance Optimization)
+// ============================================================================
+
+/// Instruction opcode for dispatch table lookup
+///
+/// This enum mirrors IrInstruction variants but as a simple discriminant.
+/// Used for computed goto-style dispatch via function pointer table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Opcode {
+    Const = 0,
+    Copy = 1,
+    Move = 2,
+    BinOp = 3,
+    UnOp = 4,
+    Cmp = 5,
+    Load = 6,
+    Store = 7,
+    Alloc = 8,
+    Free = 9,
+    GetElementPtr = 10,
+    PtrAdd = 11,
+    CallDirect = 12,
+    CallIndirect = 13,
+    Cast = 14,
+    BitCast = 15,
+    CreateStruct = 16,
+    ExtractValue = 17,
+    InsertValue = 18,
+    CreateUnion = 19,
+    ExtractDiscriminant = 20,
+    ExtractUnionValue = 21,
+    Select = 22,
+    FunctionRef = 23,
+    MakeClosure = 24,
+    ClosureFunc = 25,
+    ClosureEnv = 26,
+    BorrowImmutable = 27,
+    BorrowMutable = 28,
+    Clone = 29,
+    EndBorrow = 30,
+    MemCopy = 31,
+    MemSet = 32,
+    Undef = 33,
+    Panic = 34,
+    DebugLoc = 35,
+    Phi = 36,
+    Jump = 37,
+    Branch = 38,
+    Switch = 39,
+    Return = 40,
+    Throw = 41,
+    LandingPad = 42,
+    Resume = 43,
+    InlineAsm = 44,
+    // Sentinel for table size
+    _Count = 45,
+}
+
+impl Opcode {
+    /// Get opcode from IrInstruction (fast discriminant extraction)
+    #[inline(always)]
+    pub fn from_instruction(instr: &IrInstruction) -> Self {
+        match instr {
+            IrInstruction::Const { .. } => Opcode::Const,
+            IrInstruction::Copy { .. } => Opcode::Copy,
+            IrInstruction::Move { .. } => Opcode::Move,
+            IrInstruction::BinOp { .. } => Opcode::BinOp,
+            IrInstruction::UnOp { .. } => Opcode::UnOp,
+            IrInstruction::Cmp { .. } => Opcode::Cmp,
+            IrInstruction::Load { .. } => Opcode::Load,
+            IrInstruction::Store { .. } => Opcode::Store,
+            IrInstruction::Alloc { .. } => Opcode::Alloc,
+            IrInstruction::Free { .. } => Opcode::Free,
+            IrInstruction::GetElementPtr { .. } => Opcode::GetElementPtr,
+            IrInstruction::PtrAdd { .. } => Opcode::PtrAdd,
+            IrInstruction::CallDirect { .. } => Opcode::CallDirect,
+            IrInstruction::CallIndirect { .. } => Opcode::CallIndirect,
+            IrInstruction::Cast { .. } => Opcode::Cast,
+            IrInstruction::BitCast { .. } => Opcode::BitCast,
+            IrInstruction::CreateStruct { .. } => Opcode::CreateStruct,
+            IrInstruction::ExtractValue { .. } => Opcode::ExtractValue,
+            IrInstruction::InsertValue { .. } => Opcode::InsertValue,
+            IrInstruction::CreateUnion { .. } => Opcode::CreateUnion,
+            IrInstruction::ExtractDiscriminant { .. } => Opcode::ExtractDiscriminant,
+            IrInstruction::ExtractUnionValue { .. } => Opcode::ExtractUnionValue,
+            IrInstruction::Select { .. } => Opcode::Select,
+            IrInstruction::FunctionRef { .. } => Opcode::FunctionRef,
+            IrInstruction::MakeClosure { .. } => Opcode::MakeClosure,
+            IrInstruction::ClosureFunc { .. } => Opcode::ClosureFunc,
+            IrInstruction::ClosureEnv { .. } => Opcode::ClosureEnv,
+            IrInstruction::BorrowImmutable { .. } => Opcode::BorrowImmutable,
+            IrInstruction::BorrowMutable { .. } => Opcode::BorrowMutable,
+            IrInstruction::Clone { .. } => Opcode::Clone,
+            IrInstruction::EndBorrow { .. } => Opcode::EndBorrow,
+            IrInstruction::MemCopy { .. } => Opcode::MemCopy,
+            IrInstruction::MemSet { .. } => Opcode::MemSet,
+            IrInstruction::Undef { .. } => Opcode::Undef,
+            IrInstruction::Panic { .. } => Opcode::Panic,
+            IrInstruction::DebugLoc { .. } => Opcode::DebugLoc,
+            IrInstruction::Phi { .. } => Opcode::Phi,
+            IrInstruction::Jump { .. } => Opcode::Jump,
+            IrInstruction::Branch { .. } => Opcode::Branch,
+            IrInstruction::Switch { .. } => Opcode::Switch,
+            IrInstruction::Return { .. } => Opcode::Return,
+            IrInstruction::Throw { .. } => Opcode::Throw,
+            IrInstruction::LandingPad { .. } => Opcode::LandingPad,
+            IrInstruction::Resume { .. } => Opcode::Resume,
+            IrInstruction::InlineAsm { .. } => Opcode::InlineAsm,
+        }
+    }
+}
+
+/// Pre-decoded instruction for faster dispatch
+///
+/// Stores the opcode separately from the instruction data,
+/// allowing direct dispatch table lookup without pattern matching.
+#[derive(Clone)]
+pub struct DecodedInstruction {
+    pub opcode: Opcode,
+    pub instr: IrInstruction,
+}
+
+impl DecodedInstruction {
+    #[inline(always)]
+    pub fn new(instr: IrInstruction) -> Self {
+        Self {
+            opcode: Opcode::from_instruction(&instr),
+            instr,
+        }
+    }
+}
+
+/// Pre-decoded basic block for faster interpretation
+pub struct DecodedBlock {
+    pub instructions: Vec<DecodedInstruction>,
+    pub terminator: IrTerminator,
+}
+
+impl DecodedBlock {
+    pub fn from_block(block: &IrBasicBlock) -> Self {
+        Self {
+            instructions: block.instructions.iter()
+                .map(|i| DecodedInstruction::new(i.clone()))
+                .collect(),
+            terminator: block.terminator.clone(),
+        }
+    }
+}
+
+// ============================================================================
 // Legacy InterpValue (kept for compatibility, will be phased out)
 // ============================================================================
 
