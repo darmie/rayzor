@@ -431,63 +431,62 @@ impl AdaptiveProfileConfig {
 
 ## Phase 4: Memory & Runtime Optimizations
 
-### 4.1 String Interning (Priority: MEDIUM)
+### 4.1 String Interning ✅ ALREADY EXISTS
 
-**Current**: Owned strings everywhere
-```rust
-String(String),  // In InterpValue
-```
+**Location**: [compiler/src/tast/string_intern.rs](compiler/src/tast/string_intern.rs)
 
-**Solution**: Global string pool
+We already have a complete `StringInterner` implementation with:
+- Arena-based storage via `TypedArena<u8>`
+- FxHash for fast hashing (same as rustc)
+- O(1) comparison via ID comparison (`InternedString(u32)`)
+- Thread-safe concurrent interning
+- Deduplication of identical strings
+- Reverse lookup for debugging
+
+**Integration needed**: Use `StringInterner` in the MIR interpreter:
 ```rust
-pub struct StringPool {
-    strings: Vec<Box<str>>,
-    lookup: HashMap<u64, StringId>,  // hash -> id
+// In MirInterpreter
+struct MirInterpreter {
+    string_interner: StringInterner,
+    // ...
 }
 
-impl StringPool {
-    pub fn intern(&mut self, s: &str) -> StringId {
-        let hash = hash_string(s);
-        if let Some(&id) = self.lookup.get(&hash) {
-            return id;
-        }
-        let id = StringId(self.strings.len() as u32);
-        self.strings.push(s.into());
-        self.lookup.insert(hash, id);
-        id
+// In NanBoxedValue, store InternedString ID instead of String
+const TAG_STRING: u64 = 0x0004_0000_0000_0000;
+
+impl NanBoxedValue {
+    pub fn from_interned_string(id: InternedString) -> Self {
+        Self(Self::NAN_TAG | Self::TAG_STRING | (id.as_raw() as u64))
     }
 }
-
-// In NanBoxedValue, store StringId instead of String
 ```
 
 **Expected Impact**: **10-20% improvement** for string-heavy code
 
 ---
 
-### 4.2 Arena Allocation (Priority: LOW)
+### 4.2 Arena Allocation ✅ ALREADY EXISTS
 
-**Current**: Individual allocations for objects
+**Location**: [compiler/src/tast/type_arena.rs](compiler/src/tast/type_arena.rs)
 
-**Solution**: Bump allocator for hot paths
+We already have a complete `TypedArena<T>` implementation with:
+- Bump pointer allocation (O(1))
+- Batch deallocation (drop entire arena at once)
+- Thread-safe design (Mutex + AtomicUsize)
+- Configurable chunk growth (`ArenaConfig`)
+- Stats tracking (`ArenaStats`)
+
+**Integration needed**: Use `TypedArena` for interpreter heap allocations:
 ```rust
-pub struct Arena {
-    chunks: Vec<Box<[u8; CHUNK_SIZE]>>,
-    current: *mut u8,
-    end: *mut u8,
-}
-
-impl Arena {
-    #[inline(always)]
-    pub fn alloc<T>(&mut self) -> &mut T {
-        let size = std::mem::size_of::<T>();
-        let align = std::mem::align_of::<T>();
-
-        let ptr = self.alloc_raw(size, align);
-        unsafe { &mut *(ptr as *mut T) }
-    }
+// In MirInterpreter
+struct MirInterpreter {
+    object_arena: TypedArena<HeapObject>,
+    array_arena: TypedArena<ArrayHeader>,
+    // ...
 }
 ```
+
+**Expected Impact**: **5-15% improvement** for allocation-heavy code
 
 ---
 
