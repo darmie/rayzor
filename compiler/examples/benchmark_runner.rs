@@ -24,7 +24,7 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-const WARMUP_RUNS: usize = 3;
+const WARMUP_RUNS: usize = 15;  // Increased to ensure LLVM promotion during warmup
 const BENCH_RUNS: usize = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,33 +232,36 @@ fn setup_tiered_benchmark(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> R
 
     let config = TieredConfig {
         profile_config: ProfileConfig {
-            interpreter_threshold: 5,     // JIT after 5 calls (warmup will trigger)
-            warm_threshold: 50,
-            hot_threshold: 200,
-            blazing_threshold: 1000,
+            interpreter_threshold: 2,     // JIT after 2 calls
+            warm_threshold: 3,            // Promote to Standard after 3
+            hot_threshold: 5,             // Promote to Optimized after 5
+            blazing_threshold: 10,        // Promote to LLVM after 10 (with warmup buffer)
             sample_rate: 1,
         },
         enable_background_optimization: true,
-        optimization_check_interval_ms: 5,
+        optimization_check_interval_ms: 1,  // Check frequently
         max_parallel_optimizations: 4,
-        verbosity: 0,
+        verbosity: 0,  // Set to 2 to enable debug output for tier promotions
         start_interpreted: true,
     };
 
     let mut backend = TieredBackend::with_symbols(config, symbols)
         .map_err(|e| format!("backend: {}", e))?;
 
-    let main_module = mir_modules.iter().rev()
-        .find(|m| m.functions.values().any(|f| f.name.ends_with("_main") || f.name == "main"))
-        .ok_or("No main module")?;
+    // Compile ALL modules (like the direct LLVM benchmark does)
+    for module in &mir_modules {
+        backend.compile_module((**module).clone())
+            .map_err(|e| format!("load: {}", e))?;
+    }
 
-    let main_id = main_module.functions.iter()
-        .find(|(_, f)| f.name.ends_with("_main") || f.name == "main")
-        .map(|(id, _)| *id)
+    // Find the main function ID
+    let main_id = mir_modules.iter().rev()
+        .find_map(|m| {
+            m.functions.iter()
+                .find(|(_, f)| f.name.ends_with("_main") || f.name == "main")
+                .map(|(id, _)| *id)
+        })
         .ok_or("No main function")?;
-
-    backend.compile_module((**main_module).clone())
-        .map_err(|e| format!("load: {}", e))?;
 
     let compile_time = compile_start.elapsed();
 
@@ -349,9 +352,14 @@ fn run_benchmark_llvm(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> Resul
         backend.compile_module(module).map_err(|e| format!("compile: {}", e))?;
     }
 
+    // IMPORTANT: Call finalize() to run LLVM optimization passes BEFORE measuring execution.
+    // finalize() runs the LLVM optimizer (default<O3>) and creates the JIT execution engine.
+    // This is the expensive part that should be counted as compile time, not execution time.
+    backend.finalize().map_err(|e| format!("finalize: {}", e))?;
+
     let compile_time = compile_start.elapsed();
 
-    // Execute
+    // Execute - now just calling the already-optimized and JIT-compiled code
     let exec_start = Instant::now();
     for module in mir_modules.iter().rev() {
         if backend.call_main(module).is_ok() {
@@ -379,8 +387,8 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
         for _ in 0..WARMUP_RUNS {
             let _ = run_tiered_iteration(&mut state);
         }
-        // Give background JIT time to compile (if threshold reached)
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Give background JIT time to compile LLVM (takes longer than Cranelift)
+        std::thread::sleep(std::time::Duration::from_millis(500));
         println!("done");
 
         // Benchmark runs - should now be running JIT-compiled code

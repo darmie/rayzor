@@ -62,8 +62,9 @@ pub struct TieredBackend {
     /// Functions currently being optimized (prevents duplicate work)
     optimizing: Arc<Mutex<HashSet<IrFunctionId>>>,
 
-    /// The MIR module (needed for recompilation and interpretation)
-    module: Arc<RwLock<Option<IrModule>>>,
+    /// The MIR modules (needed for recompilation and interpretation)
+    /// Multiple modules may be loaded (e.g., user code + stdlib)
+    modules: Arc<RwLock<Vec<IrModule>>>,
 
     /// Configuration
     config: TieredConfig,
@@ -76,6 +77,10 @@ pub struct TieredBackend {
 
     /// Whether to start in interpreted mode (Phase 0)
     start_interpreted: bool,
+
+    /// Runtime symbols for FFI (used by interpreter and LLVM backend)
+    /// Stored as (name, pointer) pairs for thread-safe sharing
+    runtime_symbols: Arc<Vec<(String, usize)>>,
 }
 
 /// Optimization tier level (5-tier system with interpreter)
@@ -211,6 +216,10 @@ impl TieredConfig {
 impl TieredBackend {
     /// Create a new tiered backend
     pub fn new(config: TieredConfig) -> Result<Self, String> {
+        // IMPORTANT: Initialize LLVM on the main thread BEFORE any background workers start.
+        #[cfg(feature = "llvm-backend")]
+        super::llvm_jit_backend::init_llvm_once();
+
         let baseline_backend = CraneliftBackend::new()?;
         let profile_data = ProfileData::new(config.profile_config);
         let start_interpreted = config.start_interpreted;
@@ -223,24 +232,53 @@ impl TieredBackend {
             function_pointers: Arc::new(RwLock::new(HashMap::new())),
             optimization_queue: Arc::new(Mutex::new(VecDeque::new())),
             optimizing: Arc::new(Mutex::new(HashSet::new())),
-            module: Arc::new(RwLock::new(None)),
+            modules: Arc::new(RwLock::new(Vec::new())),
             config,
             worker_handle: None,
             shutdown: Arc::new(Mutex::new(false)),
             start_interpreted,
+            runtime_symbols: Arc::new(Vec::new()),
         })
     }
 
-    /// Create a new tiered backend with runtime symbols for interpreter FFI
+    /// Create a new tiered backend with runtime symbols for interpreter and LLVM FFI
     pub fn with_symbols(config: TieredConfig, symbols: &[(&str, *const u8)]) -> Result<Self, String> {
-        let mut backend = Self::new(config)?;
-        {
-            let mut interp = backend.interpreter.lock().unwrap();
-            for (name, ptr) in symbols {
-                interp.register_symbol(name, *ptr);
-            }
+        // IMPORTANT: Initialize LLVM on the main thread BEFORE any background workers start.
+        // This prevents crashes from LLVM initialization racing with background compilation.
+        #[cfg(feature = "llvm-backend")]
+        super::llvm_jit_backend::init_llvm_once();
+
+        let baseline_backend = CraneliftBackend::new()?;
+        let profile_data = ProfileData::new(config.profile_config);
+        let start_interpreted = config.start_interpreted;
+
+        // Store symbols for later LLVM backend use
+        let runtime_symbols: Vec<(String, usize)> = symbols
+            .iter()
+            .map(|(name, ptr)| (name.to_string(), *ptr as usize))
+            .collect();
+
+        // Create interpreter and register symbols
+        let mut interp = MirInterpreter::new();
+        for (name, ptr) in symbols {
+            interp.register_symbol(name, *ptr);
         }
-        Ok(backend)
+
+        Ok(Self {
+            interpreter: Arc::new(Mutex::new(interp)),
+            baseline_backend: Arc::new(Mutex::new(baseline_backend)),
+            profile_data,
+            function_tiers: Arc::new(RwLock::new(HashMap::new())),
+            function_pointers: Arc::new(RwLock::new(HashMap::new())),
+            optimization_queue: Arc::new(Mutex::new(VecDeque::new())),
+            optimizing: Arc::new(Mutex::new(HashSet::new())),
+            modules: Arc::new(RwLock::new(Vec::new())),
+            config,
+            worker_handle: None,
+            shutdown: Arc::new(Mutex::new(false)),
+            start_interpreted,
+            runtime_symbols: Arc::new(runtime_symbols),
+        })
     }
 
     /// Compile/load a MIR module
@@ -298,7 +336,7 @@ impl TieredBackend {
         }
 
         // Store module for later recompilation/interpretation
-        *self.module.write().unwrap() = Some(module);
+        self.modules.write().unwrap().push(module);
 
         // Start background optimization if enabled
         if self.config.enable_background_optimization {
@@ -327,10 +365,18 @@ impl TieredBackend {
             .copied()
             .unwrap_or(OptimizationTier::Interpreted);
 
+        // Debug: print current tier
+        if self.config.verbosity >= 2 {
+            let count = self.profile_data.get_function_count(func_id);
+            eprintln!("[TieredBackend] Executing {:?} at tier {:?} (count: {})", func_id, tier, count);
+        }
+
         if tier.uses_interpreter() {
-            // Execute via interpreter
-            let module = self.module.read().unwrap();
-            let module_ref = module.as_ref().ok_or("Module not loaded")?;
+            // Execute via interpreter - find the module containing this function
+            let modules = self.modules.read().unwrap();
+            let module_ref = modules.iter()
+                .find(|m| m.functions.contains_key(&func_id))
+                .ok_or_else(|| format!("Function {:?} not found in any module", func_id))?;
             let mut interp = self.interpreter.lock().unwrap();
             interp.execute(module_ref, func_id, args)
                 .map_err(|e| format!("Interpreter error: {}", e))
@@ -354,8 +400,10 @@ impl TieredBackend {
                 if self.config.verbosity >= 1 {
                     debug!("[TieredBackend] JIT function with args - falling back to interpreter");
                 }
-                let module = self.module.read().unwrap();
-                let module_ref = module.as_ref().ok_or("Module not loaded")?;
+                let modules = self.modules.read().unwrap();
+                let module_ref = modules.iter()
+                    .find(|m| m.functions.contains_key(&func_id))
+                    .ok_or_else(|| format!("Function {:?} not found in any module", func_id))?;
                 let mut interp = self.interpreter.lock().unwrap();
                 interp.execute(module_ref, func_id, args)
                     .map_err(|e| format!("Interpreter error: {}", e))
@@ -370,6 +418,16 @@ impl TieredBackend {
             .unwrap()
             .get(&func_id)
             .map(|addr| *addr as *const u8)
+    }
+
+    /// Get the current optimization tier for a function
+    pub fn get_function_tier(&self, func_id: IrFunctionId) -> OptimizationTier {
+        self.function_tiers
+            .read()
+            .unwrap()
+            .get(&func_id)
+            .copied()
+            .unwrap_or(OptimizationTier::Interpreted)
     }
 
     /// Record a function call (for profiling and tier promotion)
@@ -428,9 +486,14 @@ impl TieredBackend {
                 .iter()
                 .any(|(id, tier)| *id == func_id && *tier == target_tier)
         {
-            if self.config.verbosity >= 2 {
-                let count = self.profile_data.get_function_count(func_id);
-                debug!(
+            let count = self.profile_data.get_function_count(func_id);
+            if target_tier.uses_llvm() {
+                eprintln!(
+                    "[TieredBackend] Enqueuing {:?} for LLVM (count: {})",
+                    func_id, count
+                );
+            } else if self.config.verbosity >= 2 {
+                eprintln!(
                     "[TieredBackend] Enqueuing {:?} for {} (count: {})",
                     func_id,
                     target_tier.description(),
@@ -466,28 +529,23 @@ impl TieredBackend {
             );
         }
 
-        // Get the function from the module
-        let module_lock = self.module.read().unwrap();
-        let module = module_lock
-            .as_ref()
-            .ok_or_else(|| "Module not loaded".to_string())?;
-
-        let function = module
-            .functions
-            .get(&func_id)
-            .ok_or_else(|| format!("Function {:?} not found", func_id))?;
+        // Get the function from the modules
+        let modules_lock = self.modules.read().unwrap();
+        let (module, function) = modules_lock.iter()
+            .find_map(|m| m.functions.get(&func_id).map(|f| (m, f)))
+            .ok_or_else(|| format!("Function {:?} not found in any module", func_id))?;
 
         // Choose backend based on tier
         let new_ptr = if target_tier.uses_llvm() {
-            // Tier 3: Use LLVM backend
-            self.compile_with_llvm(func_id, function)?
+            // Tier 3: Use LLVM backend - compiles all modules
+            drop(modules_lock); // Release lock before heavy work
+            self.compile_with_llvm(func_id)?
         } else {
             // Tier 0-2: Use Cranelift backend
-            self.compile_with_cranelift(func_id, function, target_tier)?
+            let ptr = self.compile_with_cranelift(func_id, module, function, target_tier)?;
+            drop(modules_lock);
+            ptr
         };
-
-        // Drop the module lock before updating pointers
-        drop(module_lock);
 
         // Atomically swap the function pointer
         self.function_pointers
@@ -514,15 +572,12 @@ impl TieredBackend {
     fn compile_with_cranelift(
         &self,
         func_id: IrFunctionId,
+        module: &IrModule,
         function: &IrFunction,
         target_tier: OptimizationTier,
     ) -> Result<usize, String> {
         // Create a new Cranelift backend with the target optimization level
         let mut backend = CraneliftBackend::with_optimization_level(target_tier.cranelift_opt_level())?;
-
-        // Get the module
-        let module_lock = self.module.read().unwrap();
-        let module = module_lock.as_ref().ok_or("Module not set")?;
 
         // Compile the function at the new optimization level
         backend.compile_single_function(func_id, module, function)?;
@@ -533,18 +588,35 @@ impl TieredBackend {
     }
 
     /// Compile function with LLVM backend (Tier 3)
+    ///
+    /// Note: This compiles ALL modules because functions may call other
+    /// functions across modules. The function pointer for the requested function
+    /// is returned.
     #[cfg(feature = "llvm-backend")]
+    #[allow(dead_code)]
     fn compile_with_llvm(
         &self,
         func_id: IrFunctionId,
-        function: &IrFunction,
     ) -> Result<usize, String> {
         // Create LLVM context and backend
         let context = Context::create();
-        let mut backend = LLVMJitBackend::new(&context)?;
 
-        // Compile the function with maximum LLVM optimization
-        backend.compile_single_function(func_id, function)?;
+        // Convert symbols to the format LLVMJitBackend expects
+        let symbols: Vec<(&str, *const u8)> = self.runtime_symbols
+            .iter()
+            .map(|(name, ptr)| (name.as_str(), *ptr as *const u8))
+            .collect();
+
+        let mut backend = LLVMJitBackend::with_symbols(&context, &symbols)?;
+
+        // Compile ALL modules - functions may call across modules
+        let modules_lock = self.modules.read().unwrap();
+        for module in modules_lock.iter() {
+            backend.compile_module(module)?;
+        }
+        drop(modules_lock);
+
+        backend.finalize()?;
 
         // Get the optimized function pointer
         let ptr = backend.get_function_ptr(func_id)?;
@@ -556,7 +628,6 @@ impl TieredBackend {
     fn compile_with_llvm(
         &self,
         func_id: IrFunctionId,
-        _function: &IrFunction,
     ) -> Result<usize, String> {
         if self.config.verbosity >= 1 {
             debug!(
@@ -575,12 +646,13 @@ impl TieredBackend {
 
         let queue = Arc::clone(&self.optimization_queue);
         let optimizing = Arc::clone(&self.optimizing);
-        let module = Arc::clone(&self.module);
+        let modules = Arc::clone(&self.modules);
         let function_pointers = Arc::clone(&self.function_pointers);
         let function_tiers = Arc::clone(&self.function_tiers);
         let shutdown = Arc::clone(&self.shutdown);
         let profile_data = self.profile_data.clone();
         let config = self.config.clone();
+        let runtime_symbols = Arc::clone(&self.runtime_symbols);
 
         let handle = thread::spawn(move || {
             if config.verbosity >= 1 {
@@ -600,11 +672,12 @@ impl TieredBackend {
                 Self::background_worker_iteration(
                     &queue,
                     &optimizing,
-                    &module,
+                    &modules,
                     &function_pointers,
                     &function_tiers,
                     &profile_data,
                     &config,
+                    &runtime_symbols,
                 );
 
                 // Sleep before next iteration
@@ -623,11 +696,12 @@ impl TieredBackend {
     fn background_worker_iteration(
         queue: &Arc<Mutex<VecDeque<(IrFunctionId, OptimizationTier)>>>,
         optimizing: &Arc<Mutex<HashSet<IrFunctionId>>>,
-        module: &Arc<RwLock<Option<IrModule>>>,
+        modules: &Arc<RwLock<Vec<IrModule>>>,
         function_pointers: &Arc<RwLock<HashMap<IrFunctionId, usize>>>,
         function_tiers: &Arc<RwLock<HashMap<IrFunctionId, OptimizationTier>>>,
         profile_data: &ProfileData,
         config: &TieredConfig,
+        runtime_symbols: &Arc<Vec<(String, usize)>>,
     ) {
         // Drain batch of functions to compile in parallel
         let batch: Vec<(IrFunctionId, OptimizationTier)> = {
@@ -657,28 +731,34 @@ impl TieredBackend {
             return;
         }
 
-        // Get module reference (read lock held during parallel compilation)
-        let module_lock = module.read().unwrap();
-        let module_ref = match module_lock.as_ref() {
-            Some(m) => m,
-            None => {
-                // No module, mark all as done and return
-                let mut optimizing_lock = optimizing.lock().unwrap();
-                for (func_id, _) in &batch {
-                    optimizing_lock.remove(func_id);
-                }
-                return;
+        // Get modules reference (read lock held during parallel compilation)
+        let modules_lock = modules.read().unwrap();
+        if modules_lock.is_empty() {
+            // No modules, mark all as done and return
+            let mut optimizing_lock = optimizing.lock().unwrap();
+            for (func_id, _) in &batch {
+                optimizing_lock.remove(func_id);
             }
-        };
+            return;
+        }
 
-        // Compile functions in parallel using rayon
-        // Each function gets its own Cranelift backend instance
-        let results: Vec<(IrFunctionId, OptimizationTier, Result<usize, String>)> = batch
+        // Separate LLVM and Cranelift compilations
+        // LLVM must run sequentially (not thread-safe), Cranelift can run in parallel
+        let (llvm_batch, cranelift_batch): (Vec<_>, Vec<_>) = batch
+            .iter()
+            .cloned()  // Clone to get owned values
+            .partition(|(_, tier)| tier.uses_llvm());
+
+        // Compile Cranelift functions in parallel
+        let cranelift_results: Vec<(IrFunctionId, OptimizationTier, Result<usize, String>)> = cranelift_batch
             .par_iter()
             .map(|(func_id, target_tier)| {
-                let function = match module_ref.functions.get(func_id) {
-                    Some(f) => f,
-                    None => return (*func_id, *target_tier, Err(format!("Function {:?} not found", func_id))),
+                // Find the module containing this function
+                let (module_ref, function) = match modules_lock.iter()
+                    .find_map(|m| m.functions.get(func_id).map(|f| (m, f)))
+                {
+                    Some(pair) => pair,
+                    None => return (*func_id, *target_tier, Err(format!("Function {:?} not found in any module", func_id))),
                 };
 
                 if config.verbosity >= 2 {
@@ -691,26 +771,39 @@ impl TieredBackend {
                     );
                 }
 
-                // Compile with appropriate backend
-                let result = if target_tier.uses_llvm() {
-                    #[cfg(feature = "llvm-backend")]
-                    {
-                        Self::compile_with_llvm_static(*func_id, module_ref, function)
+                // Compile with Cranelift
+                let result = Self::compile_with_cranelift_static(*func_id, module_ref, function, *target_tier);
+                (*func_id, *target_tier, result)
+            })
+            .collect();
+
+        // Compile LLVM functions sequentially (LLVM is not thread-safe for context creation)
+        let llvm_results: Vec<(IrFunctionId, OptimizationTier, Result<usize, String>)> = llvm_batch
+            .iter()
+            .map(|(func_id, target_tier)| {
+                eprintln!("[TieredBackend] LLVM compilation starting for {:?}", func_id);
+                #[cfg(feature = "llvm-backend")]
+                let result = {
+                    // For LLVM, compile ALL modules (functions may call across modules)
+                    let r = Self::compile_with_llvm_static(*func_id, &modules_lock, runtime_symbols);
+                    match &r {
+                        Ok(ptr) => eprintln!("[TieredBackend] LLVM compilation succeeded for {:?}, ptr={:#x}", func_id, ptr),
+                        Err(e) => eprintln!("[TieredBackend] LLVM compilation FAILED for {:?}: {}", func_id, e),
                     }
-                    #[cfg(not(feature = "llvm-backend"))]
-                    {
-                        Err("LLVM backend not enabled".to_string())
-                    }
-                } else {
-                    Self::compile_with_cranelift_static(*func_id, module_ref, function, *target_tier)
+                    r
                 };
+                #[cfg(not(feature = "llvm-backend"))]
+                let result = Err("LLVM backend not enabled".to_string());
 
                 (*func_id, *target_tier, result)
             })
             .collect();
 
-        // Drop module lock before installing results
-        drop(module_lock);
+        // Combine results
+        let results: Vec<_> = cranelift_results.into_iter().chain(llvm_results).collect();
+
+        // Drop modules lock before installing results
+        drop(modules_lock);
 
         // Install compiled function pointers (serialized for thread safety)
         {
@@ -744,70 +837,6 @@ impl TieredBackend {
         }
     }
 
-    /// Worker function to optimize a single function (called by background thread)
-    fn worker_optimize_function(
-        func_id: IrFunctionId,
-        target_tier: OptimizationTier,
-        module: &Arc<RwLock<Option<IrModule>>>,
-        function_pointers: &Arc<RwLock<HashMap<IrFunctionId, usize>>>,
-        function_tiers: &Arc<RwLock<HashMap<IrFunctionId, OptimizationTier>>>,
-        profile_data: &ProfileData,
-        config: &TieredConfig,
-    ) -> Result<(), String> {
-        if config.verbosity >= 1 {
-            let count = profile_data.get_function_count(func_id);
-            debug!(
-                "[TieredBackend] Worker optimizing {:?} at {} (count: {})",
-                func_id,
-                target_tier.description(),
-                count
-            );
-        }
-
-        // Get the function from the module
-        let module_lock = module.read().unwrap();
-        let module_ref = module_lock
-            .as_ref()
-            .ok_or_else(|| "Module not loaded".to_string())?;
-
-        let function = module_ref
-            .functions
-            .get(&func_id)
-            .ok_or_else(|| format!("Function {:?} not found", func_id))?;
-
-        // Compile with appropriate backend
-        let new_ptr = if target_tier.uses_llvm() {
-            // Tier 3: Use LLVM backend
-            Self::compile_with_llvm_static(func_id, module_ref, function)?
-        } else {
-            // Tier 0-2: Use Cranelift backend
-            Self::compile_with_cranelift_static(func_id, module_ref, function, target_tier)?
-        };
-
-        // Drop the module lock before updating pointers
-        drop(module_lock);
-
-        // Atomically swap the function pointer
-        function_pointers
-            .write()
-            .unwrap()
-            .insert(func_id, new_ptr);
-        function_tiers
-            .write()
-            .unwrap()
-            .insert(func_id, target_tier);
-
-        if config.verbosity >= 1 {
-            debug!(
-                "[TieredBackend] Worker successfully recompiled {:?} at {}",
-                func_id,
-                target_tier.description()
-            );
-        }
-
-        Ok(())
-    }
-
     /// Static version of compile_with_cranelift for use in worker thread
     fn compile_with_cranelift_static(
         func_id: IrFunctionId,
@@ -825,18 +854,39 @@ impl TieredBackend {
     ///
     /// Note: This intentionally leaks the LLVM context and backend to ensure
     /// JIT-compiled code remains valid for the program's lifetime.
+    ///
+    /// This compiles ALL modules because functions may call other functions
+    /// across modules. The function pointer for the requested function is returned.
     #[cfg(feature = "llvm-backend")]
     fn compile_with_llvm_static(
         func_id: IrFunctionId,
-        _module: &IrModule,
-        function: &IrFunction,
+        modules: &[IrModule],
+        runtime_symbols: &Arc<Vec<(String, usize)>>,
     ) -> Result<usize, String> {
+        // Acquire global LLVM lock - LLVM is not thread-safe
+        let _llvm_guard = super::llvm_jit_backend::llvm_lock();
+
         // Create context and backend, then leak them to ensure lifetime
         // This is intentional: JIT code must remain valid indefinitely
         let context = Box::leak(Box::new(Context::create()));
-        let mut backend = LLVMJitBackend::new(context)?;
-        // TODO: LLVM backend also needs to accept module parameter
-        backend.compile_single_function(func_id, function)?;
+
+        // Convert symbols back to the format LLVMJitBackend expects
+        let symbols: Vec<(&str, *const u8)> = runtime_symbols
+            .iter()
+            .map(|(name, ptr)| (name.as_str(), *ptr as *const u8))
+            .collect();
+
+        let mut backend = LLVMJitBackend::with_symbols(context, &symbols)?;
+
+        // Compile ALL modules - functions may call across modules
+        for module in modules {
+            backend.compile_module(module)?;
+        }
+
+        // Finalize the module to create the execution engine
+        backend.finalize()?;
+
+        // Get the function pointer for the requested function
         let ptr = backend.get_function_ptr(func_id)?;
 
         // Leak the backend to keep the execution engine alive
@@ -849,8 +899,8 @@ impl TieredBackend {
     #[cfg(not(feature = "llvm-backend"))]
     fn compile_with_llvm_static(
         func_id: IrFunctionId,
-        _module: &IrModule,
-        _function: &IrFunction,
+        _modules: &[IrModule],
+        _runtime_symbols: &Arc<Vec<(String, usize)>>,
     ) -> Result<usize, String> {
         Err(format!(
             "LLVM backend not enabled, cannot compile {:?} at Tier 3. Compile with --features llvm-backend",

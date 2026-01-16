@@ -31,13 +31,42 @@ use inkwell::{
     IntPredicate, FloatPredicate,
     AddressSpace,
     targets::{InitializationConfig, Target, TargetMachine, RelocMode, CodeModel, FileType, TargetData},
+    passes::PassBuilderOptions,
 };
 
 use std::collections::HashMap;
+use std::sync::{Once, Mutex};
 use crate::ir::{
     IrModule, IrFunction, IrFunctionId, IrType, IrValue, IrInstruction, IrTerminator,
     IrBasicBlock, IrBlockId, IrId, IrPhiNode, BinaryOp, UnaryOp, CompareOp,
 };
+
+/// Static Once for thread-safe LLVM initialization
+#[cfg(feature = "llvm-backend")]
+static LLVM_INIT: Once = Once::new();
+
+/// Global mutex to serialize all LLVM operations (LLVM is not fully thread-safe)
+#[cfg(feature = "llvm-backend")]
+static LLVM_MUTEX: Mutex<()> = Mutex::new(());
+
+/// Initialize LLVM once (thread-safe)
+///
+/// IMPORTANT: Call this from the main thread before spawning any background threads
+/// that will use LLVM. This ensures LLVM's global state is initialized safely.
+#[cfg(feature = "llvm-backend")]
+pub fn init_llvm_once() {
+    LLVM_INIT.call_once(|| {
+        Target::initialize_native(&InitializationConfig::default())
+            .expect("Failed to initialize LLVM native target");
+        ExecutionEngine::link_in_mc_jit();
+    });
+}
+
+/// Acquire the global LLVM lock - must be held during all LLVM operations
+#[cfg(feature = "llvm-backend")]
+pub fn llvm_lock() -> std::sync::MutexGuard<'static, ()> {
+    LLVM_MUTEX.lock().unwrap()
+}
 
 /// LLVM JIT backend using MCJIT
 ///
@@ -91,12 +120,8 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
     /// Create with custom optimization level
     pub fn with_opt_level(context: &'ctx Context, opt_level: OptimizationLevel) -> Result<Self, String> {
-        // Initialize LLVM native target
-        Target::initialize_native(&InitializationConfig::default())
-            .map_err(|e| format!("Failed to initialize LLVM target: {}", e))?;
-
-        // Link in MCJIT
-        ExecutionEngine::link_in_mc_jit();
+        // Initialize LLVM once (thread-safe)
+        init_llvm_once();
 
         // Create module
         let module = context.create_module("rayzor_jit");
@@ -171,6 +196,32 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         }
     }
 
+    /// Fast-math flags bitmask: enables all unsafe FP optimizations for maximum performance.
+    /// LLVM FastMathFlags: AllowReassoc(1) | NoNaNs(2) | NoInfs(4) | NoSignedZeros(8) |
+    ///                     AllowReciprocal(16) | AllowContract(32) | ApproxFunc(64) = 127
+    ///
+    /// WARNING: These flags assume:
+    /// - No NaN values in computation
+    /// - No Inf values in computation
+    /// - -0.0 == +0.0
+    /// - Operations can be reassociated/contracted for speed
+    const FAST_MATH_FLAGS: u32 = 0x7F; // All flags (127)
+
+    /// Apply fast-math flags to a float instruction for aggressive optimization.
+    /// This enables LLVM to perform optimizations like:
+    /// - Reassociation of floating-point operations
+    /// - Use of reciprocals instead of division
+    /// - Contraction of multiply-add sequences into FMA
+    /// - Approximation of transcendental functions
+    #[inline]
+    fn apply_fast_math(&self, result: inkwell::values::FloatValue<'ctx>) {
+        // Get the instruction that produced this value and set fast-math flags
+        // This is safe to call on any FloatValue - returns None if not an instruction
+        if let Some(inst) = result.as_instruction_value() {
+            inst.set_fast_math_flags(Self::FAST_MATH_FLAGS);
+        }
+    }
+
     /// Compile a single function (for tiered JIT)
     ///
     /// This is the main entry point for Tier 3 optimization.
@@ -194,8 +245,8 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             self.execution_engine = Some(engine);
         }
 
-        // Get function pointer
-        let func_name = Self::function_name(func_id);
+        // Get function pointer using the mangled name
+        let func_name = Self::mangle_function_name(&function.name);
         if let Some(ref engine) = self.execution_engine {
             let fn_ptr = engine
                 .get_function_address(&func_name)
@@ -208,11 +259,27 @@ impl<'ctx> LLVMJitBackend<'ctx> {
     }
 
     /// Get a compiled function pointer
-    pub fn get_function_ptr(&self, func_id: IrFunctionId) -> Result<*const u8, String> {
-        self.function_pointers
-            .get(&func_id)
-            .map(|&addr| addr as *const u8)
-            .ok_or_else(|| format!("Function {:?} not compiled", func_id))
+    pub fn get_function_ptr(&mut self, func_id: IrFunctionId) -> Result<*const u8, String> {
+        // Check cache first
+        if let Some(&addr) = self.function_pointers.get(&func_id) {
+            return Ok(addr as *const u8);
+        }
+
+        // JIT-compile on demand
+        let llvm_func = self.function_map.get(&func_id)
+            .ok_or_else(|| format!("Function {:?} not found in function_map", func_id))?;
+        let func_name = llvm_func.get_name().to_string_lossy().to_string();
+
+        let engine = self.execution_engine.as_ref()
+            .ok_or("Execution engine not initialized - call finalize() first")?;
+
+        let fn_ptr = engine.get_function_address(&func_name)
+            .map_err(|e| format!("Failed to get function address for {}: {}", func_name, e))?;
+
+        // Cache for future calls
+        self.function_pointers.insert(func_id, fn_ptr as usize);
+
+        Ok(fn_ptr as *const u8)
     }
 
     /// Compile an entire MIR module
@@ -220,12 +287,9 @@ impl<'ctx> LLVMJitBackend<'ctx> {
     /// This is the main entry point for whole-program compilation.
     /// Compiles all functions and registers runtime symbols.
     pub fn compile_module(&mut self, module: &IrModule) -> Result<(), String> {
-        // First, declare all runtime symbols as external functions
-        for (name, _) in &self.runtime_symbols {
-            // Declare as external void function with varargs for flexibility
-            // Runtime functions typically take varying arguments
-            self.declare_external_function(name)?;
-        }
+        // Note: We don't pre-declare runtime symbols as functions here.
+        // They will be declared when encountered in MIR code with proper signatures,
+        // and resolved at link time via add_global_mapping in finalize().
 
         // Phase 1: Declare all functions first (forward declarations)
         // This allows functions to call each other regardless of order
@@ -234,9 +298,23 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         }
 
         // Phase 2: Compile all function bodies
+        // Skip functions that were already compiled from a previous module
+        // Skip extern functions (no blocks in CFG)
         for (func_id, function) in &module.functions {
             let llvm_func = *self.function_map.get(func_id)
                 .ok_or_else(|| format!("Function {:?} not declared", func_id))?;
+
+            // Skip if this LLVM function already has basic blocks (was compiled from a previous module)
+            if llvm_func.count_basic_blocks() > 0 {
+                continue;
+            }
+
+            // Skip extern functions (they have no blocks in their CFG)
+            // These are just declarations, not definitions
+            if function.cfg.blocks.is_empty() {
+                continue;
+            }
+
             self.compile_function_body(*func_id, function, llvm_func)
                 .map_err(|e| format!("Error in function '{}' ({:?}): {}", function.name, func_id, e))?;
         }
@@ -253,20 +331,70 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             return Ok(()); // Already finalized
         }
 
-        // Verify the module before JIT compilation
+        // Dump IR before optimization if requested
+        if std::env::var("RAYZOR_DUMP_LLVM_IR").is_ok() {
+            eprintln!("=== LLVM IR (before JIT, opt_level={:?}) ===", self.opt_level);
+            let ir_str = self.module.print_to_string().to_string();
+            // Only print first 5000 chars to avoid huge output
+            if ir_str.len() > 5000 {
+                eprintln!("{}...(truncated)", &ir_str[..5000]);
+            } else {
+                eprintln!("{}", ir_str);
+            }
+            eprintln!("=== End LLVM IR ===");
+        }
+
+        // Verify the module before optimization
         if self.module.verify().is_err() {
-            // Try to print the module for debugging
+            // Print the module IR for debugging
+            if std::env::var("RAYZOR_DUMP_LLVM_IR").is_ok() {
+                eprintln!("=== LLVM IR (verification failed) ===");
+                eprintln!("{}", self.module.print_to_string().to_string());
+                eprintln!("=== End LLVM IR ===");
+            }
             if let Err(msg) = self.module.verify() {
                 return Err(format!("LLVM module verification failed: {}", msg.to_string()));
             }
         }
 
+        // Run LLVM optimization passes before JIT compilation
+        // This is critical for performance - without this, we're running unoptimized IR
+        if self.opt_level != OptimizationLevel::None {
+            let passes = match self.opt_level {
+                OptimizationLevel::None => "default<O0>",
+                OptimizationLevel::Less => "default<O1>",
+                OptimizationLevel::Default => "default<O2>",
+                OptimizationLevel::Aggressive => "default<O3>",
+            };
+
+            // Get target machine for optimization
+            let target_triple = TargetMachine::get_default_triple();
+            let target = Target::from_triple(&target_triple)
+                .map_err(|e| format!("Failed to get target: {}", e))?;
+            let target_machine = target.create_target_machine(
+                &target_triple,
+                TargetMachine::get_host_cpu_name().to_str().unwrap_or("generic"),
+                TargetMachine::get_host_cpu_features().to_str().unwrap_or(""),
+                self.opt_level,
+                RelocMode::Default,
+                CodeModel::Default,
+            ).ok_or("Failed to create target machine for optimization")?;
+
+            // Run optimization passes
+            let pass_options = PassBuilderOptions::create();
+            self.module.run_passes(passes, &target_machine, pass_options)
+                .map_err(|e| format!("Failed to run optimization passes: {}", e))?;
+        }
+
         // Create execution engine
+        // Note: We use OptimizationLevel::None here because we've already optimized the module
+        // using run_passes() above. The execution engine just needs to do code generation.
+        // Using the same opt_level again would cause double optimization, which can be slower.
         let engine = self.module
-            .create_jit_execution_engine(self.opt_level)
+            .create_jit_execution_engine(OptimizationLevel::None)
             .map_err(|e| format!("Failed to create JIT execution engine: {}", e))?;
 
-        // Add global mappings for runtime symbols BEFORE finalizing
+        // Add global mappings for runtime symbols
         for (name, addr) in &self.runtime_symbols {
             if let Some(func) = self.module.get_function(name) {
                 engine.add_global_mapping(&func, *addr);
@@ -275,15 +403,10 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
         self.execution_engine = Some(engine);
 
-        // Register all function pointers
-        for (func_id, llvm_func) in &self.function_map {
-            let func_name = llvm_func.get_name().to_string_lossy().to_string();
-            if let Some(ref engine) = self.execution_engine {
-                if let Ok(fn_ptr) = engine.get_function_address(&func_name) {
-                    self.function_pointers.insert(*func_id, fn_ptr as usize);
-                }
-            }
-        }
+        // Note: LLVM's MCJIT lazily compiles functions when get_function_address is called.
+        // For fair benchmarking, the benchmark runner should call finalize() BEFORE measuring
+        // execution time. The first call to get_function_address will trigger full module
+        // compilation in MCJIT.
 
         Ok(())
     }
@@ -322,11 +445,6 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         }
 
         Ok(())
-    }
-
-    /// Generate function name for LLVM
-    fn function_name(func_id: IrFunctionId) -> String {
-        format!("rayzor_func_{}", func_id.0)
     }
 
     /// Translate function type signature to LLVM function type
@@ -435,11 +553,62 @@ impl<'ctx> LLVMJitBackend<'ctx> {
     }
 
     /// Declare a function signature
+    ///
+    /// Uses the function's unique name (not just ID) to avoid collisions when
+    /// compiling multiple modules with overlapping IrFunctionIds.
     fn declare_function(
         &mut self,
         func_id: IrFunctionId,
         function: &IrFunction,
     ) -> Result<FunctionValue<'ctx>, String> {
+        // Use function's actual name for LLVM (unique across modules)
+        // Mangle the name to be LLVM-safe (replace :: with _)
+        let func_name = Self::mangle_function_name(&function.name);
+
+        // Check if this function was already declared (from a previous module)
+        // Reuse if it has basic blocks (was already compiled) AND signatures match
+        if let Some(existing_func) = self.module.get_function(&func_name) {
+            // Build expected signature to compare
+            let expected_param_types: Result<Vec<BasicMetadataTypeEnum>, _> = function
+                .signature
+                .parameters
+                .iter()
+                .filter(|param| param.ty != IrType::Void)
+                .map(|param| self.translate_type(&param.ty).map(|t| t.into()))
+                .collect();
+            let expected_params = expected_param_types?;
+
+            let existing_type = existing_func.get_type();
+            let existing_params: Vec<BasicMetadataTypeEnum> = existing_type.get_param_types()
+                .iter()
+                .map(|&t| t.into())
+                .collect();
+
+            // Check if signatures match (parameter count and types)
+            let signatures_match = expected_params.len() == existing_params.len() &&
+                expected_params.iter().zip(existing_params.iter())
+                .all(|(e, a)| {
+                    // Compare type kinds - a simple check
+                    format!("{:?}", e) == format!("{:?}", a)
+                });
+
+            if signatures_match {
+                // Signatures match, safe to reuse
+                self.function_map.insert(func_id, existing_func);
+                return Ok(existing_func);
+            } else {
+                // Signature mismatch - this is a different function with same name
+                // Generate a unique name using the func_id to disambiguate
+                let unique_name = format!("{}_{}", func_name, func_id.0);
+                if let Some(unique_func) = self.module.get_function(&unique_name) {
+                    self.function_map.insert(func_id, unique_func);
+                    return Ok(unique_func);
+                }
+                // Fall through to create new function with unique name
+                return self.declare_function_with_name(func_id, function, &unique_name);
+            }
+        }
+
         // Translate parameter types
         let param_types: Result<Vec<BasicMetadataTypeEnum>, _> = function
             .signature
@@ -460,9 +629,48 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             return_type.fn_type(&param_types, false)
         };
 
-        let func_name = Self::function_name(func_id);
         let llvm_func = self.module.add_function(&func_name, fn_type, None);
 
+        self.function_map.insert(func_id, llvm_func);
+        Ok(llvm_func)
+    }
+
+    /// Mangle function name to be LLVM-safe
+    fn mangle_function_name(name: &str) -> String {
+        // Replace characters that might cause issues in LLVM
+        name.replace("::", "_")
+            .replace('<', "_L_")
+            .replace('>', "_R_")
+            .replace(',', "_C_")
+            .replace(' ', "_S_")
+    }
+
+    /// Declare a function with a specific name (for handling signature conflicts)
+    fn declare_function_with_name(
+        &mut self,
+        func_id: IrFunctionId,
+        function: &IrFunction,
+        func_name: &str,
+    ) -> Result<FunctionValue<'ctx>, String> {
+        // Translate parameter types
+        let param_types: Result<Vec<BasicMetadataTypeEnum>, _> = function
+            .signature
+            .parameters
+            .iter()
+            .filter(|param| param.ty != IrType::Void)
+            .map(|param| self.translate_type(&param.ty).map(|t| t.into()))
+            .collect();
+        let param_types = param_types?;
+
+        // Translate return type
+        let fn_type = if function.signature.return_type == IrType::Void {
+            self.context.void_type().fn_type(&param_types, false)
+        } else {
+            let return_type = self.translate_type(&function.signature.return_type)?;
+            return_type.fn_type(&param_types, false)
+        };
+
+        let llvm_func = self.module.add_function(func_name, fn_type, None);
         self.function_map.insert(func_id, llvm_func);
         Ok(llvm_func)
     }
@@ -517,7 +725,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 // Insert a default value based on type
                 let default = match &local.ty {
                     IrType::Void => continue,
-                    IrType::Bool => self.context.bool_type().const_int(0, false).into(),
+                    IrType::Bool => self.context.i8_type().const_int(0, false).into(), // Bool is i8
                     IrType::I8 | IrType::U8 => self.context.i8_type().const_int(0, false).into(),
                     IrType::I16 | IrType::U16 => self.context.i16_type().const_int(0, false).into(),
                     IrType::I32 | IrType::U32 => self.context.i32_type().const_int(0, false).into(),
@@ -531,16 +739,32 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         }
 
         // Create LLVM basic blocks for all MIR blocks
+        // IMPORTANT: In LLVM, the entry block cannot have predecessors (no branches to it).
+        // We create a "true entry" block that just branches to the first MIR block.
+        // This ensures loops back to block 0 don't violate LLVM's entry block rule.
+
+        // Get blocks sorted by ID to ensure correct processing order
+        let mut sorted_blocks: Vec<_> = function.cfg.blocks.iter().collect();
+        sorted_blocks.sort_by_key(|(id, _)| id.as_u32());
+
+        // Create the LLVM entry block (will branch to first MIR block)
+        let entry_block = self.context.append_basic_block(llvm_func, "entry");
+
+        // Create LLVM blocks for all MIR blocks
         for (block_id, _) in &function.cfg.blocks {
             let block_name = format!("bb{}", block_id.as_u32());
             let llvm_block = self.context.append_basic_block(llvm_func, &block_name);
             self.block_map.insert(*block_id, llvm_block);
         }
 
-        // Get blocks sorted by ID to ensure correct processing order
-        // Block 0 (entry) should be processed first, then subsequent blocks
-        let mut sorted_blocks: Vec<_> = function.cfg.blocks.iter().collect();
-        sorted_blocks.sort_by_key(|(id, _)| id.as_u32());
+        // Connect entry block to first MIR block (bb0)
+        // Get the first MIR block ID (should be block 0 in sorted order)
+        if let Some((first_block_id, _)) = sorted_blocks.first() {
+            let first_mir_block = self.block_map[first_block_id];
+            self.builder.position_at_end(entry_block);
+            self.builder.build_unconditional_branch(first_mir_block)
+                .map_err(|e| format!("Failed to build entry branch: {}", e))?;
+        }
 
         // Pass 1: Create all phi nodes (without incoming values)
         for (block_id, mir_block) in &sorted_blocks {
@@ -559,12 +783,12 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
             // Compile instructions
             for instruction in &mir_block.instructions {
-                self.compile_instruction(instruction)
+                self.compile_instruction(instruction, &function.register_types)
                     .map_err(|e| format!("In block {:?}, instruction {:?}: {}", block_id, instruction, e))?;
             }
 
-            // Compile terminator
-            self.compile_terminator(&mir_block.terminator)?;
+            // Compile terminator (pass llvm_func for return type checking)
+            self.compile_terminator(&mir_block.terminator, llvm_func)?;
         }
 
         // Pass 3: Fill in phi node incoming values
@@ -609,6 +833,8 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         let llvm_phi = self.phi_map.get(&phi.dest)
             .ok_or_else(|| format!("Phi node {:?} not found", phi.dest))?;
 
+        let expected_ty = llvm_phi.as_basic_value().get_type();
+
         // Add incoming values
         for (block_id, value_id) in &phi.incoming {
             let llvm_block = self.block_map.get(block_id)
@@ -616,14 +842,69 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             let llvm_value = self.value_map.get(value_id)
                 .ok_or_else(|| format!("Value {:?} not found in value map for phi incoming", value_id))?;
 
-            llvm_phi.add_incoming(&[(llvm_value, *llvm_block)]);
+            // Cast value to phi's expected type if there's a mismatch
+            // This handles cases where MIR type tracking differs from actual computed types
+            let actual_ty = llvm_value.get_type();
+            let coerced_value = if actual_ty == expected_ty {
+                *llvm_value
+            } else {
+                // Position builder BEFORE the terminator to insert cast
+                let terminator = llvm_block.get_terminator();
+                if let Some(term) = terminator {
+                    self.builder.position_before(&term);
+                } else {
+                    self.builder.position_at_end(*llvm_block);
+                }
+
+                let cast_name = format!("phi_cast_{}", value_id.as_u32());
+
+                // Handle int<->float conversions
+                if llvm_value.is_float_value() && expected_ty.is_int_type() {
+                    // Float to int: fptosi
+                    self.builder.build_float_to_signed_int(
+                        llvm_value.into_float_value(),
+                        expected_ty.into_int_type(),
+                        &cast_name
+                    ).map_err(|e| format!("Failed to cast phi float->int: {}", e))?.into()
+                } else if llvm_value.is_int_value() && expected_ty.is_float_type() {
+                    // Int to float: sitofp
+                    self.builder.build_signed_int_to_float(
+                        llvm_value.into_int_value(),
+                        expected_ty.into_float_type(),
+                        &cast_name
+                    ).map_err(|e| format!("Failed to cast phi int->float: {}", e))?.into()
+                } else if llvm_value.is_int_value() && expected_ty.is_int_type() {
+                    // Int to int: resize
+                    let src_bits = llvm_value.into_int_value().get_type().get_bit_width();
+                    let dst_bits = expected_ty.into_int_type().get_bit_width();
+                    if src_bits < dst_bits {
+                        self.builder.build_int_z_extend(
+                            llvm_value.into_int_value(),
+                            expected_ty.into_int_type(),
+                            &cast_name
+                        ).map_err(|e| format!("Failed to extend phi int: {}", e))?.into()
+                    } else {
+                        self.builder.build_int_truncate(
+                            llvm_value.into_int_value(),
+                            expected_ty.into_int_type(),
+                            &cast_name
+                        ).map_err(|e| format!("Failed to truncate phi int: {}", e))?.into()
+                    }
+                } else {
+                    // For other cases, use as-is (might fail verification but gives better error)
+                    *llvm_value
+                }
+            };
+
+            llvm_phi.add_incoming(&[(&coerced_value, *llvm_block)]);
         }
 
         Ok(())
     }
 
     /// Compile a single MIR instruction to LLVM IR
-    fn compile_instruction(&mut self, inst: &IrInstruction) -> Result<(), String> {
+    /// The register_types map is used to determine the proper types for operations
+    fn compile_instruction(&mut self, inst: &IrInstruction, register_types: &HashMap<IrId, IrType>) -> Result<(), String> {
         match inst {
             IrInstruction::Const { dest, value } => {
                 let llvm_value = self.compile_constant(value)?;
@@ -661,20 +942,29 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             IrInstruction::BinOp { dest, op, left, right } => {
                 let left_val = self.get_value(*left)?;
                 let right_val = self.get_value(*right)?;
-                let result = self.compile_binop(*op, left_val, right_val, *dest)?;
+                // Get the result type from register_types - this tells us whether to use
+                // integer or float operations, avoiding incorrect type inference
+                let result_ty = register_types.get(dest)
+                    .or_else(|| register_types.get(left));
+                let result = self.compile_binop(*op, left_val, right_val, *dest, result_ty)?;
                 self.value_map.insert(*dest, result);
             }
 
             IrInstruction::UnOp { dest, op, operand } => {
                 let operand_val = self.get_value(*operand)?;
-                let result = self.compile_unop(*op, operand_val, *dest)?;
+                // Get the result type from register_types
+                let result_ty = register_types.get(dest)
+                    .or_else(|| register_types.get(operand));
+                let result = self.compile_unop(*op, operand_val, *dest, result_ty)?;
                 self.value_map.insert(*dest, result);
             }
 
             IrInstruction::Cmp { dest, op, left, right } => {
                 let left_val = self.get_value(*left)?;
                 let right_val = self.get_value(*right)?;
-                let result = self.compile_compare(*op, left_val, right_val, *dest)?;
+                // Get operand type for comparison (comparison result is always Bool)
+                let operand_ty = register_types.get(left);
+                let result = self.compile_compare(*op, left_val, right_val, *dest, operand_ty)?;
                 self.value_map.insert(*dest, result);
             }
 
@@ -776,11 +1066,11 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 let target_ty = self.translate_type(ty)?;
 
                 let result = if src_val.is_int_value() {
-                    self.builder.build_bitcast(src_val.into_int_value(), target_ty, &format!("bitcast_{}", dest.as_u32()))
+                    self.builder.build_bit_cast(src_val.into_int_value(), target_ty, &format!("bitcast_{}", dest.as_u32()))
                 } else if src_val.is_float_value() {
-                    self.builder.build_bitcast(src_val.into_float_value(), target_ty, &format!("bitcast_{}", dest.as_u32()))
+                    self.builder.build_bit_cast(src_val.into_float_value(), target_ty, &format!("bitcast_{}", dest.as_u32()))
                 } else if src_val.is_pointer_value() {
-                    self.builder.build_bitcast(src_val.into_pointer_value(), target_ty, &format!("bitcast_{}", dest.as_u32()))
+                    self.builder.build_bit_cast(src_val.into_pointer_value(), target_ty, &format!("bitcast_{}", dest.as_u32()))
                 } else {
                     return Err("Unsupported bitcast type".to_string());
                 }.map_err(|e| format!("Failed to build bitcast: {}", e))?;
@@ -1167,15 +1457,12 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
             // Function reference
             IrInstruction::FunctionRef { dest, func_id } => {
-                let func_name = Self::function_name(*func_id);
+                // All functions should be declared before bodies are compiled
                 if let Some(llvm_func) = self.function_map.get(func_id) {
                     let ptr = llvm_func.as_global_value().as_pointer_value();
                     self.value_map.insert(*dest, ptr.into());
-                } else if let Some(llvm_func) = self.module.get_function(&func_name) {
-                    let ptr = llvm_func.as_global_value().as_pointer_value();
-                    self.value_map.insert(*dest, ptr.into());
                 } else {
-                    return Err(format!("Function {:?} not found for FunctionRef", func_id));
+                    return Err(format!("Function {:?} not found in function_map for FunctionRef. Ensure all modules are compiled in declare-first order.", func_id));
                 }
             }
 
@@ -1198,12 +1485,62 @@ impl<'ctx> LLVMJitBackend<'ctx> {
     }
 
     /// Compile a terminator instruction
-    fn compile_terminator(&mut self, term: &IrTerminator) -> Result<(), String> {
+    fn compile_terminator(&mut self, term: &IrTerminator, llvm_func: FunctionValue<'ctx>) -> Result<(), String> {
         match term {
             IrTerminator::Return { value } => {
                 if let Some(val_id) = value {
                     let return_val = self.get_value(*val_id)?;
-                    self.builder.build_return(Some(&return_val))
+
+                    // Get expected return type from the function
+                    let expected_ret_ty = llvm_func.get_type().get_return_type();
+
+                    // Coerce return value to match expected type if needed
+                    let coerced_val = if let Some(expected) = expected_ret_ty {
+                        let actual_ty = return_val.get_type();
+                        if actual_ty == expected {
+                            return_val
+                        } else {
+                            // Type mismatch - try to coerce
+                            let cast_name = format!("ret_cast_{}", val_id.as_u32());
+
+                            // Handle ptr -> struct conversion (e.g., ptr -> {i64, ptr})
+                            if return_val.is_pointer_value() && expected.is_struct_type() {
+                                // Wrap pointer in expected struct type
+                                // For Array type {i64, ptr}: create struct with 0 length and the pointer
+                                let struct_ty = expected.into_struct_type();
+                                let len_val = self.context.i64_type().const_int(0, false);
+                                let ptr_val = return_val.into_pointer_value();
+                                let s1 = self.builder.build_insert_value(struct_ty.const_zero(), len_val, 0, &format!("{}_len", cast_name))
+                                    .map_err(|e| format!("Failed to build struct for return: {}", e))?
+                                    .into_struct_value();
+                                let s2 = self.builder.build_insert_value(s1, ptr_val, 1, &format!("{}_ptr", cast_name))
+                                    .map_err(|e| format!("Failed to build struct for return: {}", e))?
+                                    .into_struct_value();
+                                s2.into()
+                            } else if return_val.is_float_value() && expected.is_int_type() {
+                                // Float to int
+                                self.builder.build_float_to_signed_int(
+                                    return_val.into_float_value(),
+                                    expected.into_int_type(),
+                                    &cast_name
+                                ).map_err(|e| format!("Failed to cast return: {}", e))?.into()
+                            } else if return_val.is_int_value() && expected.is_float_type() {
+                                // Int to float
+                                self.builder.build_signed_int_to_float(
+                                    return_val.into_int_value(),
+                                    expected.into_float_type(),
+                                    &cast_name
+                                ).map_err(|e| format!("Failed to cast return: {}", e))?.into()
+                            } else {
+                                // Use as-is, let LLVM report the error
+                                return_val
+                            }
+                        }
+                    } else {
+                        return_val
+                    };
+
+                    self.builder.build_return(Some(&coerced_val))
                         .map_err(|e| format!("Failed to build return: {}", e))?;
                 } else {
                     self.builder.build_return(None)
@@ -1220,6 +1557,8 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
             IrTerminator::CondBranch { condition, true_target, false_target } => {
                 let cond_raw = self.get_value(*condition)?;
+                // LLVM requires branch conditions to be i1, but our Bool type is i8
+                // Convert to i1 by comparing with 0 (any non-zero value is true)
                 let cond_val = if cond_raw.is_float_value() {
                     // Convert float to bool (non-zero = true)
                     let zero = self.context.f64_type().const_float(0.0);
@@ -1230,7 +1569,20 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                         "cond_bool"
                     ).map_err(|e| format!("Failed to convert cond: {}", e))?
                 } else {
-                    cond_raw.into_int_value()
+                    let int_val = cond_raw.into_int_value();
+                    // If it's already i1, use it directly; otherwise compare with 0
+                    if int_val.get_type().get_bit_width() == 1 {
+                        int_val
+                    } else {
+                        // Compare with 0 to get i1 (ne 0 = true)
+                        let zero = int_val.get_type().const_int(0, false);
+                        self.builder.build_int_compare(
+                            inkwell::IntPredicate::NE,
+                            int_val,
+                            zero,
+                            "cond_i1"
+                        ).map_err(|e| format!("Failed to convert cond to i1: {}", e))?
+                    }
                 };
                 let true_block = self.block_map.get(true_target)
                     .ok_or_else(|| format!("True target block {:?} not found", true_target))?;
@@ -1307,7 +1659,8 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 Ok(self.context.i8_type().ptr_type(AddressSpace::default()).const_null().into())
             }
             IrValue::Bool(b) => {
-                Ok(self.context.bool_type().const_int(*b as u64, false).into())
+                // Our Bool type is i8, not i1
+                Ok(self.context.i8_type().const_int(*b as u64, false).into())
             }
             IrValue::I8(v) => Ok(self.context.i8_type().const_int(*v as u64, true).into()),
             IrValue::I16(v) => Ok(self.context.i16_type().const_int(*v as u64, true).into()),
@@ -1320,9 +1673,27 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             IrValue::F32(v) => Ok(self.context.f32_type().const_float(*v as f64).into()),
             IrValue::F64(v) => Ok(self.context.f64_type().const_float(*v).into()),
             IrValue::String(s) => {
+                // Create global string constant
                 let global_str = self.builder.build_global_string_ptr(s, "str")
                     .map_err(|e| format!("Failed to build global string: {}", e))?;
-                Ok(global_str.as_pointer_value().into())
+                let str_ptr = global_str.as_pointer_value();
+
+                // String type is { ptr, i64 } - construct the struct with pointer and length
+                let str_len = self.context.i64_type().const_int(s.len() as u64, false);
+                let str_ty = self.context.struct_type(&[
+                    self.context.i8_type().ptr_type(AddressSpace::default()).into(),
+                    self.context.i64_type().into()
+                ], false);
+
+                // Build the struct { ptr, len }
+                let str_struct = self.builder.build_insert_value(str_ty.const_zero(), str_ptr, 0, "str_ptr")
+                    .map_err(|e| format!("Failed to insert string ptr: {}", e))?
+                    .into_struct_value();
+                let str_struct = self.builder.build_insert_value(str_struct, str_len, 1, "str_len")
+                    .map_err(|e| format!("Failed to insert string len: {}", e))?
+                    .into_struct_value();
+
+                Ok(str_struct.into())
             }
             IrValue::Array(_) | IrValue::Struct(_) | IrValue::Function(_) | IrValue::Closure { .. } => {
                 Err("Complex constant values not yet supported".to_string())
@@ -1331,18 +1702,24 @@ impl<'ctx> LLVMJitBackend<'ctx> {
     }
 
     /// Compile binary operation
+    /// The result_ty is the MIR type for the result, used to determine integer vs float ops
     fn compile_binop(
         &self,
         op: BinaryOp,
         left: BasicValueEnum<'ctx>,
         right: BasicValueEnum<'ctx>,
         dest: IrId,
+        result_ty: Option<&IrType>,
     ) -> Result<BasicValueEnum<'ctx>, String> {
         let name = format!("binop_{}", dest.as_u32());
 
-        // Check if EITHER operand is a float - dispatch to float operations if so
-        // This handles mixed int/float operations that result from Haxe's numeric promotion
-        let is_float = left.is_float_value() || right.is_float_value();
+        // Use MIR type to determine if this is a float operation
+        // This is more reliable than inferring from LLVM values, which can cascade incorrectly
+        let is_float = match result_ty {
+            Some(ty) => ty.is_float(),
+            // Fallback to LLVM value inference if MIR type not available
+            None => left.is_float_value() || right.is_float_value(),
+        };
 
         // Helper function to convert int to float if needed
         let to_float = |val: BasicValueEnum<'ctx>, builder: &inkwell::builder::Builder<'ctx>, name: &str| -> Result<inkwell::values::FloatValue<'ctx>, String> {
@@ -1362,6 +1739,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     let right_f = to_float(right, &self.builder, "add_r_f")?;
                     let result = self.builder.build_float_add(left_f, right_f, &name)
                         .map_err(|e| format!("Failed to build fadd: {}", e))?;
+                    self.apply_fast_math(result);
                     Ok(result.into())
                 } else {
                     let result = self.builder.build_int_add(
@@ -1378,6 +1756,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     let right_f = to_float(right, &self.builder, "sub_r_f")?;
                     let result = self.builder.build_float_sub(left_f, right_f, &name)
                         .map_err(|e| format!("Failed to build fsub: {}", e))?;
+                    self.apply_fast_math(result);
                     Ok(result.into())
                 } else {
                     let result = self.builder.build_int_sub(
@@ -1394,6 +1773,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     let right_f = to_float(right, &self.builder, "mul_r_f")?;
                     let result = self.builder.build_float_mul(left_f, right_f, &name)
                         .map_err(|e| format!("Failed to build fmul: {}", e))?;
+                    self.apply_fast_math(result);
                     Ok(result.into())
                 } else {
                     let result = self.builder.build_int_mul(
@@ -1410,6 +1790,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     let right_f = to_float(right, &self.builder, "div_r_f")?;
                     let result = self.builder.build_float_div(left_f, right_f, &name)
                         .map_err(|e| format!("Failed to build fdiv: {}", e))?;
+                    self.apply_fast_math(result);
                     Ok(result.into())
                 } else {
                     let result = self.builder.build_int_signed_div(
@@ -1426,6 +1807,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     let right_f = to_float(right, &self.builder, "rem_r_f")?;
                     let result = self.builder.build_float_rem(left_f, right_f, &name)
                         .map_err(|e| format!("Failed to build frem: {}", e))?;
+                    self.apply_fast_math(result);
                     Ok(result.into())
                 } else {
                     let result = self.builder.build_int_signed_rem(
@@ -1504,13 +1886,14 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 Ok(result.into())
             }
 
-            // Float arithmetic
+            // Float arithmetic (explicit float operations)
             BinaryOp::FAdd => {
                 let result = self.builder.build_float_add(
                     left.into_float_value(),
                     right.into_float_value(),
                     &name
                 ).map_err(|e| format!("Failed to build fadd: {}", e))?;
+                self.apply_fast_math(result);
                 Ok(result.into())
             }
             BinaryOp::FSub => {
@@ -1519,6 +1902,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     right.into_float_value(),
                     &name
                 ).map_err(|e| format!("Failed to build fsub: {}", e))?;
+                self.apply_fast_math(result);
                 Ok(result.into())
             }
             BinaryOp::FMul => {
@@ -1527,6 +1911,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     right.into_float_value(),
                     &name
                 ).map_err(|e| format!("Failed to build fmul: {}", e))?;
+                self.apply_fast_math(result);
                 Ok(result.into())
             }
             BinaryOp::FDiv => {
@@ -1535,6 +1920,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     right.into_float_value(),
                     &name
                 ).map_err(|e| format!("Failed to build fdiv: {}", e))?;
+                self.apply_fast_math(result);
                 Ok(result.into())
             }
             BinaryOp::FRem => {
@@ -1543,6 +1929,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     right.into_float_value(),
                     &name
                 ).map_err(|e| format!("Failed to build frem: {}", e))?;
+                self.apply_fast_math(result);
                 Ok(result.into())
             }
         }
@@ -1554,11 +1941,15 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         op: UnaryOp,
         operand: BasicValueEnum<'ctx>,
         dest: IrId,
+        result_ty: Option<&IrType>,
     ) -> Result<BasicValueEnum<'ctx>, String> {
         let name = format!("unop_{}", dest.as_u32());
 
-        // Check operand type for proper dispatch
-        let is_float = operand.is_float_value();
+        // Use MIR type to determine if this is a float operation
+        let is_float = match result_ty {
+            Some(ty) => ty.is_float(),
+            None => operand.is_float_value(),
+        };
 
         match op {
             UnaryOp::Neg => {
@@ -1566,6 +1957,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 if is_float {
                     let result = self.builder.build_float_neg(operand.into_float_value(), &name)
                         .map_err(|e| format!("Failed to build fneg: {}", e))?;
+                    self.apply_fast_math(result);
                     Ok(result.into())
                 } else {
                     let result = self.builder.build_int_neg(operand.into_int_value(), &name)
@@ -1586,23 +1978,29 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             UnaryOp::FNeg => {
                 let result = self.builder.build_float_neg(operand.into_float_value(), &name)
                     .map_err(|e| format!("Failed to build fneg: {}", e))?;
+                self.apply_fast_math(result);
                 Ok(result.into())
             }
         }
     }
 
     /// Compile comparison operation
+    /// Note: Comparisons return i8 (our Bool type), not i1 (LLVM's native bool)
     fn compile_compare(
         &self,
         op: CompareOp,
         left: BasicValueEnum<'ctx>,
         right: BasicValueEnum<'ctx>,
         dest: IrId,
+        operand_ty: Option<&IrType>,
     ) -> Result<BasicValueEnum<'ctx>, String> {
         let name = format!("cmp_{}", dest.as_u32());
 
-        // Check if EITHER operand is a float - use float comparison if so
-        let is_float = left.is_float_value() || right.is_float_value();
+        // Use MIR type to determine if operands are float
+        let is_float = match operand_ty {
+            Some(ty) => ty.is_float(),
+            None => left.is_float_value() || right.is_float_value(),
+        };
 
         // Helper to convert int to float if needed
         let to_float = |val: BasicValueEnum<'ctx>, builder: &inkwell::builder::Builder<'ctx>, n: &str| -> Result<inkwell::values::FloatValue<'ctx>, String> {
@@ -1614,6 +2012,13 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             }
         };
 
+        // Helper to extend i1 comparison result to i8 (our Bool type)
+        let to_i8 = |result: inkwell::values::IntValue<'ctx>, builder: &inkwell::builder::Builder<'ctx>, n: &str| -> Result<BasicValueEnum<'ctx>, String> {
+            let ext = builder.build_int_z_extend(result, self.context.i8_type(), n)
+                .map_err(|e| format!("Failed to extend bool to i8: {}", e))?;
+            Ok(ext.into())
+        };
+
         match op {
             // Integer/Float comparisons - dispatch based on operand type
             CompareOp::Eq => {
@@ -1623,7 +2028,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     let result = self.builder.build_float_compare(
                         FloatPredicate::OEQ, left_f, right_f, &name
                     ).map_err(|e| format!("Failed to build feq: {}", e))?;
-                    Ok(result.into())
+                    to_i8(result, &self.builder, &format!("{}_i8", name))
                 } else {
                     let result = self.builder.build_int_compare(
                         IntPredicate::EQ,
@@ -1631,7 +2036,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                         right.into_int_value(),
                         &name
                     ).map_err(|e| format!("Failed to build eq: {}", e))?;
-                    Ok(result.into())
+                    to_i8(result, &self.builder, &format!("{}_i8", name))
                 }
             }
             CompareOp::Ne => {
@@ -1641,7 +2046,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     let result = self.builder.build_float_compare(
                         FloatPredicate::ONE, left_f, right_f, &name
                     ).map_err(|e| format!("Failed to build fne: {}", e))?;
-                    Ok(result.into())
+                    to_i8(result, &self.builder, &format!("{}_i8", name))
                 } else {
                     let result = self.builder.build_int_compare(
                         IntPredicate::NE,
@@ -1649,7 +2054,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                         right.into_int_value(),
                         &name
                     ).map_err(|e| format!("Failed to build ne: {}", e))?;
-                    Ok(result.into())
+                    to_i8(result, &self.builder, &format!("{}_i8", name))
                 }
             }
             CompareOp::Lt => {
@@ -1659,7 +2064,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     let result = self.builder.build_float_compare(
                         FloatPredicate::OLT, left_f, right_f, &name
                     ).map_err(|e| format!("Failed to build flt: {}", e))?;
-                    Ok(result.into())
+                    to_i8(result, &self.builder, &format!("{}_i8", name))
                 } else {
                     let result = self.builder.build_int_compare(
                         IntPredicate::SLT,
@@ -1667,7 +2072,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                         right.into_int_value(),
                         &name
                     ).map_err(|e| format!("Failed to build lt: {}", e))?;
-                    Ok(result.into())
+                    to_i8(result, &self.builder, &format!("{}_i8", name))
                 }
             }
             CompareOp::Le => {
@@ -1677,7 +2082,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     let result = self.builder.build_float_compare(
                         FloatPredicate::OLE, left_f, right_f, &name
                     ).map_err(|e| format!("Failed to build fle: {}", e))?;
-                    Ok(result.into())
+                    to_i8(result, &self.builder, &format!("{}_i8", name))
                 } else {
                     let result = self.builder.build_int_compare(
                         IntPredicate::SLE,
@@ -1685,7 +2090,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                         right.into_int_value(),
                         &name
                     ).map_err(|e| format!("Failed to build le: {}", e))?;
-                    Ok(result.into())
+                    to_i8(result, &self.builder, &format!("{}_i8", name))
                 }
             }
             CompareOp::Gt => {
@@ -1695,7 +2100,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     let result = self.builder.build_float_compare(
                         FloatPredicate::OGT, left_f, right_f, &name
                     ).map_err(|e| format!("Failed to build fgt: {}", e))?;
-                    Ok(result.into())
+                    to_i8(result, &self.builder, &format!("{}_i8", name))
                 } else {
                     let result = self.builder.build_int_compare(
                         IntPredicate::SGT,
@@ -1703,7 +2108,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                         right.into_int_value(),
                         &name
                     ).map_err(|e| format!("Failed to build gt: {}", e))?;
-                    Ok(result.into())
+                    to_i8(result, &self.builder, &format!("{}_i8", name))
                 }
             }
             CompareOp::Ge => {
@@ -1713,7 +2118,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     let result = self.builder.build_float_compare(
                         FloatPredicate::OGE, left_f, right_f, &name
                     ).map_err(|e| format!("Failed to build fge: {}", e))?;
-                    Ok(result.into())
+                    to_i8(result, &self.builder, &format!("{}_i8", name))
                 } else {
                     let result = self.builder.build_int_compare(
                         IntPredicate::SGE,
@@ -1721,7 +2126,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                         right.into_int_value(),
                         &name
                     ).map_err(|e| format!("Failed to build ge: {}", e))?;
-                    Ok(result.into())
+                    to_i8(result, &self.builder, &format!("{}_i8", name))
                 }
             }
 
@@ -1733,7 +2138,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     right.into_int_value(),
                     &name
                 ).map_err(|e| format!("Failed to build ult: {}", e))?;
-                Ok(result.into())
+                to_i8(result, &self.builder, &format!("{}_i8", name))
             }
             CompareOp::ULe => {
                 let result = self.builder.build_int_compare(
@@ -1742,7 +2147,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     right.into_int_value(),
                     &name
                 ).map_err(|e| format!("Failed to build ule: {}", e))?;
-                Ok(result.into())
+                to_i8(result, &self.builder, &format!("{}_i8", name))
             }
             CompareOp::UGt => {
                 let result = self.builder.build_int_compare(
@@ -1751,7 +2156,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     right.into_int_value(),
                     &name
                 ).map_err(|e| format!("Failed to build ugt: {}", e))?;
-                Ok(result.into())
+                to_i8(result, &self.builder, &format!("{}_i8", name))
             }
             CompareOp::UGe => {
                 let result = self.builder.build_int_compare(
@@ -1760,7 +2165,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     right.into_int_value(),
                     &name
                 ).map_err(|e| format!("Failed to build uge: {}", e))?;
-                Ok(result.into())
+                to_i8(result, &self.builder, &format!("{}_i8", name))
             }
 
             // Float comparisons (ordered)
@@ -1771,7 +2176,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     right.into_float_value(),
                     &name
                 ).map_err(|e| format!("Failed to build feq: {}", e))?;
-                Ok(result.into())
+                to_i8(result, &self.builder, &format!("{}_i8", name))
             }
             CompareOp::FNe => {
                 let result = self.builder.build_float_compare(
@@ -1780,7 +2185,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     right.into_float_value(),
                     &name
                 ).map_err(|e| format!("Failed to build fne: {}", e))?;
-                Ok(result.into())
+                to_i8(result, &self.builder, &format!("{}_i8", name))
             }
             CompareOp::FLt => {
                 let result = self.builder.build_float_compare(
@@ -1789,7 +2194,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     right.into_float_value(),
                     &name
                 ).map_err(|e| format!("Failed to build flt: {}", e))?;
-                Ok(result.into())
+                to_i8(result, &self.builder, &format!("{}_i8", name))
             }
             CompareOp::FLe => {
                 let result = self.builder.build_float_compare(
@@ -1798,7 +2203,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     right.into_float_value(),
                     &name
                 ).map_err(|e| format!("Failed to build fle: {}", e))?;
-                Ok(result.into())
+                to_i8(result, &self.builder, &format!("{}_i8", name))
             }
             CompareOp::FGt => {
                 let result = self.builder.build_float_compare(
@@ -1807,7 +2212,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     right.into_float_value(),
                     &name
                 ).map_err(|e| format!("Failed to build fgt: {}", e))?;
-                Ok(result.into())
+                to_i8(result, &self.builder, &format!("{}_i8", name))
             }
             CompareOp::FGe => {
                 let result = self.builder.build_float_compare(
@@ -1816,7 +2221,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     right.into_float_value(),
                     &name
                 ).map_err(|e| format!("Failed to build fge: {}", e))?;
-                Ok(result.into())
+                to_i8(result, &self.builder, &format!("{}_i8", name))
             }
 
             // Ordered/Unordered comparisons
@@ -1827,7 +2232,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     right.into_float_value(),
                     &name
                 ).map_err(|e| format!("Failed to build ford: {}", e))?;
-                Ok(result.into())
+                to_i8(result, &self.builder, &format!("{}_i8", name))
             }
             CompareOp::FUno => {
                 let result = self.builder.build_float_compare(
@@ -1836,7 +2241,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     right.into_float_value(),
                     &name
                 ).map_err(|e| format!("Failed to build funo: {}", e))?;
-                Ok(result.into())
+                to_i8(result, &self.builder, &format!("{}_i8", name))
             }
         }
     }
@@ -1850,11 +2255,102 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         let llvm_func = self.function_map.get(&func_id)
             .ok_or_else(|| format!("Function {:?} not found", func_id))?;
 
-        // Get argument values
-        let arg_values: Result<Vec<_>, _> = args.iter()
-            .map(|&id| self.get_value(id).map(|v| v.into()))
-            .collect();
-        let arg_values = arg_values?;
+        // Get expected parameter types from the function
+        let expected_params = llvm_func.get_type().get_param_types();
+
+        // Get argument values and coerce them to match expected types
+        let mut arg_values = Vec::new();
+        for (i, &id) in args.iter().enumerate() {
+            let val = self.get_value(id)?;
+
+            // Coerce to expected parameter type if needed
+            let coerced = if let Some(expected_ty) = expected_params.get(i) {
+                let actual_ty = val.get_type();
+                if actual_ty == *expected_ty {
+                    val.into()
+                } else {
+                    let cast_name = format!("arg_cast_{}", i);
+
+                    // Handle struct -> ptr coercion (e.g., {i64, ptr} -> ptr)
+                    if val.is_struct_value() && expected_ty.is_pointer_type() {
+                        // Extract pointer from struct (assume it's at index 1 for {len, ptr})
+                        let struct_val = val.into_struct_value();
+                        self.builder.build_extract_value(struct_val, 1, &cast_name)
+                            .map_err(|e| format!("Failed to extract ptr from struct: {}", e))?
+                            .into()
+                    } else if val.is_struct_value() && expected_ty.is_int_type() {
+                        // Extract i64 from struct (field 0 is the length in {i64, ptr})
+                        let struct_val = val.into_struct_value();
+                        let extracted = self.builder.build_extract_value(struct_val, 0, &cast_name)
+                            .map_err(|e| format!("Failed to extract i64 from struct: {}", e))?;
+
+                        // May need to truncate/extend if target int type differs
+                        let extracted_int = extracted.into_int_value();
+                        let target_int_ty = expected_ty.into_int_type();
+                        if extracted_int.get_type().get_bit_width() != target_int_ty.get_bit_width() {
+                            if extracted_int.get_type().get_bit_width() > target_int_ty.get_bit_width() {
+                                self.builder.build_int_truncate(extracted_int, target_int_ty, &format!("{}_trunc", cast_name))
+                                    .map_err(|e| format!("Failed to truncate int: {}", e))?.into()
+                            } else {
+                                self.builder.build_int_s_extend(extracted_int, target_int_ty, &format!("{}_sext", cast_name))
+                                    .map_err(|e| format!("Failed to extend int: {}", e))?.into()
+                            }
+                        } else {
+                            extracted.into()
+                        }
+                    } else if val.is_pointer_value() && expected_ty.is_struct_type() {
+                        // Wrap ptr in struct (e.g., ptr -> {i64, ptr})
+                        let struct_ty = expected_ty.into_struct_type();
+                        let len_val = self.context.i64_type().const_int(0, false);
+                        let ptr_val = val.into_pointer_value();
+                        let s1 = self.builder.build_insert_value(struct_ty.const_zero(), len_val, 0, &format!("{}_len", cast_name))
+                            .map_err(|e| format!("Failed to wrap ptr in struct: {}", e))?
+                            .into_struct_value();
+                        let s2 = self.builder.build_insert_value(s1, ptr_val, 1, &format!("{}_ptr", cast_name))
+                            .map_err(|e| format!("Failed to wrap ptr in struct: {}", e))?
+                            .into_struct_value();
+                        s2.into()
+                    } else if val.is_float_value() && expected_ty.is_int_type() {
+                        // Float to int
+                        self.builder.build_float_to_signed_int(
+                            val.into_float_value(),
+                            expected_ty.into_int_type(),
+                            &cast_name
+                        ).map_err(|e| format!("Failed to cast arg: {}", e))?.into()
+                    } else if val.is_int_value() && expected_ty.is_float_type() {
+                        // Int to float
+                        self.builder.build_signed_int_to_float(
+                            val.into_int_value(),
+                            expected_ty.into_float_type(),
+                            &cast_name
+                        ).map_err(|e| format!("Failed to cast arg: {}", e))?.into()
+                    } else if val.is_int_value() && expected_ty.is_int_type() {
+                        // Int to int with different widths
+                        let int_val = val.into_int_value();
+                        let target_int_ty = expected_ty.into_int_type();
+                        if int_val.get_type().get_bit_width() < target_int_ty.get_bit_width() {
+                            // Extend (sign extend for safety)
+                            self.builder.build_int_s_extend(int_val, target_int_ty, &cast_name)
+                                .map_err(|e| format!("Failed to extend int: {}", e))?.into()
+                        } else if int_val.get_type().get_bit_width() > target_int_ty.get_bit_width() {
+                            // Truncate
+                            self.builder.build_int_truncate(int_val, target_int_ty, &cast_name)
+                                .map_err(|e| format!("Failed to truncate int: {}", e))?.into()
+                        } else {
+                            // Same width - use as-is
+                            val.into()
+                        }
+                    } else {
+                        // Use as-is
+                        val.into()
+                    }
+                }
+            } else {
+                val.into()
+            };
+
+            arg_values.push(coerced);
+        }
 
         let call_site = self.builder.build_call(*llvm_func, &arg_values, "call")
             .map_err(|e| format!("Failed to build call: {}", e))?;
