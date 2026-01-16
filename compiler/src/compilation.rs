@@ -110,6 +110,11 @@ pub struct CompilationConfig {
     /// Directory for BLADE cache files
     pub cache_dir: Option<PathBuf>,
 
+    /// Lazy stdlib loading - skip upfront symbol registration for faster cold start
+    /// When enabled, stdlib symbols are loaded on-demand when first referenced
+    /// This trades first-access latency for faster initial startup
+    pub lazy_stdlib: bool,
+
     /// Pipeline configuration for analysis and optimization
     pub pipeline_config: PipelineConfig,
 }
@@ -133,6 +138,7 @@ impl Default for CompilationConfig {
             global_import_hx_files: Vec::new(), // No global import.hx by default
             enable_cache: true, // Cache enabled - BLADE manifest now includes Math, Std, Date, etc.
             cache_dir: None, // Auto-discover cache directory when needed
+            lazy_stdlib: false, // Default to eager loading for compatibility
             pipeline_config: PipelineConfig::default(),
         }
     }
@@ -317,6 +323,31 @@ impl CompilationConfig {
 
         cache_dir.join(cache_name)
     }
+
+    /// Create a fast compilation config optimized for interpreter cold start
+    ///
+    /// This configuration prioritizes startup speed over type safety:
+    /// - Lazy stdlib loading (symbols loaded on-demand)
+    /// - Cache enabled for subsequent runs
+    ///
+    /// Ideal for REPL, development mode, and interpreted execution.
+    pub fn fast() -> Self {
+        Self {
+            lazy_stdlib: true,
+            ..Default::default()
+        }
+    }
+
+    /// Create a strict compilation config with full type checking
+    ///
+    /// This is the default behavior - all symbols loaded upfront,
+    /// full type analysis enabled.
+    pub fn strict() -> Self {
+        Self {
+            lazy_stdlib: false,
+            ..Default::default()
+        }
+    }
 }
 
 impl CompilationUnit {
@@ -368,12 +399,17 @@ impl CompilationUnit {
         self.namespace_resolver.set_stdlib_paths(self.config.stdlib_paths.clone());
 
         // Load pre-compiled symbols from BLADE manifest if caching is enabled
-        if self.config.enable_cache {
+        // Skip if lazy_stdlib is enabled (for faster cold start)
+        if self.config.enable_cache && !self.config.lazy_stdlib {
             if self.load_stdlib_symbols() {
                 debug!("BLADE symbols loaded, stdlib configured for cached resolution");
             } else {
                 debug!("No BLADE symbols available, falling back to on-demand loading");
             }
+        } else if self.config.lazy_stdlib {
+            debug!("Lazy stdlib enabled - skipping upfront symbol registration for faster startup");
+            // Still register builtin globals like 'trace' which are always needed
+            self.register_builtin_globals();
         }
 
         // DON'T load stdlib files upfront - rely entirely on on-demand loading

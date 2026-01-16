@@ -32,6 +32,10 @@ fn main() {
     println!("\nTest 4: Startup time comparison");
     test_startup_comparison();
 
+    // Test 5: Compare fast vs standard compilation
+    println!("\nTest 5: Fast vs Standard compilation");
+    test_fast_compilation();
+
     println!("\n=== All E2E Tests Complete ===");
 }
 
@@ -127,6 +131,36 @@ class Main {
     if interp_time < jit_time {
         println!("  Interpreter was {:.1}x faster to start",
                  jit_time.as_micros() as f64 / interp_time.as_micros() as f64);
+    }
+}
+
+fn test_fast_compilation() {
+    let source = r#"
+class Main {
+    static function main() {
+        trace(42);
+    }
+}
+"#;
+
+    // Test standard compilation (eager symbol loading)
+    println!("  Standard compilation (eager stdlib):");
+    let t0 = Instant::now();
+    let _ = compile_to_mir(source, "standard");
+    let standard_time = t0.elapsed();
+
+    // Test fast compilation (lazy stdlib loading)
+    println!("  Fast compilation (lazy stdlib):");
+    let t1 = Instant::now();
+    let _ = compile_to_mir_fast(source, "fast");
+    let fast_time = t1.elapsed();
+
+    println!("\n  Standard compile: {:?}", standard_time);
+    println!("  Fast compile: {:?}", fast_time);
+
+    if fast_time < standard_time {
+        let speedup = standard_time.as_micros() as f64 / fast_time.as_micros() as f64;
+        println!("  Fast mode is {:.1}x faster!", speedup);
     }
 }
 
@@ -240,21 +274,42 @@ fn compile_and_run_jit(source: &str, name: &str) -> Result<(), String> {
 }
 
 fn compile_to_mir(source: &str, name: &str) -> Result<Vec<Arc<IrModule>>, String> {
-    let mut unit = CompilationUnit::new(CompilationConfig::default());
+    compile_to_mir_with_config(source, name, CompilationConfig::default())
+}
+
+fn compile_to_mir_fast(source: &str, name: &str) -> Result<Vec<Arc<IrModule>>, String> {
+    compile_to_mir_with_config(source, name, CompilationConfig::fast())
+}
+
+fn compile_to_mir_with_config(source: &str, name: &str, config: CompilationConfig) -> Result<Vec<Arc<IrModule>>, String> {
+    let t0 = Instant::now();
+    let mut unit = CompilationUnit::new(config);
 
     // Load stdlib
+    let t1 = Instant::now();
     unit.load_stdlib().map_err(|e| format!("Failed to load stdlib: {}", e))?;
+    let stdlib_time = t1.elapsed();
 
     // Add source file
+    let t2 = Instant::now();
     unit.add_file(source, &format!("{}.hx", name))
         .map_err(|e| format!("Failed to add file: {}", e))?;
+    let add_file_time = t2.elapsed();
 
     // Lower to TAST
+    let t3 = Instant::now();
     unit.lower_to_tast()
         .map_err(|errors| format!("TAST lowering failed: {:?}", errors))?;
+    let tast_time = t3.elapsed();
 
     // Get MIR modules
+    let t4 = Instant::now();
     let mir_modules = unit.get_mir_modules();
+    let mir_time = t4.elapsed();
+
+    eprintln!("    [compile breakdown] stdlib={:?}, parse={:?}, tast={:?}, mir={:?}, total={:?}",
+        stdlib_time, add_file_time, tast_time, mir_time, t0.elapsed());
+
     if mir_modules.is_empty() {
         return Err("No MIR modules generated".to_string());
     }
