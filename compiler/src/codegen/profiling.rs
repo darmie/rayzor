@@ -24,16 +24,21 @@ pub struct ProfileData {
     config: ProfileConfig,
 }
 
-/// Configuration for profiling and hotness detection (4-tier system)
+/// Configuration for profiling and hotness detection (5-tier system with interpreter)
 #[derive(Debug, Clone, Copy)]
 pub struct ProfileConfig {
-    /// Number of executions before considering function "warm" (eligible for Tier 1)
+    /// Number of executions before JIT compiling (Phase 0 -> Phase 1)
+    /// When a function is called this many times in interpreter mode,
+    /// it gets compiled to native code for better performance.
+    pub interpreter_threshold: u64,
+
+    /// Number of executions before considering function "warm" (eligible for Phase 2)
     pub warm_threshold: u64,
 
-    /// Number of executions before considering function "hot" (eligible for Tier 2)
+    /// Number of executions before considering function "hot" (eligible for Phase 3)
     pub hot_threshold: u64,
 
-    /// Number of executions before considering function "blazing" (eligible for Tier 3/LLVM)
+    /// Number of executions before considering function "blazing" (eligible for Phase 4/LLVM)
     pub blazing_threshold: u64,
 
     /// Sample rate (1 = profile every call, 10 = every 10th call, etc.)
@@ -44,9 +49,10 @@ pub struct ProfileConfig {
 impl Default for ProfileConfig {
     fn default() -> Self {
         Self {
-            warm_threshold: 100,       // Promote to T1 after 100 calls
-            hot_threshold: 1000,       // Promote to T2 after 1000 calls
-            blazing_threshold: 10000,  // Promote to T3/LLVM after 10000 calls
+            interpreter_threshold: 10, // JIT compile after 10 interpreted calls
+            warm_threshold: 100,       // Promote to P2 after 100 calls
+            hot_threshold: 1000,       // Promote to P3 after 1000 calls
+            blazing_threshold: 10000,  // Promote to P4/LLVM after 10000 calls
             sample_rate: 1,            // Profile every call by default
         }
     }
@@ -56,9 +62,10 @@ impl ProfileConfig {
     /// Development configuration (aggressive optimization, low thresholds)
     pub fn development() -> Self {
         Self {
+            interpreter_threshold: 3,  // JIT quickly for testing
             warm_threshold: 10,        // Quickly promote for testing
-            hot_threshold: 100,        // T2 after 100 calls
-            blazing_threshold: 500,    // T3/LLVM after 500 calls
+            hot_threshold: 100,        // P3 after 100 calls
+            blazing_threshold: 500,    // P4/LLVM after 500 calls
             sample_rate: 1,            // Profile every call for accuracy
         }
     }
@@ -66,9 +73,10 @@ impl ProfileConfig {
     /// Production configuration (conservative, high thresholds, low overhead)
     pub fn production() -> Self {
         Self {
+            interpreter_threshold: 50, // Stay interpreted longer for cold code
             warm_threshold: 1000,      // Wait longer before optimizing
-            hot_threshold: 10000,      // T2 after 10k calls
-            blazing_threshold: 100000, // T3/LLVM after 100k calls (truly hot!)
+            hot_threshold: 10000,      // P3 after 10k calls
+            blazing_threshold: 100000, // P4/LLVM after 100k calls (truly hot!)
             sample_rate: 10,           // Sample 1/10 calls to reduce overhead
         }
     }
@@ -101,7 +109,14 @@ impl ProfileData {
             .unwrap_or(0)
     }
 
-    /// Check if a function is warm (executed moderately, eligible for Tier 1)
+    /// Check if a function should be JIT compiled (executed enough in interpreter)
+    /// This promotes from Phase 0 (Interpreted) to Phase 1 (Baseline JIT)
+    pub fn should_jit_compile(&self, func_id: IrFunctionId) -> bool {
+        let count = self.get_function_count(func_id);
+        count >= self.config.interpreter_threshold && count < self.config.warm_threshold
+    }
+
+    /// Check if a function is warm (executed moderately, eligible for Phase 2)
     pub fn is_warm(&self, func_id: IrFunctionId) -> bool {
         let count = self.get_function_count(func_id);
         count >= self.config.warm_threshold && count < self.config.hot_threshold
@@ -128,8 +143,10 @@ impl ProfileData {
             HotnessLevel::Hot
         } else if count >= self.config.warm_threshold {
             HotnessLevel::Warm
-        } else {
+        } else if count >= self.config.interpreter_threshold {
             HotnessLevel::Cold
+        } else {
+            HotnessLevel::Interpreted
         }
     }
 
@@ -215,13 +232,14 @@ impl ProfileData {
     }
 }
 
-/// Hotness level classification (4-tier system)
+/// Hotness level classification (5-tier system with interpreter)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HotnessLevel {
-    Cold,      // Below warm threshold (Tier 0)
-    Warm,      // Between warm and hot thresholds (Tier 1)
-    Hot,       // Between hot and blazing thresholds (Tier 2)
-    Blazing,   // Above blazing threshold (Tier 3/LLVM)
+    Interpreted, // Below interpreter threshold (Phase 0 - Interpreter)
+    Cold,        // Below warm threshold (Phase 1 - Baseline JIT)
+    Warm,        // Between warm and hot thresholds (Phase 2)
+    Hot,         // Between hot and blazing thresholds (Phase 3)
+    Blazing,     // Above blazing threshold (Phase 4/LLVM)
 }
 
 /// Profiling statistics summary
@@ -256,27 +274,35 @@ mod tests {
     #[test]
     fn test_profile_data_basic() {
         let profile = ProfileData::new(ProfileConfig {
+            interpreter_threshold: 3,  // JIT after 3 calls
             warm_threshold: 5,
             hot_threshold: 10,
+            blazing_threshold: 100,
             sample_rate: 1,
-            ..Default::default()
         });
 
         let func_id = IrFunctionId(SymbolId(42).into());
 
-        // Initially cold
-        assert_eq!(profile.get_hotness(func_id), HotnessLevel::Cold);
+        // Initially interpreted (0 calls)
+        assert_eq!(profile.get_hotness(func_id), HotnessLevel::Interpreted);
         assert_eq!(profile.get_function_count(func_id), 0);
 
-        // Execute 7 times -> warm
-        for _ in 0..7 {
+        // Execute 3 times -> cold (eligible for JIT)
+        for _ in 0..3 {
+            profile.record_function_call(func_id);
+        }
+        assert_eq!(profile.get_hotness(func_id), HotnessLevel::Cold);
+        assert!(profile.should_jit_compile(func_id));
+
+        // Execute 4 more times (7 total) -> warm
+        for _ in 0..4 {
             profile.record_function_call(func_id);
         }
         assert_eq!(profile.get_hotness(func_id), HotnessLevel::Warm);
         assert!(profile.is_warm(func_id));
         assert!(!profile.is_hot(func_id));
 
-        // Execute 5 more times -> hot
+        // Execute 5 more times (12 total) -> hot
         for _ in 0..5 {
             profile.record_function_call(func_id);
         }
@@ -289,10 +315,11 @@ mod tests {
     #[test]
     fn test_get_hot_functions() {
         let profile = ProfileData::new(ProfileConfig {
+            interpreter_threshold: 2,
             warm_threshold: 5,
             hot_threshold: 10,
+            blazing_threshold: 100,
             sample_rate: 1,
-            ..Default::default()
         });
 
         let func1 = IrFunctionId(SymbolId(1).into());

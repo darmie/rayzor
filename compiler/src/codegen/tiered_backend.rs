@@ -27,6 +27,7 @@ use std::thread;
 use std::time::Duration;
 
 use super::cranelift_backend::CraneliftBackend;
+use super::mir_interpreter::{MirInterpreter, InterpValue, InterpError};
 use super::profiling::{ProfileData, ProfileConfig, ProfileStatistics};
 use crate::ir::{IrFunction, IrFunctionId, IrModule};
 
@@ -38,7 +39,10 @@ use tracing::debug;
 
 /// Tiered compilation backend
 pub struct TieredBackend {
-    /// Primary Cranelift backend (used for Tier 0 compilation)
+    /// MIR interpreter for Phase 0 (instant startup)
+    interpreter: Arc<Mutex<MirInterpreter>>,
+
+    /// Primary Cranelift backend (used for Phase 1+ compilation)
     baseline_backend: Arc<Mutex<CraneliftBackend>>,
 
     /// Runtime profiling data
@@ -56,7 +60,7 @@ pub struct TieredBackend {
     /// Functions currently being optimized (prevents duplicate work)
     optimizing: Arc<Mutex<HashSet<IrFunctionId>>>,
 
-    /// The MIR module (needed for recompilation)
+    /// The MIR module (needed for recompilation and interpretation)
     module: Arc<RwLock<Option<IrModule>>>,
 
     /// Configuration
@@ -67,26 +71,36 @@ pub struct TieredBackend {
 
     /// Shutdown signal for background worker
     shutdown: Arc<Mutex<bool>>,
+
+    /// Whether to start in interpreted mode (Phase 0)
+    start_interpreted: bool,
 }
 
-/// Optimization tier level (4-tier system)
+/// Optimization tier level (5-tier system with interpreter)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OptimizationTier {
-    Baseline,     // Tier 0: Cranelift, fast compilation, minimal optimization
-    Standard,     // Tier 1: Cranelift, moderate optimization
-    Optimized,    // Tier 2: Cranelift, aggressive optimization
-    Maximum,      // Tier 3: LLVM, maximum optimization for ultra-hot code
+    Interpreted,  // Phase 0: MIR interpreter (instant startup, ~5-10x native speed)
+    Baseline,     // Phase 1: Cranelift, fast compilation, minimal optimization
+    Standard,     // Phase 2: Cranelift, moderate optimization
+    Optimized,    // Phase 3: Cranelift, aggressive optimization
+    Maximum,      // Phase 4: LLVM, maximum optimization for ultra-hot code
 }
 
 impl OptimizationTier {
-    /// Get Cranelift optimization level for this tier (T0-T2 only)
+    /// Get Cranelift optimization level for this tier (Phase 1-3 only)
     pub fn cranelift_opt_level(&self) -> &'static str {
         match self {
-            OptimizationTier::Baseline => "none",              // T0: No optimization
-            OptimizationTier::Standard => "speed",             // T1: Moderate
-            OptimizationTier::Optimized => "speed_and_size",   // T2: Aggressive
-            OptimizationTier::Maximum => "speed_and_size",     // T3 uses LLVM, not Cranelift
+            OptimizationTier::Interpreted => "none",           // P0: Not used (interpreter)
+            OptimizationTier::Baseline => "none",              // P1: No optimization
+            OptimizationTier::Standard => "speed",             // P2: Moderate
+            OptimizationTier::Optimized => "speed_and_size",   // P3: Aggressive
+            OptimizationTier::Maximum => "speed_and_size",     // P4 uses LLVM, not Cranelift
         }
+    }
+
+    /// Check if this tier uses the interpreter
+    pub fn uses_interpreter(&self) -> bool {
+        matches!(self, OptimizationTier::Interpreted)
     }
 
     /// Check if this tier uses LLVM backend
@@ -97,6 +111,7 @@ impl OptimizationTier {
     /// Get the next higher tier (if any)
     pub fn next_tier(&self) -> Option<OptimizationTier> {
         match self {
+            OptimizationTier::Interpreted => Some(OptimizationTier::Baseline),
             OptimizationTier::Baseline => Some(OptimizationTier::Standard),
             OptimizationTier::Standard => Some(OptimizationTier::Optimized),
             OptimizationTier::Optimized => Some(OptimizationTier::Maximum),
@@ -107,10 +122,11 @@ impl OptimizationTier {
     /// Get a human-readable description
     pub fn description(&self) -> &'static str {
         match self {
-            OptimizationTier::Baseline => "Baseline (T0/Cranelift)",
-            OptimizationTier::Standard => "Standard (T1/Cranelift)",
-            OptimizationTier::Optimized => "Optimized (T2/Cranelift)",
-            OptimizationTier::Maximum => "Maximum (T3/LLVM)",
+            OptimizationTier::Interpreted => "Interpreted (P0/MIR)",
+            OptimizationTier::Baseline => "Baseline (P1/Cranelift)",
+            OptimizationTier::Standard => "Standard (P2/Cranelift)",
+            OptimizationTier::Optimized => "Optimized (P3/Cranelift)",
+            OptimizationTier::Maximum => "Maximum (P4/LLVM)",
         }
     }
 }
@@ -132,6 +148,10 @@ pub struct TieredConfig {
 
     /// Verbosity level (0 = silent, 1 = basic, 2 = detailed)
     pub verbosity: u8,
+
+    /// Start in interpreted mode (Phase 0) for instant startup
+    /// If false, functions are compiled to Baseline (Phase 1) immediately
+    pub start_interpreted: bool,
 }
 
 impl Default for TieredConfig {
@@ -142,6 +162,7 @@ impl Default for TieredConfig {
             optimization_check_interval_ms: 100,
             max_parallel_optimizations: 4,
             verbosity: 0,
+            start_interpreted: true, // Enable interpreter by default for instant startup
         }
     }
 }
@@ -155,6 +176,7 @@ impl TieredConfig {
             optimization_check_interval_ms: 50,
             max_parallel_optimizations: 2,
             verbosity: 2,
+            start_interpreted: true, // Instant startup for quick iteration
         }
     }
 
@@ -166,6 +188,20 @@ impl TieredConfig {
             optimization_check_interval_ms: 1000,
             max_parallel_optimizations: 8,
             verbosity: 0,
+            start_interpreted: true, // Instant startup, then promote hot functions
+        }
+    }
+
+    /// JIT-only configuration (skip interpreter, compile immediately)
+    /// Use when startup time is less important than consistent performance
+    pub fn jit_only() -> Self {
+        Self {
+            profile_config: ProfileConfig::default(),
+            enable_background_optimization: true,
+            optimization_check_interval_ms: 100,
+            max_parallel_optimizations: 4,
+            verbosity: 0,
+            start_interpreted: false, // Skip interpreter, start at Phase 1
         }
     }
 }
@@ -175,8 +211,10 @@ impl TieredBackend {
     pub fn new(config: TieredConfig) -> Result<Self, String> {
         let baseline_backend = CraneliftBackend::new()?;
         let profile_data = ProfileData::new(config.profile_config);
+        let start_interpreted = config.start_interpreted;
 
         Ok(Self {
+            interpreter: Arc::new(Mutex::new(MirInterpreter::new())),
             baseline_backend: Arc::new(Mutex::new(baseline_backend)),
             profile_data,
             function_tiers: Arc::new(RwLock::new(HashMap::new())),
@@ -187,38 +225,77 @@ impl TieredBackend {
             config,
             worker_handle: None,
             shutdown: Arc::new(Mutex::new(false)),
+            start_interpreted,
         })
     }
 
-    /// Compile a MIR module (initially at Tier 0 - Baseline)
+    /// Create a new tiered backend with runtime symbols for interpreter FFI
+    pub fn with_symbols(config: TieredConfig, symbols: &[(&str, *const u8)]) -> Result<Self, String> {
+        let mut backend = Self::new(config)?;
+        {
+            let mut interp = backend.interpreter.lock().unwrap();
+            for (name, ptr) in symbols {
+                interp.register_symbol(name, *ptr);
+            }
+        }
+        Ok(backend)
+    }
+
+    /// Compile/load a MIR module
+    ///
+    /// If `start_interpreted` is true:
+    /// - Functions start at Phase 0 (Interpreted) for instant startup
+    /// - Background worker will JIT-compile functions as they get hot
+    ///
+    /// If `start_interpreted` is false:
+    /// - Functions are compiled to Phase 1 (Baseline) immediately
     pub fn compile_module(&mut self, module: IrModule) -> Result<(), String> {
+        let initial_tier = if self.start_interpreted {
+            OptimizationTier::Interpreted
+        } else {
+            OptimizationTier::Baseline
+        };
+
         if self.config.verbosity >= 1 {
             debug!(
-                "[TieredBackend] Compiling {} functions at Tier 0 (Baseline)",
-                module.functions.len()
+                "[TieredBackend] Loading {} functions at {} ({})",
+                module.functions.len(),
+                initial_tier.description(),
+                if self.start_interpreted { "instant startup" } else { "JIT compiled" }
             );
         }
 
-        // Compile everything at baseline (Tier 0)
-        let mut backend = self.baseline_backend.lock().unwrap();
-        backend.compile_module(&module)?;
-
-        // Store function pointers and mark all as Baseline tier
-        for func_id in module.functions.keys() {
-            if let Ok(ptr) = backend.get_function_ptr(*func_id) {
-                self.function_pointers
-                    .write()
-                    .unwrap()
-                    .insert(*func_id, ptr as usize);
+        if self.start_interpreted {
+            // Interpreter mode: Just register functions, no compilation needed
+            // Functions start at Phase 0 (Interpreted) and will be JIT-compiled on demand
+            for func_id in module.functions.keys() {
                 self.function_tiers
                     .write()
                     .unwrap()
-                    .insert(*func_id, OptimizationTier::Baseline);
+                    .insert(*func_id, OptimizationTier::Interpreted);
             }
-        }
-        drop(backend);
+        } else {
+            // JIT mode: Compile everything at baseline (Phase 1)
+            let mut backend = self.baseline_backend.lock().unwrap();
+            backend.compile_module(&module)?;
 
-        // Store module for later recompilation
+            // Store function pointers and mark all as Baseline tier
+            for func_id in module.functions.keys() {
+                if let Ok(ptr) = backend.get_function_ptr(*func_id) {
+                    self.function_pointers
+                        .write()
+                        .unwrap()
+                        .insert(*func_id, ptr as usize);
+                    self.function_tiers
+                        .write()
+                        .unwrap()
+                        .insert(*func_id, OptimizationTier::Baseline);
+                }
+            }
+            drop(backend);
+        }
+
+        // Store module for later recompilation/interpretation
         *self.module.write().unwrap() = Some(module);
 
         // Start background optimization if enabled
@@ -227,6 +304,40 @@ impl TieredBackend {
         }
 
         Ok(())
+    }
+
+    /// Execute a function (interpreter or JIT based on current tier)
+    ///
+    /// Returns the result as an InterpValue, which can be converted to native types.
+    pub fn execute_function(
+        &mut self,
+        func_id: IrFunctionId,
+        args: Vec<InterpValue>,
+    ) -> Result<InterpValue, String> {
+        // Record the call for profiling
+        self.record_call(func_id);
+
+        // Get current tier
+        let tier = self.function_tiers
+            .read()
+            .unwrap()
+            .get(&func_id)
+            .copied()
+            .unwrap_or(OptimizationTier::Interpreted);
+
+        if tier.uses_interpreter() {
+            // Execute via interpreter
+            let module = self.module.read().unwrap();
+            let module_ref = module.as_ref().ok_or("Module not loaded")?;
+            let mut interp = self.interpreter.lock().unwrap();
+            interp.execute(module_ref, func_id, args)
+                .map_err(|e| format!("Interpreter error: {}", e))
+        } else {
+            // For JIT-compiled code, we can't easily call it with InterpValue args
+            // This would require marshaling - for now, return an error
+            // In a full implementation, we'd use libffi or similar
+            Err("Direct execution of JIT-compiled functions with InterpValue args not yet supported. Use get_function_pointer() for native calls.".to_string())
+        }
     }
 
     /// Get a function pointer (for execution)
@@ -255,17 +366,24 @@ impl TieredBackend {
             let current_tier = tiers
                 .get(&func_id)
                 .copied()
-                .unwrap_or(OptimizationTier::Baseline);
+                .unwrap_or(OptimizationTier::Interpreted);
 
             match current_tier {
+                // Phase 0 -> Phase 1: Interpreted -> Baseline (JIT compile)
+                OptimizationTier::Interpreted if self.profile_data.should_jit_compile(func_id) => {
+                    Some(OptimizationTier::Baseline)
+                }
+                // Phase 1 -> Phase 2: Baseline -> Standard
                 OptimizationTier::Baseline if self.profile_data.is_warm(func_id) => {
                     Some(OptimizationTier::Standard)
                 }
+                // Phase 2 -> Phase 3: Standard -> Optimized
                 OptimizationTier::Standard if self.profile_data.is_hot(func_id) => {
                     Some(OptimizationTier::Optimized)
                 }
+                // Phase 3 -> Phase 4: Optimized -> Maximum (LLVM)
                 OptimizationTier::Optimized if self.profile_data.is_blazing(func_id) => {
-                    Some(OptimizationTier::Maximum)  // Promote to LLVM!
+                    Some(OptimizationTier::Maximum)
                 }
                 _ => None,
             }
@@ -647,6 +765,10 @@ impl TieredBackend {
             }
         }
 
+        let interpreted_count = tiers
+            .values()
+            .filter(|&&t| t == OptimizationTier::Interpreted)
+            .count();
         let baseline_count = tiers
             .values()
             .filter(|&&t| t == OptimizationTier::Baseline)
@@ -666,6 +788,7 @@ impl TieredBackend {
 
         TieredStatistics {
             profile_stats,
+            interpreted_functions: interpreted_count,
             baseline_functions: baseline_count,
             standard_functions: standard_count,
             optimized_functions: optimized_count,
@@ -695,6 +818,7 @@ impl Drop for TieredBackend {
 #[derive(Debug, Clone)]
 pub struct TieredStatistics {
     pub profile_stats: ProfileStatistics,
+    pub interpreted_functions: usize,
     pub baseline_functions: usize,
     pub standard_functions: usize,
     pub optimized_functions: usize,
@@ -707,12 +831,14 @@ impl TieredStatistics {
     /// Format as human-readable string
     pub fn format(&self) -> String {
         format!(
-            "Tiered Compilation: {} Baseline (T0), {} Standard (T1), {} Optimized (T2)\n\
+            "Tiered Compilation: {} Interpreted (P0), {} Baseline (P1), {} Standard (P2), {} Optimized (P3), {} LLVM (P4)\n\
              Queue: {} waiting, {} optimizing\n\
              {}",
+            self.interpreted_functions,
             self.baseline_functions,
             self.standard_functions,
             self.optimized_functions,
+            self.llvm_functions,
             self.queued_for_optimization,
             self.currently_optimizing,
             self.profile_stats.format()
