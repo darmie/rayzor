@@ -1360,6 +1360,73 @@ impl MirInterpreter {
                 }
                 Ok(InterpValue::Void)
             }
+            // Handle haxe_trace_string_struct which takes a struct containing the string
+            "haxe_trace_string_struct" => {
+                if let Some(arg) = args.first() {
+                    match arg {
+                        InterpValue::String(s) => println!("{}", s),
+                        InterpValue::Struct(fields) => {
+                            // The struct typically has (ptr, len) or (ptr, len, capacity)
+                            // Try to extract and print the string
+                            if let Some(first) = fields.first() {
+                                match first {
+                                    InterpValue::String(s) => println!("{}", s),
+                                    InterpValue::Ptr(ptr) => {
+                                        // Try to read string from pointer with length from second field
+                                        if let Some(InterpValue::I64(len)) = fields.get(1) {
+                                            if *ptr != 0 && *len > 0 {
+                                                unsafe {
+                                                    let slice = std::slice::from_raw_parts(*ptr as *const u8, *len as usize);
+                                                    if let Ok(s) = std::str::from_utf8(slice) {
+                                                        println!("{}", s);
+                                                    } else {
+                                                        println!("<non-utf8 string>");
+                                                    }
+                                                }
+                                            } else {
+                                                println!("");
+                                            }
+                                        } else {
+                                            println!("<ptr:{:#x}>", ptr);
+                                        }
+                                    }
+                                    _ => println!("{:?}", first),
+                                }
+                            } else {
+                                println!("");
+                            }
+                        }
+                        InterpValue::Ptr(ptr) => {
+                            // It might be a pointer to the string struct - try to read it
+                            if *ptr != 0 {
+                                // In production, we'd dereference the struct. For now, just show address.
+                                println!("<string at {:#x}>", ptr);
+                            } else {
+                                println!("null");
+                            }
+                        }
+                        other => println!("{:?}", other),
+                    }
+                }
+                Ok(InterpValue::Void)
+            }
+            // Handle haxe_trace_int for tracing integers
+            "haxe_trace_int" => {
+                if let Some(arg) = args.first() {
+                    match arg {
+                        InterpValue::I32(n) => println!("{}", n),
+                        InterpValue::I64(n) => println!("{}", n),
+                        InterpValue::I8(n) => println!("{}", n),
+                        InterpValue::I16(n) => println!("{}", n),
+                        InterpValue::U8(n) => println!("{}", n),
+                        InterpValue::U16(n) => println!("{}", n),
+                        InterpValue::U32(n) => println!("{}", n),
+                        InterpValue::U64(n) => println!("{}", n),
+                        other => println!("{:?}", other),
+                    }
+                }
+                Ok(InterpValue::Void)
+            }
             "haxe_string_length" => {
                 if let Some(InterpValue::String(s)) = args.first() {
                     Ok(InterpValue::I32(s.len() as i32))

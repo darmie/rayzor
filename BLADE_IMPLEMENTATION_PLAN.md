@@ -515,6 +515,17 @@ rayzor cache stats
 
 ---
 
+## Related: RayzorBundle (.rzb)
+
+For single-file executable distribution, see:
+
+- [RZB_FORMAT_SPEC.md](RZB_FORMAT_SPEC.md) - Format specification
+- [RZB_IMPLEMENTATION_PLAN.md](RZB_IMPLEMENTATION_PLAN.md) - Implementation details
+
+BLADE caches individual modules for incremental compilation, while RayzorBundle packages entire applications for distribution.
+
+---
+
 ## Notes
 
 - **postcard** format is ~10x smaller than JSON and ~5x faster to parse

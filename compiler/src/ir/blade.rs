@@ -456,6 +456,261 @@ pub fn load_symbol_manifest(path: impl AsRef<Path>) -> Result<BladeSymbolManifes
     Ok(manifest)
 }
 
+// ============================================================================
+// Rayzor Bundle Format (.rzb) - Single-file executable bundle
+// ============================================================================
+//
+// The .rzb format bundles all compiled modules into a single file for
+// instant startup, similar to HashLink's .hl format.
+//
+// Structure:
+//   [Header]
+//     - Magic: "RZBF" (4 bytes)
+//     - Version: u32
+//     - Flags: u32 (compression, debug info, etc.)
+//     - Entry module index: u32
+//     - Entry function name length: u32
+//     - Entry function name: [u8]
+//     - Module count: u32
+//     - Symbol manifest offset: u64
+//     - Symbol manifest size: u64
+//   [Module Table] (for fast lookup)
+//     - For each module:
+//       - Name length: u32
+//       - Name: [u8]
+//       - Offset: u64
+//       - Size: u64
+//   [Module Data]
+//     - Serialized IrModules (postcard format)
+//   [Symbol Manifest]
+//     - Embedded BladeSymbolManifest
+//
+
+/// Magic number for Rayzor Bundle files
+const BUNDLE_MAGIC: &[u8; 4] = b"RZBF";
+
+/// Current bundle format version
+const BUNDLE_VERSION: u32 = 1;
+
+/// Bundle flags
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct BundleFlags {
+    /// Is the bundle compressed (zstd)?
+    pub compressed: bool,
+    /// Include debug info?
+    pub debug_info: bool,
+    /// Include source maps?
+    pub source_maps: bool,
+}
+
+impl Default for BundleFlags {
+    fn default() -> Self {
+        Self {
+            compressed: false,
+            debug_info: false,
+            source_maps: false,
+        }
+    }
+}
+
+/// Entry in the module table
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ModuleTableEntry {
+    /// Module name (e.g., "Main", "haxe.io.Bytes")
+    name: String,
+    /// Offset in the data section
+    offset: u64,
+    /// Size of the serialized module
+    size: u64,
+}
+
+/// Rayzor Bundle - all modules in a single file
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RayzorBundle {
+    /// Magic number
+    magic: [u8; 4],
+    /// Format version
+    version: u32,
+    /// Bundle flags
+    flags: BundleFlags,
+    /// Entry point module name
+    entry_module: String,
+    /// Entry point function name (usually "main" or "Main_main")
+    entry_function: String,
+    /// Module table (name -> offset/size)
+    module_table: Vec<ModuleTableEntry>,
+    /// All modules serialized
+    modules: Vec<IrModule>,
+    /// Optional embedded symbol manifest
+    symbols: Option<BladeSymbolManifest>,
+    /// Build metadata
+    build_info: BundleBuildInfo,
+}
+
+/// Build information for the bundle
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BundleBuildInfo {
+    /// Compiler version
+    pub compiler_version: String,
+    /// Build timestamp
+    pub build_timestamp: u64,
+    /// Target platform (e.g., "aarch64-apple-darwin")
+    pub target_platform: String,
+    /// Original source files (for debugging)
+    pub source_files: Vec<String>,
+}
+
+impl RayzorBundle {
+    /// Create a new bundle from modules
+    pub fn new(
+        modules: Vec<IrModule>,
+        entry_module: &str,
+        entry_function: &str,
+        symbols: Option<BladeSymbolManifest>,
+    ) -> Self {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // Build module table
+        let module_table: Vec<ModuleTableEntry> = modules.iter()
+            .enumerate()
+            .map(|(i, m)| ModuleTableEntry {
+                name: m.name.clone(),
+                offset: i as u64, // Will be calculated during serialization
+                size: 0,
+            })
+            .collect();
+
+        let source_files: Vec<String> = modules.iter()
+            .map(|m| m.source_file.clone())
+            .collect();
+
+        Self {
+            magic: *BUNDLE_MAGIC,
+            version: BUNDLE_VERSION,
+            flags: BundleFlags::default(),
+            entry_module: entry_module.to_string(),
+            entry_function: entry_function.to_string(),
+            module_table,
+            modules,
+            symbols,
+            build_info: BundleBuildInfo {
+                compiler_version: env!("CARGO_PKG_VERSION").to_string(),
+                build_timestamp: now,
+                target_platform: std::env::consts::ARCH.to_string(),
+                source_files,
+            },
+        }
+    }
+
+    /// Get the entry module
+    pub fn entry_module(&self) -> Option<&IrModule> {
+        self.modules.iter().find(|m| m.name == self.entry_module)
+    }
+
+    /// Get a module by name
+    pub fn get_module(&self, name: &str) -> Option<&IrModule> {
+        self.modules.iter().find(|m| m.name == name)
+    }
+
+    /// Get all modules
+    pub fn modules(&self) -> &[IrModule] {
+        &self.modules
+    }
+
+    /// Get the entry function name
+    pub fn entry_function(&self) -> &str {
+        &self.entry_function
+    }
+
+    /// Get embedded symbols (if any)
+    pub fn symbols(&self) -> Option<&BladeSymbolManifest> {
+        self.symbols.as_ref()
+    }
+
+    /// Get build info
+    pub fn build_info(&self) -> &BundleBuildInfo {
+        &self.build_info
+    }
+
+    /// Get module count
+    pub fn module_count(&self) -> usize {
+        self.modules.len()
+    }
+}
+
+/// Save a Rayzor Bundle to file
+///
+/// # Arguments
+///
+/// * `path` - Path to the .rzb file to create
+/// * `bundle` - The bundle to save
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let bundle = RayzorBundle::new(modules, "Main", "main", None);
+/// save_bundle("app.rzb", &bundle)?;
+/// ```
+pub fn save_bundle(path: impl AsRef<Path>, bundle: &RayzorBundle) -> Result<(), BladeError> {
+    let bytes = postcard::to_allocvec(bundle)?;
+    fs::write(path, bytes)?;
+    Ok(())
+}
+
+/// Load a Rayzor Bundle from file
+///
+/// # Arguments
+///
+/// * `path` - Path to the .rzb file to load
+///
+/// # Returns
+///
+/// The loaded RayzorBundle
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let bundle = load_bundle("app.rzb")?;
+/// println!("Loaded {} modules", bundle.module_count());
+/// let entry = bundle.entry_module().unwrap();
+/// ```
+pub fn load_bundle(path: impl AsRef<Path>) -> Result<RayzorBundle, BladeError> {
+    let bytes = fs::read(path)?;
+    let bundle: RayzorBundle = postcard::from_bytes(&bytes)?;
+
+    // Validate magic
+    if &bundle.magic != BUNDLE_MAGIC {
+        return Err(BladeError::InvalidMagic);
+    }
+
+    // Check version
+    if bundle.version != BUNDLE_VERSION {
+        return Err(BladeError::UnsupportedVersion(bundle.version));
+    }
+
+    Ok(bundle)
+}
+
+/// Load a Rayzor Bundle from bytes (for embedded bundles)
+pub fn load_bundle_from_bytes(bytes: &[u8]) -> Result<RayzorBundle, BladeError> {
+    let bundle: RayzorBundle = postcard::from_bytes(bytes)?;
+
+    if &bundle.magic != BUNDLE_MAGIC {
+        return Err(BladeError::InvalidMagic);
+    }
+
+    if bundle.version != BUNDLE_VERSION {
+        return Err(BladeError::UnsupportedVersion(bundle.version));
+    }
+
+    Ok(bundle)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

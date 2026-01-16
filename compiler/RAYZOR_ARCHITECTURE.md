@@ -62,31 +62,41 @@ Rayzor is a **next-generation Haxe compiler** focused on:
 │     MIR     │ ◄─── Mid-level IR (SSA form, optimizable)
 │   (Mid IR)  │      - Phi nodes, basic blocks
 └──────┬──────┘      - Type metadata, global init
-       │              [YOU ARE HERE - 98% Complete]
        │
-       ├──────────────┬──────────────┬──────────────┐
-       │              │              │
-       │ (JIT Mode)   │ (AOT Mode)   │ (WASM Mode)
-       │              │              │
-       ▼              ▼              ▼
-┌────────────┐ ┌────────────┐ ┌────────────┐
-│ Cranelift  │ │    LLVM    │ │  WebAsm    │
-│  (Cold)    │ │  (AOT All) │ │            │
-└─────┬──────┘ └─────┬──────┘ └─────┬──────┘
-      │              │              │
-      │ (tier-up)    │              │
-      ▼              ▼              ▼
-┌────────────┐ ┌────────────┐ ┌────────────┐
-│    LLVM    │ │ Native ARM │ │   .wasm    │
-│   (Hot)    │ │  x64, etc  │ │   Module   │
-└────────────┘ └────────────┘ └────────────┘
-      │              │
-      └──────┬───────┘
-             ▼
-      ┌────────────┐
-      │   Native   │
-      │    Code    │
-      └────────────┘
+       ├─────────────────────────────────────────────────────┐
+       │                                                     │
+       ▼                                                     ▼
+┌─────────────┐                                       ┌─────────────┐
+│   .blade    │ ◄─── Module cache (incremental)       │    .rzb     │
+│   (cache)   │      Single module per file           │  (bundle)   │
+└─────────────┘                                       └─────────────┘
+       │                                                     │
+       └──────────────────────┬──────────────────────────────┘
+                              │
+       ┌──────────────┬───────┴───────┬──────────────┐
+       │              │               │              │
+       │ (Interp)     │ (JIT Mode)    │ (AOT Mode)   │ (WASM Mode)
+       │              │               │              │
+       ▼              ▼               ▼              ▼
+┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐
+│ MIR Interp │ │ Cranelift  │ │    LLVM    │ │  WebAsm    │
+│  (Phase 0) │ │  (Cold)    │ │  (AOT All) │ │            │
+└─────┬──────┘ └─────┬──────┘ └─────┬──────┘ └─────┬──────┘
+      │              │              │              │
+      │ (tier-up)    │ (tier-up)    │              │
+      └──────┬───────┘              │              │
+             ▼                      ▼              ▼
+      ┌────────────┐         ┌────────────┐ ┌────────────┐
+      │    LLVM    │         │ Native ARM │ │   .wasm    │
+      │   (Hot)    │         │  x64, etc  │ │   Module   │
+      └────────────┘         └────────────┘ └────────────┘
+             │                     │
+             └─────────┬───────────┘
+                       ▼
+                ┌────────────┐
+                │   Native   │
+                │    Code    │
+                └────────────┘
 ```
 
 ---
@@ -167,27 +177,50 @@ Rayzor is a **next-generation Haxe compiler** focused on:
 
 ## Tiered JIT Compilation Strategy
 
-Rayzor uses a **multi-tier JIT approach** for optimal performance across different execution patterns:
+Rayzor uses a **5-phase tiered compilation** for optimal performance across different execution patterns:
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                   JIT Execution Flow                         │
-└─────────────────────────────────────────────────────────────┘
-
-Function First Call:
-  1. Compile with Cranelift (fast: ~50-200ms)
-  2. Execute Cranelift-compiled code
-  3. Profile execution (call count, runtime %)
-
-Function Becomes Hot (>5% runtime OR >1000 calls):
-  1. Mark function as hot candidate
-  2. Compile with LLVM in background thread (optimized: 1-5s)
-  3. Continue executing Cranelift version
-  4. Swap to LLVM version when ready
-
-Subsequent Calls:
-  1. Execute LLVM-optimized version (maximum performance)
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     5-Phase Tiered Compilation                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  .rzb Bundle Load     │ Instant startup (~500µs)                       │
+│          │            │ No compilation needed                           │
+│          ▼                                                              │
+│  Phase 0: Interpreter │ Instant execution (~1-5x native)               │
+│          │            │ Direct MIR interpretation                       │
+│          ▼ (after N calls)                                              │
+│  Phase 1: Cranelift   │ ~14ms compile, ~15x native                     │
+│          │            │ Fast JIT compilation                            │
+│          ▼ (warm)                                                       │
+│  Phase 2: Cranelift+  │ ~20ms compile, ~25x native                     │
+│          │            │ Optimized Cranelift                             │
+│          ▼ (hot)                                                        │
+│  Phase 3: LLVM        │ ~1-5s compile, ~50x native                     │
+│                       │ Maximum optimization                            │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
+
+**Execution Flow:**
+
+1. **Phase 0 - Interpreter** (instant):
+   - Load .rzb bundle or compile to MIR
+   - Execute via MIR interpreter immediately
+   - Profile execution (call count, runtime %)
+
+2. **Phase 1 - Cranelift Baseline** (after ~10 calls):
+   - JIT compile with Cranelift (fast: ~14ms)
+   - Replace interpreter with compiled code
+   - Continue profiling
+
+3. **Phase 2 - Cranelift Optimized** (after ~100 calls):
+   - Recompile with Cranelift optimizations
+   - Better performance, still fast compile
+
+4. **Phase 3 - LLVM** (after ~1000 calls):
+   - Compile hot functions with LLVM in background
+   - Swap to LLVM version when ready
+   - Maximum performance for hot paths
 
 ### Compilation Modes
 
@@ -215,10 +248,123 @@ Source → MIR → Optimize → LLVM → Native Binary
 
 | Mode | Compile Time | Runtime Speed | Use Case |
 |------|--------------|---------------|----------|
+| MIR Interpreter | 0ms | 1-5x | Instant startup, cold paths |
 | Cranelift JIT | 50-200ms | 15-25x | Cold paths, dev mode |
 | LLVM JIT | 1-5s | 45-50x | Hot paths (tier-up) |
 | LLVM AOT | 10-30s | 45-50x | Production binaries |
 | WASM AOT | 100-500ms | 30-40x | Cross-platform |
+
+---
+
+## Binary Formats
+
+Rayzor uses two binary formats for caching and distribution:
+
+### BLADE Format (.blade) - Module Cache
+
+**Purpose:** Cache individual compiled MIR modules for incremental compilation.
+
+```
+┌──────────────────────────┐
+│ Magic (4 bytes)          │  "BLDE"
+├──────────────────────────┤
+│ Version (4 bytes)        │  Format version
+├──────────────────────────┤
+│ Source Hash (32 bytes)   │  SHA-256 of source
+├──────────────────────────┤
+│ Compiler Hash (32 bytes) │  Compiler version hash
+├──────────────────────────┤
+│ Serialized IrModule      │  postcard-encoded MIR
+└──────────────────────────┘
+```
+
+**Use Cases:**
+- **Incremental compilation** - Skip recompiling unchanged modules
+- **Stdlib caching** - Pre-compile standard library once
+- **CI/CD caching** - Share compiled modules across builds
+
+**Performance:**
+- Load time: ~50µs per module
+- Validation: SHA-256 hash check
+- Typical size: 1-50 KB per module
+
+**Location:** `compiler/src/ir/blade.rs`
+
+### RayzorBundle Format (.rzb) - Executable Bundle
+
+**Purpose:** Package entire application for instant startup and distribution.
+
+```
+┌──────────────────────────┐
+│ Magic (4 bytes)          │  "RZBF"
+├──────────────────────────┤
+│ Version (4 bytes)        │  Format version
+├──────────────────────────┤
+│ Flags (4 bytes)          │  Bundle options
+├──────────────────────────┤
+│ Entry Module Name        │  e.g., "main"
+├──────────────────────────┤
+│ Entry Function Name      │  e.g., "main"
+├──────────────────────────┤
+│ Module Table             │  Index of all modules
+├──────────────────────────┤
+│ Serialized Modules       │  All IrModule data
+├──────────────────────────┤
+│ Build Info               │  Compiler version, timestamp
+└──────────────────────────┘
+```
+
+**Use Cases:**
+- **Single-file distribution** - Ship one .rzb file instead of source
+- **Instant startup** - Skip compilation entirely
+- **Embedded deployment** - Include in applications
+
+**Performance Benchmarks:**
+
+| Metric | Bundle | Full Compile | Speedup |
+|--------|--------|--------------|---------|
+| **Startup Time** | ~388µs | ~5.36ms | **10x** |
+| **Total (start + exec)** | ~394µs | ~20.59ms | **34.5x** |
+
+**Startup Breakdown (pre-bundled .rzb):**
+
+| Phase | Time |
+|-------|------|
+| Bundle load (disk → memory) | ~192µs |
+| Backend init (interpreter) | ~43µs |
+| Module load (into interpreter) | ~127µs |
+| Find main function | ~167ns |
+| **Total Startup** | **~388µs** |
+
+**Location:** `compiler/src/ir/blade.rs`
+
+**CLI Tools:**
+```bash
+# Create bundle
+cargo run --release --bin preblade -- --bundle app.rzb Main.hx
+
+# Run bundle (via example)
+cargo run --release --example test_bundle_loading -- app.rzb
+
+# Benchmark
+cargo run --release --example benchmark_bundle -- app.rzb
+```
+
+### Format Comparison
+
+| Feature | BLADE (.blade) | RayzorBundle (.rzb) |
+|---------|---------------|---------------------|
+| **Purpose** | Cache individual modules | Package entire application |
+| **Contents** | Single MIR module | All modules + entry point |
+| **Use Case** | Incremental compilation | Distribution / deployment |
+| **Typical Size** | 1-50 KB per module | 10-500 KB total |
+| **Load Time** | ~50µs per module | ~500µs total |
+
+**Related Documentation:**
+- `BLADE_FORMAT_SPEC.md` - Detailed BLADE format specification
+- `BLADE_IMPLEMENTATION_PLAN.md` - BLADE implementation details
+- `RZB_FORMAT_SPEC.md` - Detailed RZB format specification
+- `RZB_IMPLEMENTATION_PLAN.md` - RZB implementation details
 
 ---
 
@@ -435,7 +581,7 @@ Total: 32 bytes
 
 ## Development Roadmap
 
-### ✅ Completed (99%)
+### ✅ Completed
 - Parser (Haxe syntax)
 - Type checker (full type inference)
 - HIR lowering (language semantics)
@@ -444,44 +590,26 @@ Total: 32 bytes
 - Pattern matching
 - Exception handling
 - Global variables
-- **Abstract types with operator overloading**
-  - ✅ Binary operators (11/11 complete)
-  - ⏳ Unary operators (not yet implemented)
-  - ⏳ Array access operators (not yet implemented)
+- Abstract types with operator overloading
+- **Cranelift JIT Backend**
+- **MIR Interpreter (Phase 0)**
+- **BLADE Module Caching**
+- **RayzorBundle (.rzb) Format**
+- **5-Phase Tiered Compilation**
 
-### 🔄 Current Phase: Abstract Types Polish (1% remaining)
-- Unary operator overloading (~1 hour)
-- Array access operators (~2 hours)
-- Constructor expression bug fix (~2-3 hours)
-- Total remaining: ~5-6 hours
+### 🔄 Current Phase: Runtime & Optimization
+- Expand runtime library coverage
+- MIR-level optimizations (DCE, constant folding)
+- Improve interpreter performance
 
-### 📋 Next: Cranelift Backend (Phase 1)
-**Timeline:** 2-3 weeks
-- MIR → Cranelift IR translation
-- Basic JIT compilation
-- Simple runtime (malloc/free, no GC)
-- "Hello World" native executable
+### 📋 Next: LLVM Backend
 
-### 📋 Then: Optimization Pipeline
-**Timeline:** 1-2 weeks
-- Implement DCE, constant folding, CSE
-- Leverage existing SSA infrastructure
-- Inline small functions
-
-### 📋 Then: GC Integration
-**Timeline:** 1-2 weeks
-- Integrate Boehm GC
-- Implement core runtime (String, Array, etc.)
-- Run simple Haxe programs
-
-### 📋 Then: LLVM Backend (Phase 2)
-**Timeline:** 2-3 weeks
 - MIR → LLVM IR translation
 - Enable full optimization pipeline
 - Cross-compilation support
 
-### 📋 Future: WASM Backend (Phase 3)
-**Timeline:** TBD
+### 📋 Future: WASM Backend
+
 - WASM target with WasmGC
 - Browser, WASI, and edge deployment
 

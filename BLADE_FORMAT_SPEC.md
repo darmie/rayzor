@@ -278,11 +278,25 @@ Cache is invalidated when:
 ### Implementation Status
 
 - [x] Specification complete
-- [ ] Add `Serialize`/`Deserialize` to MIR types
-- [ ] Implement `blade` module with `postcard`
-- [ ] Add caching to `CompilationUnit`
-- [ ] CLI integration with `--cache-dir`
-- [ ] Testing and benchmarks
+- [x] Add `Serialize`/`Deserialize` to MIR types
+- [x] Implement `blade` module with `postcard`
+- [x] Add caching to `CompilationUnit`
+- [x] Symbol manifest for extern functions
+- [x] `preblade` CLI tool
+- [ ] CLI integration with `--cache-dir` flag
+- [ ] Full testing and benchmarks
+
+### Related: RayzorBundle (.rzb)
+
+For single-file executable distribution (similar to HashLink's `.hl`), see:
+
+- [RZB_FORMAT_SPEC.md](RZB_FORMAT_SPEC.md) - RayzorBundle format specification
+- [RZB_IMPLEMENTATION_PLAN.md](RZB_IMPLEMENTATION_PLAN.md) - Implementation details
+
+| Format   | Purpose           | Use Case                   |
+|----------|-------------------|----------------------------|
+| `.blade` | Module cache      | Incremental compilation    |
+| `.rzb`   | Executable bundle | Distribution / deployment  |
 
 ### Notes
 

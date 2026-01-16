@@ -4,11 +4,14 @@
 //! for faster incremental compilation. Pre-compiled modules can be loaded directly
 //! instead of re-parsing and re-compiling.
 //!
-//! It generates a .bsym manifest with all symbol information (types, methods, fields)
+//! It generates:
+//! - A .bsym manifest with all symbol information (types, methods, fields)
+//! - Optional: A .rzb bundle containing all MIR modules in one file
 //!
 //! Usage:
 //!   cargo run --bin preblade -- --out .rayzor/blade/stdlib
 //!   cargo run --bin preblade -- --list  # List modules that would be compiled
+//!   cargo run --bin preblade -- --bundle app.rzb Main.hx  # Create a bundle
 
 use std::path::{Path, PathBuf};
 use std::collections::hash_map::DefaultHasher;
@@ -17,8 +20,9 @@ use std::hash::{Hash, Hasher};
 use compiler::ir::blade::{
     BladeModuleSymbols, BladeTypeInfo, BladeClassInfo, BladeEnumInfo,
     BladeFieldInfo, BladeMethodInfo, BladeParamInfo, BladeEnumVariantInfo, BladeTypeAliasInfo,
-    BladeAbstractInfo, save_symbol_manifest,
+    BladeAbstractInfo, save_symbol_manifest, RayzorBundle, save_bundle,
 };
+use compiler::compilation::{CompilationUnit, CompilationConfig};
 use parser;
 
 fn main() {
@@ -26,6 +30,8 @@ fn main() {
 
     // Parse arguments
     let mut out_path: Option<PathBuf> = None;
+    let mut bundle_path: Option<PathBuf> = None;
+    let mut source_files: Vec<String> = Vec::new();
     let mut list_only = false;
     let mut verbose = false;
 
@@ -38,21 +44,52 @@ fn main() {
                     out_path = Some(PathBuf::from(&args[i]));
                 }
             }
+            "--bundle" | "-b" => {
+                i += 1;
+                if i < args.len() {
+                    bundle_path = Some(PathBuf::from(&args[i]));
+                }
+            }
             "--list" | "-l" => list_only = true,
             "--verbose" | "-v" => verbose = true,
             "--help" | "-h" => {
                 print_usage();
                 return;
             }
+            arg if !arg.starts_with("-") => {
+                // Source file
+                source_files.push(arg.to_string());
+            }
             _ => {
-                if args[i].starts_with("-") {
-                    eprintln!("Warning: Unknown argument: {}", args[i]);
-                }
+                eprintln!("Warning: Unknown argument: {}", args[i]);
             }
         }
         i += 1;
     }
 
+    // Bundle mode
+    if let Some(bundle_out) = bundle_path {
+        if source_files.is_empty() {
+            eprintln!("Error: No source files specified for bundle");
+            eprintln!("Usage: preblade --bundle app.rzb Main.hx [other.hx ...]");
+            std::process::exit(1);
+        }
+
+        match create_bundle(&bundle_out, &source_files, verbose) {
+            Ok(module_count) => {
+                println!();
+                println!("Bundle created: {}", bundle_out.display());
+                println!("  Modules: {}", module_count);
+            }
+            Err(e) => {
+                eprintln!("Bundle creation failed: {}", e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // Standard symbol extraction mode
     let out_path = out_path.unwrap_or_else(|| PathBuf::from(".rayzor/blade/stdlib"));
 
     if !list_only {
@@ -82,19 +119,127 @@ fn main() {
 }
 
 fn print_usage() {
-    println!("preblade - Pre-compile Haxe stdlib to BLADE format");
+    println!("preblade - Pre-compile Haxe to BLADE format");
     println!();
     println!("Usage:");
-    println!("  preblade [OPTIONS]");
+    println!("  preblade [OPTIONS] [SOURCE_FILES...]");
+    println!();
+    println!("Modes:");
+    println!("  Symbol extraction (default):");
+    println!("    preblade --out .rayzor/blade/stdlib");
+    println!();
+    println!("  Bundle creation:");
+    println!("    preblade --bundle app.rzb Main.hx [other.hx ...]");
     println!();
     println!("Options:");
     println!("  --out, -o <PATH>      Output directory for .bsym files");
+    println!("  --bundle, -b <FILE>   Create a .rzb bundle from source files");
     println!("  --list, -l            List types without generating files");
     println!("  --verbose, -v         Show detailed output");
     println!("  --help, -h            Show this help message");
     println!();
     println!("Output files:");
     println!("  <out>/stdlib.bsym     Symbol manifest (all types/methods/fields)");
+    println!("  <bundle>.rzb          Rayzor Bundle (all MIR in one file)");
+}
+
+/// Create a .rzb bundle from source files
+fn create_bundle(output: &Path, source_files: &[String], verbose: bool) -> Result<usize, String> {
+    use std::time::Instant;
+
+    println!("Creating Rayzor Bundle: {}", output.display());
+    println!();
+
+    let t0 = Instant::now();
+
+    // Create compilation unit
+    let mut unit = CompilationUnit::new(CompilationConfig::default());
+
+    // Load stdlib
+    if verbose {
+        println!("  Loading stdlib...");
+    }
+    unit.load_stdlib().map_err(|e| format!("Failed to load stdlib: {}", e))?;
+
+    // Add source files
+    for source_file in source_files {
+        if verbose {
+            println!("  Adding: {}", source_file);
+        }
+        let source = std::fs::read_to_string(source_file)
+            .map_err(|e| format!("Failed to read {}: {}", source_file, e))?;
+        unit.add_file(&source, source_file)
+            .map_err(|e| format!("Failed to add {}: {}", source_file, e))?;
+    }
+
+    // Lower to TAST
+    if verbose {
+        println!("  Lowering to TAST...");
+    }
+    unit.lower_to_tast()
+        .map_err(|errors| format!("TAST lowering failed: {:?}", errors))?;
+
+    // Get MIR modules
+    if verbose {
+        println!("  Generating MIR...");
+    }
+    let mir_modules = unit.get_mir_modules();
+
+    if mir_modules.is_empty() {
+        return Err("No MIR modules generated".to_string());
+    }
+
+    // Convert Arc<IrModule> to IrModule for the bundle
+    let modules: Vec<_> = mir_modules.iter()
+        .map(|m| (**m).clone())
+        .collect();
+
+    let module_count = modules.len();
+
+    // Find entry module and function
+    let entry_module = modules.iter()
+        .rev()  // User modules are at the end
+        .find(|m| m.functions.values().any(|f|
+            f.name == "main" || f.name == "Main_main" || f.name.ends_with("_main")))
+        .map(|m| m.name.clone())
+        .ok_or("No entry point found (no main function)")?;
+
+    let entry_function = modules.iter()
+        .find(|m| m.name == entry_module)
+        .and_then(|m| m.functions.values()
+            .find(|f| f.name == "main" || f.name == "Main_main" || f.name.ends_with("_main"))
+            .map(|f| f.name.clone()))
+        .ok_or("Entry function not found")?;
+
+    if verbose {
+        println!("  Entry: {}::{}", entry_module, entry_function);
+    }
+
+    // Create and save bundle
+    let bundle = RayzorBundle::new(modules, &entry_module, &entry_function, None);
+
+    if verbose {
+        println!("  Saving bundle...");
+    }
+    save_bundle(output, &bundle)
+        .map_err(|e| format!("Failed to save bundle: {}", e))?;
+
+    let elapsed = t0.elapsed();
+    println!("  Compiled {} modules in {:?}", module_count, elapsed);
+
+    // Show bundle size
+    if let Ok(meta) = std::fs::metadata(output) {
+        let size = meta.len();
+        if size > 1024 * 1024 {
+            println!("  Bundle size: {:.2} MB", size as f64 / (1024.0 * 1024.0));
+        } else if size > 1024 {
+            println!("  Bundle size: {:.2} KB", size as f64 / 1024.0);
+        } else {
+            println!("  Bundle size: {} bytes", size);
+        }
+    }
+
+    Ok(module_count)
 }
 
 /// Discover all .hx modules in stdlib directory
