@@ -398,14 +398,18 @@ impl<'a> HirToMirContext<'a> {
     fn type_needs_drop(&self, type_id: TypeId) -> bool {
         let type_table = self.type_table.borrow();
         if let Some(type_info) = type_table.get(type_id) {
-            match &type_info.kind {
+            let result = match &type_info.kind {
                 // Class instances are heap-allocated
                 TypeKind::Class { .. } => true,
                 // Arrays might be heap-allocated
                 TypeKind::Array { .. } => true,
+                // Dynamic values contain boxed/heap-allocated content
+                // Method calls with unresolved return types often fall back to Dynamic
+                TypeKind::Dynamic => true,
                 // Other types don't need drop
                 _ => false,
-            }
+            };
+            result
         } else {
             false
         }
@@ -1668,6 +1672,7 @@ impl<'a> HirToMirContext<'a> {
                 // We use type_needs_drop to detect any heap-allocated value, not just `new`
                 let rhs_type_needs_drop = self.type_needs_drop(rhs.ty);
 
+
                 // For simple variable assignment, check if we need to free the old value
                 // We do this BEFORE evaluating RHS to avoid double-free if RHS reuses the variable
                 let lhs_symbol = match lhs {
@@ -2663,6 +2668,8 @@ impl<'a> HirToMirContext<'a> {
                     let method_name = self.symbol_table.get_symbol(*field).and_then(|s| self.string_interner.get(s.name));
                     let in_local = self.function_map.contains_key(field);
                     let in_external = self.external_function_map.contains_key(field);
+                    eprintln!("[DEBUG METHOD CALL] method={:?}, field={:?}, in_local={}, in_external={}, object.kind={:?}",
+                        method_name, field, in_local, in_external, std::mem::discriminant(&object.kind));
                     debug!("[Method call] method={:?}, field={:?}, in_local={}, in_external={}", method_name, field, in_local, in_external);
 
                     if let Some(func_id) = self.get_function_id(field) {
@@ -4841,6 +4848,29 @@ impl<'a> HirToMirContext<'a> {
                         }
                     }
 
+                    // If still not found, try lookup by function name in function_map
+                    // This handles cases where method calls use different symbol IDs than the definition
+                    // (e.g., chained method calls like z.mul(z).add(c) where add has a different symbol)
+                    if func_id_opt.is_none() && *is_method {
+                        if let Some(sym_info) = self.symbol_table.get_symbol(*symbol) {
+                            if let Some(method_name) = self.string_interner.get(sym_info.name) {
+                                // Search function_map by name
+                                for (func_sym, &func_id) in &self.function_map {
+                                    if let Some(func_sym_info) = self.symbol_table.get_symbol(*func_sym) {
+                                        if let Some(func_name) = self.string_interner.get(func_sym_info.name) {
+                                            if func_name == method_name {
+                                                debug!("[NAME FALLBACK] Found method '{}' by name: {:?} -> {:?}",
+                                                    method_name, func_sym, func_id);
+                                                func_id_opt = Some(func_id);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     if let Some(func_id) = func_id_opt {
                         let sym_name = self.symbol_table.get_symbol(*symbol)
                             .and_then(|s| self.string_interner.get(s.name))
@@ -4909,6 +4939,16 @@ impl<'a> HirToMirContext<'a> {
                                 self.builder.build_call_direct_with_type_args(func_id, arg_regs, actual_return_type.clone(), ir_type_args)
                             };
                             debug!("[FUNCTION_MAP] Result: {:?}", result);
+
+                            // Register method call result as temp if it returns a heap-allocated value
+                            // This ensures intermediate values like z.mul(z) in z = z.mul(z).add(c) are freed
+                            if let Some(result_reg) = result {
+                                if self.type_needs_drop(expr.ty) {
+                                    self.temp_heap_values.push(result_reg);
+                                    trace!("Drop: Registered method result {:?} as temp", result_reg);
+                                }
+                            }
+
                             return result;
                         } else {
                             // Direct function call (static method or free function)
@@ -6075,6 +6115,13 @@ impl<'a> HirToMirContext<'a> {
                 // Update symbol map to use phi node
                 phi_nodes.insert(*symbol_id, phi_reg);
                 self.symbol_map.insert(*symbol_id, phi_reg);
+
+                // Also update owned_heap_values so drop tracking uses the phi result
+                // This ensures that when a loop variable is reassigned, we free the
+                // current iteration's value (from phi), not the initial value
+                if self.owned_heap_values.contains_key(symbol_id) {
+                    self.owned_heap_values.insert(*symbol_id, phi_reg);
+                }
             }
         }
         // debug!("Created {} phi nodes", phi_nodes.len());

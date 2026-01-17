@@ -945,6 +945,10 @@ pub struct MirInterpreter {
 
     /// Whether to use cached decoded blocks
     use_decoded_cache: bool,
+
+    /// Track heap allocations from system allocator for proper free
+    /// Maps pointer address to allocation size for correct deallocation
+    heap_allocations: HashMap<usize, usize>,
 }
 
 // Safety: MirInterpreter can be sent across threads
@@ -964,6 +968,7 @@ impl MirInterpreter {
             object_heap: ObjectHeap::new(),
             decoded_blocks: HashMap::new(),
             use_decoded_cache: true, // Enable by default for performance
+            heap_allocations: HashMap::new(),
         }
     }
 
@@ -1275,9 +1280,13 @@ impl MirInterpreter {
                     .set(*dest, NanBoxedValue::from_ptr(ptr));
             }
 
-            IrInstruction::Free { ptr: _ } => {
-                // Simple bump allocator doesn't support free
-                // In a full implementation, we'd track allocations
+            IrInstruction::Free { ptr } => {
+                // Free heap-allocated memory
+                let ptr_val = self.current_frame().registers.get(*ptr);
+                if ptr_val.is_ptr() {
+                    let ptr_addr = ptr_val.as_ptr();
+                    self.free_heap(ptr_addr);
+                }
             }
 
             IrInstruction::GetElementPtr {
@@ -2356,19 +2365,47 @@ impl MirInterpreter {
         Ok(())
     }
 
-    /// Allocate memory on the heap
+    /// Allocate memory on the heap using system allocator
+    /// Uses a fixed alignment of 8 bytes which is suitable for most types
     fn alloc_heap(&mut self, size: usize) -> Result<usize, InterpError> {
-        // Align to 8 bytes
-        let aligned_size = (size + 7) & !7;
-        let ptr = self.heap_offset;
-
-        if ptr + aligned_size > self.heap.len() {
-            // Grow heap
-            self.heap.resize(self.heap.len() * 2, 0);
+        if size == 0 {
+            return Ok(0); // Null pointer for zero-size allocations
         }
 
-        self.heap_offset += aligned_size;
-        Ok(ptr)
+        // Round up size to alignment for proper deallocation
+        let aligned_size = (size + 7) & !7;
+
+        // Use system allocator with layout stored for later deallocation
+        let layout = std::alloc::Layout::from_size_align(aligned_size, 8)
+            .map_err(|_| InterpError::RuntimeError("Invalid allocation layout".to_string()))?;
+
+        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+        if ptr.is_null() {
+            return Err(InterpError::RuntimeError("Allocation failed".to_string()));
+        }
+
+        let ptr_val = ptr as usize;
+
+        // Track this allocation with its size so we can free it correctly
+        self.heap_allocations.insert(ptr_val, aligned_size);
+
+        Ok(ptr_val)
+    }
+
+    /// Free heap-allocated memory
+    fn free_heap(&mut self, ptr: usize) {
+        if ptr == 0 {
+            return; // Don't free null pointers
+        }
+
+        // Look up the allocation size and verify this was a tracked allocation
+        if let Some(size) = self.heap_allocations.remove(&ptr) {
+            let layout = std::alloc::Layout::from_size_align(size, 8).unwrap();
+            unsafe {
+                std::alloc::dealloc(ptr as *mut u8, layout);
+            }
+        }
+        // If not in heap_allocations, it might be an invalid pointer - don't free it
     }
 
     /// Extract a value from an aggregate using indices
