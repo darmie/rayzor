@@ -127,6 +127,22 @@ pub struct HirToMirContext<'a> {
 
     /// Counter for generating unique wrapper function names
     next_wrapper_id: u32,
+
+    // === Drop Tracking (Rust-style implicit drop semantics) ===
+
+    /// Maps variable SymbolId to the IrId holding its current heap-allocated value
+    /// When a variable is reassigned, we free its old value before assigning the new one
+    owned_heap_values: HashMap<SymbolId, IrId>,
+
+    /// Stack of scopes, each containing the variables that own heap allocations in that scope
+    /// When a scope exits, we emit Free for all owned values in that scope
+    /// Inner Vec contains (SymbolId, IrId) pairs of owned values
+    drop_scope_stack: Vec<Vec<(SymbolId, IrId)>>,
+
+    /// Set of IrIds that are temporaries needing drop after use
+    /// These are intermediate values from expressions (e.g., `new Complex(...).mul(...)`)
+    /// that need to be freed after the containing expression completes
+    temp_heap_values: Vec<IrId>,
 }
 
 /// SSA-derived optimization hints from DFG analysis
@@ -221,10 +237,16 @@ impl<'a> HirToMirContext<'a> {
             monomorphized_var_types: HashMap::new(),
             enums_for_registration: HashMap::new(),
             next_wrapper_id: 0,
+            // Drop tracking initialization
+            owned_heap_values: HashMap::new(),
+            drop_scope_stack: Vec::new(),
+            temp_heap_values: Vec::new(),
         };
 
         // Pre-declare malloc so it's available for heap allocations during lowering
         ctx.declare_malloc();
+        // Pre-declare free so it's available for drop semantics
+        ctx.declare_free();
 
         ctx
     }
@@ -265,6 +287,118 @@ impl<'a> HirToMirContext<'a> {
         };
 
         self.builder.module.extern_functions.insert(func_id, extern_func);
+    }
+
+    /// Declare free function so we can call it during lowering for drop semantics
+    fn declare_free(&mut self) {
+        use super::{IrFunctionSignature, IrParameter, CallingConvention, IrId, IrType};
+        use super::modules::IrExternFunction;
+        use crate::tast::SymbolId;
+
+        // Create free signature: fn free(ptr: *u8) -> void
+        let signature = IrFunctionSignature {
+            parameters: vec![IrParameter {
+                name: "ptr".to_string(),
+                ty: IrType::Ptr(Box::new(IrType::U8)),
+                reg: IrId::new(0),
+                by_ref: false,
+            }],
+            return_type: IrType::Void,
+            calling_convention: CallingConvention::C,
+            can_throw: false,
+            type_params: vec![],
+            uses_sret: false,
+        };
+
+        // Allocate a function ID
+        let func_id = self.builder.module.alloc_function_id();
+
+        // Create extern function declaration
+        let extern_func = IrExternFunction {
+            id: func_id,
+            name: "free".to_string(),
+            symbol_id: SymbolId::from_raw(u32::MAX - 2), // Dummy symbol ID for extern
+            signature,
+            source: "libc".to_string(),
+        };
+
+        self.builder.module.extern_functions.insert(func_id, extern_func);
+    }
+
+    // === Drop Tracking Methods (Rust-style implicit drop semantics) ===
+
+    /// Enter a new scope for drop tracking
+    fn enter_drop_scope(&mut self) {
+        self.drop_scope_stack.push(Vec::new());
+    }
+
+    /// Exit a scope, emitting Free instructions for all owned heap values in that scope
+    fn exit_drop_scope(&mut self) {
+        if let Some(scope_values) = self.drop_scope_stack.pop() {
+            for (_symbol_id, ir_id) in scope_values {
+                // Emit free instruction
+                self.builder.build_free(ir_id);
+                trace!("Drop: Freed {:?} on scope exit", ir_id);
+            }
+        }
+    }
+
+    /// Register a heap-allocated value as owned by a variable
+    /// This is called when a variable is assigned a newly allocated value (from `new`)
+    fn register_owned_value(&mut self, symbol: SymbolId, ir_id: IrId) {
+        // Check if this variable already owns a heap value - if so, free the old one first
+        if let Some(old_ir_id) = self.owned_heap_values.get(&symbol).copied() {
+            // Free the old value before replacing it
+            self.builder.build_free(old_ir_id);
+            trace!("Drop: Freed old value {:?} on reassignment of {:?}", old_ir_id, symbol);
+
+            // Remove from current scope tracking
+            for scope in self.drop_scope_stack.iter_mut().rev() {
+                scope.retain(|(sym, _)| *sym != symbol);
+            }
+        }
+
+        // Register the new owned value
+        self.owned_heap_values.insert(symbol, ir_id);
+
+        // Add to current scope for cleanup on scope exit
+        if let Some(current_scope) = self.drop_scope_stack.last_mut() {
+            current_scope.push((symbol, ir_id));
+        }
+
+        trace!("Drop: Registered {:?} as owned by {:?}", ir_id, symbol);
+    }
+
+    /// Register a temporary heap-allocated value that needs dropping after use
+    /// This is for intermediate results like `new Complex(...).mul(...)`
+    fn register_temp_value(&mut self, ir_id: IrId) {
+        self.temp_heap_values.push(ir_id);
+        trace!("Drop: Registered temp {:?}", ir_id);
+    }
+
+    /// Free all temporary values (called after expression completes)
+    fn drop_temps(&mut self) {
+        for ir_id in std::mem::take(&mut self.temp_heap_values) {
+            self.builder.build_free(ir_id);
+            trace!("Drop: Freed temp {:?}", ir_id);
+        }
+    }
+
+    /// Check if a type represents a heap-allocated value that needs drop
+    fn type_needs_drop(&self, type_id: TypeId) -> bool {
+        let type_table = self.type_table.borrow();
+        if let Some(type_info) = type_table.get(type_id) {
+            match &type_info.kind {
+                // Class instances are heap-allocated
+                TypeKind::Class { .. } => true,
+                // Arrays might be heap-allocated
+                TypeKind::Array { .. } => true,
+                // Other types don't need drop
+                _ => false,
+            }
+        } else {
+            false
+        }
     }
 
     /// Look up a function ID by symbol, checking both local and external function maps
@@ -797,6 +931,13 @@ impl<'a> HirToMirContext<'a> {
 
         self.builder.current_function = Some(func_id);
         self.builder.current_block = Some(func.entry_block());
+
+        // Clear per-function drop tracking state
+        // Note: We track owned heap values to free them on reassignment (Rust-style drop)
+        // This handles the main memory leak case: loop iterations creating new objects
+        self.owned_heap_values.clear();
+        self.drop_scope_stack.clear();
+        self.temp_heap_values.clear();
 
         // Set current_this_type for implicit field access resolution
         self.current_this_type = this_type;
@@ -1391,6 +1532,9 @@ impl<'a> HirToMirContext<'a> {
                         None
                     };
 
+                    // Check if this is a heap allocation (from `new` expression)
+                    let is_heap_alloc = matches!(&init_expr.kind, HirExprKind::New { .. });
+
                     let value = self.lower_expression(init_expr);
 
                     // Bind to pattern and register as local
@@ -1419,15 +1563,56 @@ impl<'a> HirToMirContext<'a> {
                         };
 
                         self.bind_pattern_with_type(pattern, final_value, var_type, *is_mutable);
+
+                        // Register heap-allocated value for drop tracking
+                        if is_heap_alloc {
+                            if let HirPattern::Variable { symbol, .. } = pattern {
+                                self.register_owned_value(*symbol, final_value);
+                            }
+                        }
                     }
                 }
             }
 
             HirStatement::Expr(expr) => {
-                self.lower_expression(expr);
+                // Clear temps before expression
+                self.temp_heap_values.clear();
+
+                let result = self.lower_expression(expr);
+
+                // Free any temporaries created during expression evaluation
+                // The result itself (if heap-allocated) is NOT a temporary if it's
+                // being used as a return value, but for bare expression statements
+                // like method calls for side effects, we should free the result too
+                if let Some(result_id) = result {
+                    // If the expression result is heap-allocated, it's a temp too
+                    if self.type_needs_drop(expr.ty) {
+                        self.temp_heap_values.push(result_id);
+                    }
+                }
+
+                // Free all temporaries
+                self.drop_temps();
             }
 
             HirStatement::Assign { lhs, rhs, op } => {
+                // Check if RHS is a heap allocation (from `new` expression)
+                let is_heap_alloc = matches!(&rhs.kind, HirExprKind::New { .. });
+
+                // For simple variable assignment, check if we need to free the old value
+                // We do this BEFORE evaluating RHS to avoid double-free if RHS reuses the variable
+                let lhs_symbol = match lhs {
+                    HirLValue::Variable(symbol) => Some(*symbol),
+                    _ => None,
+                };
+
+                // If assigning a NEW heap allocation to a variable that already owns one,
+                // free the old value first (handled by register_owned_value)
+                // Note: The actual free happens in register_owned_value after we evaluate RHS
+
+                // Clear temps before RHS evaluation
+                self.temp_heap_values.clear();
+
                 let rhs_value = self.lower_expression(rhs);
 
                 if let Some(rhs_reg) = rhs_value {
@@ -1469,7 +1654,22 @@ impl<'a> HirToMirContext<'a> {
                     // Store to lvalue
                     if let Some(value) = final_value {
                         self.lower_lvalue_write(lhs, value);
+
+                        // Register heap-allocated value for drop tracking
+                        // This also frees any previously owned value
+                        if is_heap_alloc {
+                            if let Some(symbol) = lhs_symbol {
+                                self.register_owned_value(symbol, value);
+                            }
+                        }
+
+                        // Remove the assigned value from temps (it's now owned by the variable)
+                        self.temp_heap_values.retain(|&id| id != value);
                     }
+
+                    // Free any intermediate temporaries created during RHS evaluation
+                    // These are values like the result of z.mul(z) in z = z.mul(z).add(c)
+                    self.drop_temps();
                 }
             }
 
@@ -2337,6 +2537,19 @@ impl<'a> HirToMirContext<'a> {
                 debug!("[Field expression] About to lower object");
                 let obj_reg = self.lower_expression(object)?;
                 debug!("[Field expression] Object lowered to reg={}, now calling lower_field_access", obj_reg);
+
+                // Track object as temp if it's a heap-allocated intermediate value
+                // This handles cases like z.mul(z).add(c) where z.mul(z) is a temp
+                let is_intermediate_heap_value = matches!(
+                    &object.kind,
+                    HirExprKind::Call { .. } | HirExprKind::New { .. }
+                ) && self.type_needs_drop(object.ty);
+
+                if is_intermediate_heap_value {
+                    self.temp_heap_values.push(obj_reg);
+                    trace!("Drop: Registered intermediate {:?} as temp", obj_reg);
+                }
+
                 let receiver_ty = object.ty; // The type of the object being accessed
                 let result = self.lower_field_access(obj_reg, *field, receiver_ty, expr.ty);
                 debug!("[Field expression] lower_field_access returned {:?}", result);

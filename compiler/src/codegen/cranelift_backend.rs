@@ -2616,6 +2616,25 @@ impl CraneliftBackend {
                 value_map.insert(*dest, result_ptr);
             }
 
+            IrInstruction::Free { ptr } => {
+                // Free heap-allocated memory (Rust-style drop semantics)
+                // Get the pointer value to free
+                let ptr_val = *value_map
+                    .get(ptr)
+                    .ok_or_else(|| format!("Free ptr {:?} not found in value_map", ptr))?;
+
+                // Get the libc free function
+                let free_func_id = *runtime_functions
+                    .get("free")
+                    .ok_or_else(|| "libc free not found in runtime_functions".to_string())?;
+                let free_func_ref = module.declare_func_in_func(free_func_id, builder.func);
+
+                // Call free(ptr) - returns void
+                builder.ins().call(free_func_ref, &[ptr_val]);
+
+                debug!("Free: Emitted call to free for {:?}", ptr);
+            }
+
             // TODO: Implement remaining instructions
             _ => {
                 return Err(format!("Unsupported instruction: {:?}", instruction));

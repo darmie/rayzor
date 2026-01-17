@@ -406,6 +406,23 @@ impl IrBuilder {
         self.build_call_direct(malloc_id, vec![size_reg], ptr_u8_ty)
     }
 
+    /// Build a free instruction (marks pointer for deallocation)
+    /// This emits an IrInstruction::Free which backends translate to actual deallocation
+    pub fn build_free(&mut self, ptr: IrId) -> Option<()> {
+        self.add_instruction(IrInstruction::Free { ptr })
+    }
+
+    /// Build a heap free by calling the free function
+    /// This is used for explicit deallocation of heap-allocated objects (Rust-style drop)
+    pub fn build_heap_free(&mut self, ptr: IrId) -> Option<()> {
+        // Get free function ID
+        let free_id = self.get_function_by_name("free")?;
+
+        // Call free(ptr) - returns void
+        self.build_call_direct(free_id, vec![ptr], IrType::Void)?;
+        Some(())
+    }
+
     /// Build a GEP (get element pointer) instruction
     pub fn build_gep(
         &mut self,
