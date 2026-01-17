@@ -442,16 +442,22 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         // Finalize if needed
         self.finalize()?;
 
-        // Find main function
-        let main_id = module.functions.iter()
+        // Find main function by name since IDs may not match between modules
+        let main_func = module.functions.iter()
             .find(|(_, f)| f.name.ends_with("_main") || f.name == "main")
-            .map(|(id, _)| *id)
+            .map(|(_, f)| f)
             .ok_or("No main function found")?;
 
-        let ptr = self.get_function_ptr(main_id)?;
+        // Get function pointer by name (MCJIT compilation already happened in finalize)
+        let func_name = Self::mangle_function_name(&main_func.name);
+        let engine = self.execution_engine.as_ref()
+            .ok_or("Execution engine not initialized")?;
+
+        let fn_ptr = engine.get_function_address(&func_name)
+            .map_err(|e| format!("Failed to get main function '{}': {}", func_name, e))?;
 
         unsafe {
-            let main_fn: extern "C" fn() = std::mem::transmute(ptr);
+            let main_fn: extern "C" fn() = std::mem::transmute(fn_ptr);
             main_fn();
         }
 
