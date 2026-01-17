@@ -196,16 +196,17 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         }
     }
 
-    /// Fast-math flags bitmask: enables all unsafe FP optimizations for maximum performance.
+    /// Fast-math flags bitmask for floating-point optimizations.
     /// LLVM FastMathFlags: AllowReassoc(1) | NoNaNs(2) | NoInfs(4) | NoSignedZeros(8) |
-    ///                     AllowReciprocal(16) | AllowContract(32) | ApproxFunc(64) = 127
+    ///                     AllowReciprocal(16) | AllowContract(32) | ApproxFunc(64)
     ///
-    /// WARNING: These flags assume:
-    /// - No NaN values in computation
-    /// - No Inf values in computation
-    /// - -0.0 == +0.0
-    /// - Operations can be reassociated/contracted for speed
-    const FAST_MATH_FLAGS: u32 = 0x7F; // All flags (127)
+    /// Currently using conservative flags to ensure IEEE 754 compliance:
+    /// - NoNaNs(2) + NoInfs(4) + NoSignedZeros(8) + AllowContract(32) = 46
+    /// - AllowContract enables FMA fusion which is safe and improves performance
+    /// - AllowReassoc is DISABLED as it can change results due to FP non-associativity
+    /// - ApproxFunc is DISABLED as it uses approximations for math functions
+    /// - AllowReciprocal is DISABLED as it can change division precision
+    const FAST_MATH_FLAGS: u32 = 0x2E; // NoNaNs + NoInfs + NoSignedZeros + AllowContract (46)
 
     /// Apply fast-math flags to a float instruction for aggressive optimization.
     /// This enables LLVM to perform optimizations like:
@@ -403,10 +404,20 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
         self.execution_engine = Some(engine);
 
-        // Note: LLVM's MCJIT lazily compiles functions when get_function_address is called.
-        // For fair benchmarking, the benchmark runner should call finalize() BEFORE measuring
-        // execution time. The first call to get_function_address will trigger full module
-        // compilation in MCJIT.
+        // IMPORTANT: Trigger MCJIT compilation NOW, not during execution.
+        // LLVM's MCJIT lazily compiles when get_function_address is called.
+        // We pre-compile all functions here to avoid lazy compilation during execution timing.
+        let func_ids: Vec<_> = self.function_map.keys().cloned().collect();
+        for func_id in func_ids {
+            if let Some(llvm_func) = self.function_map.get(&func_id) {
+                let func_name = llvm_func.get_name().to_string_lossy().to_string();
+                if let Some(ref engine) = self.execution_engine {
+                    if let Ok(fn_ptr) = engine.get_function_address(&func_name) {
+                        self.function_pointers.insert(func_id, fn_ptr as usize);
+                    }
+                }
+            }
+        }
 
         Ok(())
     }

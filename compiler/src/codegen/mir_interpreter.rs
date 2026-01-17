@@ -706,6 +706,11 @@ impl InterpValue {
         }
     }
 
+    /// Check if this value is a floating-point type
+    pub fn is_float(&self) -> bool {
+        matches!(self, InterpValue::F32(_) | InterpValue::F64(_))
+    }
+
     /// Convert to usize (for pointer operations)
     pub fn to_usize(&self) -> Result<usize, InterpError> {
         match self {
@@ -2022,38 +2027,71 @@ impl MirInterpreter {
         left: InterpValue,
         right: InterpValue,
     ) -> Result<InterpValue, InterpError> {
+        // Check if either operand is a float - if so, use float arithmetic for Add/Sub/Mul/Div/Rem
+        let either_is_float = left.is_float() || right.is_float();
+
         match op {
-            // Integer arithmetic
+            // Arithmetic operations - use float if either operand is float
             BinaryOp::Add => {
-                let l = left.to_i64()?;
-                let r = right.to_i64()?;
-                Ok(InterpValue::I64(l.wrapping_add(r)))
+                if either_is_float {
+                    let l = left.to_f64()?;
+                    let r = right.to_f64()?;
+                    Ok(InterpValue::F64(l + r))
+                } else {
+                    let l = left.to_i64()?;
+                    let r = right.to_i64()?;
+                    Ok(InterpValue::I64(l.wrapping_add(r)))
+                }
             }
             BinaryOp::Sub => {
-                let l = left.to_i64()?;
-                let r = right.to_i64()?;
-                Ok(InterpValue::I64(l.wrapping_sub(r)))
+                if either_is_float {
+                    let l = left.to_f64()?;
+                    let r = right.to_f64()?;
+                    Ok(InterpValue::F64(l - r))
+                } else {
+                    let l = left.to_i64()?;
+                    let r = right.to_i64()?;
+                    Ok(InterpValue::I64(l.wrapping_sub(r)))
+                }
             }
             BinaryOp::Mul => {
-                let l = left.to_i64()?;
-                let r = right.to_i64()?;
-                Ok(InterpValue::I64(l.wrapping_mul(r)))
+                if either_is_float {
+                    let l = left.to_f64()?;
+                    let r = right.to_f64()?;
+                    Ok(InterpValue::F64(l * r))
+                } else {
+                    let l = left.to_i64()?;
+                    let r = right.to_i64()?;
+                    Ok(InterpValue::I64(l.wrapping_mul(r)))
+                }
             }
             BinaryOp::Div => {
-                let l = left.to_i64()?;
-                let r = right.to_i64()?;
-                if r == 0 {
-                    return Err(InterpError::RuntimeError("Division by zero".to_string()));
+                if either_is_float {
+                    let l = left.to_f64()?;
+                    let r = right.to_f64()?;
+                    Ok(InterpValue::F64(l / r))
+                } else {
+                    let l = left.to_i64()?;
+                    let r = right.to_i64()?;
+                    if r == 0 {
+                        return Err(InterpError::RuntimeError("Division by zero".to_string()));
+                    }
+                    Ok(InterpValue::I64(l / r))
                 }
-                Ok(InterpValue::I64(l / r))
             }
             BinaryOp::Rem => {
-                let l = left.to_i64()?;
-                let r = right.to_i64()?;
-                if r == 0 {
-                    return Err(InterpError::RuntimeError("Modulo by zero".to_string()));
+                if either_is_float {
+                    let l = left.to_f64()?;
+                    let r = right.to_f64()?;
+                    Ok(InterpValue::F64(l % r))
+                } else {
+                    let l = left.to_i64()?;
+                    let r = right.to_i64()?;
+                    if r == 0 {
+                        return Err(InterpError::RuntimeError("Modulo by zero".to_string()));
+                    }
+                    Ok(InterpValue::I64(l % r))
                 }
-                Ok(InterpValue::I64(l % r))
             }
 
             // Bitwise operations
