@@ -18,6 +18,7 @@ use crate::ir::{
     IrPhiNode, IrSourceLocation, IrTerminator, IrType, IrTypeDef, IrTypeDefId, IrTypeDefinition,
     IrValue, Linkage, UnaryOp,
 };
+use crate::ir::drop_analysis::{DropPointAnalyzer, DropPoints};
 use crate::stdlib::{MethodSignature, StdlibMapping};
 use crate::tast::{
     InternedString, SourceLocation, StringInterner, SymbolId, SymbolTable, TypeId, TypeKind,
@@ -143,6 +144,13 @@ pub struct HirToMirContext<'a> {
     /// These are intermediate values from expressions (e.g., `new Complex(...).mul(...)`)
     /// that need to be freed after the containing expression completes
     temp_heap_values: Vec<IrId>,
+
+    /// Drop point analysis results for current function
+    /// Contains last-use information for precise drop insertion
+    current_drop_points: Option<DropPoints>,
+
+    /// Current statement index during lowering (for drop point matching)
+    current_stmt_index: usize,
 }
 
 /// SSA-derived optimization hints from DFG analysis
@@ -241,6 +249,8 @@ impl<'a> HirToMirContext<'a> {
             owned_heap_values: HashMap::new(),
             drop_scope_stack: Vec::new(),
             temp_heap_values: Vec::new(),
+            current_drop_points: None,
+            current_stmt_index: 0,
         };
 
         // Pre-declare malloc so it's available for heap allocations during lowering
@@ -398,6 +408,40 @@ impl<'a> HirToMirContext<'a> {
             }
         } else {
             false
+        }
+    }
+
+    /// Check drop points and emit Free for variables at their last use
+    /// Called after each statement during lowering
+    fn check_drop_points_after_statement(&mut self) {
+        use crate::ir::drop_analysis::should_drop_at_statement;
+
+        // Get drop points - if none, skip
+        let drop_points = match &self.current_drop_points {
+            Some(dp) => dp,
+            None => return,
+        };
+
+        // Check each owned heap variable to see if it should be dropped
+        // We iterate over owned_heap_values to find variables that are:
+        // 1. Heap-allocated (tracked in drop_points.heap_allocated)
+        // 2. Not escaping (not in drop_points.escaping)
+        // 3. At their last use (drop_points.last_use[symbol].statement_index == current_stmt_index)
+        let current_idx = self.current_stmt_index;
+        let mut to_drop = Vec::new();
+
+        for (&symbol, &ir_id) in &self.owned_heap_values {
+            if should_drop_at_statement(drop_points, symbol, current_idx) {
+                to_drop.push((symbol, ir_id));
+            }
+        }
+
+        // Emit Free for each variable at its last use
+        for (symbol, ir_id) in to_drop {
+            self.builder.build_free(ir_id);
+            trace!("Drop: Freed {:?} at last use (stmt {})", symbol, current_idx);
+            // Remove from owned_heap_values since it's been freed
+            self.owned_heap_values.remove(&symbol);
         }
     }
 
@@ -939,6 +983,20 @@ impl<'a> HirToMirContext<'a> {
         self.drop_scope_stack.clear();
         self.temp_heap_values.clear();
 
+        // Run drop point analysis on the function body to find last-use points
+        // This enables precise drop insertion at the exact point a variable is no longer used
+        if let Some(body) = &hir_func.body {
+            let mut analyzer = DropPointAnalyzer::new();
+            self.current_drop_points = Some(analyzer.analyze_function(body));
+            self.current_stmt_index = 0;
+            trace!("Drop analysis: Found {} heap variables, {} escaping",
+                self.current_drop_points.as_ref().map(|dp| dp.heap_allocated.len()).unwrap_or(0),
+                self.current_drop_points.as_ref().map(|dp| dp.escaping.len()).unwrap_or(0));
+        } else {
+            self.current_drop_points = None;
+            self.current_stmt_index = 0;
+        }
+
         // Set current_this_type for implicit field access resolution
         self.current_this_type = this_type;
 
@@ -1476,6 +1534,13 @@ impl<'a> HirToMirContext<'a> {
         // Process all statements
         for stmt in &block.statements {
             self.lower_statement(stmt);
+
+            // Check if any variables have their last use at this statement
+            // and emit Free for them (lifetime-based drop)
+            self.check_drop_points_after_statement();
+
+            // Increment statement index for drop point tracking
+            self.current_stmt_index += 1;
         }
 
         // Process trailing expression if present
@@ -1596,8 +1661,12 @@ impl<'a> HirToMirContext<'a> {
             }
 
             HirStatement::Assign { lhs, rhs, op } => {
-                // Check if RHS is a heap allocation (from `new` expression)
-                let is_heap_alloc = matches!(&rhs.kind, HirExprKind::New { .. });
+                // Check if RHS produces a heap-allocated value
+                // This includes:
+                // 1. Direct `new` expressions (e.g., `new Point(1, 2)`)
+                // 2. Method calls returning class instances (e.g., `z.mul(z).add(c)`)
+                // We use type_needs_drop to detect any heap-allocated value, not just `new`
+                let rhs_type_needs_drop = self.type_needs_drop(rhs.ty);
 
                 // For simple variable assignment, check if we need to free the old value
                 // We do this BEFORE evaluating RHS to avoid double-free if RHS reuses the variable
@@ -1606,7 +1675,7 @@ impl<'a> HirToMirContext<'a> {
                     _ => None,
                 };
 
-                // If assigning a NEW heap allocation to a variable that already owns one,
+                // If assigning a heap-allocated value to a variable that already owns one,
                 // free the old value first (handled by register_owned_value)
                 // Note: The actual free happens in register_owned_value after we evaluate RHS
 
@@ -1657,7 +1726,10 @@ impl<'a> HirToMirContext<'a> {
 
                         // Register heap-allocated value for drop tracking
                         // This also frees any previously owned value
-                        if is_heap_alloc {
+                        // IMPORTANT: Check type_needs_drop, not just HirExprKind::New
+                        // This handles method calls returning heap-allocated values
+                        // e.g., z = z.mul(z).add(c) where mul/add return new Complex
+                        if rhs_type_needs_drop {
                             if let Some(symbol) = lhs_symbol {
                                 self.register_owned_value(symbol, value);
                             }

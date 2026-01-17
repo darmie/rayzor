@@ -11,6 +11,7 @@
 pub mod hir;  // High-level IR (close to source syntax)
 pub mod tast_to_hir;  // TAST to HIR lowering
 pub mod hir_to_mir;   // HIR to MIR lowering
+pub mod drop_analysis;  // Drop point analysis for automatic memory deallocation
 
 // MIR modules (the existing IR serves as MIR)
 pub mod types;
