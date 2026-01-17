@@ -206,7 +206,7 @@ impl<'a> TastToHirContext<'a> {
         self.get_dynamic_type()
     }
     
-    /// Lower a typed file to HIR module  
+    /// Lower a typed file to HIR module
     pub fn lower_file(&mut self, file: &'a TypedFile) -> Result<HirModule, Vec<LoweringError>> {
         // Set current file for validation
         self.current_file = Some(file);
@@ -938,9 +938,40 @@ impl<'a> TastToHirContext<'a> {
                 HirExprKind::Literal(self.lower_literal(value))
             }
             TypedExpressionKind::Variable { symbol_id } => {
-                HirExprKind::Variable {
-                    symbol: *symbol_id,
-                    capture_mode: None, // TODO: Determine from context
+                // Check if this variable is actually a static field reference
+                // This happens when you access a static field without the class prefix
+                // e.g., `SIZE` instead of `Main.SIZE` when inside class Main
+                let mut inlined_static = None;
+
+                if let Some(file) = &self.current_file {
+                    // Look through all classes to find if this symbol is a static field
+                    for class in &file.classes {
+                        for field in &class.fields {
+                            if field.symbol_id == *symbol_id && field.is_static {
+                                // Found a static field - try to inline its constant value
+                                if let Some(ref init_expr) = field.initializer {
+                                    if let TypedExpressionKind::Literal { value } = &init_expr.kind {
+                                        // Inline the constant value from the static field
+                                        let lowered = self.lower_literal(value);
+                                        inlined_static = Some(HirExprKind::Literal(lowered));
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                        if inlined_static.is_some() {
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(hir_kind) = inlined_static {
+                    hir_kind
+                } else {
+                    HirExprKind::Variable {
+                        symbol: *symbol_id,
+                        capture_mode: None, // TODO: Determine from context
+                    }
                 }
             }
             TypedExpressionKind::This { .. } => HirExprKind::This,
@@ -950,6 +981,47 @@ impl<'a> TastToHirContext<'a> {
                 HirExprKind::Field {
                     object: Box::new(self.lower_expression(object)),
                     field: *field_symbol,
+                }
+            }
+            TypedExpressionKind::StaticFieldAccess { class_symbol, field_symbol } => {
+                // Static fields with constant initializers should be inlined
+                // For non-constant static fields, we would need global data storage
+                let mut inlined_value = None;
+
+                if let Some(file) = &self.current_file {
+                    // Find the class by symbol
+                    for class in &file.classes {
+                        if class.symbol_id == *class_symbol {
+                            // Find the field by symbol
+                            for field in &class.fields {
+                                if field.symbol_id == *field_symbol && field.is_static {
+                                    // Check if field has a constant initializer
+                                    if let Some(ref init_expr) = field.initializer {
+                                        if let TypedExpressionKind::Literal { value } = &init_expr.kind {
+                                            // Inline the literal value
+                                            inlined_value = Some(HirExprKind::Literal(
+                                                self.lower_literal(value)
+                                            ));
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(hir_kind) = inlined_value {
+                    hir_kind
+                } else {
+                    // Fallback: treat as variable (may not work for all cases)
+                    // TODO: Add proper global static data storage for non-constant static fields
+                    debug!("WARNING: Static field access without constant initializer may not work");
+                    HirExprKind::Variable {
+                        symbol: *field_symbol,
+                        capture_mode: None,
+                    }
                 }
             }
             TypedExpressionKind::ArrayAccess { array, index } => {

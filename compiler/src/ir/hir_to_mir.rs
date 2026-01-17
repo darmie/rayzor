@@ -6364,7 +6364,12 @@ impl<'a> HirToMirContext<'a> {
             HirLiteral::Int(i) => {
                 // Use the actual type from type checking instead of always using I64
                 let ir_type = self.convert_type(type_id);
-                self.builder.build_int(*i, ir_type)
+                let result = self.builder.build_int(*i, ir_type);
+                if result.is_none() {
+                    // Fallback to I32 if the type is unrecognized (e.g., Ptr(Void) from inlined static fields)
+                    return self.builder.build_int(*i, IrType::I32);
+                }
+                result
             }
             HirLiteral::Float(f) => {
                 let ir_type = self.convert_type(type_id);
