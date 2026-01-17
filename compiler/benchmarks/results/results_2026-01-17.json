@@ -1,0 +1,42 @@
+{
+  "date": "2026-01-17",
+  "benchmarks": [
+    {
+      "name": "mandelbrot_tiny",
+      "results": [
+        {
+          "name": "mandelbrot_tiny",
+          "target": "rayzor-cranelift",
+          "compile_time_ms": 90.45,
+          "runtime_ms": 0.02,
+          "total_time_ms": 90.47,
+          "iterations": 3
+        },
+        {
+          "name": "mandelbrot_tiny",
+          "target": "rayzor-interpreter",
+          "compile_time_ms": 69.14,
+          "runtime_ms": 0.16,
+          "total_time_ms": 69.30,
+          "iterations": 3
+        },
+        {
+          "name": "mandelbrot_tiny",
+          "target": "rayzor-tiered",
+          "compile_time_ms": 69.47,
+          "runtime_ms": 0.02,
+          "total_time_ms": 69.49,
+          "iterations": 3
+        },
+        {
+          "name": "mandelbrot_tiny",
+          "target": "rayzor-llvm",
+          "compile_time_ms": 130.34,
+          "runtime_ms": 0.0448,
+          "total_time_ms": 130.38,
+          "iterations": 1
+        }
+      ]
+    }
+  ]
+}
