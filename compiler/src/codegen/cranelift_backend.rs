@@ -105,8 +105,8 @@ impl CraneliftBackend {
         Self::with_symbols_and_opt("none", symbols)
     }
 
-    /// Internal: Create backend with symbols and optimization level
-    fn with_symbols_and_opt(
+    /// Create backend with symbols and optimization level
+    pub fn with_symbols_and_opt(
         opt_level: &str,
         symbols: &[(&str, *const u8)],
     ) -> Result<Self, String> {
@@ -2964,9 +2964,11 @@ impl CraneliftBackend {
 
         // Call the main function (assuming it's void main() -> void)
         // This is unsafe because we're calling JIT-compiled code
+        // NOTE: Cranelift adds a hidden environment parameter (i64) to non-extern Haxe
+        // functions. We must pass a null pointer for this parameter.
         unsafe {
-            let main_fn: extern "C" fn() = std::mem::transmute(func_ptr);
-            main_fn();
+            let main_fn: extern "C" fn(i64) = std::mem::transmute(func_ptr);
+            main_fn(0); // null environment pointer
         }
 
         // CRITICAL: Wait for all spawned threads to complete before returning

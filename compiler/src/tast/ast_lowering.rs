@@ -975,6 +975,11 @@ impl<'a> AstLowering<'a> {
         // (skip if CompilationUnit is handling stdlib loading)
         if !self.skip_stdlib_loading {
             self.load_standard_library()?;
+        } else {
+            // Even when skipping full stdlib loading, we MUST register top-level stdlib
+            // symbols (Math, Std, etc.) so they can be resolved without explicit imports.
+            // This is required for Haxe semantics where these classes are implicitly available.
+            self.register_toplevel_stdlib_symbols();
         }
 
         // Process import.hx files in the current directory hierarchy
@@ -1423,6 +1428,141 @@ impl<'a> AstLowering<'a> {
         self.context.current_package = saved_package;
 
         Ok(())
+    }
+
+    /// Register top-level stdlib symbols (Math, Std, etc.) for implicit availability.
+    ///
+    /// In Haxe, these classes are always available without explicit imports.
+    /// This method is called separately from load_standard_library() to support
+    /// lazy stdlib loading where we want to skip parsing/processing stdlib files
+    /// but still need these symbols to be resolvable.
+    fn register_toplevel_stdlib_symbols(&mut self) {
+        // Top-level Haxe standard library classes that are always implicitly available.
+        // These match the .hx files in haxe-std/ root directory.
+        let toplevel_stdlib_classes = [
+            // Core types from StdTypes.hx
+            "Dynamic", "Class", "Enum", "EnumValue", "Type", "Any", "Unknown",
+            // Collections - CRITICAL: Array must be here for array literals
+            "Array", "Map", "List", "Vector",
+            // String handling
+            "String", "StringBuf", "StringTools", "UnicodeString",
+            // Utilities
+            "Date", "DateTools", "Math", "Reflect", "Std", "Sys", "Lambda",
+            // Iteration
+            "IntIterator",
+            // Other stdlib
+            "EReg", "Xml", "UInt",
+            // System types (may be in subdirectories but commonly used)
+            "File", "FileSystem", "Json", "Timer", "Bytes", "Int32", "Int64",
+        ];
+
+        for type_name in &toplevel_stdlib_classes {
+            let interned_name = self.context.intern_string(type_name);
+
+            // Check if already registered (avoid duplicates)
+            if self.resolve_symbol_in_scope_hierarchy(interned_name).is_some() {
+                continue;
+            }
+
+            let builtin_symbol = self
+                .context
+                .symbol_table
+                .create_class_in_scope(interned_name, ScopeId::first());
+
+            // Update qualified name
+            self.context.update_symbol_qualified_name(builtin_symbol);
+
+            // Add to root scope for global resolution
+            self.context
+                .scope_tree
+                .get_scope_mut(ScopeId::first())
+                .expect("Root scope should exist")
+                .add_symbol(builtin_symbol, interned_name);
+        }
+
+        // Register built-in global functions (trace)
+        self.register_builtin_functions();
+    }
+
+    /// Register built-in global functions like trace()
+    fn register_builtin_functions(&mut self) {
+        let builtin_functions = [
+            ("trace", vec!["Dynamic"], "Void"),
+        ];
+
+        for (func_name, param_types, return_type) in builtin_functions {
+            let func_name_interned = self.context.intern_string(func_name);
+
+            // Check if already registered
+            if self.resolve_symbol_in_scope_hierarchy(func_name_interned).is_some() {
+                continue;
+            }
+
+            // Create parameter types
+            let mut param_type_ids = Vec::new();
+            for param_type_name in param_types {
+                let param_type_id = match param_type_name {
+                    "Dynamic" => self.context.type_table.borrow().dynamic_type(),
+                    "Int" => self.context.type_table.borrow().int_type(),
+                    "String" => self.context.type_table.borrow().string_type(),
+                    "Float" => self.context.type_table.borrow().float_type(),
+                    "Bool" => self.context.type_table.borrow().bool_type(),
+                    "Void" => self.context.type_table.borrow().void_type(),
+                    _ => self.context.type_table.borrow().dynamic_type(),
+                };
+                param_type_ids.push(param_type_id);
+            }
+
+            // Create return type
+            let return_type_id = match return_type {
+                "Dynamic" => self.context.type_table.borrow().dynamic_type(),
+                "Int" => self.context.type_table.borrow().int_type(),
+                "String" => self.context.type_table.borrow().string_type(),
+                "Float" => self.context.type_table.borrow().float_type(),
+                "Bool" => self.context.type_table.borrow().bool_type(),
+                "Void" => self.context.type_table.borrow().void_type(),
+                _ => self.context.type_table.borrow().dynamic_type(),
+            };
+
+            // Create function type
+            let function_type_id = self
+                .context
+                .type_table
+                .borrow_mut()
+                .create_function_type(param_type_ids, return_type_id);
+
+            // Create function symbol
+            use crate::tast::{
+                LifetimeId, Mutability, SourceLocation, Symbol, SymbolFlags, SymbolKind, Visibility,
+            };
+
+            let func_symbol_id = SymbolId::from_raw(self.context.symbol_table.len() as u32);
+            let func_symbol = Symbol {
+                id: func_symbol_id,
+                name: func_name_interned,
+                kind: SymbolKind::Function,
+                type_id: function_type_id,
+                scope_id: ScopeId::first(),
+                lifetime_id: LifetimeId::invalid(),
+                visibility: Visibility::Public,
+                mutability: Mutability::Immutable,
+                definition_location: SourceLocation::unknown(),
+                is_used: false,
+                is_exported: false,
+                documentation: None,
+                flags: SymbolFlags::NONE,
+                package_id: None,
+                qualified_name: None,
+            };
+
+            self.context.symbol_table.add_symbol(func_symbol);
+
+            self.context
+                .scope_tree
+                .get_scope_mut(ScopeId::first())
+                .expect("Root scope should exist")
+                .add_symbol(func_symbol_id, func_name_interned);
+        }
     }
 
     /// Register a symbol with package information
@@ -2122,6 +2262,35 @@ impl<'a> AstLowering<'a> {
             .iter()
             .map(|t| self.lower_type(t))
             .collect::<Result<Vec<_>, _>>()?;
+
+        // PRE-REGISTER ALL METHODS before lowering any method bodies.
+        // This is critical for intra-class method calls: when main() calls iterate(),
+        // iterate must already be registered in the class scope, even if it's defined later.
+        for field in &class_decl.fields {
+            if let ClassFieldKind::Function(func) = &field.kind {
+                let method_name = self.context.intern_string(&func.name);
+
+                // Check if this method was already registered (e.g., from parent class)
+                if self.context.symbol_table.lookup_symbol(class_scope, method_name).is_none() {
+                    // Create the function symbol in the class scope
+                    let method_symbol = self.context.symbol_table.create_function_in_scope(method_name, class_scope);
+
+                    // Add to the class scope so it can be resolved during method body lowering
+                    if let Some(scope) = self.context.scope_tree.get_scope_mut(class_scope) {
+                        scope.add_symbol(method_symbol, method_name);
+                    }
+
+                    // Mark as static if applicable (needed for resolution)
+                    let is_static = field.modifiers.iter().any(|m| matches!(m, parser::haxe_ast::Modifier::Static));
+                    if is_static {
+                        self.context.symbol_table.add_symbol_flags(
+                            method_symbol,
+                            crate::tast::symbols::SymbolFlags::STATIC,
+                        );
+                    }
+                }
+            }
+        }
 
         // Process fields, methods, and constructors separately
         let mut fields = Vec::with_capacity(class_decl.fields.len());
@@ -3118,11 +3287,11 @@ impl<'a> AstLowering<'a> {
         func: &Function,
     ) -> LoweringResult<TypedFunction> {
         let function_name = self.context.intern_string(&func.name);
-        
-        // Create function symbol in the class scope (not global scope)
+
+        // Get function symbol - may have been pre-registered during class declaration
         // This ensures the method is associated with its class
         let current_class = self.context.class_context_stack.last().copied();
-        
+
         // Use the current scope as the class scope since we're inside the class
         // The class symbol itself is in the parent scope, but methods are in the class scope
         let class_scope = if current_class.is_some() {
@@ -3130,9 +3299,15 @@ impl<'a> AstLowering<'a> {
         } else {
             ScopeId::first() // Fallback to root scope
         };
-        
-        // Create the function symbol in the class scope
-        let function_symbol = self.context.symbol_table.create_function_in_scope(function_name, class_scope);
+
+        // Look up the pre-registered function symbol, or create a new one if not found
+        // (constructors named "new" are not pre-registered since they're handled specially)
+        let function_symbol = if let Some(existing) = self.context.symbol_table.lookup_symbol(class_scope, function_name) {
+            existing.id
+        } else {
+            // Create the function symbol in the class scope (e.g., for constructors)
+            self.context.symbol_table.create_function_in_scope(function_name, class_scope)
+        };
 
         // Update qualified name (full path including class hierarchy)
         self.context.update_symbol_qualified_name(function_symbol);

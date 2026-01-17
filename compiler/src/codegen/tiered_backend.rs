@@ -100,8 +100,10 @@ impl OptimizationTier {
             OptimizationTier::Interpreted => "none",           // P0: Not used (interpreter)
             OptimizationTier::Baseline => "none",              // P1: No optimization
             OptimizationTier::Standard => "speed",             // P2: Moderate
-            OptimizationTier::Optimized => "speed_and_size",   // P3: Aggressive
-            OptimizationTier::Maximum => "speed_and_size",     // P4 uses LLVM, not Cranelift
+            // TODO: "speed_and_size" causes incorrect results in some cases (checksum halved)
+            // Using "speed" until the root cause is identified
+            OptimizationTier::Optimized => "speed",            // P3: Was "speed_and_size"
+            OptimizationTier::Maximum => "speed",              // P4 uses LLVM, not Cranelift
         }
     }
 
@@ -386,11 +388,14 @@ impl TieredBackend {
                 .ok_or_else(|| format!("JIT function {:?} not found in function_pointers", func_id))?;
 
             // For functions with no args (like main), call directly
+            // NOTE: Cranelift adds a hidden environment parameter (i64) to non-extern Haxe
+            // functions. We must pass a null pointer for this parameter.
             // For functions with args, we'd need to marshal InterpValue -> native types
             if args.is_empty() {
                 unsafe {
-                    let jit_fn: extern "C" fn() = std::mem::transmute(func_ptr);
-                    jit_fn();
+                    // Pass null environment pointer as required by Haxe calling convention
+                    let jit_fn: extern "C" fn(i64) = std::mem::transmute(func_ptr);
+                    jit_fn(0); // null environment pointer
                 }
                 Ok(InterpValue::Void)
             } else {
@@ -771,8 +776,8 @@ impl TieredBackend {
                     );
                 }
 
-                // Compile with Cranelift
-                let result = Self::compile_with_cranelift_static(*func_id, module_ref, function, *target_tier);
+                // Compile with Cranelift - pass runtime symbols for extern function linking
+                let result = Self::compile_with_cranelift_static(*func_id, module_ref, function, *target_tier, runtime_symbols);
                 (*func_id, *target_tier, result)
             })
             .collect();
@@ -843,8 +848,18 @@ impl TieredBackend {
         module: &IrModule,
         function: &IrFunction,
         target_tier: OptimizationTier,
+        runtime_symbols: &Arc<Vec<(String, usize)>>,
     ) -> Result<usize, String> {
-        let mut backend = CraneliftBackend::with_optimization_level(target_tier.cranelift_opt_level())?;
+        // Convert runtime symbols to format expected by Cranelift
+        let symbols: Vec<(&str, *const u8)> = runtime_symbols
+            .iter()
+            .map(|(name, ptr)| (name.as_str(), *ptr as *const u8))
+            .collect();
+
+        let mut backend = CraneliftBackend::with_symbols_and_opt(
+            target_tier.cranelift_opt_level(),
+            &symbols,
+        )?;
         backend.compile_single_function(func_id, module, function)?;
         let ptr = backend.get_function_ptr(func_id)?;
         Ok(ptr as usize)

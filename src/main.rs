@@ -380,12 +380,14 @@ fn run_file(file: PathBuf, verbose: bool, stats: bool, _tier: u8, llvm: bool, ca
         optimization_check_interval_ms: 50,
         max_parallel_optimizations: 2,
         profile_config: ProfileConfig {
+            interpreter_threshold: 10,
             warm_threshold: 100,
             hot_threshold: 1000,
             blazing_threshold: 5000,
             sample_rate: 1,
         },
         verbosity: if verbose { 2 } else { 0 },
+        start_interpreted: false, // Start with JIT, not interpreter
     };
 
     let mut backend = TieredBackend::new(config)?;
@@ -707,12 +709,14 @@ fn compile_file(
         optimization_check_interval_ms: 0,
         max_parallel_optimizations: 0,
         profile_config: ProfileConfig {
+            interpreter_threshold: 10,
             warm_threshold: 100,
             hot_threshold: 1000,
             blazing_threshold: 5000,
             sample_rate: 1,
         },
         verbosity: 0,
+        start_interpreted: false, // Start with JIT, not interpreter
     };
 
     let mut backend = TieredBackend::new(config)?;

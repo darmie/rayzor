@@ -127,6 +127,8 @@ impl Default for CompilationConfig {
                 "StdTypes.hx".to_string(), // Contains Iterator typedef
                 "String.hx".to_string(),
                 "Array.hx".to_string(),
+                "Math.hx".to_string(),     // Top-level Math functions (sqrt, sin, cos, etc.)
+                "Std.hx".to_string(),      // Top-level conversion utilities
                 // Concurrent types
                 "rayzor/concurrent/Thread.hx".to_string(),
                 "rayzor/concurrent/Channel.hx".to_string(),
@@ -412,9 +414,15 @@ impl CompilationUnit {
             self.register_builtin_globals();
         }
 
-        // DON'T load stdlib files upfront - rely entirely on on-demand loading
-        // Files will be loaded via load_import_file() when imports or qualified names are encountered
-        debug!("Stdlib configured for pure on-demand loading (no files loaded at startup)");
+        // Load default stdlib imports (Math, Std, Array, String, etc.)
+        // These are core types that are always needed, even with lazy_stdlib
+        let default_files = loader.load_default_imports();
+        for file in default_files {
+            debug!("Loading default import: {}", file.filename);
+            // Add the file to the stdlib files for processing during lowering
+            self.stdlib_files.push(file);
+        }
+        debug!("Loaded {} default stdlib imports", self.stdlib_files.len());
 
         Ok(())
     }
