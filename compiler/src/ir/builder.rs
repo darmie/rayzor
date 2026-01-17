@@ -378,13 +378,34 @@ impl IrBuilder {
         Some(dest)
     }
     
-    /// Build an alloc instruction
+    /// Build an alloc instruction (stack allocation)
     pub fn build_alloc(&mut self, ty: IrType, count: Option<IrId>) -> Option<IrId> {
         let dest = self.alloc_reg()?;
         self.add_instruction(IrInstruction::Alloc { dest, ty, count })?;
         Some(dest)
     }
-    
+
+    /// Get a function by name from the module
+    pub fn get_function_by_name(&self, name: &str) -> Option<IrFunctionId> {
+        self.module.functions.iter()
+            .find(|(_, f)| f.name == name)
+            .map(|(id, _)| *id)
+    }
+
+    /// Build a heap allocation by calling malloc
+    /// This is used for class instances that may escape the current function
+    pub fn build_heap_alloc(&mut self, size: u64) -> Option<IrId> {
+        // Get malloc function ID
+        let malloc_id = self.get_function_by_name("malloc")?;
+
+        // Create size constant
+        let size_reg = self.build_const(IrValue::U64(size))?;
+
+        // Call malloc
+        let ptr_u8_ty = IrType::Ptr(Box::new(IrType::U8));
+        self.build_call_direct(malloc_id, vec![size_reg], ptr_u8_ty)
+    }
+
     /// Build a GEP (get element pointer) instruction
     pub fn build_gep(
         &mut self,

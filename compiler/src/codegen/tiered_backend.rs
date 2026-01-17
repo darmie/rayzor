@@ -446,7 +446,8 @@ impl TieredBackend {
 
         self.profile_data.record_function_call(func_id);
 
-        // Check if function should be promoted to next tier
+        // Check if function should be promoted to a higher tier
+        // Use count-based promotion that allows skipping tiers if count exceeds multiple thresholds
         let should_promote = {
             let tiers = self.function_tiers.read().unwrap();
             let current_tier = tiers
@@ -454,24 +455,27 @@ impl TieredBackend {
                 .copied()
                 .unwrap_or(OptimizationTier::Interpreted);
 
-            match current_tier {
-                // Phase 0 -> Phase 1: Interpreted -> Baseline (JIT compile)
-                OptimizationTier::Interpreted if self.profile_data.should_jit_compile(func_id) => {
-                    Some(OptimizationTier::Baseline)
-                }
-                // Phase 1 -> Phase 2: Baseline -> Standard
-                OptimizationTier::Baseline if self.profile_data.is_warm(func_id) => {
-                    Some(OptimizationTier::Standard)
-                }
-                // Phase 2 -> Phase 3: Standard -> Optimized
-                OptimizationTier::Standard if self.profile_data.is_hot(func_id) => {
-                    Some(OptimizationTier::Optimized)
-                }
-                // Phase 3 -> Phase 4: Optimized -> Maximum (LLVM)
-                OptimizationTier::Optimized if self.profile_data.is_blazing(func_id) => {
-                    Some(OptimizationTier::Maximum)
-                }
-                _ => None,
+            let count = self.profile_data.get_function_count(func_id);
+            let config = self.profile_data.config();
+
+            // Determine target tier based on count (allows skipping tiers)
+            let target_tier = if count >= config.blazing_threshold {
+                OptimizationTier::Maximum
+            } else if count >= config.hot_threshold {
+                OptimizationTier::Optimized
+            } else if count >= config.warm_threshold {
+                OptimizationTier::Standard
+            } else if count >= config.interpreter_threshold {
+                OptimizationTier::Baseline
+            } else {
+                OptimizationTier::Interpreted
+            };
+
+            // Only promote if target tier is higher than current tier
+            if target_tier as u8 > current_tier as u8 {
+                Some(target_tier)
+            } else {
+                None
             }
         };
 

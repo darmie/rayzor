@@ -192,7 +192,7 @@ impl<'a> HirToMirContext<'a> {
         hir_types: &'a indexmap::IndexMap<TypeId, HirTypeDecl>,
         symbol_table: &'a SymbolTable,
     ) -> Self {
-        Self {
+        let mut ctx = Self {
             builder: IrBuilder::new(module_name.clone(), source_file),
             symbol_map: HashMap::new(),
             function_map: HashMap::new(),
@@ -221,7 +221,50 @@ impl<'a> HirToMirContext<'a> {
             monomorphized_var_types: HashMap::new(),
             enums_for_registration: HashMap::new(),
             next_wrapper_id: 0,
-        }
+        };
+
+        // Pre-declare malloc so it's available for heap allocations during lowering
+        ctx.declare_malloc();
+
+        ctx
+    }
+
+    /// Declare malloc function so we can call it during lowering for heap allocations
+    fn declare_malloc(&mut self) {
+        use super::{IrFunctionSignature, IrParameter, CallingConvention, IrId, IrType};
+        use super::modules::IrExternFunction;
+        use crate::tast::SymbolId;
+
+        // Create malloc signature: fn malloc(size: u64) -> *u8
+        let signature = IrFunctionSignature {
+            parameters: vec![IrParameter {
+                name: "size".to_string(),
+                ty: IrType::U64,
+                reg: IrId::new(0),
+                by_ref: false,
+            }],
+            return_type: IrType::Ptr(Box::new(IrType::U8)),
+            calling_convention: CallingConvention::C,
+            can_throw: false,
+            type_params: vec![],
+            uses_sret: false,
+        };
+
+        // Allocate a function ID
+        let func_id = self.builder.module.alloc_function_id();
+
+        // Create extern function declaration (NOT a regular function!)
+        // This is critical - extern functions go in extern_functions map
+        // so Cranelift backend will link them to runtime symbols
+        let extern_func = IrExternFunction {
+            id: func_id,
+            name: "malloc".to_string(),
+            symbol_id: SymbolId::from_raw(u32::MAX - 1), // Dummy symbol ID for extern
+            signature,
+            source: "libc".to_string(),
+        };
+
+        self.builder.module.extern_functions.insert(func_id, extern_func);
     }
 
     /// Look up a function ID by symbol, checking both local and external function maps
@@ -229,6 +272,26 @@ impl<'a> HirToMirContext<'a> {
         self.function_map.get(symbol)
             .copied()
             .or_else(|| self.external_function_map.get(symbol).copied())
+    }
+
+    /// Build a heap allocation (via malloc) for class instances
+    /// This is used for class instances that may escape the current function
+    fn build_heap_alloc(&mut self, size: u64) -> Option<IrId> {
+        // Look up malloc in extern_functions (where declare_malloc adds it)
+        let malloc_id = self.builder.module.extern_functions.iter()
+            .find(|(_, f)| f.name == "malloc")
+            .map(|(id, _)| *id)
+            .or_else(|| {
+                // Fallback: check external_function_name_map
+                self.external_function_name_map.get("malloc").copied()
+            })?;
+
+        // Create size constant
+        let size_reg = self.builder.build_const(IrValue::U64(size))?;
+
+        // Call malloc - returns Ptr(U8)
+        let ptr_u8_ty = IrType::Ptr(Box::new(IrType::U8));
+        self.builder.build_call_direct(malloc_id, vec![size_reg], ptr_u8_ty)
     }
 
     /// Register a constructor by qualified name for cross-file resolution
@@ -2316,6 +2379,7 @@ impl<'a> HirToMirContext<'a> {
                     let in_local = self.function_map.contains_key(field);
                     let in_external = self.external_function_map.contains_key(field);
                     debug!("[Method call] method={:?}, field={:?}, in_local={}, in_external={}", method_name, field, in_local, in_external);
+
                     if let Some(func_id) = self.get_function_id(field) {
                         // debug!("Found method in function_map - func_id={:?}", func_id);
 
@@ -3348,6 +3412,7 @@ impl<'a> HirToMirContext<'a> {
                         if !receiver_is_class_type {
                         // Calculate param_count for overload disambiguation: args[0] is receiver, rest are params
                         let method_param_count = if args.len() > 1 { args.len() - 1 } else { 0 };
+
                         if let Some((class_name, method_name, runtime_call)) =
                             self.get_stdlib_runtime_info(*symbol, receiver_type, Some(method_param_count))
                         {
@@ -3787,16 +3852,34 @@ impl<'a> HirToMirContext<'a> {
                             return call_result;
                         }
 
+                        // GUARD: Check if receiver is a user-defined class (not stdlib)
+                        // If so, skip all stdlib fallbacks - they would incorrectly match stdlib methods
+                        let receiver_is_user_class = {
+                            let type_table = self.type_table.borrow();
+                            type_table.get(receiver_type)
+                                .map(|ti| {
+                                    if let crate::tast::core::TypeKind::Class { symbol_id, .. } = &ti.kind {
+                                        // Check if this is a stdlib class
+                                        self.symbol_table.get_symbol(*symbol_id)
+                                            .and_then(|s| self.string_interner.get(s.name))
+                                            .map(|name| !self.stdlib_mapping.is_stdlib_class(name))
+                                            .unwrap_or(false)
+                                    } else {
+                                        false
+                                    }
+                                })
+                                .unwrap_or(false)
+                        };
+
+                        // Skip stdlib fallbacks for user-defined classes
+                        if receiver_is_user_class {
+                            // For user-defined classes, the method should be in function_map
+                            // Don't try to match stdlib methods
+                        } else {
                         // Fallback: Use stdlib mapping to try all possible class/method combinations
                         // This is necessary when qualified names aren't set properly
                         if let Some(method_sym) = self.symbol_table.get_symbol(*symbol) {
                             if let Some(method_name) = self.string_interner.get(method_sym.name) {
-                                // debug!("Trying stdlib mapping for method '{}', symbol={:?}, kind={:?}, qualified_name={:?}",
-                                //          method_name,
-                                //          symbol,
-                                //          method_sym.kind,
-                                //          method_sym.qualified_name.and_then(|qn| self.string_interner.get(qn)));
-
                                 // First try to use the qualified name if available
                                 if let Some(qual_name) = method_sym
                                     .qualified_name
@@ -4199,6 +4282,7 @@ impl<'a> HirToMirContext<'a> {
                                 }
                             }
                         }
+                    } // end of else block for receiver_is_user_class
                     } else {
                         // receiver_is_class_type == true
                         // This is an instance method call on a MIR wrapper class (Thread, Channel, etc.)
@@ -5073,9 +5157,17 @@ impl<'a> HirToMirContext<'a> {
                 }
 
                 // CLASS TYPE CONSTRUCTOR:
-                // Allocate object
-                let class_mir_type = self.convert_type(*class_type);
-                let obj_ptr = self.builder.build_alloc(class_mir_type.clone(), None)?;
+                // Allocate object on HEAP (not stack) since objects may escape the current function
+                // When a method returns `new Foo()`, the object must outlive the callee's stack frame
+                let _class_mir_type = self.convert_type(*class_type);
+
+                // Use a reasonable default object size (64 bytes = 8 fields of 8 bytes each)
+                // This covers most small-to-medium Haxe classes
+                // TODO: Calculate actual size from class field layout
+                let obj_size: u64 = 64;
+
+                // Use heap allocation (malloc) for class instances
+                let obj_ptr = self.build_heap_alloc(obj_size)?;
 
                 // TEMPORARY WORKAROUND: Zero-initialize all fields
                 // TODO: Remove this once constructor field initialization is fixed

@@ -461,6 +461,7 @@ impl CraneliftBackend {
 
         // Map MIR function IDs for malloc/realloc/free to their libc Cranelift IDs
         // This ensures that when MIR code calls these functions, they resolve to the libc versions
+        // Check both functions and extern_functions since malloc may be in either location
         for (func_id, function) in &mir_module.functions {
             if function.name == "malloc" {
                 let libc_id = *self.runtime_functions.get("malloc").unwrap();
@@ -480,6 +481,33 @@ impl CraneliftBackend {
                 let libc_id = *self.runtime_functions.get("free").unwrap();
                 debug!(
             ": Mapping MIR free {:?} -> Cranelift {:?}",
+                    func_id, libc_id
+                );
+                self.function_map.insert(*func_id, libc_id);
+            }
+        }
+
+        // Also check extern_functions for malloc/realloc/free since heap allocation
+        // now declares malloc as an extern function for proper linking
+        for (func_id, extern_func) in &mir_module.extern_functions {
+            if extern_func.name == "malloc" {
+                let libc_id = *self.runtime_functions.get("malloc").unwrap();
+                debug!(
+            ": Mapping MIR extern malloc {:?} -> Cranelift {:?}",
+                    func_id, libc_id
+                );
+                self.function_map.insert(*func_id, libc_id);
+            } else if extern_func.name == "realloc" {
+                let libc_id = *self.runtime_functions.get("realloc").unwrap();
+                debug!(
+            ": Mapping MIR extern realloc {:?} -> Cranelift {:?}",
+                    func_id, libc_id
+                );
+                self.function_map.insert(*func_id, libc_id);
+            } else if extern_func.name == "free" {
+                let libc_id = *self.runtime_functions.get("free").unwrap();
+                debug!(
+            ": Mapping MIR extern free {:?} -> Cranelift {:?}",
                     func_id, libc_id
                 );
                 self.function_map.insert(*func_id, libc_id);
