@@ -28,6 +28,8 @@ pub mod blade;  // BLADE format - Blazing Language Artifact Deployment Environme
 pub mod mir_builder;  // Programmatic MIR construction API
 pub mod environment_layout;  // Closure environment layout abstraction
 pub mod monomorphize;  // Monomorphization pass for generics
+pub mod loop_analysis;  // Loop analysis: dominators, natural loops, nesting
+pub mod inlining;       // Function inlining and call graph analysis
 
 pub use types::*;
 pub use instructions::*;
@@ -37,6 +39,7 @@ pub use modules::*;
 pub use builder::*;
 pub use environment_layout::{EnvironmentLayout, EnvironmentField};
 pub use monomorphize::{Monomorphizer, MonoKey, MonomorphizationStats};
+pub use loop_analysis::{DominatorTree, NaturalLoop, LoopNestInfo, TripCount};
 
 use std::fmt;
 use serde::{Serialize, Deserialize};

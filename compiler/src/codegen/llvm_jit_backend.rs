@@ -999,7 +999,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 self.value_map.insert(*dest, result);
             }
 
-            IrInstruction::CallDirect { dest, func_id, args, arg_ownership: _, type_args: _ } => {
+            IrInstruction::CallDirect { dest, func_id, args, arg_ownership: _, type_args: _, is_tail_call: _ } => {
                 // Note: type_args are handled by monomorphization pass before codegen
                 let result = self.compile_direct_call(*func_id, args)?;
                 if let Some(dest) = dest {
@@ -1109,7 +1109,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 self.value_map.insert(*dest, result);
             }
 
-            IrInstruction::CallIndirect { dest, func_ptr, args, signature, arg_ownership: _ } => {
+            IrInstruction::CallIndirect { dest, func_ptr, args, signature, arg_ownership: _, is_tail_call: _ } => {
                 let func_ptr_val = self.get_value(*func_ptr)?.into_pointer_value();
 
                 // Get argument values

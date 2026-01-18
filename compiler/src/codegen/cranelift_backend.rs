@@ -1531,6 +1531,7 @@ impl CraneliftBackend {
                 args,
                 arg_ownership: _,
                 type_args: _, // Handled by monomorphization pass before codegen
+                is_tail_call: _,
             } => {
                 // TODO: Use arg_ownership to generate proper move/borrow/clone code
                 // Check if this is an extern function call
@@ -1961,6 +1962,7 @@ impl CraneliftBackend {
                 args,
                 signature,
                 arg_ownership: _,
+                is_tail_call: _,
             } => {
                 // Indirect function call (virtual call or closure call)
                 // In our unified representation, func_ptr is ALWAYS a pointer to a Closure struct

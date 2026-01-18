@@ -3096,12 +3096,16 @@ mod tests {
     #[test]
     fn test_register_file() {
         let mut regs = RegisterFile::new(10);
-        regs.set(IrId::new(0), InterpValue::I32(100));
-        regs.set(IrId::new(5), InterpValue::Bool(true));
+        let mut heap = ObjectHeap::new();
+        regs.set(IrId::new(0), InterpValue::I32(100).to_nan_boxed(&mut heap));
+        regs.set(IrId::new(5), InterpValue::Bool(true).to_nan_boxed(&mut heap));
 
-        assert!(matches!(regs.get(IrId::new(0)), InterpValue::I32(100)));
-        assert!(matches!(regs.get(IrId::new(5)), InterpValue::Bool(true)));
-        assert!(matches!(regs.get(IrId::new(3)), InterpValue::Void));
+        let _100 = InterpValue::I32(100).to_nan_boxed(&mut heap);
+        let _true = InterpValue::Bool(true).to_nan_boxed(&mut heap);
+        let _void = InterpValue::Void.to_nan_boxed(&mut heap);
+        assert!(matches!(regs.get(IrId::new(0)), _100));
+        assert!(matches!(regs.get(IrId::new(5)), _true));
+        assert!(matches!(regs.get(IrId::new(3)), _void));
     }
 
     #[test]

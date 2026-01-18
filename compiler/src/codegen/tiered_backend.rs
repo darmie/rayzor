@@ -107,6 +107,18 @@ impl OptimizationTier {
         }
     }
 
+    /// Get MIR optimization level for this tier
+    pub fn mir_opt_level(&self) -> crate::ir::optimization::OptimizationLevel {
+        use crate::ir::optimization::OptimizationLevel;
+        match self {
+            OptimizationTier::Interpreted => OptimizationLevel::O0, // No MIR opts for interpreter
+            OptimizationTier::Baseline => OptimizationLevel::O0,    // Fast compilation
+            OptimizationTier::Standard => OptimizationLevel::O1,    // Basic optimizations
+            OptimizationTier::Optimized => OptimizationLevel::O2,   // Standard optimizations
+            OptimizationTier::Maximum => OptimizationLevel::O3,     // Aggressive optimizations
+        }
+    }
+
     /// Check if this tier uses the interpreter
     pub fn uses_interpreter(&self) -> bool {
         matches!(self, OptimizationTier::Interpreted)
@@ -585,15 +597,50 @@ impl TieredBackend {
         function: &IrFunction,
         target_tier: OptimizationTier,
     ) -> Result<usize, String> {
+        use crate::ir::optimization::PassManager;
+
+        // Apply MIR-level optimizations for higher tiers
+        let mir_opt_level = target_tier.mir_opt_level();
+        let optimized_function;
+        let function_to_compile = if mir_opt_level != crate::ir::optimization::OptimizationLevel::O0 {
+            // Clone the function and apply MIR optimizations
+            optimized_function = Self::apply_mir_optimizations(function.clone(), mir_opt_level);
+            &optimized_function
+        } else {
+            function
+        };
+
         // Create a new Cranelift backend with the target optimization level
         let mut backend = CraneliftBackend::with_optimization_level(target_tier.cranelift_opt_level())?;
 
         // Compile the function at the new optimization level
-        backend.compile_single_function(func_id, module, function)?;
+        backend.compile_single_function(func_id, module, function_to_compile)?;
 
         // Get the optimized function pointer
         let ptr = backend.get_function_ptr(func_id)?;
         Ok(ptr as usize)
+    }
+
+    /// Apply MIR-level optimizations to a function
+    fn apply_mir_optimizations(
+        function: IrFunction,
+        level: crate::ir::optimization::OptimizationLevel,
+    ) -> IrFunction {
+        use crate::ir::optimization::PassManager;
+
+        // Create a temporary module containing just this function
+        let mut temp_module = IrModule::new("temp_opt".to_string(), "temp".to_string());
+
+        // Use a temporary function ID
+        let temp_id = IrFunctionId(0);
+        temp_module.functions.insert(temp_id, function);
+
+        // Run optimization passes
+        let mut pass_manager = PassManager::for_level(level);
+        let _ = pass_manager.run(&mut temp_module);
+
+        // Extract the optimized function
+        temp_module.functions.remove(&temp_id).unwrap()
     }
 
     /// Compile function with LLVM backend (Tier 3)

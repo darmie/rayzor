@@ -283,7 +283,7 @@ impl BytecodeWriter {
                 self.write_ir_id(*dest)?;
                 self.write_ir_id(*src)?;
             }
-            IrInstruction::CallDirect { dest, func_id, args, arg_ownership: _, type_args } => {
+            IrInstruction::CallDirect { dest, func_id, args, arg_ownership: _, type_args, is_tail_call } => {
                 self.write_ir_id(*dest)?;
                 self.write_function_id(*func_id)?;
                 self.write_u32(args.len() as u32)?;
@@ -295,6 +295,8 @@ impl BytecodeWriter {
                 for ty in type_args {
                     self.write_type(ty)?;
                 }
+                // Write tail call flag
+                self.write_u8(if *is_tail_call { 1 } else { 0 })?;
             }
             IrInstruction::Cmp { dest, op, left, right } => {
                 self.write_ir_id(*dest)?;

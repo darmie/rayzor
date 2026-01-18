@@ -551,7 +551,7 @@ fn validate_instruction(ctx: &mut ValidationContext, inst: &IrInstruction) {
             }
         }
         
-        CallDirect { dest, func_id, args, arg_ownership: _, type_args: _ } => {
+        CallDirect { dest, func_id, args, arg_ownership: _, type_args: _, is_tail_call: _ } => {
             // For direct calls, we'd need to look up the function signature from the module
             // For now, just validate that arguments are valid registers
             // TODO: Validate ownership modes match function signature
@@ -566,7 +566,7 @@ fn validate_instruction(ctx: &mut ValidationContext, inst: &IrInstruction) {
             }
         }
 
-        CallIndirect { dest, func_ptr, args, signature, arg_ownership: _, } => {
+        CallIndirect { dest, func_ptr, args, signature, arg_ownership: _, is_tail_call: _ } => {
             // Validate function pointer
             ctx.use_register(*func_ptr);
 
@@ -885,8 +885,8 @@ impl<'a> MirSafetyValidator<'a> {
             }
 
             // Function calls: check all arguments
-            CallDirect { dest: _, func_id: _, args, arg_ownership: _, type_args: _ } |
-            CallIndirect { dest: _, func_ptr: _, args, signature: _, arg_ownership: _ } => {
+            CallDirect { dest: _, func_id: _, args, arg_ownership: _, type_args: _, is_tail_call: _ } |
+            CallIndirect { dest: _, func_ptr: _, args, signature: _, arg_ownership: _, is_tail_call: _ } => {
                 for arg in args {
                     if let Some(&symbol_id) = self.register_to_symbol.get(arg) {
                         self.check_not_moved(symbol_id, *arg);

@@ -263,7 +263,7 @@ impl IrBuilder {
 
         // Default to Move ownership for all arguments (will be refined by HIR lowering)
         let arg_ownership = args.iter().map(|_| crate::ir::instructions::OwnershipMode::Move).collect();
-        self.add_instruction(IrInstruction::CallDirect { dest, func_id, args, arg_ownership, type_args: Vec::new() })?;
+        self.add_instruction(IrInstruction::CallDirect { dest, func_id, args, arg_ownership, type_args: Vec::new(), is_tail_call: false })?;
 
         // Register the return type for the result register
         if let Some(dest_reg) = dest {
@@ -332,7 +332,7 @@ impl IrBuilder {
         };
 
         let arg_ownership = args.iter().map(|_| crate::ir::instructions::OwnershipMode::Move).collect();
-        self.add_instruction(IrInstruction::CallDirect { dest, func_id, args, arg_ownership, type_args })?;
+        self.add_instruction(IrInstruction::CallDirect { dest, func_id, args, arg_ownership, type_args, is_tail_call: false })?;
 
         if let Some(dest_reg) = dest {
             self.set_register_type(dest_reg, actual_return_type.clone());
@@ -365,7 +365,7 @@ impl IrBuilder {
         let dest = self.alloc_reg()?;
         // Default to Move ownership for all arguments
         let arg_ownership = args.iter().map(|_| crate::ir::instructions::OwnershipMode::Move).collect();
-        self.add_instruction(IrInstruction::CallIndirect { dest: Some(dest), func_ptr, args, signature, arg_ownership })?;
+        self.add_instruction(IrInstruction::CallIndirect { dest: Some(dest), func_ptr, args, signature, arg_ownership, is_tail_call: false })?;
         Some(dest)
     }
     

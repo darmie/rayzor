@@ -1797,26 +1797,24 @@ impl HaxeCompilationPipeline {
     
     /// Optimize MIR modules
     fn optimize_mir(&mut self, mut mir_module: IrModule) -> IrModule {
-        let mut pass_manager = if self.config.optimization_level == 0 {
-            // Debug mode: minimal optimizations
-            let mut manager = PassManager::new();
-            manager.add_pass(crate::ir::optimization::DeadCodeEliminationPass::new());
-            manager
-        } else if self.config.optimization_level == 1 {
-            // Basic optimizations
-            PassManager::default_pipeline()
-        } else {
-            // Aggressive optimizations
-            let mut manager = PassManager::default_pipeline();
-            // Add additional passes for aggressive optimization
-            manager.add_pass(crate::ir::optimization::ConstantFoldingPass::new());
-            manager.add_pass(crate::ir::optimization::CopyPropagationPass::new());
-            manager
+        use crate::ir::optimization::OptimizationLevel;
+
+        // Map config optimization level to OptimizationLevel enum
+        let opt_level = match self.config.optimization_level {
+            0 => OptimizationLevel::O0,  // Debug mode: no optimization
+            1 => OptimizationLevel::O1,  // Basic: DCE, const fold, copy prop
+            2 => OptimizationLevel::O2,  // Standard: + CSE, LICM, CFG simplify
+            _ => OptimizationLevel::O3,  // Aggressive: + GVN, inlining, tail call opt
         };
-        
-        let _result = pass_manager.run(&mut mir_module);
-        // Could log optimization statistics here if needed
-        
+
+        let mut pass_manager = PassManager::for_level(opt_level);
+        let result = pass_manager.run(&mut mir_module);
+
+        // Log optimization statistics
+        if result.modified {
+            tracing::debug!("MIR optimization modified module: {:?}", result.stats);
+        }
+
         mir_module
     }
     

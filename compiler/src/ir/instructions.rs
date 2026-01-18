@@ -151,6 +151,9 @@ pub enum IrInstruction {
         arg_ownership: Vec<OwnershipMode>,
         /// Type arguments for generic function instantiation (empty if non-generic)
         type_args: Vec<IrType>,
+        /// Whether this is a tail call (can reuse caller's stack frame)
+        #[serde(default)]
+        is_tail_call: bool,
     },
 
     /// Indirect function call (callee computed at runtime)
@@ -161,6 +164,9 @@ pub enum IrInstruction {
         signature: IrType,
         /// Ownership mode for each argument
         arg_ownership: Vec<OwnershipMode>,
+        /// Whether this is a tail call (can reuse caller's stack frame)
+        #[serde(default)]
+        is_tail_call: bool,
     },
     
     /// Return from function
