@@ -401,8 +401,10 @@ impl<'a> HirToMirContext<'a> {
             let result = match &type_info.kind {
                 // Class instances are heap-allocated
                 TypeKind::Class { .. } => true,
-                // Arrays might be heap-allocated
-                TypeKind::Array { .. } => true,
+                // Arrays: The HaxeArray struct is stack-allocated, with internal buffer
+                // managed by the runtime (haxe_array_push_i64 etc). The runtime handles
+                // its own memory, so we don't emit Free for arrays.
+                TypeKind::Array { .. } => false,
                 // Dynamic values contain boxed/heap-allocated content
                 // Method calls with unresolved return types often fall back to Dynamic
                 TypeKind::Dynamic => true,
@@ -1602,7 +1604,20 @@ impl<'a> HirToMirContext<'a> {
                     };
 
                     // Check if this is a heap allocation (from `new` expression)
-                    let is_heap_alloc = matches!(&init_expr.kind, HirExprKind::New { .. });
+                    // Arrays are stack-allocated (the struct), with internal buffer managed by runtime,
+                    // so they should NOT be tracked for Free
+                    let is_heap_alloc = if matches!(&init_expr.kind, HirExprKind::New { .. }) {
+                        let type_table = self.type_table.borrow();
+                        let is_array = if let Some(type_ref) = type_table.get(init_expr.ty) {
+                            matches!(type_ref.kind, crate::tast::TypeKind::Array { .. })
+                        } else {
+                            false
+                        };
+                        drop(type_table);
+                        !is_array // is_heap_alloc = true only if NOT an array
+                    } else {
+                        false
+                    };
 
                     let value = self.lower_expression(init_expr);
 
@@ -1653,9 +1668,18 @@ impl<'a> HirToMirContext<'a> {
                 // The result itself (if heap-allocated) is NOT a temporary if it's
                 // being used as a return value, but for bare expression statements
                 // like method calls for side effects, we should free the result too
+                //
+                // IMPORTANT: Don't track method call results for drop because:
+                // 1. Void-returning methods may incorrectly return the receiver
+                // 2. The receiver is typically owned by a variable, not the call expression
+                // 3. Dynamic-typed method calls on arrays/strings return stack pointers
+                //
+                // Only track results from `new` expressions which are known heap allocations
                 if let Some(result_id) = result {
-                    // If the expression result is heap-allocated, it's a temp too
-                    if self.type_needs_drop(expr.ty) {
+                    // Only track temps from `new` expressions (explicit heap allocations)
+                    // Method calls return borrowed references or void, not owned values
+                    let is_new_expr = matches!(&expr.kind, HirExprKind::New { .. });
+                    if is_new_expr && self.type_needs_drop(expr.ty) {
                         self.temp_heap_values.push(result_id);
                     }
                 }
@@ -2615,14 +2639,17 @@ impl<'a> HirToMirContext<'a> {
                 let obj_reg = self.lower_expression(object)?;
                 debug!("[Field expression] Object lowered to reg={}, now calling lower_field_access", obj_reg);
 
-                // Track object as temp if it's a heap-allocated intermediate value
-                // This handles cases like z.mul(z).add(c) where z.mul(z) is a temp
-                let is_intermediate_heap_value = matches!(
+                // Track object as temp if it's an OWNED heap-allocated value (only `new` expressions)
+                // NOTE: We do NOT track Call results here because method calls return:
+                // - Borrowed references (no ownership transfer)
+                // - Temporary boxed values (allocated by Rust's Box, not malloc)
+                // Freeing these would crash (Rust Box vs C malloc allocator mismatch)
+                let is_owned_heap_value = matches!(
                     &object.kind,
-                    HirExprKind::Call { .. } | HirExprKind::New { .. }
+                    HirExprKind::New { .. }
                 ) && self.type_needs_drop(object.ty);
 
-                if is_intermediate_heap_value {
+                if is_owned_heap_value {
                     self.temp_heap_values.push(obj_reg);
                     trace!("Drop: Registered intermediate {:?} as temp", obj_reg);
                 }
@@ -2668,8 +2695,6 @@ impl<'a> HirToMirContext<'a> {
                     let method_name = self.symbol_table.get_symbol(*field).and_then(|s| self.string_interner.get(s.name));
                     let in_local = self.function_map.contains_key(field);
                     let in_external = self.external_function_map.contains_key(field);
-                    eprintln!("[DEBUG METHOD CALL] method={:?}, field={:?}, in_local={}, in_external={}, object.kind={:?}",
-                        method_name, field, in_local, in_external, std::mem::discriminant(&object.kind));
                     debug!("[Method call] method={:?}, field={:?}, in_local={}, in_external={}", method_name, field, in_local, in_external);
 
                     if let Some(func_id) = self.get_function_id(field) {
@@ -3505,24 +3530,37 @@ impl<'a> HirToMirContext<'a> {
                                                 // Direct extern call
                                                 let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
 
-                                                // Lower all arguments
-                                                let arg_regs: Vec<_> = args
-                                                    .iter()
-                                                    .filter_map(|a| self.lower_expression(a))
-                                                    .collect();
+                                                // Extract runtime_call data before borrowing self mutably
+                                                let has_return = runtime_call.has_return;
+
+                                                // Lower all arguments using a for loop (not a closure)
+                                                // to avoid borrow conflict with stdlib_mapping
+                                                let mut arg_regs = Vec::new();
+                                                for arg in args {
+                                                    if let Some(reg) = self.lower_expression(arg) {
+                                                        arg_regs.push(reg);
+                                                    }
+                                                }
 
                                                 // Build param types
                                                 let param_types: Vec<_> = arg_regs.iter()
                                                     .map(|_| ptr_u8.clone())
                                                     .collect();
 
+                                                // Determine return type: Void if function doesn't return, otherwise ptr
+                                                let return_type = if has_return {
+                                                    ptr_u8.clone()
+                                                } else {
+                                                    IrType::Void
+                                                };
+
                                                 let extern_func_id = self.get_or_register_extern_function(
                                                     runtime_func,
                                                     param_types,
-                                                    ptr_u8.clone(),
+                                                    return_type.clone(),
                                                 );
 
-                                                return self.builder.build_call_direct(extern_func_id, arg_regs, ptr_u8);
+                                                return self.builder.build_call_direct(extern_func_id, arg_regs, return_type);
                                             }
                                         }
                                         // If no mapping found, fall through to regular dispatch
@@ -4940,14 +4978,18 @@ impl<'a> HirToMirContext<'a> {
                             };
                             debug!("[FUNCTION_MAP] Result: {:?}", result);
 
-                            // Register method call result as temp if it returns a heap-allocated value
-                            // This ensures intermediate values like z.mul(z) in z = z.mul(z).add(c) are freed
-                            if let Some(result_reg) = result {
-                                if self.type_needs_drop(expr.ty) {
-                                    self.temp_heap_values.push(result_reg);
-                                    trace!("Drop: Registered method result {:?} as temp", result_reg);
-                                }
-                            }
+                            // NOTE: We do NOT register method call results as temps needing free.
+                            // Method calls return:
+                            // 1. Borrowed references (no ownership transfer)
+                            // 2. Temporary boxed values (allocated by Rust's Box, not malloc)
+                            // 3. Stack-allocated values (strings, primitives)
+                            //
+                            // Calling free() on these would cause crashes because:
+                            // - Rust Box uses a different allocator than C's malloc
+                            // - Borrowed references shouldn't be freed by the caller
+                            //
+                            // For method chains like z.mul(z).add(c), the callee (class method)
+                            // is responsible for managing intermediate allocations, not the caller.
 
                             return result;
                         } else {
@@ -10008,7 +10050,12 @@ impl<'a> HirToMirContext<'a> {
         let element_count = elements.len();
 
         // Allocate HaxeArray struct on stack (4 x i64 = 32 bytes)
-        let array_ptr = self.builder.build_alloc(IrType::I64, None)?;
+        // HaxeArray layout: { ptr: *u8, len: usize, cap: usize, elem_size: usize }
+        // IMPORTANT: We must allocate 4 x 8 = 32 bytes, not just 8 bytes!
+        // Allocating only 8 bytes causes stack corruption when we write to
+        // the len/cap/elem_size fields at offsets 8, 16, 24.
+        let count_4 = self.builder.build_const(IrValue::I32(4))?;
+        let array_ptr = self.builder.build_alloc(IrType::I64, Some(count_4))?;
 
         // Zero-initialize the HaxeArray struct fields
         if let Some(zero_i64) = self.builder.build_const(IrValue::I64(0)) {
