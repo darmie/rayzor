@@ -13,15 +13,15 @@
 </head>
 <body>
     <h1>Rayzor Benchmark Results</h1>
-    <p style="text-align: center">Generated: 2026-01-16</p>
+    <p style="text-align: center">Generated: 2026-01-18</p>
     <div class="summary">
         <h3>Summary</h3>
         <ul>
-            <li><strong>arithmetic</strong>: 4 targets measured</li>
+            <li><strong>mandelbrot_simple</strong>: 4 targets measured</li>
         </ul>
     </div>
 
-    <h2>arithmetic</h2>
+    <h2>mandelbrot_simple</h2>
     <div class="chart-container">
         <canvas id="chart_0"></canvas>
     </div>
@@ -29,16 +29,16 @@
         new Chart(document.getElementById('chart_0'), {
             type: 'bar',
             data: {
-                labels: ['rayzor-cranelift', 'rayzor-interpreter', 'rayzor-tiered', 'rayzor-llvm'],
+                labels: ['rayzor-cranelift', 'rayzor-interpreter', 'rayzor-llvm', 'rayzor-tiered'],
                 datasets: [
                     {
                         label: 'Compile (ms)',
-                        data: [79.26, 66.68, 65.13, 86.88],
+                        data: [91.83, 75.80, 131.00, 81.06],
                         backgroundColor: 'rgba(54, 162, 235, 0.8)'
                     },
                     {
                         label: 'Execute (ms)',
-                        data: [228.48, 2347.47, 299.41, 310.50],
+                        data: [152.72, 11081.63, 360.24, 152.87],
                         backgroundColor: 'rgba(255, 99, 132, 0.8)'
                     }
                 ]
@@ -50,7 +50,7 @@
                     y: { stacked: true, title: { display: true, text: 'Time (ms)' } }
                 },
                 plugins: {
-                    title: { display: true, text: 'arithmetic' }
+                    title: { display: true, text: 'mandelbrot_simple' }
                 }
             }
         });

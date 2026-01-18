@@ -22,6 +22,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 const WARMUP_RUNS: usize = 15;  // Increased to ensure LLVM promotion during warmup
@@ -49,7 +51,7 @@ struct BenchmarkResults {
     results: Vec<BenchmarkResult>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Target {
     RayzorInterpreter,
     RayzorCranelift,
@@ -241,7 +243,7 @@ fn setup_tiered_benchmark(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> R
         enable_background_optimization: true,
         optimization_check_interval_ms: 1,  // Check frequently
         max_parallel_optimizations: 4,
-        verbosity: 0,  // Set to 2 to enable debug output for tier promotions
+        verbosity: 2,  // Enable debug output for tier promotions
         start_interpreted: true,
     };
 
@@ -329,9 +331,20 @@ fn run_benchmark_tiered(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> Res
     Ok((compile_time, exec_time))
 }
 
+/// LLVM benchmark state - persisted across iterations (context must outlive backend)
 #[cfg(feature = "llvm-backend")]
-fn run_benchmark_llvm(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> Result<(Duration, Duration), String> {
-    // Compile
+struct LLVMBenchmarkState<'ctx> {
+    backend: LLVMJitBackend<'ctx>,
+    mir_modules: Vec<std::sync::Arc<compiler::ir::IrModule>>,
+    compile_time: Duration,
+}
+
+#[cfg(feature = "llvm-backend")]
+fn setup_llvm_benchmark<'ctx>(
+    bench: &Benchmark,
+    symbols: &[(&str, *const u8)],
+    context: &'ctx Context,
+) -> Result<LLVMBenchmarkState<'ctx>, String> {
     let compile_start = Instant::now();
 
     // Use fast() for lazy stdlib like interpreter - avoids trace resolution issues
@@ -343,32 +356,48 @@ fn run_benchmark_llvm(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> Resul
 
     let mir_modules = unit.get_mir_modules();
 
-    // Create LLVM context and backend
-    let context = Context::create();
-    let mut backend = LLVMJitBackend::with_symbols(&context, symbols)
+    // Create LLVM backend (context is passed in and must outlive this)
+    let mut backend = LLVMJitBackend::with_symbols(context, symbols)
         .map_err(|e| format!("backend: {}", e))?;
 
+    // Two-pass compilation for cross-module function references:
+    // 1. First declare ALL functions from ALL modules
     for module in &mir_modules {
-        backend.compile_module(module).map_err(|e| format!("compile: {}", e))?;
+        backend.declare_module(module).map_err(|e| format!("declare: {}", e))?;
+    }
+    // 2. Then compile all function bodies
+    for module in &mir_modules {
+        backend.compile_module_bodies(module).map_err(|e| format!("compile: {}", e))?;
     }
 
-    // IMPORTANT: Call finalize() to run LLVM optimization passes BEFORE measuring execution.
+    // IMPORTANT: Call finalize() ONCE to run LLVM optimization passes and create execution engine.
     // finalize() runs the LLVM optimizer (default<O3>) and creates the JIT execution engine.
     // This is the expensive part that should be counted as compile time, not execution time.
     backend.finalize().map_err(|e| format!("finalize: {}", e))?;
 
     let compile_time = compile_start.elapsed();
 
-    // Execute - now just calling the already-optimized and JIT-compiled code
+    Ok(LLVMBenchmarkState { backend, mir_modules, compile_time })
+}
+
+#[cfg(feature = "llvm-backend")]
+fn run_llvm_iteration(state: &mut LLVMBenchmarkState) -> Result<Duration, String> {
     let exec_start = Instant::now();
-    for module in mir_modules.iter().rev() {
-        if backend.call_main(module).is_ok() {
+    for module in state.mir_modules.iter().rev() {
+        if state.backend.call_main(module).is_ok() {
             break;
         }
     }
-    let exec_time = exec_start.elapsed();
+    Ok(exec_start.elapsed())
+}
 
-    Ok((compile_time, exec_time))
+// Legacy function kept for compatibility - redirects to stateful approach
+#[cfg(feature = "llvm-backend")]
+fn run_benchmark_llvm(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> Result<(Duration, Duration), String> {
+    let context = Context::create();
+    let mut state = setup_llvm_benchmark(bench, symbols, &context)?;
+    let exec_time = run_llvm_iteration(&mut state)?;
+    Ok((state.compile_time, exec_time))
 }
 
 fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, String> {
@@ -376,72 +405,81 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
     let mut compile_times = Vec::new();
     let mut exec_times = Vec::new();
 
-    // For tiered, use stateful approach to allow JIT promotion across iterations
-    if matches!(target, Target::RayzorTiered) {
-        // Set up tiered backend ONCE - this is key for JIT promotion
-        let mut state = setup_tiered_benchmark(bench, &symbols)?;
-        let compile_time = state.compile_time;
+    match target {
+        // Tiered: stateful approach for JIT promotion across iterations
+        Target::RayzorTiered => {
+            let mut state = setup_tiered_benchmark(bench, &symbols)?;
+            let compile_time = state.compile_time;
 
-        // Warmup - runs accumulate, triggering JIT promotion
-        print!("  Warming up {} ({})... ", bench.name, target.name());
-        for _ in 0..WARMUP_RUNS {
-            let _ = run_tiered_iteration(&mut state);
-        }
-        // Give background JIT time to compile LLVM (takes longer than Cranelift)
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        println!("done");
+            // Warmup - runs accumulate, triggering JIT promotion
+            for _ in 0..WARMUP_RUNS {
+                let _ = run_tiered_iteration(&mut state);
+            }
+            // Give background JIT time to compile (takes longer than Cranelift)
+            std::thread::sleep(std::time::Duration::from_millis(500));
 
-        // Benchmark runs - should now be running JIT-compiled code
-        print!("  Running {} iterations... ", BENCH_RUNS);
-        for i in 0..BENCH_RUNS {
-            match run_tiered_iteration(&mut state) {
-                Ok(exec) => {
-                    compile_times.push(compile_time); // Same compile time for all
-                    exec_times.push(exec);
-                }
-                Err(e) => {
-                    println!("FAILED at iteration {}: {}", i + 1, e);
-                    return Err(e);
+            // Benchmark runs - should now be running JIT-compiled code
+            for _ in 0..BENCH_RUNS {
+                match run_tiered_iteration(&mut state) {
+                    Ok(exec) => {
+                        compile_times.push(compile_time);
+                        exec_times.push(exec);
+                    }
+                    Err(e) => return Err(e),
                 }
             }
         }
-        println!("done");
-    } else {
-        // Non-tiered: each iteration is independent
-        print!("  Warming up {} ({})... ", bench.name, target.name());
-        for _ in 0..WARMUP_RUNS {
-            let _ = match target {
-                Target::RayzorCranelift => run_benchmark_cranelift(bench, &symbols),
-                Target::RayzorInterpreter => run_benchmark_interpreter(bench, &symbols),
-                Target::RayzorTiered => unreachable!(),
-                #[cfg(feature = "llvm-backend")]
-                Target::RayzorLLVM => run_benchmark_llvm(bench, &symbols),
-            };
-        }
-        println!("done");
 
-        print!("  Running {} iterations... ", BENCH_RUNS);
-        for i in 0..BENCH_RUNS {
-            let result = match target {
-                Target::RayzorCranelift => run_benchmark_cranelift(bench, &symbols),
-                Target::RayzorInterpreter => run_benchmark_interpreter(bench, &symbols),
-                Target::RayzorTiered => unreachable!(),
-                #[cfg(feature = "llvm-backend")]
-                Target::RayzorLLVM => run_benchmark_llvm(bench, &symbols),
-            };
+        // LLVM: stateful approach - finalize() should only be called once
+        #[cfg(feature = "llvm-backend")]
+        Target::RayzorLLVM => {
+            let context = Context::create();
+            let mut state = setup_llvm_benchmark(bench, &symbols, &context)?;
+            let compile_time = state.compile_time;
 
-            match result {
-                Ok((compile, exec)) => {
-                    compile_times.push(compile);
-                    exec_times.push(exec);
-                }
-                Err(e) => {
-                    println!("FAILED at iteration {}: {}", i + 1, e);
-                    return Err(e);
+            // Warmup runs
+            for _ in 0..WARMUP_RUNS {
+                let _ = run_llvm_iteration(&mut state);
+            }
+
+            // Benchmark runs
+            for _ in 0..BENCH_RUNS {
+                match run_llvm_iteration(&mut state) {
+                    Ok(exec) => {
+                        compile_times.push(compile_time);
+                        exec_times.push(exec);
+                    }
+                    Err(e) => return Err(e),
                 }
             }
         }
-        println!("done");
+
+        // Cranelift and Interpreter: each iteration is independent
+        Target::RayzorCranelift | Target::RayzorInterpreter => {
+            for _ in 0..WARMUP_RUNS {
+                let _ = match target {
+                    Target::RayzorCranelift => run_benchmark_cranelift(bench, &symbols),
+                    Target::RayzorInterpreter => run_benchmark_interpreter(bench, &symbols),
+                    _ => unreachable!(),
+                };
+            }
+
+            for _ in 0..BENCH_RUNS {
+                let result = match target {
+                    Target::RayzorCranelift => run_benchmark_cranelift(bench, &symbols),
+                    Target::RayzorInterpreter => run_benchmark_interpreter(bench, &symbols),
+                    _ => unreachable!(),
+                };
+
+                match result {
+                    Ok((compile, exec)) => {
+                        compile_times.push(compile);
+                        exec_times.push(exec);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
     }
 
     // Calculate medians
@@ -679,22 +717,79 @@ fn main() {
             }
         };
 
+        // Run non-LLVM targets in parallel (LLVM has threading issues with add_global_mapping)
+        let (tx, rx) = mpsc::channel::<(Target, Result<BenchmarkResult, String>)>();
+        let mut handles = Vec::new();
+
+        #[cfg(feature = "llvm-backend")]
+        let llvm_target = targets.iter().find(|t| matches!(t, Target::RayzorLLVM)).cloned();
+        #[cfg(not(feature = "llvm-backend"))]
+        let llvm_target: Option<Target> = None;
+
+        for target in targets.clone() {
+            #[cfg(feature = "llvm-backend")]
+            if matches!(target, Target::RayzorLLVM) {
+                continue; // Run LLVM on main thread later
+            }
+
+            let tx = tx.clone();
+            let bench_source = bench.source.clone();
+            let bench_name_clone = bench.name.clone();
+
+            let handle = thread::spawn(move || {
+                let bench = Benchmark {
+                    name: bench_name_clone,
+                    source: bench_source,
+                };
+                let result = run_benchmark(&bench, target);
+                let _ = tx.send((target, result));
+            });
+            handles.push(handle);
+        }
+        drop(tx); // Close sender so receiver knows when all threads are done
+
+        println!("\n  Running {} targets in parallel...\n", targets.len());
+
+        // Collect results from other threads as they complete
         let mut results = Vec::new();
 
-        for target in &targets {
-            println!("\n  Target: {} ({})", target.name(), target.description());
-
-            match run_benchmark(&bench, *target) {
-                Ok(result) => {
-                    println!("  -> Compile: {:.2}ms, Execute: {:.2}ms, Total: {:.2}ms",
-                        result.compile_time_ms, result.runtime_ms, result.total_time_ms);
-                    results.push(result);
+        // Run LLVM on main thread (has threading issues with add_global_mapping)
+        #[cfg(feature = "llvm-backend")]
+        if let Some(llvm) = llvm_target {
+            let result = run_benchmark(&bench, llvm);
+            match result {
+                Ok(bench_result) => {
+                    println!("  [DONE] {} ({})", llvm.name(), llvm.description());
+                    println!("         Compile: {:.2}ms, Execute: {:.2}ms, Total: {:.2}ms\n",
+                        bench_result.compile_time_ms, bench_result.runtime_ms, bench_result.total_time_ms);
+                    results.push(bench_result);
                 }
                 Err(e) => {
-                    eprintln!("  -> FAILED: {}", e);
+                    eprintln!("  [FAIL] {}: {}\n", llvm.name(), e);
                 }
             }
         }
+        while let Ok((target, result)) = rx.recv() {
+            match result {
+                Ok(bench_result) => {
+                    println!("  [DONE] {} ({})", target.name(), target.description());
+                    println!("         Compile: {:.2}ms, Execute: {:.2}ms, Total: {:.2}ms\n",
+                        bench_result.compile_time_ms, bench_result.runtime_ms, bench_result.total_time_ms);
+                    results.push(bench_result);
+                }
+                Err(e) => {
+                    eprintln!("  [FAIL] {}: {}\n", target.name(), e);
+                }
+            }
+        }
+
+        // Wait for all threads to complete
+        for handle in handles {
+            let _ = handle.join();
+        }
+
+        // Sort results by target name for consistent ordering
+        results.sort_by(|a, b| a.target.cmp(&b.target));
 
         print_results(&results);
 
