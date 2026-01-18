@@ -283,35 +283,29 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         Ok(fn_ptr as *const u8)
     }
 
-    /// Compile an entire MIR module
+    /// Declare all functions in a module without compiling their bodies
     ///
-    /// This is the main entry point for whole-program compilation.
-    /// Compiles all functions and registers runtime symbols.
-    pub fn compile_module(&mut self, module: &IrModule) -> Result<(), String> {
-        // Note: We don't pre-declare runtime symbols as functions here.
-        // They will be declared when encountered in MIR code with proper signatures,
-        // and resolved at link time via add_global_mapping in finalize().
-
-        // Phase 1: Declare all functions first (forward declarations)
-        // This allows functions to call each other regardless of order
+    /// Call this for ALL modules first before calling compile_module_bodies.
+    /// This ensures all function references can be resolved across modules.
+    pub fn declare_module(&mut self, module: &IrModule) -> Result<(), String> {
         for (func_id, function) in &module.functions {
             self.declare_function(*func_id, function)?;
         }
+        Ok(())
+    }
 
-        // Phase 2: Compile all function bodies
-        // Skip functions that were already compiled from a previous module
-        // Skip extern functions (no blocks in CFG)
+    /// Compile function bodies for a module (call declare_module for ALL modules first)
+    pub fn compile_module_bodies(&mut self, module: &IrModule) -> Result<(), String> {
         for (func_id, function) in &module.functions {
             let llvm_func = *self.function_map.get(func_id)
                 .ok_or_else(|| format!("Function {:?} not declared", func_id))?;
 
-            // Skip if this LLVM function already has basic blocks (was compiled from a previous module)
+            // Skip if already compiled
             if llvm_func.count_basic_blocks() > 0 {
                 continue;
             }
 
-            // Skip extern functions (they have no blocks in their CFG)
-            // These are just declarations, not definitions
+            // Skip extern functions (no body)
             if function.cfg.blocks.is_empty() {
                 continue;
             }
@@ -319,6 +313,26 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             self.compile_function_body(*func_id, function, llvm_func)
                 .map_err(|e| format!("Error in function '{}' ({:?}): {}", function.name, func_id, e))?;
         }
+        Ok(())
+    }
+
+    /// Compile an entire MIR module
+    ///
+    /// This is the main entry point for whole-program compilation.
+    /// Compiles all functions and registers runtime symbols.
+    ///
+    /// Note: If compiling multiple modules with cross-module references,
+    /// use declare_module() for ALL modules first, then compile_module_bodies().
+    pub fn compile_module(&mut self, module: &IrModule) -> Result<(), String> {
+        // Note: We don't pre-declare runtime symbols as functions here.
+        // They will be declared when encountered in MIR code with proper signatures,
+        // and resolved at link time via add_global_mapping in finalize().
+
+        // Phase 1: Declare all functions first (forward declarations)
+        self.declare_module(module)?;
+
+        // Phase 2: Compile all function bodies
+        self.compile_module_bodies(module)?;
 
         // Note: Execution engine is created lazily when first needed (call_main, get_function_ptr, etc.)
         // This allows compiling multiple modules before JIT-compiling everything
@@ -1730,10 +1744,16 @@ impl<'ctx> LLVMJitBackend<'ctx> {
     ) -> Result<BasicValueEnum<'ctx>, String> {
         let name = format!("binop_{}", dest.as_u32());
 
-        // Use MIR type to determine if this is a float operation
-        // This is more reliable than inferring from LLVM values, which can cascade incorrectly
+        // Determine if this is a float operation
+        // Primary: use MIR type if available
+        // Safety net: also check LLVM values in case MIR type is wrong (e.g., defaulted to I64)
         let is_float = match result_ty {
-            Some(ty) => ty.is_float(),
+            Some(ty) if ty.is_float() => true,
+            Some(_) => {
+                // MIR says non-float, but check actual LLVM values as safety net
+                // This catches cases where register_types defaulted to I64
+                left.is_float_value() || right.is_float_value()
+            }
             // Fallback to LLVM value inference if MIR type not available
             None => left.is_float_value() || right.is_float_value(),
         };
@@ -1962,9 +1982,12 @@ impl<'ctx> LLVMJitBackend<'ctx> {
     ) -> Result<BasicValueEnum<'ctx>, String> {
         let name = format!("unop_{}", dest.as_u32());
 
-        // Use MIR type to determine if this is a float operation
+        // Determine if this is a float operation
+        // Primary: use MIR type if available
+        // Safety net: also check LLVM value in case MIR type is wrong
         let is_float = match result_ty {
-            Some(ty) => ty.is_float(),
+            Some(ty) if ty.is_float() => true,
+            Some(_) => operand.is_float_value(),
             None => operand.is_float_value(),
         };
 
@@ -2013,9 +2036,12 @@ impl<'ctx> LLVMJitBackend<'ctx> {
     ) -> Result<BasicValueEnum<'ctx>, String> {
         let name = format!("cmp_{}", dest.as_u32());
 
-        // Use MIR type to determine if operands are float
+        // Determine if operands are float
+        // Primary: use MIR type if available
+        // Safety net: also check LLVM values in case MIR type is wrong
         let is_float = match operand_ty {
-            Some(ty) => ty.is_float(),
+            Some(ty) if ty.is_float() => true,
+            Some(_) => left.is_float_value() || right.is_float_value(),
             None => left.is_float_value() || right.is_float_value(),
         };
 

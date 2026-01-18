@@ -2011,16 +2011,33 @@ impl CompilationUnit {
             // Update the function's own ID
             func.id = new_id;
 
-            // Update all CallDirect instructions that reference old stdlib function IDs
+            // Update all function ID references in instructions (CallDirect, FunctionRef, MakeClosure)
             use crate::ir::IrInstruction;
             for block in func.cfg.blocks.values_mut() {
                 for inst in &mut block.instructions {
-                    if let IrInstruction::CallDirect { func_id, .. } = inst {
-                        if let Some(&new_func_id) = id_mapping.get(func_id) {
-                            debug!("DEBUG: Updated CallDirect in {} from func_id {} -> {}",
-                                      func.name, func_id.0, new_func_id.0);
-                            *func_id = new_func_id;
+                    match inst {
+                        IrInstruction::CallDirect { func_id, .. } => {
+                            if let Some(&new_func_id) = id_mapping.get(func_id) {
+                                debug!("DEBUG: Updated CallDirect in {} from func_id {} -> {}",
+                                          func.name, func_id.0, new_func_id.0);
+                                *func_id = new_func_id;
+                            }
                         }
+                        IrInstruction::FunctionRef { func_id, .. } => {
+                            if let Some(&new_func_id) = id_mapping.get(func_id) {
+                                debug!("DEBUG: Updated FunctionRef in {} from func_id {} -> {}",
+                                          func.name, func_id.0, new_func_id.0);
+                                *func_id = new_func_id;
+                            }
+                        }
+                        IrInstruction::MakeClosure { func_id, .. } => {
+                            if let Some(&new_func_id) = id_mapping.get(func_id) {
+                                debug!("DEBUG: Updated MakeClosure in {} from func_id {} -> {}",
+                                          func.name, func_id.0, new_func_id.0);
+                                *func_id = new_func_id;
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }

@@ -752,11 +752,24 @@ impl TieredBackend {
         }
 
         // Separate LLVM and Cranelift compilations
-        // LLVM must run sequentially (not thread-safe), Cranelift can run in parallel
-        let (llvm_batch, cranelift_batch): (Vec<_>, Vec<_>) = batch
+        // LLVM requires main thread for symbol mapping, so skip it on background threads
+        // Those functions will be downgraded to Cranelift tier
+        let (llvm_batch, mut cranelift_batch): (Vec<_>, Vec<_>) = batch
             .iter()
             .cloned()  // Clone to get owned values
             .partition(|(_, tier)| tier.uses_llvm());
+
+        // Skip LLVM batch on background thread - LLVM's add_global_mapping needs main thread
+        // Instead, compile these at Optimized tier (Cranelift) as fallback
+        if !llvm_batch.is_empty() {
+            if config.verbosity >= 1 {
+                debug!("[TieredBackend] Downgrading {} LLVM requests to Optimized (Cranelift)", llvm_batch.len());
+            }
+            // Re-add to cranelift batch at Optimized tier
+            for (func_id, _) in llvm_batch {
+                cranelift_batch.push((func_id, OptimizationTier::Optimized));
+            }
+        }
 
         // Compile Cranelift functions in parallel
         let cranelift_results: Vec<(IrFunctionId, OptimizationTier, Result<usize, String>)> = cranelift_batch
@@ -786,30 +799,9 @@ impl TieredBackend {
             })
             .collect();
 
-        // Compile LLVM functions sequentially (LLVM is not thread-safe for context creation)
-        let llvm_results: Vec<(IrFunctionId, OptimizationTier, Result<usize, String>)> = llvm_batch
-            .iter()
-            .map(|(func_id, target_tier)| {
-                eprintln!("[TieredBackend] LLVM compilation starting for {:?}", func_id);
-                #[cfg(feature = "llvm-backend")]
-                let result = {
-                    // For LLVM, compile ALL modules (functions may call across modules)
-                    let r = Self::compile_with_llvm_static(*func_id, &modules_lock, runtime_symbols);
-                    match &r {
-                        Ok(ptr) => eprintln!("[TieredBackend] LLVM compilation succeeded for {:?}, ptr={:#x}", func_id, ptr),
-                        Err(e) => eprintln!("[TieredBackend] LLVM compilation FAILED for {:?}: {}", func_id, e),
-                    }
-                    r
-                };
-                #[cfg(not(feature = "llvm-backend"))]
-                let result = Err("LLVM backend not enabled".to_string());
-
-                (*func_id, *target_tier, result)
-            })
-            .collect();
-
-        // Combine results
-        let results: Vec<_> = cranelift_results.into_iter().chain(llvm_results).collect();
+        // LLVM compilation skipped on background thread (requires main thread for symbol mapping)
+        // Use only Cranelift results
+        let results: Vec<_> = cranelift_results;
 
         // Drop modules lock before installing results
         drop(modules_lock);
@@ -877,6 +869,7 @@ impl TieredBackend {
     /// This compiles ALL modules because functions may call other functions
     /// across modules. The function pointer for the requested function is returned.
     #[cfg(feature = "llvm-backend")]
+    #[allow(unused)] // Reserved for future main-thread LLVM compilation
     fn compile_with_llvm_static(
         func_id: IrFunctionId,
         modules: &[IrModule],

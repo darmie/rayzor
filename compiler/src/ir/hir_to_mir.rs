@@ -5681,39 +5681,37 @@ impl<'a> HirToMirContext<'a> {
                 let mut lhs_reg = self.lower_expression(lhs)?;
                 let mut rhs_reg = self.lower_expression(rhs)?;
 
+                let lhs_type = self.convert_type(lhs.ty);
+                let rhs_type = self.convert_type(rhs.ty);
+
+                // Type coercion for mixed int/float operations
+                // When one operand is float and the other is int, cast int to float
+                let lhs_is_int = matches!(
+                    lhs_type,
+                    IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 |
+                    IrType::U8 | IrType::U16 | IrType::U32 | IrType::U64
+                );
+                let rhs_is_int = matches!(
+                    rhs_type,
+                    IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 |
+                    IrType::U8 | IrType::U16 | IrType::U32 | IrType::U64
+                );
+                let lhs_is_float = matches!(lhs_type, IrType::F32 | IrType::F64);
+                let rhs_is_float = matches!(rhs_type, IrType::F32 | IrType::F64);
+
+                // Cast int to float when mixing types (promotes to F64)
+                if lhs_is_int && rhs_is_float {
+                    lhs_reg = self.builder.build_cast(lhs_reg, lhs_type.clone(), IrType::F64)?;
+                }
+                if rhs_is_int && lhs_is_float {
+                    rhs_reg = self.builder.build_cast(rhs_reg, rhs_type.clone(), IrType::F64)?;
+                }
+
                 // Special handling for division: Haxe always returns Float from division
                 // If operands are integers, convert them to float first
-                if matches!(op, HirBinaryOp::Div) {
-                    let lhs_type = self.convert_type(lhs.ty);
-                    let rhs_type = self.convert_type(rhs.ty);
-
-                    // Convert integer operands to float
-                    if matches!(
-                        lhs_type,
-                        IrType::I8
-                            | IrType::I16
-                            | IrType::I32
-                            | IrType::I64
-                            | IrType::U8
-                            | IrType::U16
-                            | IrType::U32
-                            | IrType::U64
-                    ) {
-                        lhs_reg = self.builder.build_cast(lhs_reg, lhs_type, IrType::F64)?;
-                    }
-                    if matches!(
-                        rhs_type,
-                        IrType::I8
-                            | IrType::I16
-                            | IrType::I32
-                            | IrType::I64
-                            | IrType::U8
-                            | IrType::U16
-                            | IrType::U32
-                            | IrType::U64
-                    ) {
-                        rhs_reg = self.builder.build_cast(rhs_reg, rhs_type, IrType::F64)?;
-                    }
+                if matches!(op, HirBinaryOp::Div) && lhs_is_int && rhs_is_int {
+                    lhs_reg = self.builder.build_cast(lhs_reg, lhs_type.clone(), IrType::F64)?;
+                    rhs_reg = self.builder.build_cast(rhs_reg, rhs_type.clone(), IrType::F64)?;
                 }
 
                 let result_reg = match self.convert_binary_op_to_mir(*op) {

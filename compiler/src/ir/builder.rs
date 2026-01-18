@@ -176,6 +176,10 @@ impl IrBuilder {
     /// Build a copy instruction
     pub fn build_copy(&mut self, src: IrId) -> Option<IrId> {
         let dest = self.alloc_reg()?;
+        // Propagate type from source for LLVM backend
+        if let Some(ty) = self.get_register_type(src) {
+            self.set_register_type(dest, ty);
+        }
         self.add_instruction(IrInstruction::Copy { dest, src })?;
         Some(dest)
     }
@@ -197,6 +201,11 @@ impl IrBuilder {
     /// Build a binary operation
     pub fn build_binop(&mut self, op: BinaryOp, left: IrId, right: IrId) -> Option<IrId> {
         let dest = self.alloc_reg()?;
+        // Infer result type from left operand (or right if left is unknown)
+        // This is critical for LLVM backend to know whether to use int or float ops
+        if let Some(ty) = self.get_register_type(left).or_else(|| self.get_register_type(right)) {
+            self.set_register_type(dest, ty);
+        }
         self.add_instruction(IrInstruction::BinOp { dest, op, left, right })?;
         Some(dest)
     }
@@ -204,6 +213,10 @@ impl IrBuilder {
     /// Build a unary operation
     pub fn build_unop(&mut self, op: UnaryOp, operand: IrId) -> Option<IrId> {
         let dest = self.alloc_reg()?;
+        // Infer result type from operand for LLVM backend
+        if let Some(ty) = self.get_register_type(operand) {
+            self.set_register_type(dest, ty);
+        }
         self.add_instruction(IrInstruction::UnOp { dest, op, operand })?;
         Some(dest)
     }
@@ -211,6 +224,8 @@ impl IrBuilder {
     /// Build a comparison operation
     pub fn build_cmp(&mut self, op: CompareOp, left: IrId, right: IrId) -> Option<IrId> {
         let dest = self.alloc_reg()?;
+        // Comparisons always return Bool
+        self.set_register_type(dest, IrType::Bool);
         self.add_instruction(IrInstruction::Cmp { dest, op, left, right })?;
         Some(dest)
     }
