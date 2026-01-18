@@ -288,10 +288,53 @@ impl<'ctx> LLVMJitBackend<'ctx> {
     /// Call this for ALL modules first before calling compile_module_bodies.
     /// This ensures all function references can be resolved across modules.
     pub fn declare_module(&mut self, module: &IrModule) -> Result<(), String> {
+        // Declare regular functions
         for (func_id, function) in &module.functions {
             self.declare_function(*func_id, function)?;
         }
+        // Declare extern functions (external linkage, no body)
+        for (func_id, extern_fn) in &module.extern_functions {
+            self.declare_extern_function(*func_id, extern_fn)?;
+        }
         Ok(())
+    }
+
+    /// Declare an external function (FFI/runtime function with no body)
+    fn declare_extern_function(
+        &mut self,
+        func_id: IrFunctionId,
+        extern_fn: &crate::ir::IrExternFunction,
+    ) -> Result<FunctionValue<'ctx>, String> {
+        // Check if already declared
+        let func_name = Self::mangle_function_name(&extern_fn.name);
+        if let Some(existing_func) = self.module.get_function(&func_name) {
+            self.function_map.insert(func_id, existing_func);
+            return Ok(existing_func);
+        }
+
+        // Translate parameter types
+        let param_types: Result<Vec<BasicMetadataTypeEnum>, _> = extern_fn
+            .signature
+            .parameters
+            .iter()
+            .filter(|param| param.ty != IrType::Void)
+            .map(|param| self.translate_type(&param.ty).map(|t| t.into()))
+            .collect();
+        let param_types = param_types?;
+
+        // Translate return type
+        let fn_type = if extern_fn.signature.return_type == IrType::Void {
+            self.context.void_type().fn_type(&param_types, false)
+        } else {
+            let return_type = self.translate_type(&extern_fn.signature.return_type)?;
+            return_type.fn_type(&param_types, false)
+        };
+
+        // Add function with external linkage
+        let llvm_func = self.module.add_function(&func_name, fn_type, Some(inkwell::module::Linkage::External));
+
+        self.function_map.insert(func_id, llvm_func);
+        Ok(llvm_func)
     }
 
     /// Compile function bodies for a module (call declare_module for ALL modules first)
