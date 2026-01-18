@@ -43,3 +43,5 @@ compiler/haxe-std/python/
 # Cranelift fork (local development only, use git dependency in production)
 
 cranelift-fork/
+
+.claude/
