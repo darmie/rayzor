@@ -98,8 +98,8 @@ impl E2ETestCase {
         println!("{}", self.description);
         println!("{}", "=".repeat(70));
 
-        // Create compilation unit with stdlib
-        let mut unit = CompilationUnit::new(CompilationConfig::default());
+        // Create compilation unit with stdlib (use fast() for lazy stdlib loading)
+        let mut unit = CompilationUnit::new(CompilationConfig::fast());
 
         // Load stdlib (this is critical - must happen first!)
         if let Err(e) = unit.load_stdlib() {
@@ -700,7 +700,7 @@ class SharedData {
 
 class Main {
     static function main() {
-        var shared = Arc.init(new SharedData(42));
+        var shared = new Arc(new SharedData(42));
         var shared_clone = shared.clone();
 
         var handle = Thread.spawn(() -> {
@@ -781,7 +781,7 @@ class SharedCounter {
 class Main {
     static function main() {
         // Test Arc<Mutex<T>> without threads
-        var counter = Arc.init(Mutex.init(new SharedCounter()));
+        var counter = new Arc(new Mutex(new SharedCounter()));
 
         // First lock/unlock cycle
         var guard1 = counter.get().lock();

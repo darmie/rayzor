@@ -93,7 +93,7 @@ impl E2ETestCase {
         println!("{}", self.description);
         println!("{}", "=".repeat(70));
 
-        let mut unit = CompilationUnit::new(CompilationConfig::default());
+        let mut unit = CompilationUnit::new(CompilationConfig::fast());
 
         if let Err(e) = unit.load_stdlib() {
             return TestResult::Failed {

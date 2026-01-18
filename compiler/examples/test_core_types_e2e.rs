@@ -94,7 +94,7 @@ impl E2ETestCase {
         println!("{}", "=".repeat(70));
 
         // Create compilation unit with stdlib
-        let mut unit = CompilationUnit::new(CompilationConfig::default());
+        let mut unit = CompilationUnit::new(CompilationConfig::fast());
 
         // Load stdlib
         if let Err(e) = unit.load_stdlib() {

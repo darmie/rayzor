@@ -251,53 +251,37 @@ fn main() {
 
 /// Helper function to compile Haxe source through the full pipeline to MIR
 /// Uses CompilationUnit for proper multi-file, stdlib-aware compilation
-fn compile_haxe_to_mir(source: &str, filename: &str) -> Result<compiler::ir::IrModule, String> {
+/// Returns all MIR modules (user code + stdlib)
+fn compile_haxe_to_mir(source: &str, filename: &str) -> Result<Vec<std::sync::Arc<compiler::ir::IrModule>>, String> {
     use compiler::compilation::{CompilationUnit, CompilationConfig};
-    use compiler::ir::{tast_to_hir::lower_tast_to_hir, hir_to_mir::lower_hir_to_mir};
-    use std::rc::Rc;
-    use std::cell::RefCell;
 
     // Create compilation unit with stdlib support
     let mut config = CompilationConfig::default();
-    config.load_stdlib = false; // Skip stdlib for simple CLI usage (can be enabled later)
+    config.load_stdlib = true; // Enable stdlib for full Haxe compatibility
 
     let mut unit = CompilationUnit::new(config);
+
+    // Load the standard library first
+    unit.load_stdlib()
+        .map_err(|e| format!("Failed to load stdlib: {}", e))?;
 
     // Add the source file to the compilation unit
     unit.add_file(source, filename)?;
 
-    // Compile the unit to TAST
-    let typed_files = unit.lower_to_tast().map_err(|errors| {
+    // Compile the unit to TAST (this compiles all files including stdlib)
+    unit.lower_to_tast().map_err(|errors| {
         let messages: Vec<_> = errors.iter().map(|e| format!("{:?}", e)).collect();
         format!("TAST lowering errors: {}", messages.join(", "))
     })?;
 
-    if typed_files.is_empty() {
-        return Err("No typed files generated".to_string());
+    // Get all MIR modules (including stdlib)
+    let mir_modules = unit.get_mir_modules();
+
+    if mir_modules.is_empty() {
+        return Err("No MIR modules generated".to_string());
     }
 
-    // Lower TAST to HIR
-    let string_interner_rc = Rc::new(RefCell::new(unit.string_interner));
-
-    let hir_module = lower_tast_to_hir(
-        &typed_files[0],
-        &unit.symbol_table,
-        &unit.type_table,
-        &mut *string_interner_rc.borrow_mut(),
-        None,
-    ).map_err(|errors| {
-        let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
-        format!("HIR lowering errors: {}", messages.join(", "))
-    })?;
-
-    // Lower HIR to MIR
-    let mir_module = lower_hir_to_mir(&hir_module, &*string_interner_rc.borrow(), &unit.type_table, &unit.symbol_table)
-        .map_err(|errors| {
-            let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
-            format!("MIR lowering errors: {}", messages.join(", "))
-        })?;
-
-    Ok(mir_module)
+    Ok(mir_modules)
 }
 
 fn run_file(file: PathBuf, verbose: bool, stats: bool, _tier: u8, llvm: bool, cache: bool, cache_dir: Option<PathBuf>, release: bool) -> Result<(), String> {
@@ -335,39 +319,21 @@ fn run_file(file: PathBuf, verbose: bool, stats: bool, _tier: u8, llvm: bool, ca
         config.cache_dir = Some(CompilationConfig::get_profile_cache_dir(profile));
     }
 
-    let unit = CompilationUnit::new(config);
+    let _unit = CompilationUnit::new(config);
 
-    // Try to load from cache first
-    let mir_module = if cache {
-        if let Some(cached) = unit.try_load_cached(&file) {
-            if verbose {
-                println!("  ✓ Loaded from cache");
-            }
-            cached
-        } else {
-            if verbose {
-                println!("  Cache miss, compiling...");
-            }
-            let source = std::fs::read_to_string(&file)
-                .map_err(|e| format!("Failed to read file: {}", e))?;
-            let module = compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"))?;
+    // Compile source file to MIR (returns all modules including stdlib)
+    let source = std::fs::read_to_string(&file)
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+    let mir_modules = compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"))?;
 
-            // Save to cache
-            unit.save_to_cache(&file, &module)?;
-            module
-        }
-    } else {
-        let source = std::fs::read_to_string(&file)
-            .map_err(|e| format!("Failed to read file: {}", e))?;
-        compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"))?
-    };
-
+    let total_functions: usize = mir_modules.iter().map(|m| m.functions.len()).sum();
     if verbose {
         println!("  ✓ MIR created");
-        println!("    Functions: {}", mir_module.functions.len());
+        println!("    Modules: {}", mir_modules.len());
+        println!("    Total functions: {}", total_functions);
     }
 
-    if mir_module.functions.is_empty() {
+    if total_functions == 0 {
         return Err("No functions found to execute".to_string());
     }
 
@@ -395,11 +361,16 @@ fn run_file(file: PathBuf, verbose: bool, stats: bool, _tier: u8, llvm: bool, ca
         println!("  ✓ Tiered backend ready");
     }
 
-    // Compile with tiered JIT
+    // Compile all modules with tiered JIT
     if verbose {
         println!("\nCompiling MIR → Native (Tier 0)...");
     }
-    backend.compile_module(mir_module)?;
+    for module in mir_modules {
+        // Convert Arc<IrModule> to owned IrModule for the tiered backend
+        let owned_module = std::sync::Arc::try_unwrap(module)
+            .unwrap_or_else(|arc| (*arc).clone());
+        backend.compile_module(owned_module)?;
+    }
 
     if verbose {
         println!("  ✓ Compiled successfully");

@@ -2729,6 +2729,14 @@ impl CraneliftBackend {
                         // debug!("Cranelift: Found value, emitting return instruction");
                         builder.ins().return_(&[val]);
                     } else {
+                        // Validate: void return should only happen for void functions
+                        if function.signature.return_type != IrType::Void {
+                            return Err(format!(
+                                "Function '{}' has return type {:?} but encountered Return with no value. \
+                                This usually indicates missing lowering of method calls in the function body.",
+                                function.name, function.signature.return_type
+                            ));
+                        }
                         // debug!("Cranelift: Void return, no value");
                         builder.ins().return_(&[]);
                     }

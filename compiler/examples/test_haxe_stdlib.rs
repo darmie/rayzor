@@ -269,10 +269,11 @@ class Main {
         // StringTools tests (direct static call - using syntax has a bug, see TODO)
         // TODO: Fix `using StringTools;` + s.startsWith() syntax - causes Cranelift return type mismatch
         ("stringtools_startswith", r#"
+using StringTools;       
 class Main {
     static function main() {
         var s = "hello world";
-        trace(StringTools.startsWith(s, "hello"));
+        trace(s.startsWith("hello"));
     }
 }
 "#),
@@ -348,7 +349,7 @@ class Main {
 }
 
 fn run_functional_test(code: &str) -> Result<String, String> {
-    // Create compilation unit
+    // Create compilation unit with fast (lazy) config to ensure proper dependency ordering
     let mut unit = CompilationUnit::new(CompilationConfig::fast());
 
     // Load stdlib

@@ -931,7 +931,10 @@ impl<'a> AstLowering<'a> {
     }
 
     /// Lower a complete Haxe file to TAST
+    
     pub fn lower_file(&mut self, file: &HaxeFile) -> LoweringResult<TypedFile> {
+        // Optimizer barrier
+
         // Create TypedFile with the shared interner from the pipeline
         let mut typed_file = TypedFile::new(Rc::clone(&self.context.string_interner_rc));
 
@@ -1022,7 +1025,7 @@ impl<'a> AstLowering<'a> {
         }
 
         // Second pass: Process declarations with full type resolution
-        for declaration in &file.declarations {
+        for (i, declaration) in file.declarations.iter().enumerate() {
             match self.lower_declaration(declaration) {
                 Ok(typed_decl) => match typed_decl {
                     TypedDeclaration::Function(func) => typed_file.functions.push(func),
@@ -2125,11 +2128,11 @@ impl<'a> AstLowering<'a> {
     }
 
     /// Lower a class declaration
+    
     fn lower_class_declaration(
         &mut self,
         class_decl: &ClassDecl,
     ) -> LoweringResult<TypedDeclaration> {
-
         let class_name = self.context.intern_string(&class_decl.name);
 
         // Look up the existing symbol that was created during pre-registration
@@ -2297,7 +2300,7 @@ impl<'a> AstLowering<'a> {
         let mut methods = Vec::with_capacity(class_decl.fields.len()); // Initially allocate for all fields
         let mut constructors = Vec::with_capacity(2); // Most classes have 0-2 constructors
 
-        for field in &class_decl.fields {
+        for (field_idx, field) in class_decl.fields.iter().enumerate() {
             match &field.kind {
                 ClassFieldKind::Function(func) => {
                     // Handle functions as methods or constructors
@@ -3281,6 +3284,7 @@ impl<'a> AstLowering<'a> {
     }
 
     /// Lower a function from a class field (includes field metadata)
+    
     fn lower_function_from_field(
         &mut self,
         field: &ClassField,

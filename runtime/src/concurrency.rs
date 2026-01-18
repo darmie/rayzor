@@ -442,25 +442,31 @@ pub unsafe extern "C" fn rayzor_arc_as_ptr(arc: *const u8) -> u64 {
 }
 
 // ============================================================================
-// Mutex Implementation
+// Mutex Implementation (using parking_lot for better FFI support)
 // ============================================================================
 
-/// Mutex handle wrapping std::sync::Mutex
+use parking_lot::lock_api::RawMutex as RawMutexTrait;
+
+/// Mutex handle using parking_lot's RawMutex for explicit lock/unlock
 struct MutexHandle {
-    mutex: Mutex<*mut u8>,
+    /// The raw mutex for locking
+    raw_mutex: parking_lot::RawMutex,
+    /// The protected value
+    value: *mut u8,
 }
 
-/// Mutex guard handle wrapping std::sync::MutexGuard
-/// We use 'static lifetime here because the MutexHandle is leaked/long-lived
+/// Mutex guard handle - stores reference back to mutex for unlocking
 struct MutexGuardHandle {
-    guard: std::sync::MutexGuard<'static, *mut u8>,
+    /// Pointer to the mutex handle for unlocking
+    mutex: *const MutexHandle,
 }
 
 /// Initialize a new Mutex with a value
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_mutex_init(value: *mut u8) -> *mut u8 {
     let mutex = Box::new(MutexHandle {
-        mutex: Mutex::new(value),
+        raw_mutex: parking_lot::RawMutex::INIT,
+        value,
     });
 
     Box::into_raw(mutex) as *mut u8
@@ -479,18 +485,14 @@ pub unsafe extern "C" fn rayzor_mutex_lock(mutex: *mut u8) -> *mut u8 {
 
     let mutex_handle = &*(mutex as *const MutexHandle);
 
-    // Lock the mutex (blocks until acquired)
-    match mutex_handle.mutex.lock() {
-        Ok(guard) => {
-            // Extend lifetime to 'static since MutexHandle is effectively static (leaked)
-            let guard: std::sync::MutexGuard<'static, *mut u8> = std::mem::transmute(guard);
+    // Lock the raw mutex (blocks until acquired)
+    mutex_handle.raw_mutex.lock();
 
-            let guard_handle = Box::new(MutexGuardHandle { guard });
+    let guard_handle = Box::new(MutexGuardHandle {
+        mutex: mutex_handle as *const MutexHandle,
+    });
 
-            Box::into_raw(guard_handle) as *mut u8
-        }
-        Err(_) => ptr::null_mut(),
-    }
+    Box::into_raw(guard_handle) as *mut u8
 }
 
 /// Try to lock a mutex without blocking
@@ -502,16 +504,13 @@ pub unsafe extern "C" fn rayzor_mutex_try_lock(mutex: *mut u8) -> *mut u8 {
 
     let mutex_handle = &*(mutex as *const MutexHandle);
 
-    match mutex_handle.mutex.try_lock() {
-        Ok(guard) => {
-            // Extend lifetime to 'static
-            let guard: std::sync::MutexGuard<'static, *mut u8> = std::mem::transmute(guard);
-
-            let guard_handle = Box::new(MutexGuardHandle { guard });
-
-            Box::into_raw(guard_handle) as *mut u8
-        }
-        Err(_) => ptr::null_mut(),
+    if mutex_handle.raw_mutex.try_lock() {
+        let guard_handle = Box::new(MutexGuardHandle {
+            mutex: mutex_handle as *const MutexHandle,
+        });
+        Box::into_raw(guard_handle) as *mut u8
+    } else {
+        ptr::null_mut()
     }
 }
 
@@ -523,7 +522,7 @@ pub unsafe extern "C" fn rayzor_mutex_is_locked(mutex: *const u8) -> bool {
     }
 
     let mutex_handle = &*(mutex as *const MutexHandle);
-    mutex_handle.mutex.try_lock().is_err()
+    mutex_handle.raw_mutex.is_locked()
 }
 
 /// Get the value pointer from a mutex guard
@@ -534,15 +533,18 @@ pub unsafe extern "C" fn rayzor_mutex_guard_get(guard: *mut u8) -> *mut u8 {
     }
 
     let guard_handle = &*(guard as *const MutexGuardHandle);
-    *guard_handle.guard
+    (*guard_handle.mutex).value
 }
 
 /// Unlock a mutex guard
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_mutex_unlock(guard: *mut u8) {
     if !guard.is_null() {
-        // Reconstruct Box and drop it, which drops the MutexGuard and releases the lock
-        let _ = Box::from_raw(guard as *mut MutexGuardHandle);
+        // Reconstruct Box and get the mutex reference
+        let guard_handle = Box::from_raw(guard as *mut MutexGuardHandle);
+        // Unlock the raw mutex
+        (*guard_handle.mutex).raw_mutex.unlock();
+        // Box will be dropped here
     }
 }
 

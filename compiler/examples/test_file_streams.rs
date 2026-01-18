@@ -231,7 +231,7 @@ fn run_test(source: &str, name: &str) {
 }
 
 fn compile_and_run(source: &str, name: &str) -> Result<(), String> {
-    let mut unit = CompilationUnit::new(CompilationConfig::default());
+    let mut unit = CompilationUnit::new(CompilationConfig::fast());
     unit.load_stdlib()?;
     unit.add_file(source, &format!("{}.hx", name))?;
 

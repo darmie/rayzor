@@ -1117,6 +1117,452 @@ impl CompilationUnit {
         None
     }
 
+    /// Extract all class references from a Haxe AST file.
+    /// This includes explicit imports, using statements, new expressions, and type annotations.
+    fn extract_all_dependencies(ast: &parser::HaxeFile) -> Vec<String> {
+        use parser::{BlockElement, ClassFieldKind, ExprKind, Type, TypeDeclaration};
+
+        let mut deps = std::collections::HashSet::new();
+
+        // 1. Explicit imports
+        for import in &ast.imports {
+            if !import.path.is_empty() {
+                deps.insert(import.path.join("."));
+            }
+        }
+
+        // 2. Using statements
+        for using in &ast.using {
+            if !using.path.is_empty() {
+                deps.insert(using.path.join("."));
+            }
+        }
+
+        // Helper to extract type references from a Type
+        fn extract_type_deps(ty: &Type, deps: &mut std::collections::HashSet<String>) {
+            match ty {
+                Type::Path { path, params, .. } => {
+                    // Only add if it looks like a class name (starts with uppercase)
+                    if path.package.is_empty() && !path.name.is_empty() {
+                        let first_char = path.name.chars().next();
+                        if first_char.map(|c| c.is_uppercase()).unwrap_or(false) {
+                            deps.insert(path.name.clone());
+                        }
+                    } else if !path.package.is_empty() {
+                        // Qualified type path like sys.io.File
+                        let mut full_path = path.package.clone();
+                        full_path.push(path.name.clone());
+                        deps.insert(full_path.join("."));
+                    }
+                    // Recurse into type parameters
+                    for param in params {
+                        extract_type_deps(param, deps);
+                    }
+                }
+                Type::Function { params, ret, .. } => {
+                    for param in params {
+                        extract_type_deps(param, deps);
+                    }
+                    extract_type_deps(ret, deps);
+                }
+                Type::Anonymous { fields, .. } => {
+                    for field in fields {
+                        extract_type_deps(&field.type_hint, deps);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Helper to extract dependencies from a block element
+        fn extract_block_elem_deps(elem: &BlockElement, deps: &mut std::collections::HashSet<String>) {
+            match elem {
+                BlockElement::Expr(e) => extract_expr_deps(e, deps),
+                BlockElement::Import(imp) => {
+                    if !imp.path.is_empty() {
+                        deps.insert(imp.path.join("."));
+                    }
+                }
+                BlockElement::Using(u) => {
+                    if !u.path.is_empty() {
+                        deps.insert(u.path.join("."));
+                    }
+                }
+                BlockElement::Conditional(cond) => {
+                    // Handle #if branch
+                    for elem in &cond.if_branch.content {
+                        extract_block_elem_deps(elem, deps);
+                    }
+                    // Handle #elseif branches
+                    for branch in &cond.elseif_branches {
+                        for elem in &branch.content {
+                            extract_block_elem_deps(elem, deps);
+                        }
+                    }
+                    // Handle #else branch
+                    if let Some(else_body) = &cond.else_branch {
+                        for elem in else_body {
+                            extract_block_elem_deps(elem, deps);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Helper to extract dependencies from an expression
+        fn extract_expr_deps(expr: &parser::Expr, deps: &mut std::collections::HashSet<String>) {
+            match &expr.kind {
+                ExprKind::New { type_path, params, args } => {
+                    // Extract class name from new expression
+                    if type_path.package.is_empty() && !type_path.name.is_empty() {
+                        let first_char = type_path.name.chars().next();
+                        if first_char.map(|c| c.is_uppercase()).unwrap_or(false) {
+                            deps.insert(type_path.name.clone());
+                        }
+                    } else if !type_path.package.is_empty() {
+                        let mut full_path = type_path.package.clone();
+                        full_path.push(type_path.name.clone());
+                        deps.insert(full_path.join("."));
+                    }
+                    // Recurse into type params and args
+                    for param in params {
+                        extract_type_deps(param, deps);
+                    }
+                    for arg in args {
+                        extract_expr_deps(arg, deps);
+                    }
+                }
+                ExprKind::Call { expr, args } => {
+                    extract_expr_deps(expr, deps);
+                    for arg in args {
+                        extract_expr_deps(arg, deps);
+                    }
+                }
+                ExprKind::Field { expr, .. } => {
+                    extract_expr_deps(expr, deps);
+                }
+                ExprKind::Index { expr, index } => {
+                    extract_expr_deps(expr, deps);
+                    extract_expr_deps(index, deps);
+                }
+                ExprKind::Unary { expr, .. } => {
+                    extract_expr_deps(expr, deps);
+                }
+                ExprKind::Binary { left, right, .. } => {
+                    extract_expr_deps(left, deps);
+                    extract_expr_deps(right, deps);
+                }
+                ExprKind::Assign { left, right, .. } => {
+                    extract_expr_deps(left, deps);
+                    extract_expr_deps(right, deps);
+                }
+                ExprKind::Ternary { cond, then_expr, else_expr } => {
+                    extract_expr_deps(cond, deps);
+                    extract_expr_deps(then_expr, deps);
+                    extract_expr_deps(else_expr, deps);
+                }
+                ExprKind::Array(elems) => {
+                    for elem in elems {
+                        extract_expr_deps(elem, deps);
+                    }
+                }
+                ExprKind::Block(elems) => {
+                    for elem in elems {
+                        extract_block_elem_deps(elem, deps);
+                    }
+                }
+                ExprKind::Var { type_hint, expr, .. } | ExprKind::Final { type_hint, expr, .. } => {
+                    if let Some(ty) = type_hint {
+                        extract_type_deps(ty, deps);
+                    }
+                    if let Some(e) = expr {
+                        extract_expr_deps(e, deps);
+                    }
+                }
+                ExprKind::Return(Some(e)) | ExprKind::Throw(e) => {
+                    extract_expr_deps(e, deps);
+                }
+                ExprKind::If { cond, then_branch, else_branch } => {
+                    extract_expr_deps(cond, deps);
+                    extract_expr_deps(then_branch, deps);
+                    if let Some(e) = else_branch {
+                        extract_expr_deps(e, deps);
+                    }
+                }
+                ExprKind::While { cond, body } | ExprKind::DoWhile { body, cond } => {
+                    extract_expr_deps(cond, deps);
+                    extract_expr_deps(body, deps);
+                }
+                ExprKind::For { iter, body, .. } => {
+                    extract_expr_deps(iter, deps);
+                    extract_expr_deps(body, deps);
+                }
+                ExprKind::Try { expr, catches } => {
+                    extract_expr_deps(expr, deps);
+                    for catch in catches {
+                        if let Some(ty) = &catch.type_hint {
+                            extract_type_deps(ty, deps);
+                        }
+                        extract_expr_deps(&catch.body, deps);
+                    }
+                }
+                ExprKind::Cast { expr, type_hint } => {
+                    extract_expr_deps(expr, deps);
+                    if let Some(ty) = type_hint {
+                        extract_type_deps(ty, deps);
+                    }
+                }
+                ExprKind::TypeCheck { expr, type_hint } => {
+                    extract_expr_deps(expr, deps);
+                    extract_type_deps(type_hint, deps);
+                }
+                ExprKind::Switch { expr, cases, default } => {
+                    extract_expr_deps(expr, deps);
+                    for case in cases {
+                        // Extract from patterns (they may contain constructor references)
+                        for pattern in &case.patterns {
+                            extract_pattern_deps(pattern, deps);
+                        }
+                        if let Some(guard) = &case.guard {
+                            extract_expr_deps(guard, deps);
+                        }
+                        extract_expr_deps(&case.body, deps);
+                    }
+                    if let Some(d) = default {
+                        extract_expr_deps(d, deps);
+                    }
+                }
+                ExprKind::Arrow { expr, .. } => {
+                    extract_expr_deps(expr, deps);
+                }
+                ExprKind::Map(pairs) => {
+                    for (k, v) in pairs {
+                        extract_expr_deps(k, deps);
+                        extract_expr_deps(v, deps);
+                    }
+                }
+                ExprKind::Object(fields) => {
+                    for field in fields {
+                        extract_expr_deps(&field.expr, deps);
+                    }
+                }
+                ExprKind::Function(func) => {
+                    // Extract from function parameters and return type
+                    for param in &func.params {
+                        if let Some(ty) = &param.type_hint {
+                            extract_type_deps(ty, deps);
+                        }
+                        if let Some(default) = &param.default_value {
+                            extract_expr_deps(default, deps);
+                        }
+                    }
+                    if let Some(ret) = &func.return_type {
+                        extract_type_deps(ret, deps);
+                    }
+                    if let Some(body) = &func.body {
+                        extract_expr_deps(body, deps);
+                    }
+                }
+                ExprKind::Paren(e) | ExprKind::Untyped(e) | ExprKind::Meta { expr: e, .. }
+                    | ExprKind::Macro(e) | ExprKind::Inline(e) | ExprKind::Reify(e) => {
+                    extract_expr_deps(e, deps);
+                }
+                ExprKind::ArrayComprehension { for_parts, expr } => {
+                    for part in for_parts {
+                        extract_expr_deps(&part.iter, deps);
+                    }
+                    extract_expr_deps(expr, deps);
+                }
+                ExprKind::MapComprehension { for_parts, key, value } => {
+                    for part in for_parts {
+                        extract_expr_deps(&part.iter, deps);
+                    }
+                    extract_expr_deps(key, deps);
+                    extract_expr_deps(value, deps);
+                }
+                ExprKind::StringInterpolation(parts) => {
+                    for part in parts {
+                        if let parser::StringPart::Interpolation(e) = part {
+                            extract_expr_deps(e, deps);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Helper to extract dependencies from patterns (in switch cases)
+        fn extract_pattern_deps(pattern: &parser::Pattern, deps: &mut std::collections::HashSet<String>) {
+            match pattern {
+                parser::Pattern::Const(e) => extract_expr_deps(e, deps),
+                parser::Pattern::Constructor { path, params } => {
+                    // Constructor patterns reference enum/class types
+                    if path.package.is_empty() && !path.name.is_empty() {
+                        let first_char = path.name.chars().next();
+                        if first_char.map(|c| c.is_uppercase()).unwrap_or(false) {
+                            deps.insert(path.name.clone());
+                        }
+                    } else if !path.package.is_empty() {
+                        let mut full_path = path.package.clone();
+                        full_path.push(path.name.clone());
+                        deps.insert(full_path.join("."));
+                    }
+                    for param in params {
+                        extract_pattern_deps(param, deps);
+                    }
+                }
+                parser::Pattern::Array(patterns) | parser::Pattern::Or(patterns) => {
+                    for p in patterns {
+                        extract_pattern_deps(p, deps);
+                    }
+                }
+                parser::Pattern::ArrayRest { elements, .. } => {
+                    for p in elements {
+                        extract_pattern_deps(p, deps);
+                    }
+                }
+                parser::Pattern::Object { fields } => {
+                    for (_, pattern) in fields {
+                        extract_pattern_deps(pattern, deps);
+                    }
+                }
+                parser::Pattern::Type { type_hint, .. } => {
+                    extract_type_deps(type_hint, deps);
+                }
+                parser::Pattern::Extractor { expr, value } => {
+                    extract_expr_deps(expr, deps);
+                    extract_expr_deps(value, deps);
+                }
+                _ => {}
+            }
+        }
+
+        // Helper to extract dependencies from class fields
+        fn extract_field_deps(field: &parser::ClassField, deps: &mut std::collections::HashSet<String>) {
+            match &field.kind {
+                ClassFieldKind::Var { type_hint, expr, .. }
+                | ClassFieldKind::Final { type_hint, expr, .. } => {
+                    if let Some(ty) = type_hint {
+                        extract_type_deps(ty, deps);
+                    }
+                    if let Some(e) = expr {
+                        extract_expr_deps(e, deps);
+                    }
+                }
+                ClassFieldKind::Property { type_hint, .. } => {
+                    if let Some(ty) = type_hint {
+                        extract_type_deps(ty, deps);
+                    }
+                }
+                ClassFieldKind::Function(func) => {
+                    for param in &func.params {
+                        if let Some(ty) = &param.type_hint {
+                            extract_type_deps(ty, deps);
+                        }
+                        if let Some(default) = &param.default_value {
+                            extract_expr_deps(default, deps);
+                        }
+                    }
+                    if let Some(ret) = &func.return_type {
+                        extract_type_deps(ret, deps);
+                    }
+                    if let Some(body) = &func.body {
+                        extract_expr_deps(body, deps);
+                    }
+                }
+            }
+        }
+
+        // 3. Extract from type declarations (classes, interfaces, etc.)
+        for decl in &ast.declarations {
+            match decl {
+                TypeDeclaration::Class(class_decl) => {
+                    // Extract from extends clause
+                    if let Some(extends) = &class_decl.extends {
+                        extract_type_deps(extends, &mut deps);
+                    }
+                    // Extract from implements clause
+                    for impl_type in &class_decl.implements {
+                        extract_type_deps(impl_type, &mut deps);
+                    }
+                    // Extract from fields
+                    for field in &class_decl.fields {
+                        extract_field_deps(field, &mut deps);
+                    }
+                }
+                TypeDeclaration::Interface(iface_decl) => {
+                    // Extract from extends clause
+                    for extends in &iface_decl.extends {
+                        extract_type_deps(extends, &mut deps);
+                    }
+                    // Extract from fields
+                    for field in &iface_decl.fields {
+                        extract_field_deps(field, &mut deps);
+                    }
+                }
+                TypeDeclaration::Typedef(typedef_decl) => {
+                    extract_type_deps(&typedef_decl.type_def, &mut deps);
+                }
+                TypeDeclaration::Enum(enum_decl) => {
+                    for ctor in &enum_decl.constructors {
+                        for param in &ctor.params {
+                            if let Some(ty) = &param.type_hint {
+                                extract_type_deps(ty, &mut deps);
+                            }
+                        }
+                    }
+                }
+                TypeDeclaration::Abstract(abstract_decl) => {
+                    if let Some(ty) = &abstract_decl.underlying {
+                        extract_type_deps(ty, &mut deps);
+                    }
+                    for ty in &abstract_decl.from {
+                        extract_type_deps(ty, &mut deps);
+                    }
+                    for ty in &abstract_decl.to {
+                        extract_type_deps(ty, &mut deps);
+                    }
+                    for field in &abstract_decl.fields {
+                        extract_field_deps(field, &mut deps);
+                    }
+                }
+                TypeDeclaration::Conditional(cond) => {
+                    // Handle conditional compilation blocks
+                    // Handle #if branch
+                    for inner_decl in &cond.if_branch.content {
+                        if let TypeDeclaration::Class(c) = inner_decl {
+                            for field in &c.fields {
+                                extract_field_deps(field, &mut deps);
+                            }
+                        }
+                    }
+                    // Handle #elseif branches
+                    for branch in &cond.elseif_branches {
+                        for inner_decl in &branch.content {
+                            if let TypeDeclaration::Class(c) = inner_decl {
+                                for field in &c.fields {
+                                    extract_field_deps(field, &mut deps);
+                                }
+                            }
+                        }
+                    }
+                    // Handle #else branch
+                    if let Some(else_body) = &cond.else_branch {
+                        for inner_decl in else_body {
+                            if let TypeDeclaration::Class(c) = inner_decl {
+                                for field in &c.fields {
+                                    extract_field_deps(field, &mut deps);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        deps.into_iter().collect()
+    }
+
     /// Load imports efficiently by pre-collecting all dependencies and compiling in topological order.
     /// This avoids the fail-retry pattern that causes exponential recompilation.
     pub fn load_imports_efficiently(&mut self, imports: &[String]) -> Result<(), String> {
@@ -1168,17 +1614,7 @@ impl CompilationUnit {
 
             let filename = file_path.to_string_lossy().to_string();
             let deps = match parser::parse_haxe_file(&filename, &source, false) {
-                Ok(ast) => {
-                    ast.imports.iter()
-                        .filter_map(|imp| {
-                            if !imp.path.is_empty() {
-                                Some(imp.path.join("."))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                }
+                Ok(ast) => Self::extract_all_dependencies(&ast),
                 Err(_) => Vec::new(),
             };
 
@@ -1764,6 +2200,7 @@ impl CompilationUnit {
     ///
     /// If `skip_pre_registration` is true, assumes types have already been pre-registered
     /// and skips the first pass in lower_file.
+    
     fn compile_file_with_shared_state_ex(
         &mut self,
         filename: &str,
@@ -1772,6 +2209,7 @@ impl CompilationUnit {
     ) -> Result<TypedFile, Vec<CompilationError>> {
         use crate::tast::ast_lowering::AstLowering;
         use parser::parse_haxe_file_with_diagnostics;
+
 
         // Skip if already successfully compiled - return cached TypedFile
         if let Some(cached) = self.compiled_files.get(filename) {
@@ -2165,6 +2603,7 @@ impl CompilationUnit {
     }
 
     /// Compile a single file using shared state (backward-compatible wrapper)
+    
     fn compile_file_with_shared_state(&mut self, filename: &str, source: &str) -> Result<TypedFile, Vec<CompilationError>> {
         self.compile_file_with_shared_state_ex(filename, source, false)
     }
@@ -2187,7 +2626,9 @@ impl CompilationUnit {
     /// the file that should contain it based on qualified path resolution.
     ///
     /// IMPORTANT: On error, this automatically prints formatted diagnostics to stderr
+    
     pub fn lower_to_tast(&mut self) -> Result<Vec<TypedFile>, Vec<CompilationError>> {
+
         // Step 1: Analyze dependencies for user files
         let analysis = match self.analyze_dependencies() {
             Ok(a) => a,
@@ -2252,6 +2693,7 @@ impl CompilationUnit {
                 file.input.as_ref().map(|s| (file.filename.clone(), s.clone()))
             })
             .collect();
+
 
         for (filename, source) in user_sources {
             match self.compile_file_with_shared_state(&filename, &source) {

@@ -559,84 +559,121 @@ trait InstructionExt {
 
 impl InstructionExt for IrInstruction {
     fn uses(&self) -> Vec<IrId> {
-        match self {
-            IrInstruction::Copy { src, .. } => vec![*src],
-            IrInstruction::Load { ptr, .. } => vec![*ptr],
-            IrInstruction::Store { ptr, value } => vec![*ptr, *value],
-            IrInstruction::BinOp { left, right, .. } => vec![*left, *right],
-            IrInstruction::UnOp { operand, .. } => vec![*operand],
-            IrInstruction::Cmp { left, right, .. } => vec![*left, *right],
-            IrInstruction::CallDirect { args, .. } => {
-                args.iter().copied().collect()
-            }
-            IrInstruction::CallIndirect { func_ptr, args, .. } => {
-                let mut uses = vec![*func_ptr];
-                uses.extend(args.iter().copied());
-                uses
-            }
-            IrInstruction::Cast { src, .. } => vec![*src],
-            IrInstruction::Select { condition, true_val, false_val, .. } => {
-                vec![*condition, *true_val, *false_val]
-            }
-            _ => Vec::new(),
-        }
+        // Use the inherent IrInstruction::uses() method which is complete
+        IrInstruction::uses(self)
     }
     
     fn dest(&self) -> Option<IrId> {
-        match self {
-            IrInstruction::Const { dest, .. } |
-            IrInstruction::Copy { dest, .. } |
-            IrInstruction::Load { dest, .. } |
-            IrInstruction::BinOp { dest, .. } |
-            IrInstruction::UnOp { dest, .. } |
-            IrInstruction::Cmp { dest, .. } |
-            IrInstruction::CallDirect { dest: Some(dest), .. } |
-            IrInstruction::CallIndirect { dest: Some(dest), .. } |
-            IrInstruction::Cast { dest, .. } |
-            IrInstruction::Select { dest, .. } => Some(*dest),
-            _ => None,
-        }
+        // Use the inherent IrInstruction::dest() method which is complete
+        IrInstruction::dest(self)
     }
-    
+
     fn has_side_effects(&self) -> bool {
-        match self {
-            IrInstruction::Store { .. } |
-            IrInstruction::CallDirect { .. } |
-            IrInstruction::CallIndirect { .. } |
-            IrInstruction::Throw { .. } => true,
-            _ => false,
-        }
+        // Use the inherent IrInstruction::has_side_effects() method which is complete
+        IrInstruction::has_side_effects(self)
     }
-    
+
     fn replace_uses(&mut self, replacements: &HashMap<IrId, IrId>) {
+        // Replace uses in all instruction operands
+        let replace = |id: &mut IrId| {
+            if let Some(&new_id) = replacements.get(id) {
+                *id = new_id;
+            }
+        };
+
         match self {
-            IrInstruction::Copy { src, .. } => {
-                if let Some(&new_reg) = replacements.get(src) {
-                    *src = new_reg;
-                }
-            }
-            IrInstruction::Load { ptr, .. } => {
-                if let Some(&new_reg) = replacements.get(ptr) {
-                    *ptr = new_reg;
-                }
-            }
+            IrInstruction::Copy { src, .. } => replace(src),
+            IrInstruction::Load { ptr, .. } => replace(ptr),
             IrInstruction::Store { ptr, value } => {
-                if let Some(&new_reg) = replacements.get(ptr) {
-                    *ptr = new_reg;
-                }
-                if let Some(&new_reg) = replacements.get(value) {
-                    *value = new_reg;
-                }
+                replace(ptr);
+                replace(value);
             }
             IrInstruction::BinOp { left, right, .. } => {
-                if let Some(&new_reg) = replacements.get(left) {
-                    *left = new_reg;
-                }
-                if let Some(&new_reg) = replacements.get(right) {
-                    *right = new_reg;
+                replace(left);
+                replace(right);
+            }
+            IrInstruction::UnOp { operand, .. } => replace(operand),
+            IrInstruction::Cmp { left, right, .. } => {
+                replace(left);
+                replace(right);
+            }
+            IrInstruction::CallDirect { args, .. } => {
+                for arg in args {
+                    replace(arg);
                 }
             }
-            // TODO: Add more cases as needed
+            IrInstruction::CallIndirect { func_ptr, args, .. } => {
+                replace(func_ptr);
+                for arg in args {
+                    replace(arg);
+                }
+            }
+            IrInstruction::Cast { src, .. } |
+            IrInstruction::BitCast { src, .. } => replace(src),
+            IrInstruction::Select { condition, true_val, false_val, .. } => {
+                replace(condition);
+                replace(true_val);
+                replace(false_val);
+            }
+            IrInstruction::Free { ptr } => replace(ptr),
+            IrInstruction::Alloc { count, .. } => {
+                if let Some(c) = count {
+                    replace(c);
+                }
+            }
+            IrInstruction::GetElementPtr { ptr, indices, .. } => {
+                replace(ptr);
+                for idx in indices {
+                    replace(idx);
+                }
+            }
+            IrInstruction::MemCopy { dest, src, size } => {
+                replace(dest);
+                replace(src);
+                replace(size);
+            }
+            IrInstruction::MemSet { dest, value, size } => {
+                replace(dest);
+                replace(value);
+                replace(size);
+            }
+            IrInstruction::ExtractValue { aggregate, .. } => replace(aggregate),
+            IrInstruction::InsertValue { aggregate, value, .. } => {
+                replace(aggregate);
+                replace(value);
+            }
+            IrInstruction::Return { value } => {
+                if let Some(v) = value {
+                    replace(v);
+                }
+            }
+            IrInstruction::Throw { exception } |
+            IrInstruction::Resume { exception } => replace(exception),
+            IrInstruction::Phi { incoming, .. } => {
+                for (val, _) in incoming {
+                    replace(val);
+                }
+            }
+            IrInstruction::Branch { condition, .. } => replace(condition),
+            IrInstruction::Switch { value, .. } => replace(value),
+            IrInstruction::InlineAsm { inputs, .. } => {
+                for (_, id) in inputs {
+                    replace(id);
+                }
+                // outputs contains IrType, not IrId, so no replacement needed
+            }
+            // Instructions with no uses to replace
+            IrInstruction::Const { .. } |
+            IrInstruction::Jump { .. } |
+            IrInstruction::ClosureEnv { .. } |
+            IrInstruction::BorrowImmutable { .. } |
+            IrInstruction::BorrowMutable { .. } |
+            IrInstruction::EndBorrow { .. } |
+            IrInstruction::LandingPad { .. } |
+            IrInstruction::Undef { .. } |
+            IrInstruction::FunctionRef { .. } |
+            IrInstruction::DebugLoc { .. } => {}
+            // Handle any other instructions by doing nothing (they may have no register uses)
             _ => {}
         }
     }

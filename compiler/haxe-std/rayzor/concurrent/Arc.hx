@@ -25,6 +25,17 @@ package rayzor.concurrent;
 @:native("rayzor::concurrent::Arc")
 extern class Arc<T> {
     /**
+     * Create a new Arc wrapping the given value (static factory method).
+     *
+     * The value type T must implement Send + Sync.
+     *
+     * @param value The value to wrap
+     * @return A new Arc wrapping the value
+     */
+    @:native("init")
+    public static function init<T>(value: T): Arc<T>;
+
+    /**
      * Create a new Arc wrapping the given value.
      *
      * The value type T must implement Send + Sync.

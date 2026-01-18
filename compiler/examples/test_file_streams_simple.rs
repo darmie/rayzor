@@ -100,7 +100,7 @@ fn compile_and_run_with_mode(source: &str, name: &str, fast_mode: bool) -> Resul
     use std::time::Instant;
 
     let t0 = Instant::now();
-    let mut unit = CompilationUnit::new(CompilationConfig::default());
+    let mut unit = CompilationUnit::new(CompilationConfig::fast());
     unit.load_stdlib()?;
     unit.add_file(source, &format!("{}.hx", name))?;
     eprintln!("[PROFILE] Load stdlib + add file: {:?}", t0.elapsed());
