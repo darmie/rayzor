@@ -78,6 +78,8 @@ impl EnvironmentLayout {
                 IrType::F32 | IrType::F64 => false,  // Float handled differently
                 IrType::Void => false,
                 IrType::Union { .. } => false,
+                // SIMD vector types are not captured directly
+                IrType::Vector { .. } => false,
             };
 
             fields.push(EnvironmentField {

@@ -1301,6 +1301,8 @@ impl PassManager {
                 manager.add_pass(GVNPass::new());
                 manager.add_pass(CSEPass::new());
                 manager.add_pass(LICMPass::new());
+                // Loop vectorization after LICM (LICM prepares loops for vectorization)
+                manager.add_pass(super::vectorization::LoopVectorizationPass::new());
                 manager.add_pass(TailCallOptimizationPass::new());
                 manager.add_pass(ControlFlowSimplificationPass::new());
                 manager.add_pass(UnreachableBlockEliminationPass::new());

@@ -513,8 +513,16 @@ pub enum Opcode {
     LandingPad = 42,
     Resume = 43,
     InlineAsm = 44,
+    // SIMD Vector operations
+    VectorLoad = 45,
+    VectorStore = 46,
+    VectorBinOp = 47,
+    VectorSplat = 48,
+    VectorExtract = 49,
+    VectorInsert = 50,
+    VectorReduce = 51,
     // Sentinel for table size
-    _Count = 45,
+    _Count = 52,
 }
 
 impl Opcode {
@@ -567,6 +575,14 @@ impl Opcode {
             IrInstruction::LandingPad { .. } => Opcode::LandingPad,
             IrInstruction::Resume { .. } => Opcode::Resume,
             IrInstruction::InlineAsm { .. } => Opcode::InlineAsm,
+            // SIMD Vector operations
+            IrInstruction::VectorLoad { .. } => Opcode::VectorLoad,
+            IrInstruction::VectorStore { .. } => Opcode::VectorStore,
+            IrInstruction::VectorBinOp { .. } => Opcode::VectorBinOp,
+            IrInstruction::VectorSplat { .. } => Opcode::VectorSplat,
+            IrInstruction::VectorExtract { .. } => Opcode::VectorExtract,
+            IrInstruction::VectorInsert { .. } => Opcode::VectorInsert,
+            IrInstruction::VectorReduce { .. } => Opcode::VectorReduce,
         }
     }
 }
@@ -1783,6 +1799,42 @@ impl MirInterpreter {
                         .registers
                         .set(*d, NanBoxedValue::void());
                 }
+            }
+
+            // === SIMD Vector Operations (not yet supported in interpreter) ===
+            // These are lowered by the JIT compiler; interpreter falls back to void
+            IrInstruction::VectorLoad { dest, .. } => {
+                self.current_frame_mut()
+                    .registers
+                    .set(*dest, NanBoxedValue::void());
+            }
+            IrInstruction::VectorStore { .. } => {
+                // Vector store has no dest, nothing to do
+            }
+            IrInstruction::VectorBinOp { dest, .. } => {
+                self.current_frame_mut()
+                    .registers
+                    .set(*dest, NanBoxedValue::void());
+            }
+            IrInstruction::VectorSplat { dest, .. } => {
+                self.current_frame_mut()
+                    .registers
+                    .set(*dest, NanBoxedValue::void());
+            }
+            IrInstruction::VectorExtract { dest, .. } => {
+                self.current_frame_mut()
+                    .registers
+                    .set(*dest, NanBoxedValue::void());
+            }
+            IrInstruction::VectorInsert { dest, .. } => {
+                self.current_frame_mut()
+                    .registers
+                    .set(*dest, NanBoxedValue::void());
+            }
+            IrInstruction::VectorReduce { dest, .. } => {
+                self.current_frame_mut()
+                    .registers
+                    .set(*dest, NanBoxedValue::void());
             }
         }
         Ok(())

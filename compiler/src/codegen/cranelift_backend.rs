@@ -278,6 +278,10 @@ impl CraneliftBackend {
             }
             IrType::TypeVar(_) => 0, // Should be monomorphized before codegen
             IrType::Generic { .. } => 0, // Should be monomorphized before codegen
+            // SIMD vector types - size is element_size * count
+            IrType::Vector { element, count } => {
+                self.get_type_size(element) * (*count as u64)
+            }
         }
     }
 
@@ -314,6 +318,15 @@ impl CraneliftBackend {
             IrType::Any => 8, // Aligned to i64
             IrType::TypeVar(_) => 1, // Should be monomorphized before codegen
             IrType::Generic { .. } => 1, // Should be monomorphized before codegen
+            // SIMD vectors require alignment matching their full size
+            // 128-bit vectors need 16-byte alignment, 256-bit need 32-byte
+            IrType::Vector { element, count } => {
+                let size = self.get_type_size(ty) as u32;
+                // Use vector size as alignment (16 for 128-bit, 32 for 256-bit)
+                // but at minimum match element alignment
+                let elem_align = self.get_type_alignment(element);
+                size.max(elem_align)
+            }
         }
     }
 
@@ -2637,6 +2650,152 @@ impl CraneliftBackend {
                 debug!("Free: Emitted call to free for {:?}", ptr);
             }
 
+            // === SIMD Vector Operations ===
+            IrInstruction::VectorLoad { dest, ptr, vec_ty } => {
+                let ptr_val = *value_map
+                    .get(ptr)
+                    .ok_or_else(|| format!("VectorLoad ptr {:?} not found", ptr))?;
+                let cl_vec_ty = Self::mir_type_to_cranelift_static(vec_ty)?;
+                // Load vector from memory (aligned load)
+                let loaded = builder.ins().load(cl_vec_ty, MemFlags::new(), ptr_val, 0);
+                value_map.insert(*dest, loaded);
+            }
+
+            IrInstruction::VectorStore { ptr, value, vec_ty: _ } => {
+                let ptr_val = *value_map
+                    .get(ptr)
+                    .ok_or_else(|| format!("VectorStore ptr {:?} not found", ptr))?;
+                let vec_val = *value_map
+                    .get(value)
+                    .ok_or_else(|| format!("VectorStore value {:?} not found", value))?;
+                // Store vector to memory (aligned store)
+                builder.ins().store(MemFlags::new(), vec_val, ptr_val, 0);
+            }
+
+            IrInstruction::VectorBinOp { dest, op, left, right, vec_ty } => {
+                let lhs = *value_map
+                    .get(left)
+                    .ok_or_else(|| format!("VectorBinOp left {:?} not found", left))?;
+                let rhs = *value_map
+                    .get(right)
+                    .ok_or_else(|| format!("VectorBinOp right {:?} not found", right))?;
+
+                // Get element type to determine if we use integer or float SIMD ops
+                let is_float = match vec_ty {
+                    IrType::Vector { element, .. } => matches!(**element, IrType::F32 | IrType::F64),
+                    _ => false,
+                };
+
+                let result = match op {
+                    crate::ir::BinaryOp::Add | crate::ir::BinaryOp::FAdd => {
+                        if is_float {
+                            builder.ins().fadd(lhs, rhs)
+                        } else {
+                            builder.ins().iadd(lhs, rhs)
+                        }
+                    }
+                    crate::ir::BinaryOp::Sub | crate::ir::BinaryOp::FSub => {
+                        if is_float {
+                            builder.ins().fsub(lhs, rhs)
+                        } else {
+                            builder.ins().isub(lhs, rhs)
+                        }
+                    }
+                    crate::ir::BinaryOp::Mul | crate::ir::BinaryOp::FMul => {
+                        if is_float {
+                            builder.ins().fmul(lhs, rhs)
+                        } else {
+                            builder.ins().imul(lhs, rhs)
+                        }
+                    }
+                    crate::ir::BinaryOp::Div | crate::ir::BinaryOp::FDiv => {
+                        if is_float {
+                            builder.ins().fdiv(lhs, rhs)
+                        } else {
+                            // Integer division - use signed division
+                            builder.ins().sdiv(lhs, rhs)
+                        }
+                    }
+                    crate::ir::BinaryOp::And => builder.ins().band(lhs, rhs),
+                    crate::ir::BinaryOp::Or => builder.ins().bor(lhs, rhs),
+                    crate::ir::BinaryOp::Xor => builder.ins().bxor(lhs, rhs),
+                    _ => return Err(format!("Unsupported vector binary op: {:?}", op)),
+                };
+                value_map.insert(*dest, result);
+            }
+
+            IrInstruction::VectorSplat { dest, scalar, vec_ty } => {
+                let scalar_val = *value_map
+                    .get(scalar)
+                    .ok_or_else(|| format!("VectorSplat scalar {:?} not found", scalar))?;
+                let cl_vec_ty = Self::mir_type_to_cranelift_static(vec_ty)?;
+                // Splat scalar to all lanes
+                let result = builder.ins().splat(cl_vec_ty, scalar_val);
+                value_map.insert(*dest, result);
+            }
+
+            IrInstruction::VectorExtract { dest, vector, index } => {
+                let vec_val = *value_map
+                    .get(vector)
+                    .ok_or_else(|| format!("VectorExtract vector {:?} not found", vector))?;
+                // Extract lane from vector
+                let result = builder.ins().extractlane(vec_val, *index);
+                value_map.insert(*dest, result);
+            }
+
+            IrInstruction::VectorInsert { dest, vector, scalar, index } => {
+                let vec_val = *value_map
+                    .get(vector)
+                    .ok_or_else(|| format!("VectorInsert vector {:?} not found", vector))?;
+                let scalar_val = *value_map
+                    .get(scalar)
+                    .ok_or_else(|| format!("VectorInsert scalar {:?} not found", scalar))?;
+                // Insert scalar into lane
+                let result = builder.ins().insertlane(vec_val, scalar_val, *index);
+                value_map.insert(*dest, result);
+            }
+
+            IrInstruction::VectorReduce { dest, op, vector } => {
+                let vec_val = *value_map
+                    .get(vector)
+                    .ok_or_else(|| format!("VectorReduce vector {:?} not found", vector))?;
+
+                // Get vector type info to determine lane count
+                let vec_type = builder.func.dfg.value_type(vec_val);
+                let lane_count = vec_type.lane_count() as u8;
+                let is_float = vec_type.is_float();
+
+                // Implement horizontal reduction by extracting lanes and combining
+                // Start with lane 0
+                let mut result = builder.ins().extractlane(vec_val, 0);
+
+                // Combine with remaining lanes
+                for lane in 1..lane_count {
+                    let lane_val = builder.ins().extractlane(vec_val, lane);
+                    result = match op {
+                        crate::ir::BinaryOp::Add | crate::ir::BinaryOp::FAdd => {
+                            if is_float {
+                                builder.ins().fadd(result, lane_val)
+                            } else {
+                                builder.ins().iadd(result, lane_val)
+                            }
+                        }
+                        crate::ir::BinaryOp::Mul | crate::ir::BinaryOp::FMul => {
+                            if is_float {
+                                builder.ins().fmul(result, lane_val)
+                            } else {
+                                builder.ins().imul(result, lane_val)
+                            }
+                        }
+                        crate::ir::BinaryOp::And => builder.ins().band(result, lane_val),
+                        crate::ir::BinaryOp::Or => builder.ins().bor(result, lane_val),
+                        crate::ir::BinaryOp::Xor => builder.ins().bxor(result, lane_val),
+                        _ => return Err(format!("Unsupported vector reduce op: {:?}", op)),
+                    };
+                }
+                value_map.insert(*dest, result);
+            }
+
             // TODO: Implement remaining instructions
             _ => {
                 return Err(format!("Unsupported instruction: {:?}", instruction));
@@ -2963,6 +3122,36 @@ impl CraneliftBackend {
             IrType::Opaque { .. } => Ok(types::I64),
             IrType::TypeVar(_) => Ok(types::I64), // Should be monomorphized
             IrType::Generic { .. } => Ok(types::I64), // Should be monomorphized
+            // SIMD Vector types - 128-bit vectors for SSE/NEON compatibility
+            IrType::Vector { element, count } => {
+                Self::mir_vector_to_cranelift(element, *count)
+            }
+        }
+    }
+
+    /// Convert a MIR Vector type to the appropriate Cranelift SIMD type
+    fn mir_vector_to_cranelift(element: &IrType, count: usize) -> Result<Type, String> {
+        // Cranelift SIMD types are named as <element_type>x<count>
+        // We support 128-bit vectors (SSE/NEON compatible)
+        match (element, count) {
+            // 128-bit float vectors
+            (IrType::F32, 4) => Ok(types::F32X4),  // 4x32 = 128 bits
+            (IrType::F64, 2) => Ok(types::F64X2),  // 2x64 = 128 bits
+
+            // 128-bit integer vectors
+            (IrType::I8 | IrType::U8, 16) => Ok(types::I8X16),   // 16x8 = 128 bits
+            (IrType::I16 | IrType::U16, 8) => Ok(types::I16X8),  // 8x16 = 128 bits
+            (IrType::I32 | IrType::U32, 4) => Ok(types::I32X4),  // 4x32 = 128 bits
+            (IrType::I64 | IrType::U64, 2) => Ok(types::I64X2),  // 2x64 = 128 bits
+
+            // 256-bit vectors (AVX) - future extension
+            // (IrType::F32, 8) => Ok(types::F32X8),
+            // (IrType::F64, 4) => Ok(types::F64X4),
+
+            _ => Err(format!(
+                "Unsupported vector type: {:?} x {}",
+                element, count
+            ))
         }
     }
 
@@ -3058,6 +3247,8 @@ impl CraneliftBackend {
             IrType::Ptr(_) | IrType::Ref(_) => 8, // Assume 64-bit pointers
             IrType::Void => 0,
             IrType::Any => 8, // Boxed value pointer
+            // SIMD vector types: element_size * count
+            IrType::Vector { element, count } => Self::type_size(element) * count,
             _ => 8,           // Default to pointer size
         }
     }

@@ -648,14 +648,18 @@ impl TieredBackend {
     /// Note: This compiles ALL modules because functions may call other
     /// functions across modules. The function pointer for the requested function
     /// is returned.
+    ///
+    /// IMPORTANT: This intentionally leaks the LLVM context and backend to ensure
+    /// JIT-compiled code remains valid for the program's lifetime.
     #[cfg(feature = "llvm-backend")]
     #[allow(dead_code)]
     fn compile_with_llvm(
         &self,
         func_id: IrFunctionId,
     ) -> Result<usize, String> {
-        // Create LLVM context and backend
-        let context = Context::create();
+        // Create context and backend, then leak them to ensure lifetime
+        // This is intentional: JIT code must remain valid indefinitely
+        let context = Box::leak(Box::new(Context::create()));
 
         // Convert symbols to the format LLVMJitBackend expects
         let symbols: Vec<(&str, *const u8)> = self.runtime_symbols
@@ -663,7 +667,7 @@ impl TieredBackend {
             .map(|(name, ptr)| (name.as_str(), *ptr as *const u8))
             .collect();
 
-        let mut backend = LLVMJitBackend::with_symbols(&context, &symbols)?;
+        let mut backend = LLVMJitBackend::with_symbols(context, &symbols)?;
 
         // Compile ALL modules - functions may call across modules
         let modules_lock = self.modules.read().unwrap();
@@ -676,6 +680,10 @@ impl TieredBackend {
 
         // Get the optimized function pointer
         let ptr = backend.get_function_ptr(func_id)?;
+
+        // Leak the backend to keep the execution engine alive
+        Box::leak(Box::new(backend));
+
         Ok(ptr as usize)
     }
 

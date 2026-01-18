@@ -580,6 +580,31 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             IrType::TypeVar(_) => Err("Type variables should be monomorphized before codegen".to_string()),
 
             IrType::Generic { .. } => Err("Generic types should be monomorphized before codegen".to_string()),
+
+            // SIMD Vector types - translate to LLVM vector types
+            IrType::Vector { element, count } => {
+                match (element.as_ref(), *count) {
+                    // 128-bit float vectors
+                    (IrType::F32, 4) => Ok(self.context.f32_type().vec_type(4).into()),
+                    (IrType::F64, 2) => Ok(self.context.f64_type().vec_type(2).into()),
+
+                    // 128-bit integer vectors
+                    (IrType::I8 | IrType::U8, 16) => Ok(self.context.i8_type().vec_type(16).into()),
+                    (IrType::I16 | IrType::U16, 8) => Ok(self.context.i16_type().vec_type(8).into()),
+                    (IrType::I32 | IrType::U32, 4) => Ok(self.context.i32_type().vec_type(4).into()),
+                    (IrType::I64 | IrType::U64, 2) => Ok(self.context.i64_type().vec_type(2).into()),
+
+                    // Generic vector type support
+                    _ => {
+                        let elem_ty = self.translate_type(element)?;
+                        match elem_ty {
+                            BasicTypeEnum::IntType(int_ty) => Ok(int_ty.vec_type(*count as u32).into()),
+                            BasicTypeEnum::FloatType(float_ty) => Ok(float_ty.vec_type(*count as u32).into()),
+                            _ => Err(format!("Unsupported vector element type: {:?}", element)),
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1502,6 +1527,154 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 let ptr_val = self.get_value(*ptr)?.into_pointer_value();
                 // Call runtime free or just skip (GC handles it)
                 let _ = ptr_val; // Silence unused warning
+            }
+
+            // === SIMD Vector Operations ===
+            IrInstruction::VectorLoad { dest, ptr, vec_ty } => {
+                let ptr_val = self.get_value(*ptr)?.into_pointer_value();
+                let vec_llvm_ty = self.translate_type(vec_ty)?;
+                let loaded = self.builder.build_load(vec_llvm_ty, ptr_val, &format!("vload_{}", dest.as_u32()))
+                    .map_err(|e| format!("Failed to build vector load: {}", e))?;
+                self.value_map.insert(*dest, loaded);
+            }
+
+            IrInstruction::VectorStore { ptr, value, vec_ty: _ } => {
+                let ptr_val = self.get_value(*ptr)?.into_pointer_value();
+                let vec_val = self.get_value(*value)?;
+                self.builder.build_store(ptr_val, vec_val)
+                    .map_err(|e| format!("Failed to build vector store: {}", e))?;
+            }
+
+            IrInstruction::VectorBinOp { dest, op, left, right, vec_ty } => {
+                let lhs = self.get_value(*left)?;
+                let rhs = self.get_value(*right)?;
+
+                // Determine if float or int vector
+                let is_float = match vec_ty {
+                    IrType::Vector { element, .. } => matches!(element.as_ref(), IrType::F32 | IrType::F64),
+                    _ => false,
+                };
+
+                let result = if is_float {
+                    let lhs_vec = lhs.into_vector_value();
+                    let rhs_vec = rhs.into_vector_value();
+                    match op {
+                        BinaryOp::Add | BinaryOp::FAdd => self.builder.build_float_add(lhs_vec, rhs_vec, "vadd")
+                            .map_err(|e| format!("Vector fadd failed: {}", e))?.into(),
+                        BinaryOp::Sub | BinaryOp::FSub => self.builder.build_float_sub(lhs_vec, rhs_vec, "vsub")
+                            .map_err(|e| format!("Vector fsub failed: {}", e))?.into(),
+                        BinaryOp::Mul | BinaryOp::FMul => self.builder.build_float_mul(lhs_vec, rhs_vec, "vmul")
+                            .map_err(|e| format!("Vector fmul failed: {}", e))?.into(),
+                        BinaryOp::Div | BinaryOp::FDiv => self.builder.build_float_div(lhs_vec, rhs_vec, "vdiv")
+                            .map_err(|e| format!("Vector fdiv failed: {}", e))?.into(),
+                        _ => return Err(format!("Unsupported float vector op: {:?}", op)),
+                    }
+                } else {
+                    let lhs_vec = lhs.into_vector_value();
+                    let rhs_vec = rhs.into_vector_value();
+                    match op {
+                        BinaryOp::Add => self.builder.build_int_add(lhs_vec, rhs_vec, "vadd")
+                            .map_err(|e| format!("Vector iadd failed: {}", e))?.into(),
+                        BinaryOp::Sub => self.builder.build_int_sub(lhs_vec, rhs_vec, "vsub")
+                            .map_err(|e| format!("Vector isub failed: {}", e))?.into(),
+                        BinaryOp::Mul => self.builder.build_int_mul(lhs_vec, rhs_vec, "vmul")
+                            .map_err(|e| format!("Vector imul failed: {}", e))?.into(),
+                        BinaryOp::Div => self.builder.build_int_signed_div(lhs_vec, rhs_vec, "vdiv")
+                            .map_err(|e| format!("Vector idiv failed: {}", e))?.into(),
+                        BinaryOp::And => self.builder.build_and(lhs_vec, rhs_vec, "vand")
+                            .map_err(|e| format!("Vector and failed: {}", e))?.into(),
+                        BinaryOp::Or => self.builder.build_or(lhs_vec, rhs_vec, "vor")
+                            .map_err(|e| format!("Vector or failed: {}", e))?.into(),
+                        BinaryOp::Xor => self.builder.build_xor(lhs_vec, rhs_vec, "vxor")
+                            .map_err(|e| format!("Vector xor failed: {}", e))?.into(),
+                        _ => return Err(format!("Unsupported int vector op: {:?}", op)),
+                    }
+                };
+                self.value_map.insert(*dest, result);
+            }
+
+            IrInstruction::VectorSplat { dest, scalar, vec_ty } => {
+                let scalar_val = self.get_value(*scalar)?;
+                let vec_llvm_ty = self.translate_type(vec_ty)?;
+                let vec_type = vec_llvm_ty.into_vector_type();
+                let lane_count = vec_type.get_size();
+
+                // Build splat by inserting scalar into all lanes
+                let undef = vec_type.get_undef();
+                let mut result: BasicValueEnum = undef.into();
+
+                for i in 0..lane_count {
+                    let idx = self.context.i32_type().const_int(i as u64, false);
+                    result = self.builder.build_insert_element(
+                        result.into_vector_value(),
+                        scalar_val,
+                        idx,
+                        &format!("splat_{}", i)
+                    ).map_err(|e| format!("Vector splat insert failed: {}", e))?.into();
+                }
+                self.value_map.insert(*dest, result);
+            }
+
+            IrInstruction::VectorExtract { dest, vector, index } => {
+                let vec_val = self.get_value(*vector)?.into_vector_value();
+                let idx = self.context.i32_type().const_int(*index as u64, false);
+                let extracted = self.builder.build_extract_element(vec_val, idx, &format!("extract_{}", dest.as_u32()))
+                    .map_err(|e| format!("Vector extract failed: {}", e))?;
+                self.value_map.insert(*dest, extracted);
+            }
+
+            IrInstruction::VectorInsert { dest, vector, scalar, index } => {
+                let vec_val = self.get_value(*vector)?.into_vector_value();
+                let scalar_val = self.get_value(*scalar)?;
+                let idx = self.context.i32_type().const_int(*index as u64, false);
+                let result = self.builder.build_insert_element(vec_val, scalar_val, idx, &format!("insert_{}", dest.as_u32()))
+                    .map_err(|e| format!("Vector insert failed: {}", e))?;
+                self.value_map.insert(*dest, result.into());
+            }
+
+            IrInstruction::VectorReduce { dest, op, vector } => {
+                let vec_val = self.get_value(*vector)?.into_vector_value();
+                let vec_ty = vec_val.get_type();
+                let lane_count = vec_ty.get_size();
+                let elem_ty = vec_ty.get_element_type();
+                let is_float = elem_ty.is_float_type();
+
+                // Extract first element as accumulator
+                let idx0 = self.context.i32_type().const_int(0, false);
+                let mut acc = self.builder.build_extract_element(vec_val, idx0, "reduce_init")
+                    .map_err(|e| format!("Reduce extract failed: {}", e))?;
+
+                // Reduce remaining elements
+                for i in 1..lane_count {
+                    let idx = self.context.i32_type().const_int(i as u64, false);
+                    let elem = self.builder.build_extract_element(vec_val, idx, &format!("reduce_{}", i))
+                        .map_err(|e| format!("Reduce extract failed: {}", e))?;
+
+                    acc = if is_float {
+                        match op {
+                            BinaryOp::Add | BinaryOp::FAdd => self.builder.build_float_add(acc.into_float_value(), elem.into_float_value(), "reduce_add")
+                                .map_err(|e| format!("Reduce fadd failed: {}", e))?.into(),
+                            BinaryOp::Mul | BinaryOp::FMul => self.builder.build_float_mul(acc.into_float_value(), elem.into_float_value(), "reduce_mul")
+                                .map_err(|e| format!("Reduce fmul failed: {}", e))?.into(),
+                            _ => return Err(format!("Unsupported float reduce op: {:?}", op)),
+                        }
+                    } else {
+                        match op {
+                            BinaryOp::Add => self.builder.build_int_add(acc.into_int_value(), elem.into_int_value(), "reduce_add")
+                                .map_err(|e| format!("Reduce iadd failed: {}", e))?.into(),
+                            BinaryOp::Mul => self.builder.build_int_mul(acc.into_int_value(), elem.into_int_value(), "reduce_mul")
+                                .map_err(|e| format!("Reduce imul failed: {}", e))?.into(),
+                            BinaryOp::And => self.builder.build_and(acc.into_int_value(), elem.into_int_value(), "reduce_and")
+                                .map_err(|e| format!("Reduce and failed: {}", e))?.into(),
+                            BinaryOp::Or => self.builder.build_or(acc.into_int_value(), elem.into_int_value(), "reduce_or")
+                                .map_err(|e| format!("Reduce or failed: {}", e))?.into(),
+                            BinaryOp::Xor => self.builder.build_xor(acc.into_int_value(), elem.into_int_value(), "reduce_xor")
+                                .map_err(|e| format!("Reduce xor failed: {}", e))?.into(),
+                            _ => return Err(format!("Unsupported int reduce op: {:?}", op)),
+                        }
+                    };
+                }
+                self.value_map.insert(*dest, acc);
             }
 
             // Panic

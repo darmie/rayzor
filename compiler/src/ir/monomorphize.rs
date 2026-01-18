@@ -84,6 +84,9 @@ impl MonoKey {
                 format!("{}__{}", base_name, args.join("_"))
             }
             IrType::Any => "Any".to_string(),
+            IrType::Vector { element, count } => {
+                format!("Vec{}x{}", Self::mangle_type(element), count)
+            }
         }
     }
 }

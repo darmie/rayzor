@@ -40,9 +40,18 @@ pub enum IrType {
     
     /// Array type with known size
     Array(Box<IrType>, usize),
-    
+
     /// Dynamic array (slice) type
     Slice(Box<IrType>),
+
+    /// SIMD vector type (fixed-size, homogeneous)
+    /// Used for auto-vectorization and explicit SIMD operations
+    Vector {
+        /// Element type (must be numeric: I8-I64, U8-U64, F32, F64)
+        element: Box<IrType>,
+        /// Number of elements (typically 2, 4, 8, or 16)
+        count: usize,
+    },
     
     /// String type (UTF-8)
     String,
@@ -175,6 +184,7 @@ impl IrType {
                 tag_size + max_variant_size
             }
             IrType::Opaque { size, .. } => *size,
+            IrType::Vector { element, count } => element.size() * count,
             IrType::TypeVar(_) => panic!("Cannot get size of type variable before monomorphization"),
             IrType::Generic { .. } => panic!("Cannot get size of generic type before monomorphization"),
             IrType::Any => std::mem::size_of::<usize>() * 2, // type_id + value_ptr
@@ -198,6 +208,8 @@ impl IrType {
             }
             IrType::Union { .. } => 4, // Assume 4-byte alignment for tag
             IrType::Opaque { align, .. } => *align,
+            // SIMD vectors require alignment equal to their size for optimal performance
+            IrType::Vector { element, count } => (element.size() * count).max(element.align()),
             IrType::TypeVar(_) => panic!("Cannot get alignment of type variable before monomorphization"),
             IrType::Generic { .. } => panic!("Cannot get alignment of generic type before monomorphization"),
         }
@@ -230,10 +242,56 @@ impl IrType {
     pub fn is_float(&self) -> bool {
         matches!(self, IrType::F32 | IrType::F64)
     }
-    
+
     /// Check if this is a signed integer type
     pub fn is_signed_integer(&self) -> bool {
         matches!(self, IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64)
+    }
+
+    /// Check if this is a SIMD vector type
+    pub fn is_vector(&self) -> bool {
+        matches!(self, IrType::Vector { .. })
+    }
+
+    /// Create a SIMD vector type from element type and count
+    pub fn vector(element: IrType, count: usize) -> Self {
+        IrType::Vector {
+            element: Box::new(element),
+            count,
+        }
+    }
+
+    /// Get the element type if this is a vector
+    pub fn vector_element(&self) -> Option<&IrType> {
+        match self {
+            IrType::Vector { element, .. } => Some(element),
+            _ => None,
+        }
+    }
+
+    /// Get the element count if this is a vector
+    pub fn vector_count(&self) -> Option<usize> {
+        match self {
+            IrType::Vector { count, .. } => Some(*count),
+            _ => None,
+        }
+    }
+
+    /// Check if this type can be vectorized (is a numeric scalar)
+    pub fn is_vectorizable(&self) -> bool {
+        matches!(
+            self,
+            IrType::I8
+                | IrType::I16
+                | IrType::I32
+                | IrType::I64
+                | IrType::U8
+                | IrType::U16
+                | IrType::U32
+                | IrType::U64
+                | IrType::F32
+                | IrType::F64
+        )
     }
     
     /// Get the default value for this type
@@ -338,6 +396,7 @@ impl fmt::Display for IrType {
                 write!(f, ">")
             }
             IrType::Any => write!(f, "any"),
+            IrType::Vector { element, count } => write!(f, "vec<{}; {}>", element, count),
         }
     }
 }

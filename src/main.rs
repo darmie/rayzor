@@ -251,8 +251,8 @@ fn main() {
 
 /// Helper function to compile Haxe source through the full pipeline to MIR
 /// Uses CompilationUnit for proper multi-file, stdlib-aware compilation
-/// Returns all MIR modules (user code + stdlib)
-fn compile_haxe_to_mir(source: &str, filename: &str) -> Result<Vec<std::sync::Arc<compiler::ir::IrModule>>, String> {
+/// Returns the primary MIR module (user code)
+fn compile_haxe_to_mir(source: &str, filename: &str) -> Result<compiler::ir::IrModule, String> {
     use compiler::compilation::{CompilationUnit, CompilationConfig};
 
     // Create compilation unit with stdlib support
@@ -281,7 +281,10 @@ fn compile_haxe_to_mir(source: &str, filename: &str) -> Result<Vec<std::sync::Ar
         return Err("No MIR modules generated".to_string());
     }
 
-    Ok(mir_modules)
+    // Return the last module (user code - stdlib modules are compiled first)
+    // Clone the inner IrModule from the Arc
+    let module = (**mir_modules.last().unwrap()).clone();
+    Ok(module)
 }
 
 fn run_file(file: PathBuf, verbose: bool, stats: bool, _tier: u8, llvm: bool, cache: bool, cache_dir: Option<PathBuf>, release: bool) -> Result<(), String> {
@@ -321,16 +324,15 @@ fn run_file(file: PathBuf, verbose: bool, stats: bool, _tier: u8, llvm: bool, ca
 
     let _unit = CompilationUnit::new(config);
 
-    // Compile source file to MIR (returns all modules including stdlib)
+    // Compile source file to MIR
     let source = std::fs::read_to_string(&file)
         .map_err(|e| format!("Failed to read file: {}", e))?;
-    let mir_modules = compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"))?;
+    let mir_module = compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"))?;
 
-    let total_functions: usize = mir_modules.iter().map(|m| m.functions.len()).sum();
+    let total_functions = mir_module.functions.len();
     if verbose {
         println!("  ✓ MIR created");
-        println!("    Modules: {}", mir_modules.len());
-        println!("    Total functions: {}", total_functions);
+        println!("    Functions: {}", total_functions);
     }
 
     if total_functions == 0 {
@@ -361,16 +363,11 @@ fn run_file(file: PathBuf, verbose: bool, stats: bool, _tier: u8, llvm: bool, ca
         println!("  ✓ Tiered backend ready");
     }
 
-    // Compile all modules with tiered JIT
+    // Compile module with tiered JIT
     if verbose {
         println!("\nCompiling MIR → Native (Tier 0)...");
     }
-    for module in mir_modules {
-        // Convert Arc<IrModule> to owned IrModule for the tiered backend
-        let owned_module = std::sync::Arc::try_unwrap(module)
-            .unwrap_or_else(|arc| (*arc).clone());
-        backend.compile_module(owned_module)?;
-    }
+    backend.compile_module(mir_module)?;
 
     if verbose {
         println!("  ✓ Compiled successfully");

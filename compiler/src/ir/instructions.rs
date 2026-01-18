@@ -371,6 +371,60 @@ pub enum IrInstruction {
         outputs: Vec<(String, IrType)>,
         clobbers: Vec<String>,
     },
+
+    // === SIMD Vector Operations ===
+
+    /// Load contiguous elements into a SIMD vector
+    VectorLoad {
+        dest: IrId,
+        ptr: IrId,
+        vec_ty: IrType,  // Must be IrType::Vector
+    },
+
+    /// Store SIMD vector to contiguous memory
+    VectorStore {
+        ptr: IrId,
+        value: IrId,
+        vec_ty: IrType,
+    },
+
+    /// SIMD binary operation (element-wise)
+    VectorBinOp {
+        dest: IrId,
+        op: BinaryOp,
+        left: IrId,
+        right: IrId,
+        vec_ty: IrType,
+    },
+
+    /// Broadcast scalar to all vector lanes (splat)
+    VectorSplat {
+        dest: IrId,
+        scalar: IrId,
+        vec_ty: IrType,
+    },
+
+    /// Extract scalar element from vector
+    VectorExtract {
+        dest: IrId,
+        vector: IrId,
+        index: u8,  // Lane index (0-15 for 16-element vectors)
+    },
+
+    /// Insert scalar into vector lane
+    VectorInsert {
+        dest: IrId,
+        vector: IrId,
+        scalar: IrId,
+        index: u8,
+    },
+
+    /// Horizontal reduction (e.g., sum all elements)
+    VectorReduce {
+        dest: IrId,
+        op: BinaryOp,  // Add, Mul, And, Or, Xor for reductions
+        vector: IrId,
+    },
 }
 
 /// Binary operations
@@ -475,7 +529,14 @@ impl IrInstruction {
             IrInstruction::CreateStruct { dest, .. } |
             IrInstruction::PtrAdd { dest, .. } |
             IrInstruction::Undef { dest, .. } |
-            IrInstruction::FunctionRef { dest, .. } => Some(*dest),
+            IrInstruction::FunctionRef { dest, .. } |
+            // Vector instructions
+            IrInstruction::VectorLoad { dest, .. } |
+            IrInstruction::VectorBinOp { dest, .. } |
+            IrInstruction::VectorSplat { dest, .. } |
+            IrInstruction::VectorExtract { dest, .. } |
+            IrInstruction::VectorInsert { dest, .. } |
+            IrInstruction::VectorReduce { dest, .. } => Some(*dest),
             
             IrInstruction::CallDirect { dest, .. } |
             IrInstruction::CallIndirect { dest, .. } |
@@ -534,6 +595,14 @@ impl IrInstruction {
             IrInstruction::InlineAsm { inputs, .. } => {
                 inputs.iter().map(|(_, id)| *id).collect()
             }
+            // Vector instructions
+            IrInstruction::VectorLoad { ptr, .. } => vec![*ptr],
+            IrInstruction::VectorStore { ptr, value, .. } => vec![*ptr, *value],
+            IrInstruction::VectorBinOp { left, right, .. } => vec![*left, *right],
+            IrInstruction::VectorSplat { scalar, .. } => vec![*scalar],
+            IrInstruction::VectorExtract { vector, .. } => vec![*vector],
+            IrInstruction::VectorInsert { vector, scalar, .. } => vec![*vector, *scalar],
+            IrInstruction::VectorReduce { vector, .. } => vec![*vector],
             _ => vec![],
         }
     }

@@ -30,6 +30,7 @@ pub mod environment_layout;  // Closure environment layout abstraction
 pub mod monomorphize;  // Monomorphization pass for generics
 pub mod loop_analysis;  // Loop analysis: dominators, natural loops, nesting
 pub mod inlining;       // Function inlining and call graph analysis
+pub mod vectorization;  // SIMD auto-vectorization for loops
 
 pub use types::*;
 pub use instructions::*;
@@ -40,6 +41,7 @@ pub use builder::*;
 pub use environment_layout::{EnvironmentLayout, EnvironmentField};
 pub use monomorphize::{Monomorphizer, MonoKey, MonomorphizationStats};
 pub use loop_analysis::{DominatorTree, NaturalLoop, LoopNestInfo, TripCount};
+pub use vectorization::{VectorType, VectorInstruction, LoopVectorizationPass};
 
 use std::fmt;
 use serde::{Serialize, Deserialize};
