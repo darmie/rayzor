@@ -669,10 +669,15 @@ impl TieredBackend {
 
         let mut backend = LLVMJitBackend::with_symbols(context, &symbols)?;
 
-        // Compile ALL modules - functions may call across modules
+        // Two-pass compilation for cross-module function references:
+        // 1. First declare ALL functions from ALL modules
         let modules_lock = self.modules.read().unwrap();
         for module in modules_lock.iter() {
-            backend.compile_module(module)?;
+            backend.declare_module(module)?;
+        }
+        // 2. Then compile all function bodies
+        for module in modules_lock.iter() {
+            backend.compile_module_bodies(module)?;
         }
         drop(modules_lock);
 
