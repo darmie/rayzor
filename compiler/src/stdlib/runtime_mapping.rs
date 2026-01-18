@@ -271,6 +271,14 @@ impl StdlibMapping {
         })
     }
 
+    /// Find a static method by class and method name
+    /// Returns the signature and runtime function call if found
+    pub fn find_static_method(&self, class: &str, method: &str) -> Option<(&MethodSignature, &RuntimeFunctionCall)> {
+        self.mappings.iter().find(|(sig, _)| {
+            sig.class == class && sig.method == method && sig.is_static
+        })
+    }
+
     /// Get all unique stdlib class names that have registered methods
     pub fn get_all_classes(&self) -> Vec<&'static str> {
         let mut classes: Vec<&'static str> = self.mappings.keys()
@@ -335,9 +343,18 @@ impl StdlibMapping {
 
     /// Calculate priority for a class based on its characteristics in the mapping
     /// Lower value = higher priority
-    /// - Return-only classes (no constructors) get highest priority (0-9)
-    /// - Classes with fewer methods are more specific (10-19)
-    /// - Everything else (20+)
+    ///
+    /// IMPORTANT: For method resolution without explicit type info, we PREFER types
+    /// that can be explicitly constructed (constructors/factories) over return-only types.
+    /// This is because:
+    /// - Types like Arc, Mutex can be created directly by user code
+    /// - Types like MutexGuard can only be obtained as return values from other methods
+    /// - When we don't know the receiver type, it's more likely to be a constructible type
+    ///
+    /// Priority order:
+    /// - Constructible types (constructors/factories): 0-9
+    /// - Return-only types (guard types, etc.): 10-19
+    /// - Everything else: 20+
     fn class_priority(&self, class: &str) -> u32 {
         // Check if class has any constructor mappings
         let has_constructor = self.mappings.keys().any(|sig| sig.class == class && sig.is_constructor);
@@ -350,11 +367,14 @@ impl StdlibMapping {
         // Count total methods for this class (fewer = more specific)
         let method_count = self.mappings.keys().filter(|sig| sig.class == class).count();
 
-        // Return-only types (can't be constructed, only returned from other methods)
-        // These should have highest priority as they can only exist from specific contexts
-        if !has_constructor && !has_factory {
+        // Constructible types (can be created by user code) get highest priority
+        // This includes Arc, Mutex, Channel, Thread, etc.
+        if has_constructor || has_factory {
             return method_count.min(9) as u32;
         }
+
+        // Return-only types (like MutexGuard) get lower priority
+        // They can only exist from specific contexts (e.g., after Mutex.lock())
 
         // Types with constructors/factories but fewer methods
         10 + method_count.min(9) as u32

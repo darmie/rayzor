@@ -1565,8 +1565,10 @@ impl<'a> HirToMirContext<'a> {
                 init,
                 is_mutable,
             } => {
+                debug!("[LOWER STMT] Processing Let statement, has_init={}", init.is_some());
                 // Lower initialization expression if present
                 if let Some(init_expr) = init {
+                    debug!("[LOWER STMT] init_expr.kind = {:?}", std::mem::discriminant(&init_expr.kind));
 
                     // Check if this is a New expression for a generic stdlib class (Vec<T>)
                     // We need to track the monomorphized class name for later method calls
@@ -1599,6 +1601,11 @@ impl<'a> HirToMirContext<'a> {
                         } else {
                             None
                         }
+                    }
+                    // Also check for stdlib class method calls like Arc.init() or arc.clone()
+                    // These methods return the same stdlib class type (e.g., Arc.init() -> Arc, Arc.clone() -> Arc)
+                    else if let HirExprKind::Call { callee, args: call_args, .. } = &init_expr.kind {
+                        self.detect_stdlib_class_from_call(callee, call_args)
                     } else {
                         None
                     };
@@ -1900,6 +1907,94 @@ impl<'a> HirToMirContext<'a> {
                 }
             }
         }
+    }
+
+    /// Detect if a call expression returns a stdlib class type (e.g., Arc.init() -> Arc)
+    /// This is used to track monomorphized class names for variables assigned from stdlib calls
+    fn detect_stdlib_class_from_call(&self, callee: &HirExpr, args: &[HirExpr]) -> Option<String> {
+        // Case 1: Static method call like Arc.init(...)
+        // The callee is a Field access on a class type: Arc.init
+        if let HirExprKind::Field { object, field, .. } = &callee.kind {
+            if let HirExprKind::Variable { symbol, .. } = &object.kind {
+                // Check if the variable is a class name (Arc, Mutex, etc.)
+                if let Some(sym_info) = self.symbol_table.get_symbol(*symbol) {
+                    if let Some(class_name) = self.string_interner.get(sym_info.name) {
+                        // Get the method name
+                        if let Some(field_sym) = self.symbol_table.get_symbol(*field) {
+                            if let Some(method_name) = self.string_interner.get(field_sym.name) {
+                                // Check if this is a stdlib class method that returns the same class type
+                                // Methods like init, clone, tryLock return the same class or a related type
+                                let returns_same_class = matches!(method_name, "init" | "clone" | "new");
+                                if returns_same_class && self.stdlib_mapping.is_stdlib_class(class_name) {
+                                    debug!("[STDLIB CLASS DETECT] Static call {}.{}() returns {}", class_name, method_name, class_name);
+                                    return Some(class_name.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Case 2: Instance method call like arc.clone() where arc is already tracked
+        // The callee is a Field access on a variable: shared.clone
+        if let HirExprKind::Field { object, field, .. } = &callee.kind {
+            if let HirExprKind::Variable { symbol: receiver_sym, .. } = &object.kind {
+                // Check if the receiver variable is already tracked as a stdlib class
+                if let Some(tracked_class) = self.monomorphized_var_types.get(receiver_sym) {
+                    // Get the method name
+                    if let Some(field_sym) = self.symbol_table.get_symbol(*field) {
+                        if let Some(method_name) = self.string_interner.get(field_sym.name) {
+                            // Methods that return the same class type
+                            let returns_same_class = matches!(method_name, "clone");
+                            if returns_same_class {
+                                debug!("[STDLIB CLASS DETECT] Instance call {}.{}() returns {}", tracked_class, method_name, tracked_class);
+                                return Some(tracked_class.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Case 3: Direct call where callee is Variable (method reference)
+        // This handles both:
+        // - Static method calls like Arc.init(data) where init is resolved to a method symbol
+        // - Instance method calls like clone(shared) where clone is the method symbol
+        if let HirExprKind::Variable { symbol, .. } = &callee.kind {
+            if let Some(sym_info) = self.symbol_table.get_symbol(*symbol) {
+                if let Some(method_name) = self.string_interner.get(sym_info.name) {
+                    // Check if this method name corresponds to a stdlib class factory method
+                    // Methods like "init", "new", "clone" that return a stdlib class type
+                    let factory_methods = ["init", "new", "clone"];
+                    if factory_methods.contains(&method_name) {
+                        // Try to find which stdlib class has this method
+                        let stdlib_classes = self.stdlib_mapping.get_all_classes();
+                        for class_name in &stdlib_classes {
+                            // Check if this class has the method with appropriate param count
+                            let is_static_factory = matches!(method_name, "init" | "new");
+                            if is_static_factory {
+                                // Static method - check if class has this static method
+                                if let Some((_sig, _)) = self.stdlib_mapping.find_static_method(class_name, method_name) {
+                                    return Some(class_name.to_string());
+                                }
+                            } else if method_name == "clone" {
+                                // Instance method - check if first arg is a tracked stdlib variable
+                                if !args.is_empty() {
+                                    if let HirExprKind::Variable { symbol: receiver_sym, .. } = &args[0].kind {
+                                        if let Some(tracked_class) = self.monomorphized_var_types.get(receiver_sym) {
+                                            return Some(tracked_class.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Check if a method symbol corresponds to a stdlib method with runtime mapping
