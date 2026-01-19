@@ -290,6 +290,27 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         Ok(fn_ptr as *const u8)
     }
 
+    /// Get all compiled function pointers
+    /// Call this after finalize() to get all available function addresses
+    pub fn get_all_function_pointers(&mut self) -> Result<HashMap<IrFunctionId, usize>, String> {
+        let engine = self.execution_engine.as_ref()
+            .ok_or("Execution engine not initialized - call finalize() first")?;
+
+        // Get pointers for all functions in function_map that we haven't cached yet
+        for (&func_id, llvm_func) in &self.function_map {
+            if !self.function_pointers.contains_key(&func_id) {
+                let func_name = llvm_func.get_name().to_string_lossy().to_string();
+                if let Ok(fn_ptr) = engine.get_function_address(&func_name) {
+                    if fn_ptr != 0 {
+                        self.function_pointers.insert(func_id, fn_ptr as usize);
+                    }
+                }
+            }
+        }
+
+        Ok(self.function_pointers.clone())
+    }
+
     /// Declare all functions in a module without compiling their bodies
     ///
     /// Call this for ALL modules first before calling compile_module_bodies.

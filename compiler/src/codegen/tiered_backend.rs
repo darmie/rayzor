@@ -450,6 +450,47 @@ impl TieredBackend {
             .unwrap_or(OptimizationTier::Interpreted)
     }
 
+    /// Upgrade all functions to LLVM (Maximum tier) immediately
+    ///
+    /// This bypasses the normal tier promotion and compiles everything with LLVM.
+    /// Useful for benchmarks where you want maximum performance from the start.
+    #[cfg(feature = "llvm-backend")]
+    pub fn upgrade_to_llvm(&mut self) -> Result<(), String> {
+        if self.config.verbosity >= 1 {
+            debug!("[TieredBackend] Upgrading all functions to LLVM...");
+        }
+
+        match self.compile_all_with_llvm() {
+            Ok(all_pointers) => {
+                let mut fp_lock = self.function_pointers.write().unwrap();
+                let mut ft_lock = self.function_tiers.write().unwrap();
+
+                let count = all_pointers.len();
+                for (func_id, ptr) in all_pointers {
+                    fp_lock.insert(func_id, ptr);
+                    ft_lock.insert(func_id, OptimizationTier::Maximum);
+                }
+
+                if self.config.verbosity >= 1 {
+                    debug!("[TieredBackend] Upgraded {} functions to LLVM", count);
+                }
+                Ok(())
+            }
+            Err(e) => {
+                if self.config.verbosity >= 1 {
+                    debug!("[TieredBackend] LLVM upgrade failed: {}", e);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Stub for when LLVM backend is not enabled
+    #[cfg(not(feature = "llvm-backend"))]
+    pub fn upgrade_to_llvm(&mut self) -> Result<(), String> {
+        Err("LLVM backend not enabled".to_string())
+    }
+
     /// Record a function call (for profiling and tier promotion)
     /// This should be called before executing a function
     pub fn record_call(&self, func_id: IrFunctionId) {
@@ -726,32 +767,28 @@ impl TieredBackend {
             debug!("[TieredBackend] Processing {} LLVM compilation(s) on main thread", pending.len());
         }
 
-        // Compile with LLVM (this will compile ALL modules and return function pointers)
-        // We only need to do this once since LLVM compiles everything together
+        // Compile with LLVM (this will compile ALL modules and return ALL function pointers)
         #[cfg(feature = "llvm-backend")]
         {
-            // Take the first function ID - LLVM will compile all functions
-            if let Some(first_func_id) = pending.first() {
-                match self.compile_with_llvm(*first_func_id) {
-                    Ok(ptr) => {
-                        // Install all compiled function pointers
-                        let mut fp_lock = self.function_pointers.write().unwrap();
-                        let mut ft_lock = self.function_tiers.write().unwrap();
+            match self.compile_all_with_llvm() {
+                Ok(all_pointers) => {
+                    // Install ALL compiled function pointers (not just pending ones)
+                    let mut fp_lock = self.function_pointers.write().unwrap();
+                    let mut ft_lock = self.function_tiers.write().unwrap();
 
-                        for func_id in &pending {
-                            // For the first function, we have the pointer
-                            // For others, LLVM has already compiled them as part of the module
-                            fp_lock.insert(*func_id, ptr);
-                            ft_lock.insert(*func_id, OptimizationTier::Maximum);
-                            if self.config.verbosity >= 1 {
-                                debug!("[TieredBackend] Installed {:?} at Maximum (LLVM)", func_id);
-                            }
-                        }
+                    let installed_count = all_pointers.len();
+                    for (func_id, ptr) in all_pointers {
+                        fp_lock.insert(func_id, ptr);
+                        ft_lock.insert(func_id, OptimizationTier::Maximum);
                     }
-                    Err(e) => {
-                        if self.config.verbosity >= 1 {
-                            debug!("[TieredBackend] LLVM compilation failed: {}", e);
-                        }
+
+                    if self.config.verbosity >= 1 {
+                        debug!("[TieredBackend] LLVM: Installed {} functions at Maximum tier", installed_count);
+                    }
+                }
+                Err(e) => {
+                    if self.config.verbosity >= 1 {
+                        debug!("[TieredBackend] LLVM compilation failed: {}", e);
                     }
                 }
             }
@@ -765,20 +802,16 @@ impl TieredBackend {
         }
     }
 
-    /// Compile function with LLVM backend (Tier 3)
+    /// Compile all modules with LLVM backend (Tier 4/Maximum)
     ///
     /// Note: This compiles ALL modules because functions may call other
-    /// functions across modules. The function pointer for the requested function
-    /// is returned.
+    /// functions across modules. Returns ALL function pointers.
     ///
     /// IMPORTANT: This intentionally leaks the LLVM context and backend to ensure
     /// JIT-compiled code remains valid for the program's lifetime.
     #[cfg(feature = "llvm-backend")]
     #[allow(dead_code)]
-    fn compile_with_llvm(
-        &self,
-        func_id: IrFunctionId,
-    ) -> Result<usize, String> {
+    fn compile_all_with_llvm(&self) -> Result<HashMap<IrFunctionId, usize>, String> {
         // Create context and backend, then leak them to ensure lifetime
         // This is intentional: JIT code must remain valid indefinitely
         let context = Box::leak(Box::new(Context::create()));
@@ -805,13 +838,23 @@ impl TieredBackend {
 
         backend.finalize()?;
 
-        // Get the optimized function pointer
-        let ptr = backend.get_function_ptr(func_id)?;
+        // Get ALL function pointers before leaking the backend
+        let all_pointers = backend.get_all_function_pointers()?;
 
         // Leak the backend to keep the execution engine alive
         Box::leak(Box::new(backend));
 
-        Ok(ptr as usize)
+        Ok(all_pointers)
+    }
+
+    /// Legacy single-function compile (returns just one pointer)
+    #[cfg(feature = "llvm-backend")]
+    #[allow(dead_code)]
+    fn compile_with_llvm(&self, func_id: IrFunctionId) -> Result<usize, String> {
+        let all_pointers = self.compile_all_with_llvm()?;
+        all_pointers.get(&func_id)
+            .copied()
+            .ok_or_else(|| format!("Function {:?} not found in LLVM compiled module", func_id))
     }
 
     /// Compile function with LLVM backend (Tier 3) - stub when LLVM not enabled

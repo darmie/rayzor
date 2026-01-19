@@ -256,7 +256,9 @@ fn setup_tiered_benchmark(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> R
             interpreter_threshold: 2,     // JIT after 2 calls
             warm_threshold: 3,            // Promote to Standard after 3
             hot_threshold: 5,             // Promote to Optimized after 5
-            blazing_threshold: 10,        // Promote to LLVM after 10 (with warmup buffer)
+            // Disable LLVM promotion - it conflicts with parallel JIT execution
+            // LLVM tier is tested separately via rayzor-llvm target
+            blazing_threshold: u64::MAX,
             sample_rate: 1,
         },
         enable_background_optimization: enable_background,
