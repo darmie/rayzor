@@ -556,6 +556,12 @@ register_symbol!("rayzor_vec_bool_is_empty", crate::generic_vec::rayzor_vec_bool
 register_symbol!("rayzor_vec_bool_clear", crate::generic_vec::rayzor_vec_bool_clear);
 register_symbol!("rayzor_vec_bool_free", crate::generic_vec::rayzor_vec_bool_free);
 
+// ============================================================================
+// Memory Allocation (libc malloc/free for heap allocations)
+// ============================================================================
+register_symbol!("malloc", libc::malloc);
+register_symbol!("free", libc::free);
+
 /// Rayzor Runtime Plugin
 pub struct RayzorRuntimePlugin;
 

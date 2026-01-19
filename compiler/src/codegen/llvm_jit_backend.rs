@@ -160,7 +160,14 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
     /// Create a new LLVM JIT backend with runtime symbols for FFI
     pub fn with_symbols(context: &'ctx Context, symbols: &[(&str, *const u8)]) -> Result<Self, String> {
-        let mut backend = Self::new(context)?;
+        // Check for environment variable to control optimization level
+        let opt_level = match std::env::var("RAYZOR_LLVM_OPT").ok().as_deref() {
+            Some("0") => OptimizationLevel::None,
+            Some("1") => OptimizationLevel::Less,
+            Some("2") => OptimizationLevel::Default,
+            _ => OptimizationLevel::Aggressive, // Default to O3
+        };
+        let mut backend = Self::with_opt_level(context, opt_level)?;
         for (name, ptr) in symbols {
             backend.runtime_symbols.insert(name.to_string(), *ptr as usize);
         }
@@ -391,15 +398,20 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
         // Dump IR before optimization if requested
         if std::env::var("RAYZOR_DUMP_LLVM_IR").is_ok() {
-            eprintln!("=== LLVM IR (before JIT, opt_level={:?}) ===", self.opt_level);
             let ir_str = self.module.print_to_string().to_string();
-            // Only print first 5000 chars to avoid huge output
-            if ir_str.len() > 5000 {
-                eprintln!("{}...(truncated)", &ir_str[..5000]);
+            // Save to file for easier inspection
+            if let Ok(_) = std::fs::write("/tmp/rayzor_llvm_ir.ll", &ir_str) {
+                eprintln!("=== LLVM IR saved to /tmp/rayzor_llvm_ir.ll ({} bytes) ===", ir_str.len());
             } else {
-                eprintln!("{}", ir_str);
+                eprintln!("=== LLVM IR (before JIT, opt_level={:?}) ===", self.opt_level);
+                // Fallback to truncated output
+                if ir_str.len() > 5000 {
+                    eprintln!("{}...(truncated)", &ir_str[..5000]);
+                } else {
+                    eprintln!("{}", ir_str);
+                }
+                eprintln!("=== End LLVM IR ===");
             }
-            eprintln!("=== End LLVM IR ===");
         }
 
         // Verify the module before optimization
@@ -1125,8 +1137,10 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             IrInstruction::GetElementPtr { dest, ptr, indices, .. } => {
                 let ptr_val = self.get_value(*ptr)?.into_pointer_value();
 
-                // Convert indices to LLVM values - must be integers
-                // If a float index is passed, convert it to integer
+                // Convert indices to LLVM values and multiply by field size
+                // MIR GEP uses field indices (0, 1, 2, ...) but LLVM GEP with i8 type
+                // expects byte offsets. Struct fields are 8 bytes each.
+                const FIELD_SIZE: u64 = 8;
                 let mut index_vals = Vec::new();
                 for &id in indices {
                     let val = self.get_value(id)?;
@@ -1138,9 +1152,27 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                             "gep_idx_cast"
                         ).map_err(|e| format!("Failed to cast GEP index: {}", e))?
                     } else {
-                        val.into_int_value()
+                        // Extend to i64 if needed for consistent multiplication
+                        let raw_int = val.into_int_value();
+                        if raw_int.get_type().get_bit_width() < 64 {
+                            self.builder.build_int_s_extend(
+                                raw_int,
+                                self.context.i64_type(),
+                                "gep_idx_ext"
+                            ).map_err(|e| format!("Failed to extend GEP index: {}", e))?
+                        } else {
+                            raw_int
+                        }
                     };
-                    index_vals.push(int_val);
+
+                    // Multiply field index by field size to get byte offset
+                    let byte_offset = self.builder.build_int_mul(
+                        int_val,
+                        self.context.i64_type().const_int(FIELD_SIZE, false),
+                        "field_byte_offset"
+                    ).map_err(|e| format!("Failed to multiply field index: {}", e))?;
+
+                    index_vals.push(byte_offset);
                 }
 
                 unsafe {
@@ -1208,13 +1240,17 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             IrInstruction::Free { ptr } => {
                 let ptr_val = self.get_value(*ptr)?.into_pointer_value();
 
-                // Call free function (requires libc linkage)
-                // For now, we'll use LLVM's built-in free
-                let free_fn_type = self.context.void_type().fn_type(
-                    &[self.context.i8_type().ptr_type(AddressSpace::default()).into()],
-                    false
-                );
-                let free_fn = self.module.add_function("free", free_fn_type, None);
+                // Get or declare free function (must reuse same declaration to avoid free.1, free.2, etc.)
+                let free_fn = match self.module.get_function("free") {
+                    Some(f) => f,
+                    None => {
+                        let free_fn_type = self.context.void_type().fn_type(
+                            &[self.context.i8_type().ptr_type(AddressSpace::default()).into()],
+                            false
+                        );
+                        self.module.add_function("free", free_fn_type, None)
+                    }
+                };
 
                 self.builder.build_call(free_fn, &[ptr_val.into()], "")
                     .map_err(|e| format!("Failed to build free call: {}", e))?;
@@ -1563,13 +1599,6 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 } else {
                     return Err(format!("Function {:?} not found in function_map for FunctionRef. Ensure all modules are compiled in declare-first order.", func_id));
                 }
-            }
-
-            // Free memory
-            IrInstruction::Free { ptr } => {
-                let ptr_val = self.get_value(*ptr)?.into_pointer_value();
-                // Call runtime free or just skip (GC handles it)
-                let _ = ptr_val; // Silence unused warning
             }
 
             // === SIMD Vector Operations ===

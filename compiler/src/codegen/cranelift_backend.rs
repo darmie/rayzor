@@ -545,6 +545,110 @@ impl CraneliftBackend {
         Ok(())
     }
 
+    /// Compile an entire MIR module WITHOUT calling finalize_definitions.
+    ///
+    /// This is used when compiling multiple modules to the same backend.
+    /// Call `finalize()` after all modules are compiled.
+    pub fn compile_module_without_finalize(&mut self, mir_module: &IrModule) -> Result<(), String> {
+        // Skip modules that only have extern functions (no implementations)
+        let has_implementations = mir_module
+            .functions
+            .values()
+            .any(|f| !f.cfg.blocks.is_empty());
+
+        if !has_implementations {
+            debug!(
+                ": Skipping module '{}' - no implementations (only {} extern declarations)",
+                mir_module.name,
+                mir_module.functions.len()
+            );
+            return Ok(());
+        }
+
+        // Increment module counter for unique function naming across modules
+        let current_module = self.module_counter;
+        self.module_counter += 1;
+
+        debug!(
+            ": Compiling module '{}' #{} (function_map has {} entries)",
+            mir_module.name,
+            current_module,
+            self.function_map.len()
+        );
+
+        // First pass: declare all functions (except malloc/realloc/free which we handle separately)
+        for (func_id, function) in &mir_module.functions {
+            if function.name == "malloc" || function.name == "realloc" || function.name == "free" {
+                continue;
+            }
+            self.declare_function(*func_id, function)?;
+        }
+
+        // Declare C standard library memory functions ONCE (across ALL modules)
+        if !self.runtime_functions.contains_key("malloc") {
+            debug!("Declaring libc function: malloc");
+            self.declare_libc_function("malloc", 1, true)?;
+        }
+        if !self.runtime_functions.contains_key("realloc") {
+            debug!("Declaring libc function: realloc");
+            self.declare_libc_function("realloc", 2, true)?;
+        }
+        if !self.runtime_functions.contains_key("free") {
+            debug!("Declaring libc function: free");
+            self.declare_libc_function("free", 1, false)?;
+        }
+
+        // Map MIR function IDs for malloc/realloc/free to their libc Cranelift IDs
+        for (func_id, function) in &mir_module.functions {
+            if function.name == "malloc" {
+                let libc_id = *self.runtime_functions.get("malloc").unwrap();
+                self.function_map.insert(*func_id, libc_id);
+            } else if function.name == "realloc" {
+                let libc_id = *self.runtime_functions.get("realloc").unwrap();
+                self.function_map.insert(*func_id, libc_id);
+            } else if function.name == "free" {
+                let libc_id = *self.runtime_functions.get("free").unwrap();
+                self.function_map.insert(*func_id, libc_id);
+            }
+        }
+
+        // Also check extern_functions for malloc/realloc/free
+        for (func_id, extern_func) in &mir_module.extern_functions {
+            if extern_func.name == "malloc" {
+                let libc_id = *self.runtime_functions.get("malloc").unwrap();
+                self.function_map.insert(*func_id, libc_id);
+            } else if extern_func.name == "realloc" {
+                let libc_id = *self.runtime_functions.get("realloc").unwrap();
+                self.function_map.insert(*func_id, libc_id);
+            } else if extern_func.name == "free" {
+                let libc_id = *self.runtime_functions.get("free").unwrap();
+                self.function_map.insert(*func_id, libc_id);
+            }
+        }
+
+        // Second pass: compile function bodies (skip extern functions with empty CFGs)
+        for (func_id, function) in &mir_module.functions {
+            if function.cfg.blocks.is_empty() {
+                debug!("Skipping extern function: {}", function.name);
+                continue;
+            }
+            self.compile_function(*func_id, mir_module, function)?;
+        }
+
+        // NOTE: Do NOT call finalize_definitions() here - caller must call finalize() after all modules
+        Ok(())
+    }
+
+    /// Finalize all compiled modules.
+    ///
+    /// This must be called after all `compile_module_without_finalize` calls are complete.
+    /// After finalization, function pointers can be retrieved via `get_function_ptr`.
+    pub fn finalize(&mut self) -> Result<(), String> {
+        self.module
+            .finalize_definitions()
+            .map_err(|e| format!("Failed to finalize definitions: {}", e))
+    }
+
     /// Compile a single function (for tiered compilation)
     ///
     /// This method declares, compiles, and finalizes a single function.

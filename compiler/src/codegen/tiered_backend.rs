@@ -81,6 +81,11 @@ pub struct TieredBackend {
     /// Runtime symbols for FFI (used by interpreter and LLVM backend)
     /// Stored as (name, pointer) pairs for thread-safe sharing
     runtime_symbols: Arc<Vec<(String, usize)>>,
+
+    /// Queue of functions waiting for LLVM compilation on main thread
+    /// LLVM's add_global_mapping requires main thread, so background workers
+    /// queue requests here instead of downgrading to Cranelift
+    llvm_queue: Arc<Mutex<VecDeque<IrFunctionId>>>,
 }
 
 /// Optimization tier level (5-tier system with interpreter)
@@ -252,6 +257,7 @@ impl TieredBackend {
             shutdown: Arc::new(Mutex::new(false)),
             start_interpreted,
             runtime_symbols: Arc::new(Vec::new()),
+            llvm_queue: Arc::new(Mutex::new(VecDeque::new())),
         })
     }
 
@@ -262,7 +268,9 @@ impl TieredBackend {
         #[cfg(feature = "llvm-backend")]
         super::llvm_jit_backend::init_llvm_once();
 
-        let baseline_backend = CraneliftBackend::new()?;
+        // Create baseline backend WITH runtime symbols for extern function linking
+        // This is required when start_interpreted=false (JIT-only mode)
+        let baseline_backend = CraneliftBackend::with_symbols(symbols)?;
         let profile_data = ProfileData::new(config.profile_config);
         let start_interpreted = config.start_interpreted;
 
@@ -292,6 +300,7 @@ impl TieredBackend {
             shutdown: Arc::new(Mutex::new(false)),
             start_interpreted,
             runtime_symbols: Arc::new(runtime_symbols),
+            llvm_queue: Arc::new(Mutex::new(VecDeque::new())),
         })
     }
 
@@ -319,41 +328,22 @@ impl TieredBackend {
             );
         }
 
-        if self.start_interpreted {
-            // Interpreter mode: Just register functions, no compilation needed
-            // Functions start at Phase 0 (Interpreted) and will be JIT-compiled on demand
-            for func_id in module.functions.keys() {
-                self.function_tiers
-                    .write()
-                    .unwrap()
-                    .insert(*func_id, OptimizationTier::Interpreted);
-            }
-        } else {
-            // JIT mode: Compile everything at baseline (Phase 1)
-            let mut backend = self.baseline_backend.lock().unwrap();
-            backend.compile_module(&module)?;
-
-            // Store function pointers and mark all as Baseline tier
-            for func_id in module.functions.keys() {
-                if let Ok(ptr) = backend.get_function_ptr(*func_id) {
-                    self.function_pointers
-                        .write()
-                        .unwrap()
-                        .insert(*func_id, ptr as usize);
-                    self.function_tiers
-                        .write()
-                        .unwrap()
-                        .insert(*func_id, OptimizationTier::Baseline);
-                }
-            }
-            drop(backend);
+        // Register function tiers (actual compilation deferred for JIT mode)
+        for func_id in module.functions.keys() {
+            self.function_tiers
+                .write()
+                .unwrap()
+                .insert(*func_id, initial_tier);
         }
 
         // Store module for later recompilation/interpretation
         self.modules.write().unwrap().push(module);
 
         // Start background optimization if enabled
-        if self.config.enable_background_optimization {
+        // NOTE: In JIT mode (start_interpreted=false), defer starting until after
+        // compile_all_modules_jit() completes in execute_function(), otherwise the
+        // background worker will try to recompile functions that haven't been compiled yet.
+        if self.config.enable_background_optimization && self.start_interpreted {
             self.start_background_optimization();
         }
 
@@ -371,6 +361,10 @@ impl TieredBackend {
         // Record the call for profiling
         self.record_call(func_id);
 
+        // Process LLVM queue (main thread compilation)
+        // This is safe because execute_function runs on the main thread
+        self.process_llvm_queue();
+
         // Get current tier
         let tier = self.function_tiers
             .read()
@@ -378,6 +372,15 @@ impl TieredBackend {
             .get(&func_id)
             .copied()
             .unwrap_or(OptimizationTier::Interpreted);
+
+        // JIT mode: lazily compile all modules on first execution if not yet compiled
+        if !self.start_interpreted && tier == OptimizationTier::Baseline {
+            // Check if we need to compile (no function pointers yet)
+            let needs_compile = self.function_pointers.read().unwrap().is_empty();
+            if needs_compile {
+                self.compile_all_modules_jit()?;
+            }
+        }
 
         // Debug: print current tier
         if self.config.verbosity >= 2 {
@@ -589,6 +592,67 @@ impl TieredBackend {
         Ok(())
     }
 
+    /// Compile all modules to Cranelift in JIT mode (lazy compilation on first execution)
+    ///
+    /// This is called when `start_interpreted: false` and we need to compile all modules
+    /// before executing any function. All modules are compiled to a single Cranelift backend
+    /// to allow cross-module function calls.
+    fn compile_all_modules_jit(&mut self) -> Result<(), String> {
+        if self.config.verbosity >= 1 {
+            debug!("[TieredBackend] JIT mode: compiling all modules to Cranelift");
+        }
+
+        // Convert runtime symbols to the format Cranelift expects
+        let symbols: Vec<(&str, *const u8)> = self.runtime_symbols
+            .iter()
+            .map(|(name, ptr)| (name.as_str(), *ptr as *const u8))
+            .collect();
+
+        // Create a fresh Cranelift backend with runtime symbols
+        let mut backend = CraneliftBackend::with_symbols(&symbols)?;
+
+        // Compile all modules to the same backend WITHOUT finalizing between modules
+        let modules = self.modules.read().unwrap();
+        for module in modules.iter() {
+            backend.compile_module_without_finalize(module)?;
+        }
+
+        // Finalize all modules at once (must be done before getting function pointers)
+        backend.finalize()?;
+
+        // Store function pointers for functions with bodies (non-extern)
+        // Extern functions have empty CFGs and are imported, not compiled
+        for module in modules.iter() {
+            for (func_id, function) in &module.functions {
+                // Skip extern functions (no body to compile)
+                if function.cfg.blocks.is_empty() {
+                    continue;
+                }
+                if let Ok(ptr) = backend.get_function_ptr(*func_id) {
+                    self.function_pointers
+                        .write()
+                        .unwrap()
+                        .insert(*func_id, ptr as usize);
+                }
+            }
+        }
+        drop(modules);
+
+        // Keep the backend alive by storing it (replace the old baseline_backend)
+        *self.baseline_backend.lock().unwrap() = backend;
+
+        if self.config.verbosity >= 1 {
+            debug!("[TieredBackend] JIT compilation complete");
+        }
+
+        // Now start background optimization (was deferred in JIT mode)
+        if self.config.enable_background_optimization {
+            self.start_background_optimization();
+        }
+
+        Ok(())
+    }
+
     /// Compile function with Cranelift backend (Tier 0-2)
     fn compile_with_cranelift(
         &self,
@@ -641,6 +705,64 @@ impl TieredBackend {
 
         // Extract the optimized function
         temp_module.functions.remove(&temp_id).unwrap()
+    }
+
+    /// Process pending LLVM compilations on the main thread
+    ///
+    /// LLVM's add_global_mapping requires main thread, so background workers
+    /// queue requests and this function processes them during execute_function calls.
+    fn process_llvm_queue(&mut self) {
+        // Check if there are any pending LLVM compilations
+        let pending: Vec<IrFunctionId> = {
+            let mut queue = self.llvm_queue.lock().unwrap();
+            queue.drain(..).collect()
+        };
+
+        if pending.is_empty() {
+            return;
+        }
+
+        if self.config.verbosity >= 1 {
+            debug!("[TieredBackend] Processing {} LLVM compilation(s) on main thread", pending.len());
+        }
+
+        // Compile with LLVM (this will compile ALL modules and return function pointers)
+        // We only need to do this once since LLVM compiles everything together
+        #[cfg(feature = "llvm-backend")]
+        {
+            // Take the first function ID - LLVM will compile all functions
+            if let Some(first_func_id) = pending.first() {
+                match self.compile_with_llvm(*first_func_id) {
+                    Ok(ptr) => {
+                        // Install all compiled function pointers
+                        let mut fp_lock = self.function_pointers.write().unwrap();
+                        let mut ft_lock = self.function_tiers.write().unwrap();
+
+                        for func_id in &pending {
+                            // For the first function, we have the pointer
+                            // For others, LLVM has already compiled them as part of the module
+                            fp_lock.insert(*func_id, ptr);
+                            ft_lock.insert(*func_id, OptimizationTier::Maximum);
+                            if self.config.verbosity >= 1 {
+                                debug!("[TieredBackend] Installed {:?} at Maximum (LLVM)", func_id);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if self.config.verbosity >= 1 {
+                            debug!("[TieredBackend] LLVM compilation failed: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        #[cfg(not(feature = "llvm-backend"))]
+        {
+            if self.config.verbosity >= 1 {
+                debug!("[TieredBackend] LLVM backend not enabled, skipping {} requests", pending.len());
+            }
+        }
     }
 
     /// Compile function with LLVM backend (Tier 3)
@@ -722,6 +844,7 @@ impl TieredBackend {
         let profile_data = self.profile_data.clone();
         let config = self.config.clone();
         let runtime_symbols = Arc::clone(&self.runtime_symbols);
+        let llvm_queue = Arc::clone(&self.llvm_queue);
 
         let handle = thread::spawn(move || {
             if config.verbosity >= 1 {
@@ -747,6 +870,7 @@ impl TieredBackend {
                     &profile_data,
                     &config,
                     &runtime_symbols,
+                    &llvm_queue,
                 );
 
                 // Sleep before next iteration
@@ -771,6 +895,7 @@ impl TieredBackend {
         profile_data: &ProfileData,
         config: &TieredConfig,
         runtime_symbols: &Arc<Vec<(String, usize)>>,
+        llvm_queue: &Arc<Mutex<VecDeque<IrFunctionId>>>,
     ) {
         // Drain batch of functions to compile in parallel
         let batch: Vec<(IrFunctionId, OptimizationTier)> = {
@@ -812,22 +937,27 @@ impl TieredBackend {
         }
 
         // Separate LLVM and Cranelift compilations
-        // LLVM requires main thread for symbol mapping, so skip it on background threads
-        // Those functions will be downgraded to Cranelift tier
-        let (llvm_batch, mut cranelift_batch): (Vec<_>, Vec<_>) = batch
+        // LLVM requires main thread for symbol mapping, so queue those for main thread
+        let (llvm_batch, cranelift_batch): (Vec<_>, Vec<_>) = batch
             .iter()
             .cloned()  // Clone to get owned values
             .partition(|(_, tier)| tier.uses_llvm());
 
-        // Skip LLVM batch on background thread - LLVM's add_global_mapping needs main thread
-        // Instead, compile these at Optimized tier (Cranelift) as fallback
+        // Queue LLVM requests for main thread compilation (instead of downgrading)
+        // The main thread will process these during execute_function calls
         if !llvm_batch.is_empty() {
-            if config.verbosity >= 1 {
-                debug!("[TieredBackend] Downgrading {} LLVM requests to Optimized (Cranelift)", llvm_batch.len());
-            }
-            // Re-add to cranelift batch at Optimized tier
+            let mut llvm_queue_lock = llvm_queue.lock().unwrap();
+            let mut optimizing_lock = optimizing.lock().unwrap();
             for (func_id, _) in llvm_batch {
-                cranelift_batch.push((func_id, OptimizationTier::Optimized));
+                // Remove from "optimizing" set since we're re-queuing for main thread
+                optimizing_lock.remove(&func_id);
+                // Add to LLVM queue for main thread
+                if !llvm_queue_lock.iter().any(|id| *id == func_id) {
+                    llvm_queue_lock.push_back(func_id);
+                    if config.verbosity >= 1 {
+                        debug!("[TieredBackend] Queued {:?} for LLVM compilation on main thread", func_id);
+                    }
+                }
             }
         }
 

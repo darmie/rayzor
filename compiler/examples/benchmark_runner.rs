@@ -12,10 +12,13 @@ use compiler::codegen::profiling::ProfileConfig;
 use compiler::codegen::CraneliftBackend;
 use compiler::codegen::InterpValue;
 use compiler::compilation::{CompilationConfig, CompilationUnit};
-use compiler::ir::IrFunctionId;
+use compiler::ir::{IrFunctionId, IrModule};
+use compiler::ir::optimization::{PassManager, OptimizationLevel};
 
 #[cfg(feature = "llvm-backend")]
 use compiler::codegen::LLVMJitBackend;
+#[cfg(feature = "llvm-backend")]
+use compiler::codegen::init_llvm_once;
 #[cfg(feature = "llvm-backend")]
 use inkwell::context::Context;
 use serde::{Deserialize, Serialize};
@@ -220,6 +223,11 @@ struct TieredBenchmarkState {
     compile_time: Duration,
 }
 
+/// Heavy benchmarks that should skip interpreter and start at Baseline (Cranelift)
+fn is_heavy_benchmark(name: &str) -> bool {
+    matches!(name, "mandelbrot" | "mandelbrot_simple" | "nbody")
+}
+
 fn setup_tiered_benchmark(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> Result<TieredBenchmarkState, String> {
     let compile_start = Instant::now();
 
@@ -232,6 +240,17 @@ fn setup_tiered_benchmark(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> R
 
     let mir_modules = unit.get_mir_modules();
 
+    // For heavy benchmarks, start at Baseline (Cranelift) to avoid slow interpreted first-run.
+    // For lightweight benchmarks, start interpreted to test full tiered promotion.
+    let is_heavy = is_heavy_benchmark(&bench.name);
+    let start_interpreted = !is_heavy;
+
+    // For heavy benchmarks starting at Baseline, disable background optimization
+    // since they won't benefit from tier promotion during a benchmark run.
+    // The background worker also has issues with single-function recompilation
+    // when cross-module references exist.
+    let enable_background = !is_heavy;
+
     let config = TieredConfig {
         profile_config: ProfileConfig {
             interpreter_threshold: 2,     // JIT after 2 calls
@@ -240,11 +259,11 @@ fn setup_tiered_benchmark(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> R
             blazing_threshold: 10,        // Promote to LLVM after 10 (with warmup buffer)
             sample_rate: 1,
         },
-        enable_background_optimization: true,
+        enable_background_optimization: enable_background,
         optimization_check_interval_ms: 1,  // Check frequently
         max_parallel_optimizations: 4,
-        verbosity: 2,  // Enable debug output for tier promotions
-        start_interpreted: true,
+        verbosity: 1,  // Basic output
+        start_interpreted,
     };
 
     let mut backend = TieredBackend::with_symbols(config, symbols)
@@ -290,6 +309,8 @@ fn run_benchmark_tiered(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> Res
 
     let mir_modules = unit.get_mir_modules();
 
+    // Use JIT-only mode for benchmarks to avoid slow interpreted first-run.
+    // The interpreter is tested separately via the RayzorInterpreter target.
     let config = TieredConfig {
         profile_config: ProfileConfig {
             interpreter_threshold: 5,
@@ -302,7 +323,7 @@ fn run_benchmark_tiered(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> Res
         optimization_check_interval_ms: 5,
         max_parallel_optimizations: 4,
         verbosity: 0,
-        start_interpreted: true,
+        start_interpreted: false,  // Start at Baseline (Cranelift) for benchmarks
     };
 
     let mut backend = TieredBackend::with_symbols(config, symbols)
@@ -355,6 +376,11 @@ fn setup_llvm_benchmark<'ctx>(
     unit.lower_to_tast().map_err(|e| format!("tast: {:?}", e))?;
 
     let mir_modules = unit.get_mir_modules();
+
+    // NOTE: We don't apply MIR optimization here because:
+    // 1. Some MIR optimization passes have bugs that break IR validity
+    // 2. LLVM applies its own aggressive O3 optimizations during finalize()
+    // 3. The MIR is already correct from the frontend; LLVM will optimize it further
 
     // Create LLVM backend (context is passed in and must outlive this)
     let mut backend = LLVMJitBackend::with_symbols(context, symbols)
@@ -655,6 +681,11 @@ fn generate_chart_html(suite: &BenchmarkSuite) -> Result<(), String> {
 }
 
 fn main() {
+    // IMPORTANT: Initialize LLVM on main thread BEFORE spawning any background threads
+    // This prevents crashes due to LLVM's thread-unsafe global initialization
+    #[cfg(feature = "llvm-backend")]
+    init_llvm_once();
+
     let args: Vec<String> = std::env::args().collect();
 
     println!("{}", "=".repeat(70));
@@ -686,16 +717,15 @@ fn main() {
         available
     };
 
-    let mut targets = vec![
+    let all_targets = vec![
         Target::RayzorCranelift,
         Target::RayzorInterpreter,
         Target::RayzorTiered,
+        #[cfg(feature = "llvm-backend")]
+        Target::RayzorLLVM,
     ];
 
-    #[cfg(feature = "llvm-backend")]
-    targets.push(Target::RayzorLLVM);
-
-    println!("Running {} benchmarks x {} targets", benchmarks_to_run.len(), targets.len());
+    println!("Running {} benchmarks x up to {} targets", benchmarks_to_run.len(), all_targets.len());
     println!("Warmup: {} runs, Benchmark: {} runs", WARMUP_RUNS, BENCH_RUNS);
     println!();
 
@@ -717,21 +747,60 @@ fn main() {
             }
         };
 
-        // Run non-LLVM targets in parallel (LLVM has threading issues with add_global_mapping)
-        let (tx, rx) = mpsc::channel::<(Target, Result<BenchmarkResult, String>)>();
-        let mut handles = Vec::new();
+        // Filter targets for this benchmark
+        // Skip interpreter for heavy benchmarks (millions of iterations would take hours)
+        let is_heavy = is_heavy_benchmark(bench_name);
+        let targets: Vec<Target> = all_targets.iter()
+            .filter(|t| !is_heavy || !matches!(t, Target::RayzorInterpreter))
+            .copied()
+            .collect();
+
+        if is_heavy {
+            println!("  (Skipping interpreter for heavy benchmark)\n");
+        }
+
+        // IMPORTANT: Run LLVM FIRST before spawning background threads!
+        // LLVM's optimization passes hang when JIT code (Cranelift) executes concurrently.
+        // This is a known limitation - LLVM finalize() must complete before other JIT runs.
+        let mut results = Vec::new();
 
         #[cfg(feature = "llvm-backend")]
         let llvm_target = targets.iter().find(|t| matches!(t, Target::RayzorLLVM)).cloned();
         #[cfg(not(feature = "llvm-backend"))]
         let llvm_target: Option<Target> = None;
 
-        for target in targets.clone() {
-            #[cfg(feature = "llvm-backend")]
-            if matches!(target, Target::RayzorLLVM) {
-                continue; // Run LLVM on main thread later
+        // Run LLVM on main thread FIRST (before spawning other threads)
+        #[cfg(feature = "llvm-backend")]
+        if let Some(llvm) = llvm_target {
+            println!("\n  Running LLVM first (must complete before other JIT)...\n");
+            let result = run_benchmark(&bench, llvm);
+            match result {
+                Ok(bench_result) => {
+                    println!("  [DONE] {} ({})", llvm.name(), llvm.description());
+                    println!("         Compile: {:.2}ms, Execute: {:.2}ms, Total: {:.2}ms\n",
+                        bench_result.compile_time_ms, bench_result.runtime_ms, bench_result.total_time_ms);
+                    results.push(bench_result);
+                }
+                Err(e) => {
+                    eprintln!("  [FAIL] {}: {}\n", llvm.name(), e);
+                }
             }
+        }
 
+        // NOW run non-LLVM targets in parallel
+        let (tx, rx) = mpsc::channel::<(Target, Result<BenchmarkResult, String>)>();
+        let mut handles = Vec::new();
+
+        let non_llvm_targets: Vec<Target> = targets.iter()
+            .filter(|t| !matches!(t, Target::RayzorLLVM))
+            .copied()
+            .collect();
+
+        if !non_llvm_targets.is_empty() {
+            println!("  Running {} other targets in parallel...\n", non_llvm_targets.len());
+        }
+
+        for target in non_llvm_targets {
             let tx = tx.clone();
             let bench_source = bench.source.clone();
             let bench_name_clone = bench.name.clone();
@@ -748,27 +817,6 @@ fn main() {
         }
         drop(tx); // Close sender so receiver knows when all threads are done
 
-        println!("\n  Running {} targets in parallel...\n", targets.len());
-
-        // Collect results from other threads as they complete
-        let mut results = Vec::new();
-
-        // Run LLVM on main thread (has threading issues with add_global_mapping)
-        #[cfg(feature = "llvm-backend")]
-        if let Some(llvm) = llvm_target {
-            let result = run_benchmark(&bench, llvm);
-            match result {
-                Ok(bench_result) => {
-                    println!("  [DONE] {} ({})", llvm.name(), llvm.description());
-                    println!("         Compile: {:.2}ms, Execute: {:.2}ms, Total: {:.2}ms\n",
-                        bench_result.compile_time_ms, bench_result.runtime_ms, bench_result.total_time_ms);
-                    results.push(bench_result);
-                }
-                Err(e) => {
-                    eprintln!("  [FAIL] {}: {}\n", llvm.name(), e);
-                }
-            }
-        }
         while let Ok((target, result)) = rx.recv() {
             match result {
                 Ok(bench_result) => {

@@ -1677,16 +1677,15 @@ impl<'a> HirToMirContext<'a> {
                 // like method calls for side effects, we should free the result too
                 //
                 // IMPORTANT: Don't track method call results for drop because:
-                // 1. Void-returning methods may incorrectly return the receiver
-                // 2. The receiver is typically owned by a variable, not the call expression
-                // 3. Dynamic-typed method calls on arrays/strings return stack pointers
+                // Track heap-allocated results for cleanup:
+                // 1. Direct `new` expressions: `new Complex(...)`
+                // 2. Method calls that return class instances: `z.mul(z)` returns new Complex
                 //
-                // Only track results from `new` expressions which are known heap allocations
+                // The type_needs_drop check ensures we only track Class instances,
+                // not primitives, strings, or Dynamic values from runtime functions.
                 if let Some(result_id) = result {
-                    // Only track temps from `new` expressions (explicit heap allocations)
-                    // Method calls return borrowed references or void, not owned values
-                    let is_new_expr = matches!(&expr.kind, HirExprKind::New { .. });
-                    if is_new_expr && self.type_needs_drop(expr.ty) {
+                    let is_heap_expr = matches!(&expr.kind, HirExprKind::New { .. } | HirExprKind::Call { .. });
+                    if is_heap_expr && self.type_needs_drop(expr.ty) {
                         self.temp_heap_values.push(result_id);
                     }
                 }
@@ -2734,14 +2733,17 @@ impl<'a> HirToMirContext<'a> {
                 let obj_reg = self.lower_expression(object)?;
                 debug!("[Field expression] Object lowered to reg={}, now calling lower_field_access", obj_reg);
 
-                // Track object as temp if it's an OWNED heap-allocated value (only `new` expressions)
-                // NOTE: We do NOT track Call results here because method calls return:
-                // - Borrowed references (no ownership transfer)
-                // - Temporary boxed values (allocated by Rust's Box, not malloc)
-                // Freeing these would crash (Rust Box vs C malloc allocator mismatch)
+                // Track object as temp if it's an OWNED heap-allocated value
+                // This includes:
+                // 1. Direct `new` expressions: `new Complex(...)`
+                // 2. Method calls that return class instances: `z.mul(z)` returns new Complex
+                //
+                // We check if the return type is a Class (heap-allocated via malloc).
+                // Runtime/extern functions typically return primitives, strings, or Dynamic,
+                // not Class instances, so this heuristic is safe.
                 let is_owned_heap_value = matches!(
                     &object.kind,
-                    HirExprKind::New { .. }
+                    HirExprKind::New { .. } | HirExprKind::Call { .. }
                 ) && self.type_needs_drop(object.ty);
 
                 if is_owned_heap_value {
@@ -2970,6 +2972,16 @@ impl<'a> HirToMirContext<'a> {
                         // Regular method call (not extern or no runtime mapping)
                         // Lower the object (this will be the first parameter)
                         let obj_reg = self.lower_expression(object)?;
+
+                        // Track object as temp if it's a heap-allocated intermediate
+                        // (e.g., z.mul(z) in z.mul(z).add(c) returns a new Complex)
+                        let is_owned_heap_value = matches!(
+                            &object.kind,
+                            HirExprKind::New { .. } | HirExprKind::Call { .. }
+                        ) && self.type_needs_drop(object.ty);
+                        if is_owned_heap_value {
+                            self.temp_heap_values.push(obj_reg);
+                        }
 
                         // Lower the arguments
                         let arg_regs: Vec<_> = std::iter::once(obj_reg)  // Add 'this' as first arg
@@ -5038,10 +5050,23 @@ impl<'a> HirToMirContext<'a> {
                         if *is_method {
                             // debug!("Method call (is_method=true) - symbol={:?}, args.len()={}", symbol, args.len());
                             // For method calls, args already includes the object as first arg
-                            let arg_regs: Vec<_> = args
-                                .iter()
-                                .filter_map(|a| self.lower_expression(a))
-                                .collect();
+                            // Track the receiver (args[0]) as a temp if it's a heap-allocated intermediate
+                            let mut arg_regs = Vec::new();
+                            for (i, arg) in args.iter().enumerate() {
+                                if let Some(reg) = self.lower_expression(arg) {
+                                    // Track receiver (first arg) if it's a heap-allocated Call/New result
+                                    if i == 0 {
+                                        let is_heap_intermediate = matches!(
+                                            &arg.kind,
+                                            HirExprKind::New { .. } | HirExprKind::Call { .. }
+                                        ) && self.type_needs_drop(arg.ty);
+                                        if is_heap_intermediate {
+                                            self.temp_heap_values.push(reg);
+                                        }
+                                    }
+                                    arg_regs.push(reg);
+                                }
+                            }
 
                             // Extract type_args from receiver's class type for generic method calls
                             let ir_type_args = if !args.is_empty() {
@@ -5073,18 +5098,10 @@ impl<'a> HirToMirContext<'a> {
                             };
                             debug!("[FUNCTION_MAP] Result: {:?}", result);
 
-                            // NOTE: We do NOT register method call results as temps needing free.
-                            // Method calls return:
-                            // 1. Borrowed references (no ownership transfer)
-                            // 2. Temporary boxed values (allocated by Rust's Box, not malloc)
-                            // 3. Stack-allocated values (strings, primitives)
-                            //
-                            // Calling free() on these would cause crashes because:
-                            // - Rust Box uses a different allocator than C's malloc
-                            // - Borrowed references shouldn't be freed by the caller
-                            //
-                            // For method chains like z.mul(z).add(c), the callee (class method)
-                            // is responsible for managing intermediate allocations, not the caller.
+                            // NOTE: Receiver temps are tracked above (args[0] for method calls).
+                            // For method chains like z.mul(z).add(c), the intermediate result
+                            // of z.mul(z) is tracked as a temp and freed after add() returns.
+                            // The receiver temp tracking above handles this case.
 
                             return result;
                         } else {
