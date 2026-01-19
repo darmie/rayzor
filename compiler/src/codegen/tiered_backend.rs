@@ -86,6 +86,11 @@ pub struct TieredBackend {
     /// LLVM's add_global_mapping requires main thread, so background workers
     /// queue requests here instead of downgrading to Cranelift
     llvm_queue: Arc<Mutex<VecDeque<IrFunctionId>>>,
+
+    /// Whether LLVM compilation has already been performed
+    /// Used to prevent unbounded LLVM context leaks from repeated compilations
+    #[cfg(feature = "llvm-backend")]
+    llvm_compiled: Arc<Mutex<bool>>,
 }
 
 /// Optimization tier level (5-tier system with interpreter)
@@ -258,6 +263,8 @@ impl TieredBackend {
             start_interpreted,
             runtime_symbols: Arc::new(Vec::new()),
             llvm_queue: Arc::new(Mutex::new(VecDeque::new())),
+            #[cfg(feature = "llvm-backend")]
+            llvm_compiled: Arc::new(Mutex::new(false)),
         })
     }
 
@@ -301,6 +308,8 @@ impl TieredBackend {
             start_interpreted,
             runtime_symbols: Arc::new(runtime_symbols),
             llvm_queue: Arc::new(Mutex::new(VecDeque::new())),
+            #[cfg(feature = "llvm-backend")]
+            llvm_compiled: Arc::new(Mutex::new(false)),
         })
     }
 
@@ -437,7 +446,11 @@ impl TieredBackend {
             }
         } else {
             // JIT-compiled code - call via function pointer
-            let func_ptr = self.get_function_pointer(func_id)
+            // SAFETY: Hold read lock during execution to prevent background worker
+            // from replacing the function pointer while we're executing through it
+            let fp_guard = self.function_pointers.read().unwrap();
+            let func_ptr = fp_guard.get(&func_id)
+                .map(|addr| *addr as *const u8)
                 .ok_or_else(|| format!("JIT function {:?} not found in function_pointers", func_id))?;
 
             // For functions with no args (like main), call directly
@@ -450,11 +463,13 @@ impl TieredBackend {
                     let jit_fn: extern "C" fn(i64) = std::mem::transmute(func_ptr);
                     jit_fn(0); // null environment pointer
                 }
+                drop(fp_guard); // Explicitly release lock after execution
                 Ok(InterpValue::Void)
             } else {
                 // TODO: Implement argument marshaling for JIT calls
                 // For now, fall back to interpreter for functions with args
                 // This is a limitation - in practice, hot inner functions often have args
+                drop(fp_guard); // Release lock before acquiring other locks
                 if self.config.verbosity >= 1 {
                     debug!("[TieredBackend] JIT function with args - falling back to interpreter");
                 }
@@ -866,6 +881,23 @@ impl TieredBackend {
     #[cfg(feature = "llvm-backend")]
     #[allow(dead_code)]
     fn compile_all_with_llvm(&self) -> Result<HashMap<IrFunctionId, usize>, String> {
+        // Check if LLVM compilation has already been done to prevent unbounded context leaks
+        // Each LLVM context uses ~10-50MB, so we must not create multiple contexts
+        {
+            let llvm_compiled = self.llvm_compiled.lock().unwrap();
+            if *llvm_compiled {
+                // Already compiled - return existing pointers
+                let fp_lock = self.function_pointers.read().unwrap();
+                return Ok(fp_lock.iter()
+                    .map(|(id, ptr)| (*id, *ptr))
+                    .collect());
+            }
+        }
+
+        // Acquire global LLVM lock - LLVM is not thread-safe
+        // This prevents concurrent LLVM operations from corrupting global state
+        let _llvm_guard = super::llvm_jit_backend::llvm_lock();
+
         // Create context and backend, then leak them to ensure lifetime
         // This is intentional: JIT code must remain valid indefinitely
         let context = Box::leak(Box::new(Context::create()));
@@ -897,6 +929,9 @@ impl TieredBackend {
 
         // Leak the backend to keep the execution engine alive
         Box::leak(Box::new(backend));
+
+        // Mark LLVM compilation as done to prevent future context leaks
+        *self.llvm_compiled.lock().unwrap() = true;
 
         Ok(all_pointers)
     }
