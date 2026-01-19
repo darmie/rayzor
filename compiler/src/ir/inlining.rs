@@ -288,18 +288,29 @@ impl InliningPass {
 
         // Clone callee blocks into caller with remapped registers and blocks
         for (&old_block_id, old_block) in &callee.cfg.blocks {
-            let new_block_id = block_map[&old_block_id];
+            let new_block_id = *block_map.get(&old_block_id)
+                .ok_or_else(|| format!("Block {:?} not found in block_map", old_block_id))?;
 
             // Clone and remap phi nodes
-            let new_phis: Vec<IrPhiNode> = old_block.phi_nodes.iter().map(|phi| {
-                IrPhiNode {
-                    dest: reg_map[&phi.dest],
-                    incoming: phi.incoming.iter().map(|(block, val)| {
-                        (block_map[block], *reg_map.get(val).unwrap_or(val))
-                    }).collect(),
-                    ty: phi.ty.clone(),
+            let mut new_phis: Vec<IrPhiNode> = Vec::new();
+            for phi in &old_block.phi_nodes {
+                let dest = *reg_map.get(&phi.dest)
+                    .ok_or_else(|| format!("Phi dest {:?} not found in reg_map", phi.dest))?;
+
+                let mut incoming = Vec::new();
+                for (block, val) in &phi.incoming {
+                    let new_block = *block_map.get(block)
+                        .ok_or_else(|| format!("Phi incoming block {:?} not found in block_map", block))?;
+                    let new_val = *reg_map.get(val).unwrap_or(val);
+                    incoming.push((new_block, new_val));
                 }
-            }).collect();
+
+                new_phis.push(IrPhiNode {
+                    dest,
+                    incoming,
+                    ty: phi.ty.clone(),
+                });
+            }
 
             // Clone and remap instructions
             let new_instructions: Vec<IrInstruction> = old_block.instructions.iter().map(|inst| {
@@ -323,20 +334,34 @@ impl InliningPass {
                     IrTerminator::Branch { target: continuation_block }
                 }
                 IrTerminator::Branch { target } => {
-                    IrTerminator::Branch { target: block_map[target] }
+                    let new_target = *block_map.get(target)
+                        .ok_or_else(|| format!("Branch target {:?} not found in block_map", target))?;
+                    IrTerminator::Branch { target: new_target }
                 }
                 IrTerminator::CondBranch { condition, true_target, false_target } => {
+                    let new_true = *block_map.get(true_target)
+                        .ok_or_else(|| format!("CondBranch true_target {:?} not found", true_target))?;
+                    let new_false = *block_map.get(false_target)
+                        .ok_or_else(|| format!("CondBranch false_target {:?} not found", false_target))?;
                     IrTerminator::CondBranch {
                         condition: *reg_map.get(condition).unwrap_or(condition),
-                        true_target: block_map[true_target],
-                        false_target: block_map[false_target],
+                        true_target: new_true,
+                        false_target: new_false,
                     }
                 }
                 IrTerminator::Switch { value, cases, default } => {
+                    let mut new_cases = Vec::new();
+                    for (v, t) in cases {
+                        let new_t = *block_map.get(t)
+                            .ok_or_else(|| format!("Switch case target {:?} not found", t))?;
+                        new_cases.push((*v, new_t));
+                    }
+                    let new_default = *block_map.get(default)
+                        .ok_or_else(|| format!("Switch default {:?} not found", default))?;
                     IrTerminator::Switch {
                         value: *reg_map.get(value).unwrap_or(value),
-                        cases: cases.iter().map(|(v, t)| (*v, block_map[t])).collect(),
-                        default: block_map[default],
+                        cases: new_cases,
+                        default: new_default,
                     }
                 }
                 other => other.clone(),
@@ -352,7 +377,8 @@ impl InliningPass {
 
         // Split the original block at the call site
         let call_block_id = call_site.block;
-        let inlined_entry = block_map[&callee.cfg.entry_block];
+        let inlined_entry = *block_map.get(&callee.cfg.entry_block)
+            .ok_or_else(|| format!("Callee entry block {:?} not found in block_map", callee.cfg.entry_block))?;
 
         if let Some(call_block) = caller.cfg.get_block_mut(call_block_id) {
             // Move instructions after the call to the continuation block
