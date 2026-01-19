@@ -965,6 +965,14 @@ pub struct MirInterpreter {
     /// Track heap allocations from system allocator for proper free
     /// Maps pointer address to allocation size for correct deallocation
     heap_allocations: HashMap<usize, usize>,
+
+    /// Iteration counter for hot loop detection
+    /// When exceeded, interpreter signals need for JIT compilation
+    iteration_count: u64,
+
+    /// Maximum iterations before triggering JIT bailout
+    /// Default: 10000 (signals hot code that should be JIT compiled)
+    max_iterations: u64,
 }
 
 // Safety: MirInterpreter can be sent across threads
@@ -985,6 +993,8 @@ impl MirInterpreter {
             decoded_blocks: HashMap::new(),
             use_decoded_cache: true, // Enable by default for performance
             heap_allocations: HashMap::new(),
+            iteration_count: 0,
+            max_iterations: 10_000, // Trigger JIT bailout after 10k iterations
         }
     }
 
@@ -1020,6 +1030,21 @@ impl MirInterpreter {
     /// Register a runtime symbol
     pub fn register_symbol(&mut self, name: &str, ptr: *const u8) {
         self.runtime_symbols.insert(name.to_string(), ptr);
+    }
+
+    /// Set the maximum iterations before triggering JIT bailout
+    pub fn set_max_iterations(&mut self, max: u64) {
+        self.max_iterations = max;
+    }
+
+    /// Reset the iteration counter (called when switching to JIT)
+    pub fn reset_iteration_count(&mut self) {
+        self.iteration_count = 0;
+    }
+
+    /// Get current iteration count
+    pub fn iteration_count(&self) -> u64 {
+        self.iteration_count
     }
 
     /// Calculate the maximum register ID used in a function
@@ -1112,6 +1137,15 @@ impl MirInterpreter {
         function: &IrFunction,
     ) -> Result<NanBoxedValue, InterpError> {
         loop {
+            // Hot loop detection: check if we've exceeded iteration threshold
+            self.iteration_count += 1;
+            if self.iteration_count >= self.max_iterations {
+                // Reset counter for next function call
+                self.iteration_count = 0;
+                // Signal that this function should be JIT compiled
+                return Err(InterpError::JitBailout(function.id));
+            }
+
             let block_id = self.current_frame().current_block;
             let block = function
                 .cfg
@@ -3110,6 +3144,8 @@ pub enum InterpError {
     RuntimeError(String),
     Panic(String),
     Exception(String),
+    /// Hot loop detected - signal to promote function to JIT
+    JitBailout(IrFunctionId),
 }
 
 impl std::fmt::Display for InterpError {
@@ -3122,6 +3158,7 @@ impl std::fmt::Display for InterpError {
             InterpError::RuntimeError(msg) => write!(f, "Runtime error: {}", msg),
             InterpError::Panic(msg) => write!(f, "Panic: {}", msg),
             InterpError::Exception(msg) => write!(f, "Exception: {}", msg),
+            InterpError::JitBailout(id) => write!(f, "JIT bailout requested for {:?}", id),
         }
     }
 }

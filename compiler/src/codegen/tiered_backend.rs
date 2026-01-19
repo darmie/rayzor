@@ -395,8 +395,46 @@ impl TieredBackend {
                 .find(|m| m.functions.contains_key(&func_id))
                 .ok_or_else(|| format!("Function {:?} not found in any module", func_id))?;
             let mut interp = self.interpreter.lock().unwrap();
-            interp.execute(module_ref, func_id, args)
-                .map_err(|e| format!("Interpreter error: {}", e))
+            let result = interp.execute(module_ref, func_id, args.clone());
+            drop(interp); // Release lock before potential recompilation
+            drop(modules);
+
+            match result {
+                Ok(value) => Ok(value),
+                Err(InterpError::JitBailout(bailout_func_id)) => {
+                    // Hot loop detected! Promote to JIT and re-execute
+                    if self.config.verbosity >= 1 {
+                        eprintln!("[TieredBackend] JIT bailout for {:?} - promoting to Baseline tier", bailout_func_id);
+                    }
+
+                    // Compile all modules with JIT if not already compiled
+                    let needs_compile = self.function_pointers.read().unwrap().is_empty();
+                    if needs_compile {
+                        self.compile_all_modules_jit()?;
+                    }
+
+                    // Promote ALL compiled functions to Baseline tier
+                    // This is crucial: without this, the recursive execute_function call
+                    // would still think the functions are at Interpreted tier
+                    {
+                        let fp_lock = self.function_pointers.read().unwrap();
+                        let mut tiers = self.function_tiers.write().unwrap();
+                        for func_id in fp_lock.keys() {
+                            tiers.insert(*func_id, OptimizationTier::Baseline);
+                        }
+                    }
+
+                    // Reset interpreter iteration counter
+                    {
+                        let mut interp = self.interpreter.lock().unwrap();
+                        interp.reset_iteration_count();
+                    }
+
+                    // Re-execute using JIT (recursive call will use JIT path now)
+                    self.execute_function(func_id, args)
+                }
+                Err(e) => Err(format!("Interpreter error: {}", e)),
+            }
         } else {
             // JIT-compiled code - call via function pointer
             let func_ptr = self.get_function_pointer(func_id)
@@ -458,6 +496,22 @@ impl TieredBackend {
     pub fn upgrade_to_llvm(&mut self) -> Result<(), String> {
         if self.config.verbosity >= 1 {
             debug!("[TieredBackend] Upgrading all functions to LLVM...");
+        }
+
+        // Stop background optimization to prevent race conditions during LLVM compilation
+        // The background worker might be in the middle of Cranelift compilation
+        *self.shutdown.lock().unwrap() = true;
+        if let Some(handle) = self.worker_handle.take() {
+            let _ = handle.join();
+        }
+
+        // Wait for any ongoing optimizations to complete
+        loop {
+            let optimizing_count = self.optimizing.lock().unwrap().len();
+            if optimizing_count == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
 
         match self.compile_all_with_llvm() {
