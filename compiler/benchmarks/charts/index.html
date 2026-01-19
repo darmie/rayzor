@@ -13,11 +13,11 @@
 </head>
 <body>
     <h1>Rayzor Benchmark Results</h1>
-    <p style="text-align: center">Generated: 2026-01-18</p>
+    <p style="text-align: center">Generated: 2026-01-19</p>
     <div class="summary">
         <h3>Summary</h3>
         <ul>
-            <li><strong>mandelbrot_simple</strong>: 4 targets measured</li>
+            <li><strong>mandelbrot_simple</strong>: 3 targets measured</li>
         </ul>
     </div>
 
@@ -29,16 +29,16 @@
         new Chart(document.getElementById('chart_0'), {
             type: 'bar',
             data: {
-                labels: ['rayzor-cranelift', 'rayzor-interpreter', 'rayzor-llvm', 'rayzor-tiered'],
+                labels: ['rayzor-cranelift', 'rayzor-llvm', 'rayzor-tiered'],
                 datasets: [
                     {
                         label: 'Compile (ms)',
-                        data: [89.93, 81.36, 125.72, 79.07],
+                        data: [91.76, 127.31, 81.15],
                         backgroundColor: 'rgba(54, 162, 235, 0.8)'
                     },
                     {
                         label: 'Execute (ms)',
-                        data: [152.59, 11766.70, 354.76, 150.44],
+                        data: [155.82, 361.84, 154.84],
                         backgroundColor: 'rgba(255, 99, 132, 0.8)'
                     }
                 ]
