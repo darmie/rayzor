@@ -649,6 +649,64 @@ impl CraneliftBackend {
             .map_err(|e| format!("Failed to finalize definitions: {}", e))
     }
 
+    /// Declare all functions from a module WITHOUT compiling their bodies.
+    ///
+    /// This is used by tiered compilation to prepare the backend for single-function
+    /// recompilation. All functions must be declared first so that cross-function
+    /// references can be resolved during compilation.
+    ///
+    /// Call this for ALL modules before calling `compile_single_function`.
+    pub fn declare_module_functions(&mut self, mir_module: &IrModule) -> Result<(), String> {
+        // Declare all functions (except malloc/realloc/free which we handle separately)
+        for (func_id, function) in &mir_module.functions {
+            if function.name == "malloc" || function.name == "realloc" || function.name == "free" {
+                continue;
+            }
+            self.declare_function(*func_id, function)?;
+        }
+
+        // Declare C standard library memory functions ONCE (across ALL modules)
+        if !self.runtime_functions.contains_key("malloc") {
+            self.declare_libc_function("malloc", 1, true)?;
+        }
+        if !self.runtime_functions.contains_key("realloc") {
+            self.declare_libc_function("realloc", 2, true)?;
+        }
+        if !self.runtime_functions.contains_key("free") {
+            self.declare_libc_function("free", 1, false)?;
+        }
+
+        // Map MIR function IDs for malloc/realloc/free to their libc Cranelift IDs
+        for (func_id, function) in &mir_module.functions {
+            if function.name == "malloc" {
+                let libc_id = *self.runtime_functions.get("malloc").unwrap();
+                self.function_map.insert(*func_id, libc_id);
+            } else if function.name == "realloc" {
+                let libc_id = *self.runtime_functions.get("realloc").unwrap();
+                self.function_map.insert(*func_id, libc_id);
+            } else if function.name == "free" {
+                let libc_id = *self.runtime_functions.get("free").unwrap();
+                self.function_map.insert(*func_id, libc_id);
+            }
+        }
+
+        // Also check extern_functions for malloc/realloc/free
+        for (func_id, extern_func) in &mir_module.extern_functions {
+            if extern_func.name == "malloc" {
+                let libc_id = *self.runtime_functions.get("malloc").unwrap();
+                self.function_map.insert(*func_id, libc_id);
+            } else if extern_func.name == "realloc" {
+                let libc_id = *self.runtime_functions.get("realloc").unwrap();
+                self.function_map.insert(*func_id, libc_id);
+            } else if extern_func.name == "free" {
+                let libc_id = *self.runtime_functions.get("free").unwrap();
+                self.function_map.insert(*func_id, libc_id);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Compile a single function (for tiered compilation)
     ///
     /// This method declares, compiles, and finalizes a single function.

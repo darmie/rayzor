@@ -2335,6 +2335,7 @@ impl MirInterpreter {
     }
 
     /// Load a value from a pointer
+    /// Uses raw pointer access since alloc_heap returns system allocator pointers
     fn load_from_ptr(
         &self,
         ptr: InterpValue,
@@ -2342,110 +2343,111 @@ impl MirInterpreter {
     ) -> Result<InterpValue, InterpError> {
         let addr = ptr.to_usize()?;
 
-        // Simple implementation: read from heap
-        match ty {
-            IrType::Bool => {
-                if addr < self.heap.len() {
-                    Ok(InterpValue::Bool(self.heap[addr] != 0))
-                } else {
-                    Err(InterpError::RuntimeError("Invalid memory access".to_string()))
+        // Null pointer check
+        if addr == 0 {
+            return Err(InterpError::RuntimeError("Null pointer dereference".to_string()));
+        }
+
+        // Use raw pointer access since alloc_heap uses system allocator
+        // SAFETY: We trust that valid pointers come from alloc_heap or extern functions
+        unsafe {
+            match ty {
+                IrType::Bool => {
+                    Ok(InterpValue::Bool(*(addr as *const u8) != 0))
                 }
-            }
-            IrType::I8 => {
-                if addr < self.heap.len() {
-                    Ok(InterpValue::I8(self.heap[addr] as i8))
-                } else {
-                    Err(InterpError::RuntimeError("Invalid memory access".to_string()))
+                IrType::I8 => {
+                    Ok(InterpValue::I8(*(addr as *const i8)))
                 }
-            }
-            IrType::I32 => {
-                if addr + 4 <= self.heap.len() {
-                    let bytes: [u8; 4] = self.heap[addr..addr + 4].try_into().unwrap();
-                    Ok(InterpValue::I32(i32::from_le_bytes(bytes)))
-                } else {
-                    Err(InterpError::RuntimeError("Invalid memory access".to_string()))
+                IrType::U8 => {
+                    Ok(InterpValue::U8(*(addr as *const u8)))
                 }
-            }
-            IrType::I64 => {
-                if addr + 8 <= self.heap.len() {
-                    let bytes: [u8; 8] = self.heap[addr..addr + 8].try_into().unwrap();
-                    Ok(InterpValue::I64(i64::from_le_bytes(bytes)))
-                } else {
-                    Err(InterpError::RuntimeError("Invalid memory access".to_string()))
+                IrType::I16 => {
+                    Ok(InterpValue::I16(*(addr as *const i16)))
                 }
-            }
-            IrType::F32 => {
-                if addr + 4 <= self.heap.len() {
-                    let bytes: [u8; 4] = self.heap[addr..addr + 4].try_into().unwrap();
-                    Ok(InterpValue::F32(f32::from_le_bytes(bytes)))
-                } else {
-                    Err(InterpError::RuntimeError("Invalid memory access".to_string()))
+                IrType::U16 => {
+                    Ok(InterpValue::U16(*(addr as *const u16)))
                 }
-            }
-            IrType::F64 => {
-                if addr + 8 <= self.heap.len() {
-                    let bytes: [u8; 8] = self.heap[addr..addr + 8].try_into().unwrap();
-                    Ok(InterpValue::F64(f64::from_le_bytes(bytes)))
-                } else {
-                    Err(InterpError::RuntimeError("Invalid memory access".to_string()))
+                IrType::I32 => {
+                    Ok(InterpValue::I32(*(addr as *const i32)))
                 }
-            }
-            IrType::Ptr(_) => {
-                if addr + 8 <= self.heap.len() {
-                    let bytes: [u8; 8] = self.heap[addr..addr + 8].try_into().unwrap();
-                    Ok(InterpValue::Ptr(usize::from_le_bytes(bytes)))
-                } else {
-                    Err(InterpError::RuntimeError("Invalid memory access".to_string()))
+                IrType::U32 => {
+                    Ok(InterpValue::U32(*(addr as *const u32)))
                 }
-            }
-            _ => {
-                // For other types, return a placeholder
-                Ok(InterpValue::Void)
+                IrType::I64 => {
+                    Ok(InterpValue::I64(*(addr as *const i64)))
+                }
+                IrType::U64 => {
+                    Ok(InterpValue::U64(*(addr as *const u64)))
+                }
+                IrType::F32 => {
+                    Ok(InterpValue::F32(*(addr as *const f32)))
+                }
+                IrType::F64 => {
+                    Ok(InterpValue::F64(*(addr as *const f64)))
+                }
+                IrType::Ptr(_) => {
+                    Ok(InterpValue::Ptr(*(addr as *const usize)))
+                }
+                _ => {
+                    // For other types, return a placeholder
+                    Ok(InterpValue::Void)
+                }
             }
         }
     }
 
     /// Store a value to a pointer
+    /// Uses raw pointer access since alloc_heap returns system allocator pointers
     fn store_to_ptr(&mut self, ptr: InterpValue, val: InterpValue) -> Result<(), InterpError> {
         let addr = ptr.to_usize()?;
 
-        match val {
-            InterpValue::Bool(b) => {
-                if addr < self.heap.len() {
-                    self.heap[addr] = if b { 1 } else { 0 };
+        // Null pointer check
+        if addr == 0 {
+            return Err(InterpError::RuntimeError("Null pointer write".to_string()));
+        }
+
+        // Use raw pointer access since alloc_heap uses system allocator
+        // SAFETY: We trust that valid pointers come from alloc_heap or extern functions
+        unsafe {
+            match val {
+                InterpValue::Bool(b) => {
+                    *(addr as *mut u8) = if b { 1 } else { 0 };
                 }
-            }
-            InterpValue::I8(n) => {
-                if addr < self.heap.len() {
-                    self.heap[addr] = n as u8;
+                InterpValue::I8(n) => {
+                    *(addr as *mut i8) = n;
                 }
-            }
-            InterpValue::I32(n) => {
-                if addr + 4 <= self.heap.len() {
-                    self.heap[addr..addr + 4].copy_from_slice(&n.to_le_bytes());
+                InterpValue::U8(n) => {
+                    *(addr as *mut u8) = n;
                 }
-            }
-            InterpValue::I64(n) => {
-                if addr + 8 <= self.heap.len() {
-                    self.heap[addr..addr + 8].copy_from_slice(&n.to_le_bytes());
+                InterpValue::I16(n) => {
+                    *(addr as *mut i16) = n;
                 }
-            }
-            InterpValue::F32(n) => {
-                if addr + 4 <= self.heap.len() {
-                    self.heap[addr..addr + 4].copy_from_slice(&n.to_le_bytes());
+                InterpValue::U16(n) => {
+                    *(addr as *mut u16) = n;
                 }
-            }
-            InterpValue::F64(n) => {
-                if addr + 8 <= self.heap.len() {
-                    self.heap[addr..addr + 8].copy_from_slice(&n.to_le_bytes());
+                InterpValue::I32(n) => {
+                    *(addr as *mut i32) = n;
                 }
-            }
-            InterpValue::Ptr(p) => {
-                if addr + 8 <= self.heap.len() {
-                    self.heap[addr..addr + 8].copy_from_slice(&p.to_le_bytes());
+                InterpValue::U32(n) => {
+                    *(addr as *mut u32) = n;
                 }
+                InterpValue::I64(n) => {
+                    *(addr as *mut i64) = n;
+                }
+                InterpValue::U64(n) => {
+                    *(addr as *mut u64) = n;
+                }
+                InterpValue::F32(n) => {
+                    *(addr as *mut f32) = n;
+                }
+                InterpValue::F64(n) => {
+                    *(addr as *mut f64) = n;
+                }
+                InterpValue::Ptr(p) => {
+                    *(addr as *mut usize) = p;
+                }
+                _ => {}
             }
-            _ => {}
         }
 
         Ok(())

@@ -603,7 +603,31 @@ impl IrInstruction {
             IrInstruction::VectorExtract { vector, .. } => vec![*vector],
             IrInstruction::VectorInsert { vector, scalar, .. } => vec![*vector, *scalar],
             IrInstruction::VectorReduce { vector, .. } => vec![*vector],
-            _ => vec![],
+            // Move/borrow instructions
+            IrInstruction::Move { src, .. } => vec![*src],
+            IrInstruction::BorrowImmutable { src, .. } => vec![*src],
+            IrInstruction::BorrowMutable { src, .. } => vec![*src],
+            IrInstruction::Clone { src, .. } => vec![*src],
+            IrInstruction::EndBorrow { borrow } => vec![*borrow],
+            // Closure instructions
+            IrInstruction::MakeClosure { captured_values, .. } => captured_values.clone(),
+            IrInstruction::ClosureFunc { closure, .. } => vec![*closure],
+            IrInstruction::ClosureEnv { closure, .. } => vec![*closure],
+            // Union/struct instructions
+            IrInstruction::CreateUnion { value, .. } => vec![*value],
+            IrInstruction::ExtractDiscriminant { union_val, .. } => vec![*union_val],
+            IrInstruction::ExtractUnionValue { union_val, .. } => vec![*union_val],
+            IrInstruction::CreateStruct { fields, .. } => fields.clone(),
+            // Pointer arithmetic
+            IrInstruction::PtrAdd { ptr, offset, .. } => vec![*ptr, *offset],
+            // No uses for these
+            IrInstruction::Const { .. } |
+            IrInstruction::Jump { .. } |
+            IrInstruction::LandingPad { .. } |
+            IrInstruction::Undef { .. } |
+            IrInstruction::FunctionRef { .. } |
+            IrInstruction::Panic { .. } |
+            IrInstruction::DebugLoc { .. } => vec![],
         }
     }
     
