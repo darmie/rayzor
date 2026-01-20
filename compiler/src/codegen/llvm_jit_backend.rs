@@ -547,8 +547,11 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             .map_err(|e| format!("Failed to get main function '{}': {}", func_name, e))?;
 
         unsafe {
-            let main_fn: extern "C" fn() = std::mem::transmute(fn_ptr);
-            main_fn();
+            // Haxe functions have a hidden environment parameter (i64) that must be passed
+            // even if not used. Pass null (0) for the environment pointer.
+            // This matches the Cranelift backend's calling convention.
+            let main_fn: extern "C" fn(i64) = std::mem::transmute(fn_ptr);
+            main_fn(0); // null environment pointer
         }
 
         Ok(())
