@@ -28,4 +28,4 @@ pub use profiling::{HotnessLevel, ProfileConfig, ProfileData, ProfileStatistics}
 pub use tiered_backend::{OptimizationTier, TieredBackend, TieredConfig, TieredStatistics};
 
 #[cfg(feature = "llvm-backend")]
-pub use llvm_jit_backend::{LLVMJitBackend, init_llvm_once};
+pub use llvm_jit_backend::{LLVMJitBackend, init_llvm_once, llvm_lock};

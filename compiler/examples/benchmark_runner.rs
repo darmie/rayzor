@@ -240,16 +240,13 @@ fn setup_tiered_benchmark(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> R
 
     let mir_modules = unit.get_mir_modules();
 
-    // For heavy benchmarks, start at Baseline (Cranelift) to avoid slow interpreted first-run.
-    // For lightweight benchmarks, start interpreted to test full tiered promotion.
+    // For heavy benchmarks, start at Cranelift (interpreter is too slow for millions of inner iterations)
+    // For light benchmarks, start interpreted to show full tier progression
     let is_heavy = is_heavy_benchmark(&bench.name);
     let start_interpreted = !is_heavy;
 
-    // For heavy benchmarks starting at Baseline, disable background optimization
-    // since they won't benefit from tier promotion during a benchmark run.
-    // The background worker also has issues with single-function recompilation
-    // when cross-module references exist.
-    let enable_background = !is_heavy;
+    // Enable background optimization for tier promotion
+    let enable_background = true;
 
     let config = TieredConfig {
         profile_config: ProfileConfig {
@@ -382,6 +379,9 @@ fn setup_llvm_benchmark<'ctx>(
     // 1. Some MIR optimization passes have bugs that break IR validity
     // 2. LLVM applies its own aggressive O3 optimizations during finalize()
     // 3. The MIR is already correct from the frontend; LLVM will optimize it further
+
+    // Acquire LLVM lock for thread safety during compilation
+    let _llvm_guard = compiler::codegen::llvm_lock();
 
     // Create LLVM backend (context is passed in and must outlive this)
     let mut backend = LLVMJitBackend::with_symbols(context, symbols)
@@ -756,7 +756,8 @@ fn main() {
         };
 
         // Filter targets for this benchmark
-        // Skip interpreter for heavy benchmarks (millions of iterations would take hours)
+        // Skip standalone interpreter for heavy benchmarks (millions of iterations too slow)
+        // Tiered mode handles interpreter → Cranelift handoff automatically
         let is_heavy = is_heavy_benchmark(bench_name);
         let targets: Vec<Target> = all_targets.iter()
             .filter(|t| !is_heavy || !matches!(t, Target::RayzorInterpreter))
@@ -764,7 +765,7 @@ fn main() {
             .collect();
 
         if is_heavy {
-            println!("  (Skipping interpreter for heavy benchmark)\n");
+            println!("  (Standalone interpreter skipped - tiered mode shows full progression)\n");
         }
 
         // IMPORTANT: Run LLVM FIRST before spawning background threads!
@@ -795,20 +796,39 @@ fn main() {
             }
         }
 
-        // NOW run non-LLVM targets in parallel
+        // Run tiered NEXT (before other parallel targets) since it uses LLVM internally
+        // and LLVM compilation conflicts with concurrent JIT execution
+        let tiered_target = targets.iter().find(|t| matches!(t, Target::RayzorTiered)).cloned();
+        if let Some(tiered) = tiered_target {
+            println!("  Running tiered (interpreter -> Cranelift -> LLVM)...\n");
+            let result = run_benchmark(&bench, tiered);
+            match result {
+                Ok(bench_result) => {
+                    println!("  [DONE] {} ({})", tiered.name(), tiered.description());
+                    println!("         Compile: {:.2}ms, Execute: {:.2}ms, Total: {:.2}ms\n",
+                        bench_result.compile_time_ms, bench_result.runtime_ms, bench_result.total_time_ms);
+                    results.push(bench_result);
+                }
+                Err(e) => {
+                    eprintln!("  [FAIL] {}: {}\n", tiered.name(), e);
+                }
+            }
+        }
+
+        // NOW run remaining targets in parallel (Cranelift, Interpreter)
         let (tx, rx) = mpsc::channel::<(Target, Result<BenchmarkResult, String>)>();
         let mut handles = Vec::new();
 
-        let non_llvm_targets: Vec<Target> = targets.iter()
-            .filter(|t| !matches!(t, Target::RayzorLLVM))
+        let parallel_targets: Vec<Target> = targets.iter()
+            .filter(|t| !matches!(t, Target::RayzorLLVM | Target::RayzorTiered))
             .copied()
             .collect();
 
-        if !non_llvm_targets.is_empty() {
-            println!("  Running {} other targets in parallel...\n", non_llvm_targets.len());
+        if !parallel_targets.is_empty() {
+            println!("  Running {} other targets in parallel...\n", parallel_targets.len());
         }
 
-        for target in non_llvm_targets {
+        for target in parallel_targets {
             let tx = tx.clone();
             let bench_source = bench.source.clone();
             let bench_name_clone = bench.name.clone();
