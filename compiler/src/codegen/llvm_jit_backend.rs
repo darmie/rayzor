@@ -26,7 +26,7 @@ use inkwell::{
     module::Module,
     builder::Builder,
     types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum},
-    values::{BasicValue, BasicValueEnum, FunctionValue, PointerValue, PhiValue},
+    values::{BasicValue, BasicValueEnum, BasicMetadataValueEnum, FunctionValue, PointerValue, PhiValue},
     basic_block::BasicBlock,
     IntPredicate, FloatPredicate,
     AddressSpace,
@@ -109,6 +109,16 @@ pub struct LLVMJitBackend<'ctx> {
 
     /// Runtime symbols (name -> pointer) for FFI calls
     runtime_symbols: HashMap<String, usize>,
+
+    /// Extern function IDs (no hidden env parameter)
+    extern_function_ids: std::collections::HashSet<IrFunctionId>,
+
+    /// Functions that use sret (struct return via hidden pointer parameter)
+    sret_function_ids: std::collections::HashSet<IrFunctionId>,
+
+    /// Current sret pointer for the function being compiled
+    /// Set at the start of compile_function_body, used in Return terminator
+    current_sret_ptr: Option<inkwell::values::PointerValue<'ctx>>,
 }
 
 #[cfg(feature = "llvm-backend")]
@@ -155,6 +165,9 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             opt_level,
             target_data: Some(target_data),
             runtime_symbols: HashMap::new(),
+            extern_function_ids: std::collections::HashSet::new(),
+            sret_function_ids: std::collections::HashSet::new(),
+            current_sret_ptr: None,
         })
     }
 
@@ -316,13 +329,15 @@ impl<'ctx> LLVMJitBackend<'ctx> {
     /// Call this for ALL modules first before calling compile_module_bodies.
     /// This ensures all function references can be resolved across modules.
     pub fn declare_module(&mut self, module: &IrModule) -> Result<(), String> {
-        // Declare regular functions
-        for (func_id, function) in &module.functions {
-            self.declare_function(*func_id, function)?;
-        }
-        // Declare extern functions (external linkage, no body)
+        // IMPORTANT: Declare extern functions FIRST so they get the original names
+        // for linking with runtime symbols. Regular functions will get unique names
+        // if there's a conflict.
         for (func_id, extern_fn) in &module.extern_functions {
             self.declare_extern_function(*func_id, extern_fn)?;
+        }
+        // Declare regular functions (with hidden env parameter)
+        for (func_id, function) in &module.functions {
+            self.declare_function(*func_id, function)?;
         }
         Ok(())
     }
@@ -333,14 +348,10 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         func_id: IrFunctionId,
         extern_fn: &crate::ir::IrExternFunction,
     ) -> Result<FunctionValue<'ctx>, String> {
-        // Check if already declared
-        let func_name = Self::mangle_function_name(&extern_fn.name);
-        if let Some(existing_func) = self.module.get_function(&func_name) {
-            self.function_map.insert(func_id, existing_func);
-            return Ok(existing_func);
-        }
+        // Track this as an extern function (no hidden env parameter)
+        self.extern_function_ids.insert(func_id);
 
-        // Translate parameter types
+        // Translate parameter types (NO env param for extern C functions)
         let param_types: Result<Vec<BasicMetadataTypeEnum>, _> = extern_fn
             .signature
             .parameters
@@ -357,6 +368,23 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             let return_type = self.translate_type(&extern_fn.signature.return_type)?;
             return_type.fn_type(&param_types, false)
         };
+
+        let func_name = Self::mangle_function_name(&extern_fn.name);
+
+        // Check if already declared with MATCHING signature
+        if let Some(existing_func) = self.module.get_function(&func_name) {
+            let existing_params = existing_func.get_type().get_param_types();
+            // Only reuse if signature matches (same number of params)
+            if existing_params.len() == param_types.len() {
+                self.function_map.insert(func_id, existing_func);
+                return Ok(existing_func);
+            }
+            // Signature mismatch - create with unique name to avoid conflict
+            let unique_name = format!("{}__extern_{}", func_name, func_id.0);
+            let llvm_func = self.module.add_function(&unique_name, fn_type, Some(inkwell::module::Linkage::External));
+            self.function_map.insert(func_id, llvm_func);
+            return Ok(llvm_func);
+        }
 
         // Add function with external linkage
         let llvm_func = self.module.add_function(&func_name, fn_type, Some(inkwell::module::Linkage::External));
@@ -730,6 +758,10 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             if signatures_match {
                 // Signatures match, safe to reuse
                 self.function_map.insert(func_id, existing_func);
+                // Still need to track sret for this func_id even when reusing
+                if function.signature.uses_sret {
+                    self.sret_function_ids.insert(func_id);
+                }
                 return Ok(existing_func);
             } else {
                 // Signature mismatch - this is a different function with same name
@@ -737,6 +769,10 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 let unique_name = format!("{}_{}", func_name, func_id.0);
                 if let Some(unique_func) = self.module.get_function(&unique_name) {
                     self.function_map.insert(func_id, unique_func);
+                    // Track sret for this func_id
+                    if function.signature.uses_sret {
+                        self.sret_function_ids.insert(func_id);
+                    }
                     return Ok(unique_func);
                 }
                 // Fall through to create new function with unique name
@@ -745,18 +781,37 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         }
 
         // Translate parameter types
-        let param_types: Result<Vec<BasicMetadataTypeEnum>, _> = function
-            .signature
-            .parameters
-            .iter()
-            .filter(|param| param.ty != IrType::Void) // Skip void parameters
-            .map(|param| self.translate_type(&param.ty).map(|t| t.into()))
-            .collect();
-        let param_types = param_types?;
+        // IMPORTANT: Match Cranelift's calling convention for Haxe functions
+        // Order of hidden parameters:
+        // 1. sret pointer (if uses_sret) - struct return via hidden pointer
+        // 2. env parameter (i64) - environment/closure pointer
+        // 3. actual user parameters
+        let mut param_types: Vec<BasicMetadataTypeEnum> = Vec::new();
+
+        // Check if this function uses sret (struct return by hidden pointer)
+        let uses_sret = function.signature.uses_sret;
+        if uses_sret {
+            // Track this function as using sret
+            self.sret_function_ids.insert(func_id);
+            // Add sret pointer parameter (ptr type) as first hidden param
+            param_types.push(self.context.ptr_type(inkwell::AddressSpace::default()).into());
+        }
+
+        // Add hidden env parameter (i64)
+        param_types.push(self.context.i64_type().into());
+
+        // Then add actual IR parameters
+        for param in &function.signature.parameters {
+            if param.ty != IrType::Void {
+                let ty = self.translate_type(&param.ty)?;
+                param_types.push(ty.into());
+            }
+        }
 
         // Translate return type
-        let fn_type = if function.signature.return_type == IrType::Void {
-            // Void function
+        // If using sret, the function returns void (value written through sret pointer)
+        let fn_type = if uses_sret || function.signature.return_type == IrType::Void {
+            // Void function (sret functions also return void)
             self.context.void_type().fn_type(&param_types, false)
         } else {
             // Function with return value
@@ -787,18 +842,32 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         function: &IrFunction,
         func_name: &str,
     ) -> Result<FunctionValue<'ctx>, String> {
-        // Translate parameter types
-        let param_types: Result<Vec<BasicMetadataTypeEnum>, _> = function
-            .signature
-            .parameters
-            .iter()
-            .filter(|param| param.ty != IrType::Void)
-            .map(|param| self.translate_type(&param.ty).map(|t| t.into()))
-            .collect();
-        let param_types = param_types?;
+        // Translate parameter types with hidden params first
+        // Order: sret (if needed), env, user params
+        let mut param_types: Vec<BasicMetadataTypeEnum> = Vec::new();
 
-        // Translate return type
-        let fn_type = if function.signature.return_type == IrType::Void {
+        // Check if this function uses sret (struct return by hidden pointer)
+        let uses_sret = function.signature.uses_sret;
+        if uses_sret {
+            // Track this function as using sret
+            self.sret_function_ids.insert(func_id);
+            // Add sret pointer parameter (ptr type) as first hidden param
+            param_types.push(self.context.ptr_type(inkwell::AddressSpace::default()).into());
+        }
+
+        // Add hidden env parameter (i64)
+        param_types.push(self.context.i64_type().into());
+
+        // Then add actual IR parameters
+        for param in &function.signature.parameters {
+            if param.ty != IrType::Void {
+                let ty = self.translate_type(&param.ty)?;
+                param_types.push(ty.into());
+            }
+        }
+
+        // Translate return type (void if uses_sret)
+        let fn_type = if uses_sret || function.signature.return_type == IrType::Void {
             self.context.void_type().fn_type(&param_types, false)
         } else {
             let return_type = self.translate_type(&function.signature.return_type)?;
@@ -821,6 +890,10 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         self.value_map.clear();
         self.block_map.clear();
         self.phi_map.clear();
+        self.current_sret_ptr = None;
+
+        // Check if this function uses sret (struct return)
+        let uses_sret = self.sret_function_ids.contains(&func_id);
 
         // Map function parameters to LLVM values using their actual IrIds
         // Note: we filter out void parameters but need to handle IrIds correctly
@@ -833,7 +906,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             let param_ids: Vec<_> = function.signature.parameters.iter()
                 .map(|p| (p.reg.as_u32(), &p.ty))
                 .collect();
-            tracing::debug!("Function '{}': parameters {:?}", function.name, param_ids);
+            tracing::debug!("Function '{}': parameters {:?}, uses_sret: {}", function.name, param_ids, uses_sret);
         }
 
         // First, map void parameters to a placeholder value (they shouldn't be used)
@@ -845,10 +918,25 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             }
         }
 
+        // Calculate the offset for IR parameters based on hidden params:
+        // - If uses_sret: param 0 = sret ptr, param 1 = env, params 2+ = IR params
+        // - Otherwise: param 0 = env, params 1+ = IR params
+        let param_offset = if uses_sret { 2 } else { 1 };
+
         // Then map non-void parameters to their LLVM values
         for (i, llvm_param) in llvm_func.get_param_iter().enumerate() {
-            if i < non_void_params.len() {
-                let param_id = non_void_params[i].reg;
+            if uses_sret && i == 0 {
+                // Capture the sret pointer for use in Return terminator
+                self.current_sret_ptr = Some(llvm_param.into_pointer_value());
+                continue;
+            }
+            if i == (if uses_sret { 1 } else { 0 }) {
+                // Skip the hidden env parameter
+                continue;
+            }
+            let ir_param_idx = i - param_offset;
+            if ir_param_idx < non_void_params.len() {
+                let param_id = non_void_params[ir_param_idx].reg;
                 self.value_map.insert(param_id, llvm_param);
             }
         }
@@ -1137,8 +1225,24 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             }
 
             IrInstruction::Alloc { dest, ty, count } => {
+                // IMPORTANT: Use malloc() for heap allocation, NOT alloca()!
+                // The MIR layer emits Free instructions that call C free(), so we must
+                // allocate via malloc to match. Using alloca would crash when free() is
+                // called on stack pointers.
                 let alloc_ty = self.translate_type(ty)?;
-                let ptr = if let Some(count_id) = count {
+
+                // Get element size - use 8 bytes as default for unknown types
+                let element_size = if let Some(size_val) = alloc_ty.size_of() {
+                    self.builder.build_int_z_extend_or_bit_cast(
+                        size_val,
+                        self.context.i64_type(),
+                        "elem_size"
+                    ).map_err(|e| format!("Failed to cast element size: {}", e))?
+                } else {
+                    self.context.i64_type().const_int(8, false)
+                };
+
+                let total_size = if let Some(count_id) = count {
                     let count_raw = self.get_value(*count_id)?;
                     let count_val = if count_raw.is_float_value() {
                         self.builder.build_float_to_signed_int(
@@ -1147,14 +1251,41 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                             "alloc_count_cast"
                         ).map_err(|e| format!("Failed to cast alloc count: {}", e))?
                     } else {
-                        count_raw.into_int_value()
+                        let raw_int = count_raw.into_int_value();
+                        if raw_int.get_type().get_bit_width() < 64 {
+                            self.builder.build_int_z_extend(raw_int, self.context.i64_type(), "count_ext")
+                                .map_err(|e| format!("Failed to extend count: {}", e))?
+                        } else {
+                            raw_int
+                        }
                     };
-                    self.builder.build_array_alloca(alloc_ty, count_val, &format!("alloca_{}", dest.as_u32()))
-                        .map_err(|e| format!("Failed to build array alloca: {}", e))?
+                    // total_size = element_size * count
+                    self.builder.build_int_mul(element_size, count_val, "total_size")
+                        .map_err(|e| format!("Failed to compute total size: {}", e))?
                 } else {
-                    self.builder.build_alloca(alloc_ty, &format!("alloca_{}", dest.as_u32()))
-                        .map_err(|e| format!("Failed to build alloca: {}", e))?
+                    element_size
                 };
+
+                // Get or declare malloc function
+                let malloc_fn = match self.module.get_function("malloc") {
+                    Some(f) => f,
+                    None => {
+                        let malloc_fn_type = self.context.i8_type()
+                            .ptr_type(AddressSpace::default())
+                            .fn_type(&[self.context.i64_type().into()], false);
+                        self.module.add_function("malloc", malloc_fn_type, None)
+                    }
+                };
+
+                // Call malloc(total_size)
+                let malloc_result = self.builder.build_call(malloc_fn, &[total_size.into()], &format!("malloc_{}", dest.as_u32()))
+                    .map_err(|e| format!("Failed to build malloc call: {}", e))?;
+
+                let ptr = malloc_result.try_as_basic_value()
+                    .left()
+                    .ok_or("malloc did not return a value")?
+                    .into_pointer_value();
+
                 self.value_map.insert(*dest, ptr.into());
             }
 
@@ -1788,7 +1919,19 @@ impl<'ctx> LLVMJitBackend<'ctx> {
     fn compile_terminator(&mut self, term: &IrTerminator, llvm_func: FunctionValue<'ctx>) -> Result<(), String> {
         match term {
             IrTerminator::Return { value } => {
-                if let Some(val_id) = value {
+                // Check if this function uses sret (struct return via pointer)
+                if let Some(sret_ptr) = self.current_sret_ptr {
+                    // sret function: store return value through the sret pointer, then return void
+                    if let Some(val_id) = value {
+                        let return_val = self.get_value(*val_id)?;
+                        self.builder.build_store(sret_ptr, return_val)
+                            .map_err(|e| format!("Failed to store sret return value: {}", e))?;
+                    }
+                    // Always return void for sret functions
+                    self.builder.build_return(None)
+                        .map_err(|e| format!("Failed to build sret void return: {}", e))?;
+                } else if let Some(val_id) = value {
+                    // Normal return (non-sret)
                     let return_val = self.get_value(*val_id)?;
 
                     // Get expected return type from the function
@@ -2570,13 +2713,87 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         // Get expected parameter types from the function
         let expected_params = llvm_func.get_type().get_param_types();
 
+        // Determine calling convention by examining LLVM function signature
+        // This is more robust than tracking by func_id since IDs can differ across modules
+        //
+        // Calling convention patterns:
+        // - C extern: expected_params.len() == args.len() (no hidden params)
+        // - Haxe no sret: expected_params.len() == args.len() + 1, first param is i64 (env)
+        // - Haxe with sret: expected_params.len() == args.len() + 2, first is ptr, second is i64
+        let num_llvm_params = expected_params.len();
+        let num_ir_args = args.len();
+
+        // Check first param is i64 (env pattern)
+        let first_is_i64 = expected_params.first()
+            .map(|p| p.is_int_type() && p.into_int_type().get_bit_width() == 64)
+            .unwrap_or(false);
+
+        // Check first is ptr and second is i64 (sret + env pattern)
+        let first_is_ptr = expected_params.first()
+            .map(|p| p.is_pointer_type())
+            .unwrap_or(false);
+        let second_is_i64 = expected_params.get(1)
+            .map(|p| p.is_int_type() && p.into_int_type().get_bit_width() == 64)
+            .unwrap_or(false);
+
+        // Determine convention based on parameter count and signature patterns
+        let (uses_sret, expects_env) = if num_llvm_params == num_ir_args {
+            // Exact match - C calling convention (no hidden params)
+            (false, false)
+        } else if num_llvm_params == num_ir_args + 1 && first_is_i64 {
+            // One extra param that's i64 - Haxe convention with env only
+            (false, true)
+        } else if num_llvm_params == num_ir_args + 2 && first_is_ptr && second_is_i64 {
+            // Two extra params (ptr + i64) - Haxe convention with sret + env
+            (true, true)
+        } else {
+            // Fallback: use tracked sret and assume env for non-extern
+            let tracked_sret = self.sret_function_ids.contains(&func_id);
+            let is_extern = self.extern_function_ids.contains(&func_id);
+            (tracked_sret && !is_extern, !is_extern)
+        };
+
         // Get argument values and coerce them to match expected types
-        let mut arg_values = Vec::new();
+        let mut arg_values: Vec<BasicMetadataValueEnum> = Vec::new();
+
+        // Allocate sret stack space if needed and add as first argument
+        let sret_slot = if uses_sret {
+            // Get the return type from the function (stored in sret ptr type)
+            // The sret pointer points to the return value type
+            // We need to allocate stack space for it
+            let sret_ptr_ty = expected_params.first()
+                .ok_or("sret function missing sret parameter")?;
+
+            // Allocate stack space for the return value
+            // Use alloca with the pointee type (we need to determine the struct size)
+            // For now, allocate a generic buffer; LLVM will optimize
+            let alloca = self.builder.build_alloca(
+                self.context.i8_type().array_type(64), // 64 bytes should be enough for most structs
+                "sret_slot"
+            ).map_err(|e| format!("Failed to allocate sret slot: {}", e))?;
+
+            // Cast to the expected pointer type if needed
+            arg_values.push(alloca.into());
+            Some(alloca)
+        } else {
+            None
+        };
+
+        // Add hidden env parameter (null/0) only if function expects it
+        let param_offset = if expects_env {
+            arg_values.push(self.context.i64_type().const_int(0, false).into());
+            if uses_sret { 2 } else { 1 } // sret + env, or just env
+        } else if uses_sret {
+            1 // just sret, no env
+        } else {
+            0 // No hidden params
+        };
+
         for (i, &id) in args.iter().enumerate() {
             let val = self.get_value(id)?;
 
             // Coerce to expected parameter type if needed
-            let coerced = if let Some(expected_ty) = expected_params.get(i) {
+            let coerced = if let Some(expected_ty) = expected_params.get(i + param_offset) {
                 let actual_ty = val.get_type();
                 if actual_ty == *expected_ty {
                     val.into()
@@ -2667,7 +2884,16 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         let call_site = self.builder.build_call(*llvm_func, &arg_values, "call")
             .map_err(|e| format!("Failed to build call: {}", e))?;
 
-        Ok(call_site.try_as_basic_value().left())
+        // For sret functions, the return value is in the sret slot, not the call result
+        if let Some(sret_ptr) = sret_slot {
+            // Load the return value from the sret slot
+            // The sret slot contains the struct value written by the callee
+            // Return the pointer to the sret slot as the "return value"
+            // (Most uses will just use this pointer directly)
+            Ok(Some(sret_ptr.into()))
+        } else {
+            Ok(call_site.try_as_basic_value().left())
+        }
     }
 
     /// Compile type cast
