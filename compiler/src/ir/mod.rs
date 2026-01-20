@@ -42,6 +42,7 @@ pub use environment_layout::{EnvironmentLayout, EnvironmentField};
 pub use monomorphize::{Monomorphizer, MonoKey, MonomorphizationStats};
 pub use loop_analysis::{DominatorTree, NaturalLoop, LoopNestInfo, TripCount};
 pub use vectorization::{VectorType, VectorInstruction, LoopVectorizationPass};
+pub use blade::{RayzorBundle, load_bundle, save_bundle, BladeError};
 
 use std::fmt;
 use serde::{Serialize, Deserialize};

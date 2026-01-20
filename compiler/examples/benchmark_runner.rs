@@ -7,12 +7,11 @@
 //!   cargo run --release --package compiler --example benchmark_runner -- mandelbrot
 //!   cargo run --release --package compiler --example benchmark_runner -- --json
 
-use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig};
-use compiler::codegen::profiling::ProfileConfig;
+use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig, TierPreset};
 use compiler::codegen::CraneliftBackend;
 use compiler::codegen::InterpValue;
 use compiler::compilation::{CompilationConfig, CompilationUnit};
-use compiler::ir::{IrFunctionId, IrModule};
+use compiler::ir::{IrFunctionId, IrModule, RayzorBundle, load_bundle};
 use compiler::ir::optimization::{PassManager, OptimizationLevel};
 
 #[cfg(feature = "llvm-backend")]
@@ -59,6 +58,8 @@ enum Target {
     RayzorInterpreter,
     RayzorCranelift,
     RayzorTiered,
+    RayzorPrecompiled,       // .rzb pre-bundled MIR (skips parse/lower, still JITs)
+    RayzorPrecompiledTiered, // .rzb pre-bundled MIR + tiered warmup + LLVM
     #[cfg(feature = "llvm-backend")]
     RayzorLLVM,
 }
@@ -69,6 +70,8 @@ impl Target {
             Target::RayzorInterpreter => "rayzor-interpreter",
             Target::RayzorCranelift => "rayzor-cranelift",
             Target::RayzorTiered => "rayzor-tiered",
+            Target::RayzorPrecompiled => "rayzor-precompiled",
+            Target::RayzorPrecompiledTiered => "rayzor-precompiled-tiered",
             #[cfg(feature = "llvm-backend")]
             Target::RayzorLLVM => "rayzor-llvm",
         }
@@ -77,8 +80,10 @@ impl Target {
     fn description(&self) -> &'static str {
         match self {
             Target::RayzorInterpreter => "MIR Interpreter (instant startup)",
-            Target::RayzorCranelift => "Cranelift JIT (optimized)",
-            Target::RayzorTiered => "Tiered (interpreter -> JIT)",
+            Target::RayzorCranelift => "Cranelift JIT (compile from source)",
+            Target::RayzorTiered => "Tiered (source -> interp -> Cranelift)",
+            Target::RayzorPrecompiled => "Pre-bundled MIR + JIT (skip parsing)",
+            Target::RayzorPrecompiledTiered => "Pre-bundled MIR + tiered + LLVM",
             #[cfg(feature = "llvm-backend")]
             Target::RayzorLLVM => "LLVM JIT (-O3, maximum optimization)",
         }
@@ -111,6 +116,103 @@ fn load_benchmark(name: &str) -> Option<Benchmark> {
     }
 }
 
+/// Check if a precompiled .rzb bundle exists for this benchmark
+fn has_precompiled_bundle(name: &str) -> bool {
+    get_precompiled_path(name).exists()
+}
+
+/// Get the path to the precompiled .rzb bundle
+fn get_precompiled_path(name: &str) -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("benchmarks/precompiled")
+        .join(format!("{}.rzb", name))
+}
+
+/// Run benchmark using precompiled .rzb bundle
+/// This measures the performance benefit of skipping source parsing/lowering
+/// The .rzb bundle contains pre-compiled MIR that still needs JIT compilation
+fn run_benchmark_precompiled(name: &str, symbols: &[(&str, *const u8)]) -> Result<(Duration, Duration), String> {
+    let bundle_path = get_precompiled_path(name);
+
+    // Load time = "compile time" for precompiled (should be ~500µs)
+    let load_start = Instant::now();
+
+    let bundle = load_bundle(&bundle_path)
+        .map_err(|e| format!("load bundle: {:?}", e))?;
+
+    // Get entry function ID (pre-computed in bundle for O(1) lookup)
+    let entry_func_id = bundle.entry_function_id()
+        .ok_or("No entry function ID in bundle")?;
+
+    // Use Script preset for single-run execution - starts with Cranelift JIT
+    // (Benchmark preset starts interpreted, which would be slower for single run)
+    let mut config = TierPreset::Script.to_config();
+    config.start_interpreted = false;  // Start with Cranelift (Baseline tier)
+    config.verbosity = 0;
+
+    let mut backend = TieredBackend::with_symbols(config, symbols)
+        .map_err(|e| format!("backend: {}", e))?;
+
+    // Load ALL modules from bundle (not just entry)
+    for module in bundle.modules() {
+        backend.compile_module(module.clone())
+            .map_err(|e| format!("load module: {}", e))?;
+    }
+
+    let load_time = load_start.elapsed();
+
+    // Execute
+    let exec_start = Instant::now();
+    backend.execute_function(entry_func_id, vec![])
+        .map_err(|e| format!("exec: {}", e))?;
+    let exec_time = exec_start.elapsed();
+
+    Ok((load_time, exec_time))
+}
+
+/// Precompiled-tiered benchmark state - loads from .rzb then warms up through tiers
+struct PrecompiledTieredState {
+    backend: TieredBackend,
+    main_id: IrFunctionId,
+    load_time: Duration,
+}
+
+/// Setup precompiled-tiered benchmark: load .rzb bundle then warm up with tier promotion
+fn setup_precompiled_tiered_benchmark(name: &str, symbols: &[(&str, *const u8)]) -> Result<PrecompiledTieredState, String> {
+    let bundle_path = get_precompiled_path(name);
+    let load_start = Instant::now();
+
+    let bundle = load_bundle(&bundle_path)
+        .map_err(|e| format!("load bundle: {:?}", e))?;
+
+    // Get entry function ID
+    let main_id = bundle.entry_function_id()
+        .ok_or("No entry function ID in bundle")?;
+
+    // Use Benchmark preset - fast tier promotion, immediate bailout
+    let config = TierPreset::Benchmark.to_config();
+
+    let mut backend = TieredBackend::with_symbols(config, symbols)
+        .map_err(|e| format!("backend: {}", e))?;
+
+    // Load ALL modules from bundle
+    for module in bundle.modules() {
+        backend.compile_module(module.clone())
+            .map_err(|e| format!("load module: {}", e))?;
+    }
+
+    let load_time = load_start.elapsed();
+
+    Ok(PrecompiledTieredState { backend, main_id, load_time })
+}
+
+fn run_precompiled_tiered_iteration(state: &mut PrecompiledTieredState) -> Result<Duration, String> {
+    let exec_start = Instant::now();
+    state.backend.execute_function(state.main_id, vec![])
+        .map_err(|e| format!("exec: {}", e))?;
+    Ok(exec_start.elapsed())
+}
+
 fn list_benchmarks() -> Vec<String> {
     let base_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/src");
     let mut benchmarks = Vec::new();
@@ -140,7 +242,17 @@ fn run_benchmark_cranelift(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> 
         .map_err(|e| format!("parse: {}", e))?;
     unit.lower_to_tast().map_err(|e| format!("tast: {:?}", e))?;
 
-    let mir_modules = unit.get_mir_modules();
+    let mut mir_modules = unit.get_mir_modules();
+
+    // Apply MIR optimizations (O2) for fair comparison with tiered backend
+    // Tiered reaches "Optimized" tier which uses O2/O3 MIR opts + Cranelift "speed"
+    let mut pass_manager = PassManager::for_level(OptimizationLevel::O2);
+    for module in &mut mir_modules {
+        // Get mutable access to the module through Arc::make_mut
+        let module_mut = std::sync::Arc::make_mut(module);
+        let _ = pass_manager.run(module_mut);
+    }
+
     let mut backend = CraneliftBackend::with_symbols(symbols)
         .map_err(|e| format!("backend: {}", e))?;
 
@@ -174,20 +286,9 @@ fn run_benchmark_interpreter(bench: &Benchmark, symbols: &[(&str, *const u8)]) -
 
     let mir_modules = unit.get_mir_modules();
 
-    let config = TieredConfig {
-        profile_config: ProfileConfig {
-            interpreter_threshold: u64::MAX,  // Never promote
-            warm_threshold: u64::MAX,
-            hot_threshold: u64::MAX,
-            blazing_threshold: u64::MAX,
-            sample_rate: 1,
-        },
-        enable_background_optimization: false,
-        optimization_check_interval_ms: 1000,
-        max_parallel_optimizations: 1,
-        verbosity: 0,
-        start_interpreted: true,
-    };
+    // Use Embedded preset - interpreter only, never promotes to JIT
+    // This measures pure MIR interpreter performance
+    let config = TierPreset::Embedded.to_config();
 
     let mut backend = TieredBackend::with_symbols(config, symbols)
         .map_err(|e| format!("backend: {}", e))?;
@@ -240,29 +341,12 @@ fn setup_tiered_benchmark(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> R
 
     let mir_modules = unit.get_mir_modules();
 
-    // For heavy benchmarks, start at Cranelift (interpreter is too slow for millions of inner iterations)
-    // For light benchmarks, start interpreted to show full tier progression
-    let is_heavy = is_heavy_benchmark(&bench.name);
-    let start_interpreted = !is_heavy;
-
-    // Enable background optimization for tier promotion
-    let enable_background = true;
-
-    let config = TieredConfig {
-        profile_config: ProfileConfig {
-            interpreter_threshold: 2,     // JIT after 2 calls
-            warm_threshold: 3,            // Promote to Standard after 3
-            hot_threshold: 5,             // Promote to Optimized after 5
-            // LLVM promotion disabled during warmup - we explicitly upgrade after warmup
-            blazing_threshold: u64::MAX,
-            sample_rate: 1,
-        },
-        enable_background_optimization: enable_background,
-        optimization_check_interval_ms: 1,  // Check frequently
-        max_parallel_optimizations: 4,
-        verbosity: 0,  // Quiet for benchmarks
-        start_interpreted,
-    };
+    // Use Benchmark preset - optimized for performance testing
+    // - Fast tier promotion (thresholds: 2, 3, 5)
+    // - Immediate bailout from interpreter hot loops
+    // - Synchronous optimization for deterministic results
+    // - Manual LLVM upgrade after warmup (blazing_threshold = MAX)
+    let config = TierPreset::Benchmark.to_config();
 
     let mut backend = TieredBackend::with_symbols(config, symbols)
         .map_err(|e| format!("backend: {}", e))?;
@@ -307,22 +391,11 @@ fn run_benchmark_tiered(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> Res
 
     let mir_modules = unit.get_mir_modules();
 
-    // Use JIT-only mode for benchmarks to avoid slow interpreted first-run.
-    // The interpreter is tested separately via the RayzorInterpreter target.
-    let config = TieredConfig {
-        profile_config: ProfileConfig {
-            interpreter_threshold: 5,
-            warm_threshold: 50,
-            hot_threshold: 200,
-            blazing_threshold: 1000,
-            sample_rate: 1,
-        },
-        enable_background_optimization: true,
-        optimization_check_interval_ms: 5,
-        max_parallel_optimizations: 4,
-        verbosity: 0,
-        start_interpreted: false,  // Start at Baseline (Cranelift) for benchmarks
-    };
+    // Use Application preset for single-iteration tiered benchmark
+    // This is a legacy function - main benchmark uses setup_tiered_benchmark() with Benchmark preset
+    let mut config = TierPreset::Application.to_config();
+    config.start_interpreted = false;  // Start at Baseline (Cranelift) for benchmarks
+    config.verbosity = 0;
 
     let mut backend = TieredBackend::with_symbols(config, symbols)
         .map_err(|e| format!("backend: {}", e))?;
@@ -438,21 +511,32 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
             let mut state = setup_tiered_benchmark(bench, &symbols)?;
             let compile_time = state.compile_time;
 
-            // Warmup - runs accumulate, triggering Cranelift JIT promotion
+            // Warmup - runs accumulate, triggering tier promotion
             for _ in 0..WARMUP_RUNS {
                 let _ = run_tiered_iteration(&mut state);
             }
 
-            // Upgrade ALL functions to LLVM for maximum performance
-            // This proves tiered compilation can achieve near-native performance
+            // Process optimization queue synchronously (since background is disabled)
+            // This ensures functions get promoted to higher tiers with MIR optimizations
+            let optimized = state.backend.process_queue_sync();
+            if optimized > 0 {
+                // Run a few more warmup iterations to let newly optimized code warm up
+                for _ in 0..3 {
+                    let _ = run_tiered_iteration(&mut state);
+                }
+                // Process any additional promotions
+                let _ = state.backend.process_queue_sync();
+            }
+
+            // Upgrade to LLVM tier for maximum performance
             #[cfg(feature = "llvm-backend")]
             {
                 if let Err(e) = state.backend.upgrade_to_llvm() {
-                    eprintln!("  [WARN] LLVM upgrade failed: {}", e);
+                    eprintln!("  Warning: LLVM upgrade failed: {}", e);
                 }
             }
 
-            // Benchmark runs - should now be running LLVM-compiled code
+            // Benchmark runs - running at highest tier (LLVM if available)
             for _ in 0..BENCH_RUNS {
                 match run_tiered_iteration(&mut state) {
                     Ok(exec) => {
@@ -481,6 +565,62 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
                 match run_llvm_iteration(&mut state) {
                     Ok(exec) => {
                         compile_times.push(compile_time);
+                        exec_times.push(exec);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+
+        // Precompiled .rzb bundles: each iteration loads fresh (measures AOT benefits)
+        Target::RayzorPrecompiled => {
+            for _ in 0..WARMUP_RUNS {
+                let _ = run_benchmark_precompiled(&bench.name, &symbols);
+            }
+
+            for _ in 0..BENCH_RUNS {
+                match run_benchmark_precompiled(&bench.name, &symbols) {
+                    Ok((load, exec)) => {
+                        compile_times.push(load);  // Load time = "compile time"
+                        exec_times.push(exec);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+
+        // Precompiled + Tiered warmup: load .rzb, warm up, promote to LLVM
+        Target::RayzorPrecompiledTiered => {
+            let mut state = setup_precompiled_tiered_benchmark(&bench.name, &symbols)?;
+            let load_time = state.load_time;
+
+            // Warmup - runs accumulate, triggering tier promotion
+            for _ in 0..WARMUP_RUNS {
+                let _ = run_precompiled_tiered_iteration(&mut state);
+            }
+
+            // Process optimization queue synchronously
+            let optimized = state.backend.process_queue_sync();
+            if optimized > 0 {
+                for _ in 0..3 {
+                    let _ = run_precompiled_tiered_iteration(&mut state);
+                }
+                let _ = state.backend.process_queue_sync();
+            }
+
+            // Upgrade to LLVM tier for maximum performance
+            #[cfg(feature = "llvm-backend")]
+            {
+                if let Err(e) = state.backend.upgrade_to_llvm() {
+                    eprintln!("  Warning: LLVM upgrade failed: {}", e);
+                }
+            }
+
+            // Benchmark runs at highest tier
+            for _ in 0..BENCH_RUNS {
+                match run_precompiled_tiered_iteration(&mut state) {
+                    Ok(exec) => {
+                        compile_times.push(load_time);  // Load time = "compile time"
                         exec_times.push(exec);
                     }
                     Err(e) => return Err(e),
@@ -729,8 +869,8 @@ fn main() {
         Target::RayzorCranelift,
         Target::RayzorInterpreter,
         Target::RayzorTiered,
-        #[cfg(feature = "llvm-backend")]
-        Target::RayzorLLVM,
+        // Note: LLVM is now a standalone backend, not part of default benchmarks
+        // Use --llvm flag or test_llvm_* examples for LLVM benchmarks
     ];
 
     println!("Running {} benchmarks x up to {} targets", benchmarks_to_run.len(), all_targets.len());
@@ -759,10 +899,19 @@ fn main() {
         // Skip standalone interpreter for heavy benchmarks (millions of iterations too slow)
         // Tiered mode handles interpreter → Cranelift handoff automatically
         let is_heavy = is_heavy_benchmark(bench_name);
-        let targets: Vec<Target> = all_targets.iter()
+        let has_precompiled = has_precompiled_bundle(bench_name);
+
+        let mut targets: Vec<Target> = all_targets.iter()
             .filter(|t| !is_heavy || !matches!(t, Target::RayzorInterpreter))
             .copied()
             .collect();
+
+        // Add precompiled targets if .rzb bundle exists
+        if has_precompiled {
+            targets.push(Target::RayzorPrecompiled);
+            targets.push(Target::RayzorPrecompiledTiered);
+            println!("  (Precompiled .rzb bundle found - testing AOT and AOT+tiered)\n");
+        }
 
         if is_heavy {
             println!("  (Standalone interpreter skipped - tiered mode shows full progression)\n");
@@ -796,11 +945,11 @@ fn main() {
             }
         }
 
-        // Run tiered NEXT (before other parallel targets) since it uses LLVM internally
-        // and LLVM compilation conflicts with concurrent JIT execution
+        // Run tiered NEXT (before other parallel targets) to ensure consistent timing
+        // Tiered mode uses interpreter for startup, then promotes to Cranelift JIT
         let tiered_target = targets.iter().find(|t| matches!(t, Target::RayzorTiered)).cloned();
         if let Some(tiered) = tiered_target {
-            println!("  Running tiered (interpreter -> Cranelift -> LLVM)...\n");
+            println!("  Running tiered (interpreter -> Cranelift)...\n");
             let result = run_benchmark(&bench, tiered);
             match result {
                 Ok(bench_result) => {
@@ -820,7 +969,11 @@ fn main() {
         let mut handles = Vec::new();
 
         let parallel_targets: Vec<Target> = targets.iter()
-            .filter(|t| !matches!(t, Target::RayzorLLVM | Target::RayzorTiered))
+            .filter(|t| {
+                #[cfg(feature = "llvm-backend")]
+                if matches!(t, Target::RayzorLLVM) { return false; }
+                !matches!(t, Target::RayzorTiered)
+            })
             .copied()
             .collect();
 

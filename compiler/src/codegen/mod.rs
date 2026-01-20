@@ -25,7 +25,9 @@ pub use mir_interpreter::{
     Opcode, DecodedInstruction, DecodedBlock,
 };
 pub use profiling::{HotnessLevel, ProfileConfig, ProfileData, ProfileStatistics};
-pub use tiered_backend::{OptimizationTier, TieredBackend, TieredConfig, TieredStatistics};
+pub use tiered_backend::{
+    BailoutStrategy, OptimizationTier, TierPreset, TieredBackend, TieredConfig, TieredStatistics,
+};
 
 #[cfg(feature = "llvm-backend")]
 pub use llvm_jit_backend::{LLVMJitBackend, init_llvm_once, llvm_lock};

@@ -55,6 +55,10 @@ enum Commands {
         #[arg(long)]
         llvm: bool,
 
+        /// Tier preset: script, application, server, benchmark, development, embedded
+        #[arg(long, value_enum, default_value = "application")]
+        preset: Preset,
+
         /// Enable BLADE cache for incremental compilation
         #[arg(long)]
         cache: bool,
@@ -208,12 +212,42 @@ enum CompileStage {
     Native,
 }
 
+/// Tier preset for JIT compilation
+#[derive(ValueEnum, Clone, Debug, Copy)]
+enum Preset {
+    /// CLI tools, one-shot scripts - instant startup, no tier promotion
+    Script,
+    /// Desktop apps, web servers - balanced tiering with LLVM (default)
+    Application,
+    /// Long-running services, APIs - aggressive optimization
+    Server,
+    /// Performance testing - immediate bailout, manual LLVM upgrade
+    Benchmark,
+    /// Development and debugging - verbose logging
+    Development,
+    /// Resource-constrained environments - interpreter only
+    Embedded,
+}
+
+impl Preset {
+    fn to_tier_preset(&self) -> compiler::codegen::TierPreset {
+        match self {
+            Preset::Script => compiler::codegen::TierPreset::Script,
+            Preset::Application => compiler::codegen::TierPreset::Application,
+            Preset::Server => compiler::codegen::TierPreset::Server,
+            Preset::Benchmark => compiler::codegen::TierPreset::Benchmark,
+            Preset::Development => compiler::codegen::TierPreset::Development,
+            Preset::Embedded => compiler::codegen::TierPreset::Embedded,
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Run { file, verbose, stats, tier, llvm, cache, cache_dir, release } => {
-            run_file(file, verbose, stats, tier, llvm, cache, cache_dir, release)
+        Commands::Run { file, verbose, stats, tier, llvm, preset, cache, cache_dir, release } => {
+            run_file(file, verbose, stats, tier, llvm, preset, cache, cache_dir, release)
         }
         Commands::Jit { file, tier, show_cranelift, show_mir, profile } => {
             jit_compile(file, tier, show_cranelift, show_mir, profile)
@@ -287,13 +321,12 @@ fn compile_haxe_to_mir(source: &str, filename: &str) -> Result<compiler::ir::IrM
     Ok(module)
 }
 
-fn run_file(file: PathBuf, verbose: bool, stats: bool, _tier: u8, llvm: bool, cache: bool, cache_dir: Option<PathBuf>, release: bool) -> Result<(), String> {
+fn run_file(file: PathBuf, verbose: bool, stats: bool, _tier: u8, llvm: bool, preset: Preset, cache: bool, cache_dir: Option<PathBuf>, release: bool) -> Result<(), String> {
     use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig};
-    use compiler::codegen::profiling::ProfileConfig;
     use compiler::compilation::{CompilationUnit, CompilationConfig};
 
     let profile = if release { "release" } else { "debug" };
-    println!("🚀 Running {} [{}]...", file.display(), profile);
+    println!("🚀 Running {} [{}] [preset: {:?}]...", file.display(), profile, preset);
 
     #[cfg(not(feature = "llvm-backend"))]
     if llvm {
@@ -339,24 +372,13 @@ fn run_file(file: PathBuf, verbose: bool, stats: bool, _tier: u8, llvm: bool, ca
         return Err("No functions found to execute".to_string());
     }
 
-    // Set up tiered JIT backend
+    // Set up tiered JIT backend using the selected preset
     if verbose {
-        println!("\nSetting up Tiered JIT...");
+        println!("\nSetting up Tiered JIT [preset: {:?}]...", preset);
     }
-    let config = TieredConfig {
-        enable_background_optimization: true,
-        optimization_check_interval_ms: 50,
-        max_parallel_optimizations: 2,
-        profile_config: ProfileConfig {
-            interpreter_threshold: 10,
-            warm_threshold: 100,
-            hot_threshold: 1000,
-            blazing_threshold: 5000,
-            sample_rate: 1,
-        },
-        verbosity: if verbose { 2 } else { 0 },
-        start_interpreted: false, // Start with JIT, not interpreter
-    };
+    let mut config = TieredConfig::from_preset(preset.to_tier_preset());
+    config.verbosity = if verbose { 2 } else { 0 };
+    config.start_interpreted = false; // Start with JIT for immediate execution
 
     let mut backend = TieredBackend::new(config)?;
     if verbose {
@@ -670,22 +692,11 @@ fn compile_file(
     // Step 2: Compile to native
     println!("\nCompiling MIR → Native...");
     use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig};
-    use compiler::codegen::profiling::ProfileConfig;
 
-    let config = TieredConfig {
-        enable_background_optimization: false, // No background optimization for compile mode
-        optimization_check_interval_ms: 0,
-        max_parallel_optimizations: 0,
-        profile_config: ProfileConfig {
-            interpreter_threshold: 10,
-            warm_threshold: 100,
-            hot_threshold: 1000,
-            blazing_threshold: 5000,
-            sample_rate: 1,
-        },
-        verbosity: 0,
-        start_interpreted: false, // Start with JIT, not interpreter
-    };
+    // Use Script preset for AOT compilation (no background optimization needed)
+    let mut config = TieredConfig::from_preset(compiler::codegen::TierPreset::Script);
+    config.enable_background_optimization = false;
+    config.start_interpreted = false; // Start with JIT for direct compilation
 
     let mut backend = TieredBackend::new(config)?;
     backend.compile_module(mir_module)?;
