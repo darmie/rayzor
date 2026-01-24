@@ -958,9 +958,7 @@ impl TieredBackend {
                 Ok(value) => Ok(value),
                 Err(InterpError::JitBailout(bailout_func_id)) => {
                     // Hot loop detected! Promote to JIT and re-execute
-                    if self.config.verbosity >= 1 {
-                        eprintln!("[TieredBackend] JIT bailout for {:?} - promoting to Baseline tier", bailout_func_id);
-                    }
+                    tracing::trace!("[TieredBackend] JIT bailout for {:?} - promoting to Baseline tier", bailout_func_id);
 
                     // Compile all modules with JIT if not already compiled
                     let needs_compile = self.function_pointers.read().unwrap().is_empty();
