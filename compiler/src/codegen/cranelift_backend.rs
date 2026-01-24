@@ -472,6 +472,17 @@ impl CraneliftBackend {
             self.declare_libc_function("free", 1, false)?; // 1 param (ptr), no return value
         }
 
+        // Declare rayzor_global_load and rayzor_global_store runtime functions
+        // These are used by LoadGlobal and StoreGlobal instructions for static class fields
+        if !self.runtime_functions.contains_key("rayzor_global_load") {
+            debug!("Declaring runtime function: rayzor_global_load");
+            self.declare_runtime_function("rayzor_global_load", &[types::I64], Some(types::I64))?;
+        }
+        if !self.runtime_functions.contains_key("rayzor_global_store") {
+            debug!("Declaring runtime function: rayzor_global_store");
+            self.declare_runtime_function("rayzor_global_store", &[types::I64, types::I64], None)?;
+        }
+
         // Map MIR function IDs for malloc/realloc/free to their libc Cranelift IDs
         // This ensures that when MIR code calls these functions, they resolve to the libc versions
         // Check both functions and extern_functions since malloc may be in either location
@@ -596,6 +607,16 @@ impl CraneliftBackend {
         if !self.runtime_functions.contains_key("free") {
             debug!("Declaring libc function: free");
             self.declare_libc_function("free", 1, false)?;
+        }
+
+        // Declare rayzor_global_load and rayzor_global_store runtime functions
+        if !self.runtime_functions.contains_key("rayzor_global_load") {
+            debug!("Declaring runtime function: rayzor_global_load");
+            self.declare_runtime_function("rayzor_global_load", &[types::I64], Some(types::I64))?;
+        }
+        if !self.runtime_functions.contains_key("rayzor_global_store") {
+            debug!("Declaring runtime function: rayzor_global_store");
+            self.declare_runtime_function("rayzor_global_store", &[types::I64, types::I64], None)?;
         }
 
         // Map MIR function IDs for malloc/realloc/free to their libc Cranelift IDs
@@ -1019,6 +1040,43 @@ impl CraneliftBackend {
 
         debug!(
             ": Declared libc {} as Cranelift func_id: {:?}",
+            name, func_id
+        );
+        self.runtime_functions.insert(name.to_string(), func_id);
+        Ok(func_id)
+    }
+
+    /// Declare a runtime function from our Rayzor runtime library
+    ///
+    /// Unlike libc functions, these have explicit parameter and return types specified.
+    fn declare_runtime_function(
+        &mut self,
+        name: &str,
+        param_types: &[types::Type],
+        return_type: Option<types::Type>,
+    ) -> Result<FuncId, String> {
+        // Check if already declared
+        if let Some(&func_id) = self.runtime_functions.get(name) {
+            return Ok(func_id);
+        }
+
+        // Create signature
+        let mut sig = self.module.make_signature();
+        for &param_type in param_types {
+            sig.params.push(AbiParam::new(param_type));
+        }
+        if let Some(ret_type) = return_type {
+            sig.returns.push(AbiParam::new(ret_type));
+        }
+
+        // Declare the function with Import linkage (external symbol from runtime)
+        let func_id = self
+            .module
+            .declare_function(name, Linkage::Import, &sig)
+            .map_err(|e| format!("Failed to declare runtime function {}: {}", name, e))?;
+
+        debug!(
+            ": Declared runtime {} as Cranelift func_id: {:?}",
             name, func_id
         );
         self.runtime_functions.insert(name.to_string(), func_id);
@@ -2019,12 +2077,6 @@ impl CraneliftBackend {
                         call_args.push(arg_val);
                     }
 
-                    // Debug: print call_args length and MIR args length
-                    if called_func.name == "Thread_spawn" || called_func.name == "Channel_init" || called_func.name == "Mutex_lock" {
-                        debug!("[CALL] func='{}' call_args.len()={} mir_args.len()={} mir_args={:?}",
-                                 called_func.name, call_args.len(), args.len(), args);
-                    }
-
                     // Emit the call instruction
                     let call_inst = builder.ins().call(func_ref, &call_args);
 
@@ -2956,6 +3008,73 @@ impl CraneliftBackend {
                     };
                 }
                 value_map.insert(*dest, result);
+            }
+
+            // Global variable access - uses runtime functions for storage
+            IrInstruction::LoadGlobal { dest, global_id, ty } => {
+                // Call rayzor_global_load(global_id) to get the stored value
+                let global_id_val = builder.ins().iconst(cranelift_codegen::ir::types::I64, global_id.0 as i64);
+
+                // Get or declare the runtime function
+                let load_func_id = if let Some(&func_id) = runtime_functions.get("rayzor_global_load") {
+                    func_id
+                } else {
+                    // Function not pre-declared, can't call it
+                    tracing::warn!("[CRANELIFT] rayzor_global_load not found in runtime_functions");
+                    let placeholder = builder.ins().iconst(cranelift_codegen::ir::types::I64, 0);
+                    value_map.insert(*dest, placeholder);
+                    return Ok(());
+                };
+
+                let load_func_ref = module.declare_func_in_func(load_func_id, builder.func);
+                let call = builder.ins().call(load_func_ref, &[global_id_val]);
+                let result = builder.inst_results(call)[0];
+
+                // Cast result to the expected type if needed
+                let cl_ty = match ty {
+                    IrType::I32 => cranelift_codegen::ir::types::I32,
+                    IrType::I64 => cranelift_codegen::ir::types::I64,
+                    IrType::F32 => cranelift_codegen::ir::types::F32,
+                    IrType::F64 => cranelift_codegen::ir::types::F64,
+                    IrType::Bool => cranelift_codegen::ir::types::I8,
+                    _ => cranelift_codegen::ir::types::I64,
+                };
+
+                let final_val = if cl_ty == cranelift_codegen::ir::types::I64 {
+                    result
+                } else if cl_ty.is_float() {
+                    builder.ins().bitcast(cl_ty, cranelift_codegen::ir::MemFlags::new(), result)
+                } else {
+                    builder.ins().ireduce(cl_ty, result)
+                };
+
+                tracing::debug!("[CRANELIFT] LoadGlobal {:?} - calling runtime", global_id);
+                value_map.insert(*dest, final_val);
+            }
+
+            IrInstruction::StoreGlobal { global_id, value } => {
+                // Call rayzor_global_store(global_id, value)
+                let global_id_val = builder.ins().iconst(cranelift_codegen::ir::types::I64, global_id.0 as i64);
+                let val = *value_map.get(value).ok_or_else(|| format!("StoreGlobal: value {:?} not found", value))?;
+
+                // Extend value to i64 for storage
+                let val_ty = builder.func.dfg.value_type(val);
+                let val_i64 = if val_ty == cranelift_codegen::ir::types::I64 {
+                    val
+                } else if val_ty.is_float() {
+                    builder.ins().bitcast(cranelift_codegen::ir::types::I64, cranelift_codegen::ir::MemFlags::new(), val)
+                } else {
+                    builder.ins().uextend(cranelift_codegen::ir::types::I64, val)
+                };
+
+                // Get or declare the runtime function
+                if let Some(&store_func_id) = runtime_functions.get("rayzor_global_store") {
+                    let store_func_ref = module.declare_func_in_func(store_func_id, builder.func);
+                    builder.ins().call(store_func_ref, &[global_id_val, val_i64]);
+                    tracing::debug!("[CRANELIFT] StoreGlobal {:?} - calling runtime", global_id);
+                } else {
+                    tracing::warn!("[CRANELIFT] rayzor_global_store not found in runtime_functions");
+                }
             }
 
             // TODO: Implement remaining instructions

@@ -562,6 +562,12 @@ register_symbol!("rayzor_vec_bool_free", crate::generic_vec::rayzor_vec_bool_fre
 register_symbol!("malloc", libc::malloc);
 register_symbol!("free", libc::free);
 
+// ============================================================================
+// Global Variable Storage (for static class fields)
+// ============================================================================
+register_symbol!("rayzor_global_store", crate::rayzor_global_store);
+register_symbol!("rayzor_global_load", crate::rayzor_global_load);
+
 /// Rayzor Runtime Plugin
 pub struct RayzorRuntimePlugin;
 

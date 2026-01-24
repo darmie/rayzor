@@ -3,7 +3,7 @@
 //! Defines the instruction set for the intermediate representation.
 //! Instructions are low-level operations that map directly to machine operations.
 
-use super::{IrId, IrType, IrValue, IrSourceLocation, IrFunctionId};
+use super::{IrId, IrType, IrValue, IrSourceLocation, IrFunctionId, IrGlobalId};
 use serde::{Serialize, Deserialize};
 
 /// Ownership transfer semantics for values
@@ -95,7 +95,20 @@ pub enum IrInstruction {
         ptr: IrId,
         value: IrId,
     },
-    
+
+    /// Load value from a global variable
+    LoadGlobal {
+        dest: IrId,
+        global_id: IrGlobalId,
+        ty: IrType,
+    },
+
+    /// Store value to a global variable
+    StoreGlobal {
+        global_id: IrGlobalId,
+        value: IrId,
+    },
+
     // === Arithmetic Operations ===
     
     /// Binary arithmetic operation
@@ -620,6 +633,9 @@ impl IrInstruction {
             IrInstruction::CreateStruct { fields, .. } => fields.clone(),
             // Pointer arithmetic
             IrInstruction::PtrAdd { ptr, offset, .. } => vec![*ptr, *offset],
+            // Global variable access
+            IrInstruction::LoadGlobal { .. } => vec![], // No register uses, just global_id
+            IrInstruction::StoreGlobal { value, .. } => vec![*value],
             // No uses for these
             IrInstruction::Const { .. } |
             IrInstruction::Jump { .. } |
@@ -647,6 +663,7 @@ impl IrInstruction {
     pub fn has_side_effects(&self) -> bool {
         matches!(self,
             IrInstruction::Store { .. } |
+            IrInstruction::StoreGlobal { .. } |
             IrInstruction::CallDirect { .. } |
             IrInstruction::CallIndirect { .. } |
             IrInstruction::Free { .. } |

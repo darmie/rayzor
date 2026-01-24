@@ -170,6 +170,45 @@ pub fn init_rtti() {
     type_system::init_type_system();
 }
 
+// ============================================================================
+// Global Variable Storage
+// ============================================================================
+// Thread-local storage for global variables used by JIT-compiled code.
+// Global IDs are i64 values that map to pointer values (stored as u64).
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+thread_local! {
+    static GLOBAL_STORE: RefCell<HashMap<i64, u64>> = RefCell::new(HashMap::new());
+}
+
+/// Store a value to a global variable
+///
+/// # Arguments
+/// * `global_id` - The global variable ID
+/// * `value` - The value to store (as a raw pointer cast to i64)
+#[no_mangle]
+pub unsafe extern "C" fn rayzor_global_store(global_id: i64, value: i64) {
+    GLOBAL_STORE.with(|store| {
+        store.borrow_mut().insert(global_id, value as u64);
+    });
+}
+
+/// Load a value from a global variable
+///
+/// # Arguments
+/// * `global_id` - The global variable ID
+///
+/// # Returns
+/// The stored value, or 0 if not found
+#[no_mangle]
+pub unsafe extern "C" fn rayzor_global_load(global_id: i64) -> i64 {
+    GLOBAL_STORE.with(|store| {
+        store.borrow().get(&global_id).copied().unwrap_or(0) as i64
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

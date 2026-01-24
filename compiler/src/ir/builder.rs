@@ -197,7 +197,20 @@ impl IrBuilder {
     pub fn build_store(&mut self, ptr: IrId, value: IrId) -> Option<()> {
         self.add_instruction(IrInstruction::Store { ptr, value })
     }
-    
+
+    /// Build a load from global variable
+    pub fn build_load_global(&mut self, global_id: super::IrGlobalId, ty: IrType) -> Option<IrId> {
+        let dest = self.alloc_reg()?;
+        self.set_register_type(dest, ty.clone());
+        self.add_instruction(IrInstruction::LoadGlobal { dest, global_id, ty })?;
+        Some(dest)
+    }
+
+    /// Build a store to global variable
+    pub fn build_store_global(&mut self, global_id: super::IrGlobalId, value: IrId) -> Option<()> {
+        self.add_instruction(IrInstruction::StoreGlobal { global_id, value })
+    }
+
     /// Build a binary operation
     pub fn build_binop(&mut self, op: BinaryOp, left: IrId, right: IrId) -> Option<IrId> {
         let dest = self.alloc_reg()?;

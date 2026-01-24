@@ -57,6 +57,10 @@ pub struct TastToHirContext<'a> {
 
     /// Standard library runtime function mapping
     stdlib_mapping: StdlibMapping,
+
+    /// Inline variable values (for static inline vars that need constant evaluation)
+    /// Maps symbol ID to the evaluated literal value (preserving type)
+    inline_var_values: HashMap<SymbolId, HirLiteral>,
 }
 
 #[derive(Debug)]
@@ -142,6 +146,7 @@ impl<'a> TastToHirContext<'a> {
             temp_var_counter: 0,
             current_file: None,
             stdlib_mapping: StdlibMapping::new(),
+            inline_var_values: HashMap::new(),
         }
     }
     
@@ -171,7 +176,121 @@ impl<'a> TastToHirContext<'a> {
     fn get_dynamic_type(&self) -> TypeId {
         self.type_table.borrow().dynamic_type()
     }
-    
+
+    /// Pre-process static variables to evaluate their constant values
+    /// This handles cases like: static inline var SOLAR_MASS = 4.0 * PI * PI;
+    /// where PI is also a static inline var
+    fn evaluate_inline_static_vars(&mut self, file: &TypedFile) {
+        // Collect all static fields that need evaluation
+        let static_fields: Vec<_> = file.classes.iter()
+            .flat_map(|class| class.fields.iter())
+            .filter(|field| field.is_static && field.initializer.is_some())
+            .map(|field| (field.symbol_id, field.initializer.as_ref().unwrap().clone()))
+            .collect();
+
+        // Keep evaluating until no new values are discovered (fixpoint)
+        loop {
+            let prev_count = self.inline_var_values.len();
+
+            for (symbol_id, init_expr) in &static_fields {
+                if !self.inline_var_values.contains_key(symbol_id) {
+                    if let Some(literal) = self.try_evaluate_const_expr(&init_expr) {
+                        self.inline_var_values.insert(*symbol_id, literal);
+                    }
+                }
+            }
+
+            // Stop when no new values were discovered
+            if self.inline_var_values.len() == prev_count {
+                break;
+            }
+        }
+    }
+
+    /// Try to evaluate a constant expression to a literal value
+    /// Returns Some(HirLiteral) if the expression can be fully evaluated at compile time
+    /// Preserves the type (Int vs Float) of the original expression
+    fn try_evaluate_const_expr(&self, expr: &TypedExpression) -> Option<HirLiteral> {
+        use crate::tast::node::{BinaryOperator, UnaryOperator};
+
+        match &expr.kind {
+            TypedExpressionKind::Literal { value } => {
+                // Only handle numeric literals for constant evaluation
+                match value {
+                    LiteralValue::Int(i) => Some(HirLiteral::Int(*i)),
+                    LiteralValue::Float(f) => Some(HirLiteral::Float(*f)),
+                    LiteralValue::Bool(b) => Some(HirLiteral::Bool(*b)),
+                    _ => None, // Strings and other literals not supported in const eval
+                }
+            }
+            TypedExpressionKind::Variable { symbol_id, .. } => {
+                // Check if this is an already-evaluated inline variable
+                self.inline_var_values.get(symbol_id).cloned()
+            }
+            TypedExpressionKind::BinaryOp { operator, left, right } => {
+                let lhs = self.try_evaluate_const_expr(left)?;
+                let rhs = self.try_evaluate_const_expr(right)?;
+
+                // Evaluate based on types - prefer float if either operand is float
+                match (&lhs, &rhs) {
+                    (HirLiteral::Float(l), HirLiteral::Float(r)) => {
+                        match operator {
+                            BinaryOperator::Add => Some(HirLiteral::Float(l + r)),
+                            BinaryOperator::Sub => Some(HirLiteral::Float(l - r)),
+                            BinaryOperator::Mul => Some(HirLiteral::Float(l * r)),
+                            BinaryOperator::Div => Some(HirLiteral::Float(l / r)),
+                            _ => None,
+                        }
+                    }
+                    (HirLiteral::Float(l), HirLiteral::Int(r)) => {
+                        let r = *r as f64;
+                        match operator {
+                            BinaryOperator::Add => Some(HirLiteral::Float(l + r)),
+                            BinaryOperator::Sub => Some(HirLiteral::Float(l - r)),
+                            BinaryOperator::Mul => Some(HirLiteral::Float(l * r)),
+                            BinaryOperator::Div => Some(HirLiteral::Float(l / r)),
+                            _ => None,
+                        }
+                    }
+                    (HirLiteral::Int(l), HirLiteral::Float(r)) => {
+                        let l = *l as f64;
+                        match operator {
+                            BinaryOperator::Add => Some(HirLiteral::Float(l + r)),
+                            BinaryOperator::Sub => Some(HirLiteral::Float(l - r)),
+                            BinaryOperator::Mul => Some(HirLiteral::Float(l * r)),
+                            BinaryOperator::Div => Some(HirLiteral::Float(l / r)),
+                            _ => None,
+                        }
+                    }
+                    (HirLiteral::Int(l), HirLiteral::Int(r)) => {
+                        match operator {
+                            BinaryOperator::Add => Some(HirLiteral::Int(l + r)),
+                            BinaryOperator::Sub => Some(HirLiteral::Int(l - r)),
+                            BinaryOperator::Mul => Some(HirLiteral::Int(l * r)),
+                            BinaryOperator::Div => Some(HirLiteral::Int(l / r)),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                }
+            }
+            TypedExpressionKind::UnaryOp { operator, operand } => {
+                let val = self.try_evaluate_const_expr(operand)?;
+                match operator {
+                    UnaryOperator::Neg => {
+                        match val {
+                            HirLiteral::Float(f) => Some(HirLiteral::Float(-f)),
+                            HirLiteral::Int(i) => Some(HirLiteral::Int(-i)),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// Check if class is final
     fn is_class_final(&self, class_symbol: SymbolId) -> bool {
         if let Some(hierarchy) = self.symbol_table.get_class_hierarchy(class_symbol) {
@@ -215,6 +334,11 @@ impl<'a> TastToHirContext<'a> {
         for import in &file.imports {
             self.lower_import(import);
         }
+
+        // Pre-process: Evaluate inline static variables
+        // This must happen before lowering classes so that references to inline vars
+        // (like SOLAR_MASS = 4.0 * PI * PI) can be resolved
+        self.evaluate_inline_static_vars(file);
 
         // Lower type declarations (classes, interfaces, enums, etc.)
         for class in &file.classes {
@@ -938,6 +1062,16 @@ impl<'a> TastToHirContext<'a> {
                 HirExprKind::Literal(self.lower_literal(value))
             }
             TypedExpressionKind::Variable { symbol_id } => {
+                // First check if this is a pre-evaluated inline variable (e.g., SOLAR_MASS = 4.0 * PI * PI)
+                if let Some(literal) = self.inline_var_values.get(symbol_id).cloned() {
+                    return HirExpr {
+                        kind: HirExprKind::Literal(literal),
+                        ty: expr.expr_type,
+                        lifetime: LifetimeId::from_raw(1), // Static lifetime for constants
+                        source_location: expr.source_location,
+                    };
+                }
+
                 // Check if this variable is actually a static field reference
                 // This happens when you access a static field without the class prefix
                 // e.g., `SIZE` instead of `Main.SIZE` when inside class Main

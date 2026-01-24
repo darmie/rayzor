@@ -1238,7 +1238,18 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     self.value_map.insert(*dest, placeholder);
                 } else {
                     let ptr_value = self.get_value(*ptr)?;
-                    let ptr = ptr_value.into_pointer_value();
+                    // Handle case where pointer is stored as integer (from array element access)
+                    let ptr = if ptr_value.is_pointer_value() {
+                        ptr_value.into_pointer_value()
+                    } else if ptr_value.is_int_value() {
+                        self.builder.build_int_to_ptr(
+                            ptr_value.into_int_value(),
+                            self.context.ptr_type(inkwell::AddressSpace::default()),
+                            &format!("load_ptr_{}", ptr.as_u32())
+                        ).map_err(|e| format!("Failed to convert int to ptr for load: {}", e))?
+                    } else {
+                        return Err(format!("Load ptr {:?} has unexpected type", ptr));
+                    };
                     let load_ty = self.translate_type(ty)?;
 
                     let loaded = self.builder.build_load(load_ty, ptr, &format!("load_{}", dest.as_u32()))
@@ -1248,7 +1259,19 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             }
 
             IrInstruction::Store { ptr, value } => {
-                let ptr_val = self.get_value(*ptr)?.into_pointer_value();
+                let ptr_raw = self.get_value(*ptr)?;
+                // Handle case where pointer is stored as integer (from array element access)
+                let ptr_val = if ptr_raw.is_pointer_value() {
+                    ptr_raw.into_pointer_value()
+                } else if ptr_raw.is_int_value() {
+                    self.builder.build_int_to_ptr(
+                        ptr_raw.into_int_value(),
+                        self.context.ptr_type(inkwell::AddressSpace::default()),
+                        &format!("store_ptr_{}", ptr.as_u32())
+                    ).map_err(|e| format!("Failed to convert int to ptr for store: {}", e))?
+                } else {
+                    return Err(format!("Store ptr {:?} has unexpected type", ptr));
+                };
                 let value_val = self.get_value(*value)?;
                 self.builder.build_store(ptr_val, value_val)
                     .map_err(|e| format!("Failed to build store: {}", e))?;
@@ -1382,7 +1405,21 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             }
 
             IrInstruction::GetElementPtr { dest, ptr, indices, .. } => {
-                let ptr_val = self.get_value(*ptr)?.into_pointer_value();
+                // Get the pointer value - may be an actual pointer or an integer (from array element load)
+                let raw_val = self.get_value(*ptr)?;
+                let ptr_val = if raw_val.is_pointer_value() {
+                    raw_val.into_pointer_value()
+                } else if raw_val.is_int_value() {
+                    // Convert integer to pointer (e.g., Body pointer loaded as I64 from array)
+                    let int_val = raw_val.into_int_value();
+                    self.builder.build_int_to_ptr(
+                        int_val,
+                        self.context.ptr_type(inkwell::AddressSpace::default()),
+                        &format!("int_to_ptr_{}", ptr.as_u32())
+                    ).map_err(|e| format!("Failed to convert int to ptr for GEP: {}", e))?
+                } else {
+                    return Err(format!("GEP ptr {:?} has unexpected type (not pointer or int)", ptr));
+                };
 
                 // Convert indices to LLVM values and multiply by field size
                 // MIR GEP uses field indices (0, 1, 2, ...) but LLVM GEP with i8 type
@@ -1994,6 +2031,26 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     };
                 }
                 self.value_map.insert(*dest, acc);
+            }
+
+            // Global variable access
+            IrInstruction::LoadGlobal { dest, global_id, ty } => {
+                // TODO: Implement proper global variable loading in LLVM
+                // For now, return null/zero value
+                let llvm_ty = self.translate_type(ty)?;
+                let placeholder = match llvm_ty {
+                    inkwell::types::BasicTypeEnum::IntType(t) => t.const_int(0, false).into(),
+                    inkwell::types::BasicTypeEnum::FloatType(t) => t.const_float(0.0).into(),
+                    inkwell::types::BasicTypeEnum::PointerType(t) => t.const_null().into(),
+                    _ => self.context.i64_type().const_int(0, false).into(),
+                };
+                tracing::debug!("[LLVM] LoadGlobal {:?} - returning placeholder", global_id);
+                self.value_map.insert(*dest, placeholder);
+            }
+
+            IrInstruction::StoreGlobal { global_id, value: _ } => {
+                // TODO: Implement proper global variable storing in LLVM
+                tracing::debug!("[LLVM] StoreGlobal {:?} - not implemented", global_id);
             }
 
             // Panic

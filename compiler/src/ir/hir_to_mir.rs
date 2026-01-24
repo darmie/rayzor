@@ -40,6 +40,10 @@ pub struct HirToMirContext<'a> {
     /// Mapping from HIR function symbols to MIR function IDs
     function_map: HashMap<SymbolId, crate::ir::IrFunctionId>,
 
+    /// Mapping from global variable symbols to MIR global IDs
+    /// Used for static class fields and module-level variables
+    global_symbol_map: HashMap<SymbolId, IrGlobalId>,
+
     /// External function map from previously compiled modules (e.g., stdlib)
     /// These are functions defined in other modules that can be called from this module
     external_function_map: HashMap<SymbolId, crate::ir::IrFunctionId>,
@@ -220,6 +224,7 @@ impl<'a> HirToMirContext<'a> {
             builder: IrBuilder::new(module_name.clone(), source_file),
             symbol_map: HashMap::new(),
             function_map: HashMap::new(),
+            global_symbol_map: HashMap::new(),
             external_function_map: HashMap::new(),
             external_function_name_map: HashMap::new(),
             block_map: HashMap::new(),
@@ -1629,6 +1634,9 @@ impl<'a> HirToMirContext<'a> {
                     let value = self.lower_expression(init_expr);
 
                     // Bind to pattern and register as local
+                    if value.is_none() {
+                        warn!("[LET STMT] INIT EXPRESSION FAILED TO LOWER - variable won't be added to symbol_map! pattern={:?}", pattern);
+                    }
                     if let Some(value_reg) = value {
                         // Track monomorphized class name for this variable (by SymbolId)
                         if let Some(mono_class) = monomorphized_class {
@@ -2692,6 +2700,17 @@ impl<'a> HirToMirContext<'a> {
                             // If we can't find the variant info, try to get the discriminant from the type
                             debug!("EnumVariant {:?} - could not find discriminant", symbol);
                         }
+                    }
+
+                    // Check if this is a global variable (static class field, module-level var)
+                    if let Some(&global_id) = self.global_symbol_map.get(symbol) {
+                        debug!("[GLOBAL ACCESS] Found global {:?} -> {:?}", symbol, global_id);
+                        // Load the global variable's value
+                        // First get the global's type from the module
+                        let global_type = self.builder.module.globals.get(&global_id)
+                            .map(|g| g.ty.clone())
+                            .unwrap_or(IrType::Any);
+                        return self.builder.build_load_global(global_id, global_type);
                     }
 
                     // If we get here, we couldn't resolve the variable
@@ -5671,8 +5690,6 @@ impl<'a> HirToMirContext<'a> {
                 let constructor_func_id = self.constructor_map.get(&constructor_type_id).copied();
 
                 if let Some(constructor_func_id) = constructor_func_id {
-                    // debug!("Found constructor FuncId={:?} for TypeId={:?}", constructor_func_id, constructor_type_id);
-
                     // Call constructor with object as first argument
                     let arg_regs: Vec<_> = std::iter::once(obj_ptr)
                         .chain(args.iter().filter_map(|a| self.lower_expression(a)))
@@ -6165,15 +6182,20 @@ impl<'a> HirToMirContext<'a> {
 
     /// Lower while loop
     fn lower_while_loop(&mut self, condition: &HirExpr, body: &HirBlock, label: Option<&SymbolId>) {
+        debug!("[lower_while_loop] ENTERED");
         let Some(cond_block) = self.builder.create_block() else {
+            debug!("[lower_while_loop] FAILED to create cond_block");
             return;
         };
         let Some(body_block) = self.builder.create_block() else {
+            debug!("[lower_while_loop] FAILED to create body_block");
             return;
         };
         let Some(exit_block) = self.builder.create_block() else {
+            debug!("[lower_while_loop] FAILED to create exit_block");
             return;
         };
+        debug!("[lower_while_loop] Created blocks: cond={:?}, body={:?}, exit={:?}", cond_block, body_block, exit_block);
 
         // Save the entry block (current block before loop)
         let entry_block = if let Some(block_id) = self.builder.current_block() {
@@ -6290,7 +6312,12 @@ impl<'a> HirToMirContext<'a> {
 
         // Evaluate condition - this may create additional blocks for short-circuit operators!
         // After this, we may be in a different block than cond_block
+        debug!("[lower_while_loop] Lowering condition expression, kind={:?}", std::mem::discriminant(&condition.kind));
         let cond_result = self.lower_expression(condition);
+        debug!("[lower_while_loop] Condition result: {:?}", cond_result);
+        if cond_result.is_none() {
+            debug!("[lower_while_loop] DETAILED: condition.kind = {:?}", condition.kind);
+        }
 
         // Capture the block we're actually in AFTER condition evaluation
         // This is where the conditional branch to body/exit will happen
@@ -6339,18 +6366,25 @@ impl<'a> HirToMirContext<'a> {
 
         // Build conditional branch from the block we're actually in
         if let Some(cond_reg) = cond_result {
+            debug!("[lower_while_loop] Building cond_branch with cond_reg={:?}", cond_reg);
             self.builder
                 .build_cond_branch(cond_reg, body_block, exit_block);
+        } else {
+            warn!("[lower_while_loop] CONDITION FAILED TO LOWER - no branch built!");
         }
 
         // Body block
+        debug!("[lower_while_loop] Switching to body_block and lowering body ({} statements)", body.statements.len());
         self.builder.switch_to_block(body_block);
         self.lower_block(body);
+        debug!("[lower_while_loop] Body lowered");
 
         // Get the end block of the loop body (might be different if there are nested blocks)
         let body_end_block = if let Some(block_id) = self.builder.current_block() {
+            debug!("[lower_while_loop] body_end_block={:?}", block_id);
             block_id
         } else {
+            warn!("[lower_while_loop] NO CURRENT BLOCK after body lowering - early return!");
             return;
         };
 
@@ -7495,6 +7529,13 @@ impl<'a> HirToMirContext<'a> {
     fn lower_lvalue_write(&mut self, lvalue: &HirLValue, value: IrId) {
         match lvalue {
             HirLValue::Variable(symbol) => {
+                // Check if this is a global variable first
+                if let Some(&global_id) = self.global_symbol_map.get(symbol) {
+                    debug!("[GLOBAL STORE] Storing to global {:?} -> {:?}", symbol, global_id);
+                    self.builder.build_store_global(global_id, value);
+                    return;
+                }
+
                 // Get the old register before updating (for type inference)
                 let old_reg = self.symbol_map.get(symbol).copied();
 
@@ -7612,21 +7653,28 @@ impl<'a> HirToMirContext<'a> {
                         });
 
                     if let Some(field_index) = field_index_opt {
-                        // eprintln!(
-                        //     "DEBUG: Field write - field={:?}, index={}",
-                        //     field, field_index
-                        // );
-
                         // Create constant for field index
                         if let Some(index_const) =
                             self.builder.build_const(IrValue::I32(field_index as i32))
                         {
                             // Get the type of the field from the FIELD'S DECLARED TYPE in symbol table
                             // NOT from the value's type, which may be incorrect (e.g., I32 for String parameter)
+                            //
+                            // IMPORTANT: If the field symbol's type_id is Dynamic/Unknown, we need to
+                            // fall back to looking up the actual field definition by name.
                             let field_ty = self.symbol_table.get_symbol(*field)
-                                .map(|s| self.convert_type(s.type_id))
+                                .and_then(|s| {
+                                    let converted = self.convert_type(s.type_id);
+                                    // If converted type is Ptr(Void), this might be a proxy symbol with
+                                    // incorrect type. Try the fallback.
+                                    if matches!(&converted, IrType::Ptr(inner) if matches!(**inner, IrType::Void)) {
+                                        None
+                                    } else {
+                                        Some(converted)
+                                    }
+                                })
                                 .unwrap_or_else(|| {
-                                    // Fallback: find field by name
+                                    // Fallback: find field by name in field_index_map
                                     let field_name = self.symbol_table.get_symbol(*field).map(|s| s.name);
                                     for (sym, _) in &self.field_index_map {
                                         if let Some(sym_info) = self.symbol_table.get_symbol(*sym) {
@@ -7736,9 +7784,11 @@ impl<'a> HirToMirContext<'a> {
             let obj_ir_type = self.builder.get_register_type(obj);
             if let Some(ty) = type_table.get(receiver_ty) {
                 if matches!(ty.kind, TypeKind::Dynamic) {
-                    // Check if the object's IR type is already a non-boxed pointer
+                    // Check if the object's IR type is already a non-boxed pointer or raw integer
                     // If the IR type is Ptr(Void), this is likely a raw pointer from StringMap/IntMap.get(),
                     // NOT a boxed Dynamic value. In that case, skip unboxing.
+                    // If the IR type is I64, this is likely a raw pointer stored in an Array<T>,
+                    // which is also NOT a boxed Dynamic value.
                     if let Some(IrType::Ptr(inner)) = &obj_ir_type {
                         if matches!(**inner, IrType::Void) {
                             // This is a raw pointer (e.g., from StringMap<Point>.get()),
@@ -7746,6 +7796,13 @@ impl<'a> HirToMirContext<'a> {
                             drop(type_table);
                             return self.lower_field_access_for_class(obj, field, field_ty);
                         }
+                    }
+                    // Also check for I64 - this is a raw pointer from Array element access
+                    if matches!(&obj_ir_type, Some(IrType::I64)) {
+                        // This is a raw pointer stored as I64 (e.g., from Array<Body>),
+                        // not a boxed Dynamic value. Skip unboxing.
+                        drop(type_table);
+                        return self.lower_field_access_for_class(obj, field, field_ty);
                     }
                     drop(type_table);
 
@@ -8294,11 +8351,17 @@ impl<'a> HirToMirContext<'a> {
                     .get_symbol(field)
                     .map(|s| s.name)?;
 
+                let field_name_str = self.string_interner.get(field_name).unwrap_or("<unknown>");
+                debug!("[lower_field_access_for_class] Looking up field '{}' ({:?}) by name in field_index_map ({} entries)",
+                    field_name_str, field, self.field_index_map.len());
+
                 // Search for any field with the same name
                 let mut found = None;
                 for (sym, &(class_ty, idx)) in &self.field_index_map {
                     if let Some(sym_info) = self.symbol_table.get_symbol(*sym) {
                         if sym_info.name == field_name {
+                            debug!("[lower_field_access_for_class] Found field '{}' at index {} in class_ty={:?}",
+                                field_name_str, idx, class_ty);
                             // Get the actual field type from the matched symbol
                             found = Some((class_ty, idx, sym_info.type_id));
                             break;
@@ -8309,11 +8372,12 @@ impl<'a> HirToMirContext<'a> {
                 match found {
                     Some(result) => result,
                     None => {
-                        let name_str = self.string_interner.get(field_name).unwrap_or("<unknown>");
+                        debug!("[lower_field_access_for_class] Field '{}' ({:?}) NOT FOUND in field_index_map!",
+                            field_name_str, field);
                         self.add_error(
                             &format!(
                                 "Field '{}' ({:?}) index not found for raw pointer access",
-                                name_str, field
+                                field_name_str, field
                             ),
                             SourceLocation::unknown(),
                         );
@@ -10154,20 +10218,28 @@ impl<'a> HirToMirContext<'a> {
         // HaxeArray is a 32-byte struct (4 x 8-byte fields): ptr, len, cap, elem_size
         //
         // Strategy:
-        // 1. Allocate HaxeArray struct on stack
+        // 1. Allocate HaxeArray struct on HEAP (not stack!)
+        //    CRITICAL: Stack allocation causes use-after-free when the array is
+        //    stored in a global/static variable and accessed after the function returns.
         // 2. Zero-initialize it (like new Array<T>())
         // 3. For each element, call haxe_array_push_ptr to add it
         // 4. Return pointer to HaxeArray struct
 
         let element_count = elements.len();
 
-        // Allocate HaxeArray struct on stack (4 x i64 = 32 bytes)
-        // HaxeArray layout: { ptr: *u8, len: usize, cap: usize, elem_size: usize }
-        // IMPORTANT: We must allocate 4 x 8 = 32 bytes, not just 8 bytes!
-        // Allocating only 8 bytes causes stack corruption when we write to
-        // the len/cap/elem_size fields at offsets 8, 16, 24.
-        let count_4 = self.builder.build_const(IrValue::I32(4))?;
-        let array_ptr = self.builder.build_alloc(IrType::I64, Some(count_4))?;
+        // Heap-allocate HaxeArray struct (4 x i64 = 32 bytes) using malloc
+        // HaxeArray layout: { len: usize, cap: usize, elem_size: usize, ptr: *u8 }
+        let malloc_func_id = self.get_or_register_extern_function(
+            "malloc",
+            vec![IrType::U64],
+            IrType::Ptr(Box::new(IrType::U8)),
+        );
+        let size_32 = self.builder.build_const(IrValue::U64(32))?;
+        let array_ptr = self.builder.build_call_direct(
+            malloc_func_id,
+            vec![size_32],
+            IrType::Ptr(Box::new(IrType::U8)),
+        )?;
 
         // Zero-initialize the HaxeArray struct fields
         if let Some(zero_i64) = self.builder.build_const(IrValue::I64(0)) {
@@ -10440,8 +10512,30 @@ impl<'a> HirToMirContext<'a> {
         // Add to module
         self.builder.module.add_global(ir_global);
 
+        // Store the mapping so we can look up globals by symbol ID later
+        self.global_symbol_map.insert(symbol, global_id);
+        debug!("[GLOBAL] Registered global {:?} -> {:?}", symbol, global_id);
+
         // TODO: For non-constant initializers, create an __init__ function
         // that runs at module load time to initialize the global
+    }
+
+    /// Try to evaluate an expression as a constant value for static field initialization
+    fn try_evaluate_constant_init(&self, init_expr: &HirExpr) -> Option<IrValue> {
+        match &init_expr.kind {
+            HirExprKind::Literal(lit) => {
+                match lit {
+                    HirLiteral::Bool(b) => Some(IrValue::Bool(*b)),
+                    HirLiteral::Int(i) => Some(IrValue::I64(*i)),
+                    HirLiteral::Float(f) => Some(IrValue::F64(*f)),
+                    HirLiteral::String(_) => None, // Strings need special handling
+                    HirLiteral::Regex { .. } => None,
+                }
+            }
+            // For non-constant expressions, return None
+            // The actual initialization will happen at runtime
+            _ => None,
+        }
     }
 
     fn register_type_metadata(&mut self, type_id: TypeId, type_decl: &HirTypeDecl) {
@@ -10606,7 +10700,41 @@ impl<'a> HirToMirContext<'a> {
         // Then add this class's own fields
 
         for field in &class.fields {
-            // Store field index mapping for field access lowering
+            // Static fields should be stored as globals, not instance fields
+            if field.is_static {
+                // Register static field as a global
+                let global_id = self.builder.module.alloc_global_id();
+                let field_name = self.string_interner.get(field.name).unwrap_or("<unknown>");
+                let class_name = self.string_interner.get(class.name).unwrap_or("<unknown>");
+
+                // Get initializer value if it's a constant
+                let initializer = if let Some(ref init_expr) = field.init {
+                    // Try to evaluate as constant
+                    self.try_evaluate_constant_init(init_expr)
+                } else {
+                    None
+                };
+
+                let ir_global = IrGlobal {
+                    id: global_id,
+                    name: format!("{}.{}", class_name, field_name),
+                    symbol_id: field.symbol_id,
+                    ty: self.convert_type(field.ty),
+                    initializer,
+                    mutable: !field.is_final,
+                    linkage: Linkage::Internal,
+                    alignment: None,
+                    source_location: IrSourceLocation::unknown(),
+                };
+
+                self.builder.module.add_global(ir_global);
+                self.global_symbol_map.insert(field.symbol_id, global_id);
+                debug!("[STATIC FIELD] Registered static field {}.{} ({:?}) as global {:?}",
+                       class_name, field_name, field.symbol_id, global_id);
+                continue;  // Don't add to instance fields
+            }
+
+            // Store field index mapping for field access lowering (instance fields only)
             self.field_index_map
                 .insert(field.symbol_id, (type_id, field_index));
 

@@ -521,8 +521,11 @@ pub enum Opcode {
     VectorExtract = 49,
     VectorInsert = 50,
     VectorReduce = 51,
+    // Global variable access
+    LoadGlobal = 52,
+    StoreGlobal = 53,
     // Sentinel for table size
-    _Count = 52,
+    _Count = 54,
 }
 
 impl Opcode {
@@ -583,6 +586,9 @@ impl Opcode {
             IrInstruction::VectorExtract { .. } => Opcode::VectorExtract,
             IrInstruction::VectorInsert { .. } => Opcode::VectorInsert,
             IrInstruction::VectorReduce { .. } => Opcode::VectorReduce,
+            // Global variable access
+            IrInstruction::LoadGlobal { .. } => Opcode::LoadGlobal,
+            IrInstruction::StoreGlobal { .. } => Opcode::StoreGlobal,
         }
     }
 }
@@ -973,6 +979,10 @@ pub struct MirInterpreter {
     /// Maximum iterations before triggering JIT bailout
     /// Default: 10000 (signals hot code that should be JIT compiled)
     max_iterations: u64,
+
+    /// Global variable store - maps global IDs to their values
+    /// Used for static class fields and module-level variables
+    global_store: HashMap<crate::ir::IrGlobalId, NanBoxedValue>,
 }
 
 // Safety: MirInterpreter can be sent across threads
@@ -995,6 +1005,7 @@ impl MirInterpreter {
             heap_allocations: HashMap::new(),
             iteration_count: 0,
             max_iterations: 10_000, // Trigger JIT bailout after 10k iterations
+            global_store: HashMap::new(),
         }
     }
 
@@ -1869,6 +1880,33 @@ impl MirInterpreter {
                 self.current_frame_mut()
                     .registers
                     .set(*dest, NanBoxedValue::void());
+            }
+
+            // === Global Variable Access ===
+            IrInstruction::LoadGlobal { dest, global_id, ty: _ } => {
+                // Load value from global variable store
+                let val = if let Some(&stored_val) = self.global_store.get(global_id) {
+                    stored_val
+                } else if let Some(global) = module.globals.get(global_id) {
+                    // Global not yet initialized - use module's initializer as default
+                    if let Some(ref init) = global.initializer {
+                        self.ir_value_to_nanboxed(init)?
+                    } else {
+                        NanBoxedValue::null()
+                    }
+                } else {
+                    // Global not found - return null
+                    NanBoxedValue::null()
+                };
+                tracing::debug!("[INTERP] LoadGlobal {:?} = {:?}", global_id, val);
+                self.current_frame_mut().registers.set(*dest, val);
+            }
+
+            IrInstruction::StoreGlobal { global_id, value } => {
+                // Store value to global variable store
+                let val = self.current_frame().registers.get(*value);
+                tracing::debug!("[INTERP] StoreGlobal {:?} = {:?}", global_id, val);
+                self.global_store.insert(*global_id, val);
             }
         }
         Ok(())
