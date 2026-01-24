@@ -49,6 +49,47 @@ static LLVM_INIT: Once = Once::new();
 #[cfg(feature = "llvm-backend")]
 static LLVM_MUTEX: Mutex<()> = Mutex::new(());
 
+/// Global flag to track if LLVM compilation has been done in this process
+///
+/// IMPORTANT: LLVM does not handle multiple contexts being created and leaked
+/// in the same process well - it leads to memory corruption and segfaults.
+/// This flag ensures only ONE LLVM compilation happens per process.
+#[cfg(feature = "llvm-backend")]
+static LLVM_GLOBAL_COMPILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Global storage for LLVM-compiled function pointers
+///
+/// When multiple backends exist in the same process, only ONE can do LLVM compilation.
+/// This global map stores the compiled pointers so other backends can reuse them.
+/// Key is function name (stable across backends), value is function pointer.
+#[cfg(feature = "llvm-backend")]
+static LLVM_GLOBAL_POINTERS: std::sync::OnceLock<HashMap<String, usize>> = std::sync::OnceLock::new();
+
+/// Check if LLVM compilation has already been done globally
+#[cfg(feature = "llvm-backend")]
+pub fn is_llvm_compiled_globally() -> bool {
+    LLVM_GLOBAL_COMPILED.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Mark LLVM compilation as done globally and store the function pointers
+#[cfg(feature = "llvm-backend")]
+pub fn mark_llvm_compiled_globally_with_pointers(pointers: HashMap<String, usize>) {
+    let _ = LLVM_GLOBAL_POINTERS.set(pointers);
+    LLVM_GLOBAL_COMPILED.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// Get the globally stored LLVM function pointers (if available)
+#[cfg(feature = "llvm-backend")]
+pub fn get_global_llvm_pointers() -> Option<&'static HashMap<String, usize>> {
+    LLVM_GLOBAL_POINTERS.get()
+}
+
+/// Mark LLVM compilation as done globally (legacy, without pointers)
+#[cfg(feature = "llvm-backend")]
+pub fn mark_llvm_compiled_globally() {
+    LLVM_GLOBAL_COMPILED.store(true, std::sync::atomic::Ordering::Release);
+}
+
 /// Initialize LLVM once (thread-safe)
 ///
 /// IMPORTANT: Call this from the main thread before spawning any background threads
@@ -522,22 +563,73 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
         self.execution_engine = Some(engine);
 
-        // IMPORTANT: Trigger MCJIT compilation NOW, not during execution.
-        // LLVM's MCJIT lazily compiles when get_function_address is called.
-        // We pre-compile all functions here to avoid lazy compilation during execution timing.
-        let func_ids: Vec<_> = self.function_map.keys().cloned().collect();
-        for func_id in func_ids {
-            if let Some(llvm_func) = self.function_map.get(&func_id) {
-                let func_name = llvm_func.get_name().to_string_lossy().to_string();
-                if let Some(ref engine) = self.execution_engine {
-                    if let Ok(fn_ptr) = engine.get_function_address(&func_name) {
-                        self.function_pointers.insert(func_id, fn_ptr as usize);
-                    }
-                }
-            }
-        }
+        // NOTE: We skip pre-compilation of functions here.
+        // LLVM's MCJIT does lazy compilation when get_function_address is called.
+        // Pre-compilation was causing intermittent segfaults in LLVM's MCJIT (~40% failure rate).
+        // Instead, we get function pointers lazily in get_function_pointer() and get_all_function_pointers().
+        //
+        // The tradeoff is that first execution of each function has JIT overhead,
+        // but this is much safer than triggering LLVM bugs during bulk pre-compilation.
 
         Ok(())
+    }
+
+    /// Compile to object file for AOT/dylib compilation
+    ///
+    /// This avoids all MCJIT memory protection issues on Apple Silicon by:
+    /// 1. Writing an object file to disk
+    /// 2. Linking with the system linker (which handles MAP_JIT correctly)
+    /// 3. Loading the resulting dylib with dlopen (no JIT needed)
+    ///
+    /// Returns the path to the generated object file.
+    pub fn compile_to_object_file(&mut self, output_path: &std::path::Path) -> Result<(), String> {
+        // Verify module before compilation
+        if let Err(msg) = self.module.verify() {
+            return Err(format!("LLVM module verification failed: {}", msg.to_string()));
+        }
+
+        // Get target machine with PIC mode for shared library
+        let target_triple = TargetMachine::get_default_triple();
+        let target = Target::from_triple(&target_triple)
+            .map_err(|e| format!("Failed to get target: {}", e))?;
+
+        let target_machine = target.create_target_machine(
+            &target_triple,
+            TargetMachine::get_host_cpu_name().to_str().unwrap_or("generic"),
+            TargetMachine::get_host_cpu_features().to_str().unwrap_or(""),
+            self.opt_level,
+            RelocMode::PIC,  // Position Independent Code for dylib
+            CodeModel::Default,
+        ).ok_or("Failed to create target machine for AOT")?;
+
+        // Run optimization passes
+        if self.opt_level != OptimizationLevel::None {
+            let passes = match self.opt_level {
+                OptimizationLevel::None => "default<O0>",
+                OptimizationLevel::Less => "default<O1>",
+                OptimizationLevel::Default => "default<O2>",
+                OptimizationLevel::Aggressive => "default<O3>",
+            };
+            let pass_options = PassBuilderOptions::create();
+            self.module.run_passes(passes, &target_machine, pass_options)
+                .map_err(|e| format!("Failed to run optimization passes: {}", e))?;
+        }
+
+        // Write object file
+        target_machine.write_to_file(&self.module, FileType::Object, output_path)
+            .map_err(|e| format!("Failed to write object file: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Get all function symbol names that will be exported in the dylib
+    ///
+    /// Returns a map of IrFunctionId -> symbol name for loading from the dylib
+    pub fn get_function_symbols(&self) -> HashMap<IrFunctionId, String> {
+        self.function_map.iter()
+            .filter(|(id, _)| !self.extern_function_ids.contains(id))
+            .map(|(id, func)| (*id, func.get_name().to_string_lossy().to_string()))
+            .collect()
     }
 
     /// Declare an external function for FFI
@@ -826,7 +918,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
     }
 
     /// Mangle function name to be LLVM-safe
-    fn mangle_function_name(name: &str) -> String {
+    pub fn mangle_function_name(name: &str) -> String {
         // Replace characters that might cause issues in LLVM
         name.replace("::", "_")
             .replace('<', "_L_")

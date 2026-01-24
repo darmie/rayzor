@@ -501,6 +501,7 @@ fn run_benchmark_llvm(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> Resul
 }
 
 fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, String> {
+    eprintln!("[MARKER] START target={} bench={}", target.name(), bench.name);
     let symbols = get_runtime_symbols();
     let mut compile_times = Vec::new();
     let mut exec_times = Vec::new();
@@ -508,18 +509,26 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
     match target {
         // Tiered: stateful approach for JIT promotion across iterations
         Target::RayzorTiered => {
+            eprintln!("[MARKER] TIERED_SETUP target={}", target.name());
             let mut state = setup_tiered_benchmark(bench, &symbols)?;
             let compile_time = state.compile_time;
+            eprintln!("[MARKER] TIERED_SETUP_DONE target={}", target.name());
 
             // Warmup - runs accumulate, triggering tier promotion
-            for _ in 0..WARMUP_RUNS {
+            eprintln!("[MARKER] WARMUP_START target={} runs={}", target.name(), WARMUP_RUNS);
+            for i in 0..WARMUP_RUNS {
                 let _ = run_tiered_iteration(&mut state);
+                if i % 5 == 4 {
+                    eprintln!("[MARKER] WARMUP_PROGRESS target={} completed={}", target.name(), i + 1);
+                }
             }
+            eprintln!("[MARKER] WARMUP_DONE target={}", target.name());
 
             // Process optimization queue synchronously (since background is disabled)
             // This ensures functions get promoted to higher tiers with MIR optimizations
             let optimized = state.backend.process_queue_sync();
             if optimized > 0 {
+                eprintln!("[MARKER] TIER_PROMOTION target={} optimized={}", target.name(), optimized);
                 // Run a few more warmup iterations to let newly optimized code warm up
                 for _ in 0..3 {
                     let _ = run_tiered_iteration(&mut state);
@@ -531,77 +540,114 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
             // Upgrade to LLVM tier for maximum performance
             #[cfg(feature = "llvm-backend")]
             {
+                eprintln!("[MARKER] LLVM_UPGRADE_START target={}", target.name());
                 if let Err(e) = state.backend.upgrade_to_llvm() {
-                    eprintln!("  Warning: LLVM upgrade failed: {}", e);
+                    // "already done" is expected when multiple backends exist - not an error
+                    if !e.contains("already done") {
+                        eprintln!("  Warning: LLVM upgrade failed: {}", e);
+                    }
                 }
+                eprintln!("[MARKER] LLVM_UPGRADE_DONE target={}", target.name());
             }
 
             // Benchmark runs - running at highest tier (LLVM if available)
-            for _ in 0..BENCH_RUNS {
+            eprintln!("[MARKER] BENCH_START target={} runs={}", target.name(), BENCH_RUNS);
+            for i in 0..BENCH_RUNS {
                 match run_tiered_iteration(&mut state) {
                     Ok(exec) => {
                         compile_times.push(compile_time);
                         exec_times.push(exec);
+                        eprintln!("[MARKER] BENCH_ITER target={} iter={} exec={:.2}ms",
+                            target.name(), i + 1, exec.as_secs_f64() * 1000.0);
                     }
                     Err(e) => return Err(e),
                 }
             }
+            eprintln!("[MARKER] BENCH_DONE target={}", target.name());
         }
 
         // LLVM: stateful approach - finalize() should only be called once
         #[cfg(feature = "llvm-backend")]
         Target::RayzorLLVM => {
+            eprintln!("[MARKER] LLVM_SETUP target={}", target.name());
             let context = Context::create();
             let mut state = setup_llvm_benchmark(bench, &symbols, &context)?;
             let compile_time = state.compile_time;
+            eprintln!("[MARKER] LLVM_SETUP_DONE target={}", target.name());
 
             // Warmup runs
-            for _ in 0..WARMUP_RUNS {
+            eprintln!("[MARKER] WARMUP_START target={} runs={}", target.name(), WARMUP_RUNS);
+            for i in 0..WARMUP_RUNS {
                 let _ = run_llvm_iteration(&mut state);
+                if i % 5 == 4 {
+                    eprintln!("[MARKER] WARMUP_PROGRESS target={} completed={}", target.name(), i + 1);
+                }
             }
+            eprintln!("[MARKER] WARMUP_DONE target={}", target.name());
 
             // Benchmark runs
-            for _ in 0..BENCH_RUNS {
+            eprintln!("[MARKER] BENCH_START target={} runs={}", target.name(), BENCH_RUNS);
+            for i in 0..BENCH_RUNS {
                 match run_llvm_iteration(&mut state) {
                     Ok(exec) => {
                         compile_times.push(compile_time);
                         exec_times.push(exec);
+                        eprintln!("[MARKER] BENCH_ITER target={} iter={} exec={:.2}ms",
+                            target.name(), i + 1, exec.as_secs_f64() * 1000.0);
                     }
                     Err(e) => return Err(e),
                 }
             }
+            eprintln!("[MARKER] BENCH_DONE target={}", target.name());
         }
 
         // Precompiled .rzb bundles: each iteration loads fresh (measures AOT benefits)
         Target::RayzorPrecompiled => {
-            for _ in 0..WARMUP_RUNS {
+            eprintln!("[MARKER] WARMUP_START target={} runs={}", target.name(), WARMUP_RUNS);
+            for i in 0..WARMUP_RUNS {
                 let _ = run_benchmark_precompiled(&bench.name, &symbols);
+                if i % 5 == 4 {
+                    eprintln!("[MARKER] WARMUP_PROGRESS target={} completed={}", target.name(), i + 1);
+                }
             }
+            eprintln!("[MARKER] WARMUP_DONE target={}", target.name());
 
-            for _ in 0..BENCH_RUNS {
+            eprintln!("[MARKER] BENCH_START target={} runs={}", target.name(), BENCH_RUNS);
+            for i in 0..BENCH_RUNS {
                 match run_benchmark_precompiled(&bench.name, &symbols) {
                     Ok((load, exec)) => {
                         compile_times.push(load);  // Load time = "compile time"
                         exec_times.push(exec);
+                        eprintln!("[MARKER] BENCH_ITER target={} iter={} exec={:.2}ms",
+                            target.name(), i + 1, exec.as_secs_f64() * 1000.0);
                     }
                     Err(e) => return Err(e),
                 }
             }
+            eprintln!("[MARKER] BENCH_DONE target={}", target.name());
         }
 
         // Precompiled + Tiered warmup: load .rzb, warm up, promote to LLVM
         Target::RayzorPrecompiledTiered => {
+            eprintln!("[MARKER] PRECOMPILED_TIERED_SETUP target={}", target.name());
             let mut state = setup_precompiled_tiered_benchmark(&bench.name, &symbols)?;
             let load_time = state.load_time;
+            eprintln!("[MARKER] PRECOMPILED_TIERED_SETUP_DONE target={}", target.name());
 
             // Warmup - runs accumulate, triggering tier promotion
-            for _ in 0..WARMUP_RUNS {
+            eprintln!("[MARKER] WARMUP_START target={} runs={}", target.name(), WARMUP_RUNS);
+            for i in 0..WARMUP_RUNS {
                 let _ = run_precompiled_tiered_iteration(&mut state);
+                if i % 5 == 4 {
+                    eprintln!("[MARKER] WARMUP_PROGRESS target={} completed={}", target.name(), i + 1);
+                }
             }
+            eprintln!("[MARKER] WARMUP_DONE target={}", target.name());
 
             // Process optimization queue synchronously
             let optimized = state.backend.process_queue_sync();
             if optimized > 0 {
+                eprintln!("[MARKER] TIER_PROMOTION target={} optimized={}", target.name(), optimized);
                 for _ in 0..3 {
                     let _ = run_precompiled_tiered_iteration(&mut state);
                 }
@@ -611,34 +657,49 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
             // Upgrade to LLVM tier for maximum performance
             #[cfg(feature = "llvm-backend")]
             {
+                eprintln!("[MARKER] LLVM_UPGRADE_START target={}", target.name());
                 if let Err(e) = state.backend.upgrade_to_llvm() {
-                    eprintln!("  Warning: LLVM upgrade failed: {}", e);
+                    // "already done" is expected when multiple backends exist - not an error
+                    if !e.contains("already done") {
+                        eprintln!("  Warning: LLVM upgrade failed: {}", e);
+                    }
                 }
+                eprintln!("[MARKER] LLVM_UPGRADE_DONE target={}", target.name());
             }
 
             // Benchmark runs at highest tier
-            for _ in 0..BENCH_RUNS {
+            eprintln!("[MARKER] BENCH_START target={} runs={}", target.name(), BENCH_RUNS);
+            for i in 0..BENCH_RUNS {
                 match run_precompiled_tiered_iteration(&mut state) {
                     Ok(exec) => {
                         compile_times.push(load_time);  // Load time = "compile time"
                         exec_times.push(exec);
+                        eprintln!("[MARKER] BENCH_ITER target={} iter={} exec={:.2}ms",
+                            target.name(), i + 1, exec.as_secs_f64() * 1000.0);
                     }
                     Err(e) => return Err(e),
                 }
             }
+            eprintln!("[MARKER] BENCH_DONE target={}", target.name());
         }
 
         // Cranelift and Interpreter: each iteration is independent
         Target::RayzorCranelift | Target::RayzorInterpreter => {
-            for _ in 0..WARMUP_RUNS {
+            eprintln!("[MARKER] WARMUP_START target={} runs={}", target.name(), WARMUP_RUNS);
+            for i in 0..WARMUP_RUNS {
                 let _ = match target {
                     Target::RayzorCranelift => run_benchmark_cranelift(bench, &symbols),
                     Target::RayzorInterpreter => run_benchmark_interpreter(bench, &symbols),
                     _ => unreachable!(),
                 };
+                if i % 5 == 4 {
+                    eprintln!("[MARKER] WARMUP_PROGRESS target={} completed={}", target.name(), i + 1);
+                }
             }
+            eprintln!("[MARKER] WARMUP_DONE target={}", target.name());
 
-            for _ in 0..BENCH_RUNS {
+            eprintln!("[MARKER] BENCH_START target={} runs={}", target.name(), BENCH_RUNS);
+            for i in 0..BENCH_RUNS {
                 let result = match target {
                     Target::RayzorCranelift => run_benchmark_cranelift(bench, &symbols),
                     Target::RayzorInterpreter => run_benchmark_interpreter(bench, &symbols),
@@ -649,10 +710,13 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
                     Ok((compile, exec)) => {
                         compile_times.push(compile);
                         exec_times.push(exec);
+                        eprintln!("[MARKER] BENCH_ITER target={} iter={} exec={:.2}ms",
+                            target.name(), i + 1, exec.as_secs_f64() * 1000.0);
                     }
                     Err(e) => return Err(e),
                 }
             }
+            eprintln!("[MARKER] BENCH_DONE target={}", target.name());
         }
     }
 
@@ -663,6 +727,11 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
     let median_compile = compile_times[BENCH_RUNS / 2];
     let median_exec = exec_times[BENCH_RUNS / 2];
     let total = median_compile + median_exec;
+
+    eprintln!("[MARKER] COMPLETE target={} bench={} compile={:.2}ms exec={:.2}ms",
+        target.name(), bench.name,
+        median_compile.as_secs_f64() * 1000.0,
+        median_exec.as_secs_f64() * 1000.0);
 
     Ok(BenchmarkResult {
         name: bench.name.clone(),
@@ -883,6 +952,7 @@ fn main() {
     };
 
     for bench_name in &benchmarks_to_run {
+        eprintln!("[MARKER] BENCHMARK_START name={}", bench_name);
         println!("{}", "-".repeat(70));
         println!("Benchmark: {}", bench_name);
         println!("{}", "-".repeat(70));
@@ -1024,8 +1094,10 @@ fn main() {
 
         suite.benchmarks.push(BenchmarkResults {
             name: bench_name.clone(),
-            results,
+            results: results.clone(),
         });
+
+        eprintln!("[MARKER] BENCHMARK_FINISH name={} targets_completed={}", bench_name, results.len());
     }
 
     // Save results
@@ -1044,4 +1116,6 @@ fn main() {
         println!("\nJSON Output:");
         println!("{}", serde_json::to_string_pretty(&suite).unwrap_or_default());
     }
+
+    eprintln!("[MARKER] BENCHMARK_SUITE_COMPLETE all_benchmarks={}", benchmarks_to_run.len());
 }

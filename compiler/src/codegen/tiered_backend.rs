@@ -22,11 +22,260 @@
 //! - RwLock for function pointer map: Fast reads, infrequent writes
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Condvar};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::thread;
 use std::time::Duration;
+use std::path::PathBuf;
 
 use rayon::prelude::*;
+
+// ============================================================================
+// Promotion Barrier - Safe Tier Promotion Mechanism
+// ============================================================================
+//
+// Inspired by HotSpot JVM's safepoint mechanism, this barrier ensures safe
+// code replacement during tier promotion. The key insight is that we cannot
+// simply swap function pointers while code is executing - we need to ensure:
+//
+// 1. No thread is currently executing JIT code that might call replaced functions
+// 2. All function pointers are replaced atomically (all-or-nothing)
+// 3. Minimal performance impact during normal execution
+//
+// Protocol:
+// - Main thread: Before executing JIT code, check barrier state and increment counter
+// - Main thread: After executing, decrement counter
+// - Background worker: Request promotion, wait for counter to reach 0
+// - Background worker: Swap ALL function pointers atomically
+// - Background worker: Release barrier, allowing execution to resume
+//
+
+/// State of the promotion barrier
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PromotionState {
+    /// Normal execution - no promotion pending
+    Idle = 0,
+    /// Promotion requested - new executions should wait
+    PromotionRequested = 1,
+    /// Promotion in progress - function pointers being swapped
+    PromotionInProgress = 2,
+}
+
+impl From<u8> for PromotionState {
+    fn from(v: u8) -> Self {
+        match v {
+            0 => PromotionState::Idle,
+            1 => PromotionState::PromotionRequested,
+            2 => PromotionState::PromotionInProgress,
+            _ => PromotionState::Idle,
+        }
+    }
+}
+
+/// Barrier for safe tier promotion
+///
+/// This barrier coordinates between the main execution thread and background
+/// compilation workers to ensure function pointers are only replaced when
+/// no code is executing.
+pub struct PromotionBarrier {
+    /// Current barrier state
+    state: AtomicU8,
+
+    /// Number of JIT executions currently in flight
+    /// This counts nested calls - a call from A to B to C increments 3 times
+    execution_counter: AtomicU64,
+
+    /// Mutex + Condvar for blocking when promotion is requested
+    /// Main thread waits on this when state is PromotionRequested
+    wait_mutex: Mutex<()>,
+    wait_condvar: Condvar,
+
+    /// Mutex + Condvar for background worker to wait for executions to drain
+    drain_mutex: Mutex<()>,
+    drain_condvar: Condvar,
+}
+
+impl PromotionBarrier {
+    /// Create a new promotion barrier
+    pub fn new() -> Self {
+        Self {
+            state: AtomicU8::new(PromotionState::Idle as u8),
+            execution_counter: AtomicU64::new(0),
+            wait_mutex: Mutex::new(()),
+            wait_condvar: Condvar::new(),
+            drain_mutex: Mutex::new(()),
+            drain_condvar: Condvar::new(),
+        }
+    }
+
+    /// Get current state
+    #[inline]
+    pub fn state(&self) -> PromotionState {
+        PromotionState::from(self.state.load(Ordering::Acquire))
+    }
+
+    /// Get current execution count
+    #[inline]
+    pub fn execution_count(&self) -> u64 {
+        self.execution_counter.load(Ordering::Acquire)
+    }
+
+    /// Enter JIT execution - called before executing JIT code
+    ///
+    /// Returns true if execution can proceed, false if caller should wait and retry
+    #[inline]
+    pub fn enter_execution(&self) -> bool {
+        // Fast path: if state is Idle, just increment counter
+        let state = self.state();
+        if state == PromotionState::Idle {
+            self.execution_counter.fetch_add(1, Ordering::AcqRel);
+            // Double-check state didn't change (promotion might have started)
+            if self.state() == PromotionState::Idle {
+                return true;
+            }
+            // State changed, decrement and return false to wait
+            self.execution_counter.fetch_sub(1, Ordering::AcqRel);
+            // Notify drain condvar in case background worker is waiting
+            self.drain_condvar.notify_all();
+        }
+        false
+    }
+
+    /// Wait for barrier to become idle, then enter execution
+    pub fn wait_and_enter_execution(&self) {
+        loop {
+            // Try fast path first
+            if self.enter_execution() {
+                return;
+            }
+
+            // Slow path: wait for promotion to complete
+            let guard = self.wait_mutex.lock().unwrap();
+            // Re-check state after acquiring lock
+            if self.state() == PromotionState::Idle {
+                drop(guard);
+                continue; // Retry fast path
+            }
+            // Wait for notification
+            let _guard = self.wait_condvar.wait(guard).unwrap();
+            // Loop and retry
+        }
+    }
+
+    /// Exit JIT execution - called after executing JIT code
+    #[inline]
+    pub fn exit_execution(&self) {
+        let prev = self.execution_counter.fetch_sub(1, Ordering::AcqRel);
+        // If counter reached 0 and promotion is requested, notify the background worker
+        if prev == 1 && self.state() != PromotionState::Idle {
+            self.drain_condvar.notify_all();
+        }
+    }
+
+    /// Request promotion - called by background worker before replacing function pointers
+    ///
+    /// This sets the state to PromotionRequested, preventing new executions.
+    /// Returns immediately - caller should then wait_for_drain().
+    pub fn request_promotion(&self) -> bool {
+        // Try to transition from Idle to PromotionRequested
+        self.state.compare_exchange(
+            PromotionState::Idle as u8,
+            PromotionState::PromotionRequested as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ).is_ok()
+    }
+
+    /// Wait for all executions to drain
+    ///
+    /// Called by background worker after request_promotion().
+    /// Blocks until execution_counter reaches 0.
+    pub fn wait_for_drain(&self, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+
+        loop {
+            // Check if already drained
+            if self.execution_counter.load(Ordering::Acquire) == 0 {
+                // Transition to PromotionInProgress
+                self.state.store(PromotionState::PromotionInProgress as u8, Ordering::Release);
+                return true;
+            }
+
+            // Check timeout
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+
+            // Wait for notification with remaining timeout
+            let remaining = deadline - now;
+            let guard = self.drain_mutex.lock().unwrap();
+            let result = self.drain_condvar.wait_timeout(guard, remaining).unwrap();
+
+            if result.1.timed_out() {
+                return false;
+            }
+        }
+    }
+
+    /// Complete promotion - called after function pointers have been swapped
+    ///
+    /// This sets state back to Idle and wakes up any waiting execution threads.
+    pub fn complete_promotion(&self) {
+        self.state.store(PromotionState::Idle as u8, Ordering::Release);
+        // Wake up all waiting execution threads
+        self.wait_condvar.notify_all();
+    }
+
+    /// Cancel promotion request - called if promotion fails or is aborted
+    pub fn cancel_promotion(&self) {
+        // Only cancel if we're in PromotionRequested state
+        let _ = self.state.compare_exchange(
+            PromotionState::PromotionRequested as u8,
+            PromotionState::Idle as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        // Also try to cancel from PromotionInProgress (in case of error during swap)
+        let _ = self.state.compare_exchange(
+            PromotionState::PromotionInProgress as u8,
+            PromotionState::Idle as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        // Wake up waiting threads
+        self.wait_condvar.notify_all();
+    }
+}
+
+impl Default for PromotionBarrier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// RAII guard for JIT execution
+///
+/// Automatically decrements execution counter when dropped.
+pub struct ExecutionGuard<'a> {
+    barrier: &'a PromotionBarrier,
+}
+
+impl<'a> ExecutionGuard<'a> {
+    /// Create a new execution guard
+    ///
+    /// Caller must have already called barrier.enter_execution() or wait_and_enter_execution()
+    pub fn new(barrier: &'a PromotionBarrier) -> Self {
+        Self { barrier }
+    }
+}
+
+impl<'a> Drop for ExecutionGuard<'a> {
+    fn drop(&mut self) {
+        self.barrier.exit_execution();
+    }
+}
 
 use super::cranelift_backend::CraneliftBackend;
 use super::mir_interpreter::{MirInterpreter, InterpValue, InterpError};
@@ -91,6 +340,10 @@ pub struct TieredBackend {
     /// Used to prevent unbounded LLVM context leaks from repeated compilations
     #[cfg(feature = "llvm-backend")]
     llvm_compiled: Arc<Mutex<bool>>,
+
+    /// Promotion barrier for safe tier promotion
+    /// Ensures no JIT code is executing when function pointers are replaced
+    promotion_barrier: Arc<PromotionBarrier>,
 }
 
 /// Optimization tier level (5-tier system with interpreter)
@@ -138,7 +391,8 @@ impl OptimizationTier {
     /// Check if this tier uses LLVM backend
     /// Note: LLVM is now a standalone backend, not part of tiered compilation
     pub fn uses_llvm(&self) -> bool {
-        false // All tiers use Cranelift; LLVM is standalone
+        // Maximum tier uses LLVM for best optimization; other tiers use Cranelift
+        matches!(self, OptimizationTier::Maximum)
     }
 
     /// Get the next higher tier (if any)
@@ -554,6 +808,7 @@ impl TieredBackend {
             llvm_queue: Arc::new(Mutex::new(VecDeque::new())),
             #[cfg(feature = "llvm-backend")]
             llvm_compiled: Arc::new(Mutex::new(false)),
+            promotion_barrier: Arc::new(PromotionBarrier::new()),
         })
     }
 
@@ -600,6 +855,7 @@ impl TieredBackend {
             llvm_queue: Arc::new(Mutex::new(VecDeque::new())),
             #[cfg(feature = "llvm-backend")]
             llvm_compiled: Arc::new(Mutex::new(false)),
+            promotion_barrier: Arc::new(PromotionBarrier::new()),
         })
     }
 
@@ -736,12 +992,25 @@ impl TieredBackend {
             }
         } else {
             // JIT-compiled code - call via function pointer
-            // SAFETY: Hold read lock during execution to prevent background worker
-            // from replacing the function pointer while we're executing through it
-            let fp_guard = self.function_pointers.read().unwrap();
-            let func_ptr = fp_guard.get(&func_id)
-                .map(|addr| *addr as *const u8)
-                .ok_or_else(|| format!("JIT function {:?} not found in function_pointers", func_id))?;
+            //
+            // BARRIER PROTOCOL:
+            // 1. Wait for any pending promotion to complete (blocks if PromotionRequested)
+            // 2. Enter execution (increments counter, signals we're running JIT code)
+            // 3. Get function pointer and execute
+            // 4. Exit execution (decrements counter via RAII guard)
+            //
+            // This ensures the background worker can safely swap ALL function pointers
+            // when no JIT code is executing.
+            self.promotion_barrier.wait_and_enter_execution();
+            let _exec_guard = ExecutionGuard::new(&self.promotion_barrier);
+
+            // Now safe to get function pointer - no promotion can happen while we hold the guard
+            let func_ptr = {
+                let fp_guard = self.function_pointers.read().unwrap();
+                fp_guard.get(&func_id)
+                    .map(|addr| *addr as *const u8)
+                    .ok_or_else(|| format!("JIT function {:?} not found in function_pointers", func_id))?
+            };
 
             // For functions with no args (like main), call directly
             // NOTE: Cranelift adds a hidden environment parameter (i64) to non-extern Haxe
@@ -753,13 +1022,13 @@ impl TieredBackend {
                     let jit_fn: extern "C" fn(i64) = std::mem::transmute(func_ptr);
                     jit_fn(0); // null environment pointer
                 }
-                drop(fp_guard); // Explicitly release lock after execution
+                // _exec_guard drops here, calling exit_execution()
                 Ok(InterpValue::Void)
             } else {
                 // TODO: Implement argument marshaling for JIT calls
                 // For now, fall back to interpreter for functions with args
                 // This is a limitation - in practice, hot inner functions often have args
-                drop(fp_guard); // Release lock before acquiring other locks
+                // Note: We keep the execution guard because the interpreter might call back into JIT
                 if self.config.verbosity >= 1 {
                     debug!("[TieredBackend] JIT function with args - falling back to interpreter");
                 }
@@ -1249,13 +1518,114 @@ impl TieredBackend {
     /// Note: This compiles ALL modules because functions may call other
     /// functions across modules. Returns ALL function pointers.
     ///
-    /// IMPORTANT: This intentionally leaks the LLVM context and backend to ensure
-    /// JIT-compiled code remains valid for the program's lifetime.
+    /// Compile all functions with LLVM
+    ///
+    /// Platform-specific behavior:
+    /// - Apple Silicon (aarch64-apple-darwin): Uses AOT compile-to-dylib to avoid
+    ///   MAP_JIT and W^X memory protection issues that cause MCJIT segfaults.
+    /// - Other platforms: Uses MCJIT directly (stable and fast).
+    ///
+    /// The compiled code is leaked to ensure it remains valid for program lifetime.
     #[cfg(feature = "llvm-backend")]
     #[allow(dead_code)]
     fn compile_all_with_llvm(&self) -> Result<HashMap<IrFunctionId, usize>, String> {
-        // Check if LLVM compilation has already been done to prevent unbounded context leaks
-        // Each LLVM context uses ~10-50MB, so we must not create multiple contexts
+        // Use AOT dylib approach only on Apple Silicon where MCJIT is unstable
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            self.compile_all_with_llvm_aot()
+        }
+
+        // On other platforms, MCJIT works fine
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            self.compile_all_with_llvm_mcjit()
+        }
+    }
+
+    /// Compile with MCJIT (for x86_64 and Linux)
+    ///
+    /// MCJIT is stable on these platforms and provides the best JIT experience.
+    #[cfg(feature = "llvm-backend")]
+    #[allow(dead_code)]
+    fn compile_all_with_llvm_mcjit(&self) -> Result<HashMap<IrFunctionId, usize>, String> {
+        // Check if THIS instance has already compiled with LLVM
+        {
+            let llvm_compiled = self.llvm_compiled.lock().unwrap();
+            if *llvm_compiled {
+                let fp_lock = self.function_pointers.read().unwrap();
+                return Ok(fp_lock.iter()
+                    .map(|(id, ptr)| (*id, *ptr))
+                    .collect());
+            }
+        }
+
+        // Check GLOBAL flag - if already compiled, reuse global pointers
+        if super::llvm_jit_backend::is_llvm_compiled_globally() {
+            if let Some(global_ptrs) = super::llvm_jit_backend::get_global_llvm_pointers() {
+                return self.map_global_pointers_to_ids(global_ptrs);
+            }
+            return Err("LLVM compilation already done but pointers not available.".to_string());
+        }
+
+        let _llvm_guard = super::llvm_jit_backend::llvm_lock();
+
+        // Double-check after lock
+        if super::llvm_jit_backend::is_llvm_compiled_globally() {
+            if let Some(global_ptrs) = super::llvm_jit_backend::get_global_llvm_pointers() {
+                return self.map_global_pointers_to_ids(global_ptrs);
+            }
+            return Err("LLVM compilation already done (race).".to_string());
+        }
+
+        // Create and leak context for stable JIT code
+        let context = Box::leak(Box::new(Context::create()));
+
+        let symbols: Vec<(&str, *const u8)> = self.runtime_symbols
+            .iter()
+            .map(|(name, ptr)| (name.as_str(), *ptr as *const u8))
+            .collect();
+
+        let mut backend = LLVMJitBackend::with_symbols(context, &symbols)?;
+
+        let modules_lock = self.modules.read().unwrap();
+        for module in modules_lock.iter() {
+            backend.declare_module(module)?;
+        }
+        for module in modules_lock.iter() {
+            backend.compile_module_bodies(module)?;
+        }
+        drop(modules_lock);
+
+        // Get function symbols before finalize (we need names for global storage)
+        let function_symbols = backend.get_function_symbols();
+
+        backend.finalize()?;
+        let all_pointers = backend.get_all_function_pointers()?;
+
+        Box::leak(Box::new(backend));
+
+        // Build name -> pointer map for global storage
+        let global_ptrs: HashMap<String, usize> = function_symbols.iter()
+            .filter_map(|(id, name)| all_pointers.get(id).map(|ptr| (name.clone(), *ptr)))
+            .collect();
+
+        *self.llvm_compiled.lock().unwrap() = true;
+        super::llvm_jit_backend::mark_llvm_compiled_globally_with_pointers(global_ptrs);
+
+        Ok(all_pointers)
+    }
+
+    /// Compile with AOT to dylib (for Apple Silicon)
+    ///
+    /// This avoids MCJIT's MAP_JIT issues on Apple Silicon by:
+    /// 1. LLVM compiles to object file (.o)
+    /// 2. System linker creates dylib (.dylib)
+    /// 3. libloading loads the dylib
+    /// 4. Function pointers extracted via dlsym
+    #[cfg(feature = "llvm-backend")]
+    #[allow(dead_code)]
+    fn compile_all_with_llvm_aot(&self) -> Result<HashMap<IrFunctionId, usize>, String> {
+        // Check if THIS instance has already compiled with LLVM
         {
             let llvm_compiled = self.llvm_compiled.lock().unwrap();
             if *llvm_compiled {
@@ -1267,15 +1637,35 @@ impl TieredBackend {
             }
         }
 
-        // Acquire global LLVM lock - LLVM is not thread-safe
-        // This prevents concurrent LLVM operations from corrupting global state
+        // Check GLOBAL flag - if already compiled, reuse global pointers
+        if super::llvm_jit_backend::is_llvm_compiled_globally() {
+            // Another backend already compiled - reuse their pointers
+            if let Some(global_ptrs) = super::llvm_jit_backend::get_global_llvm_pointers() {
+                return self.map_global_pointers_to_ids(global_ptrs);
+            }
+            return Err("LLVM compilation already done but pointers not available.".to_string());
+        }
+
+        // Acquire global LLVM lock
         let _llvm_guard = super::llvm_jit_backend::llvm_lock();
 
-        // Create context and backend, then leak them to ensure lifetime
-        // This is intentional: JIT code must remain valid indefinitely
+        // Double-check after acquiring lock
+        if super::llvm_jit_backend::is_llvm_compiled_globally() {
+            return Err("LLVM compilation already done by another backend instance (race).".to_string());
+        }
+
+        // Create temporary paths for object file and dylib
+        let temp_dir = std::env::temp_dir();
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let obj_path = temp_dir.join(format!("rayzor_llvm_{}.o", timestamp));
+        let dylib_path = temp_dir.join(format!("rayzor_llvm_{}.dylib", timestamp));
+
+        // Create LLVM context and backend
         let context = Box::leak(Box::new(Context::create()));
 
-        // Convert symbols to the format LLVMJitBackend expects
         let symbols: Vec<(&str, *const u8)> = self.runtime_symbols
             .iter()
             .map(|(name, ptr)| (name.as_str(), *ptr as *const u8))
@@ -1283,30 +1673,168 @@ impl TieredBackend {
 
         let mut backend = LLVMJitBackend::with_symbols(context, &symbols)?;
 
-        // Two-pass compilation for cross-module function references:
-        // 1. First declare ALL functions from ALL modules
+        // Two-pass compilation
         let modules_lock = self.modules.read().unwrap();
         for module in modules_lock.iter() {
             backend.declare_module(module)?;
         }
-        // 2. Then compile all function bodies
         for module in modules_lock.iter() {
             backend.compile_module_bodies(module)?;
         }
         drop(modules_lock);
 
-        backend.finalize()?;
+        // Get function symbols before compiling (we need the names for dlsym)
+        let function_symbols = backend.get_function_symbols();
 
-        // Get ALL function pointers before leaking the backend
-        let all_pointers = backend.get_all_function_pointers()?;
+        // Compile to object file (AOT, not JIT!)
+        tracing::trace!("[LLVM:AOT] Compiling to object file: {:?}", obj_path);
+        backend.compile_to_object_file(&obj_path)?;
 
-        // Leak the backend to keep the execution engine alive
-        Box::leak(Box::new(backend));
+        // Link object file to dylib using system linker
+        tracing::trace!("[LLVM:AOT] Linking to dylib: {:?}", dylib_path);
+        self.link_to_dylib(&obj_path, &dylib_path)?;
 
-        // Mark LLVM compilation as done to prevent future context leaks
+        // Load the dylib
+        tracing::trace!("[LLVM:AOT] Loading dylib");
+        let lib = unsafe {
+            libloading::Library::new(&dylib_path)
+                .map_err(|e| format!("Failed to load dylib: {}", e))?
+        };
+
+        // Get function pointers from dylib
+        let mut all_pointers = HashMap::new();
+        for (func_id, symbol_name) in &function_symbols {
+            let symbol_result: Result<libloading::Symbol<*const ()>, _> = unsafe {
+                lib.get(symbol_name.as_bytes())
+            };
+
+            if let Ok(symbol) = symbol_result {
+                let ptr = *symbol as usize;
+                if ptr != 0 {
+                    all_pointers.insert(*func_id, ptr);
+                }
+            }
+        }
+
+        tracing::trace!("[LLVM:AOT] Loaded {} function pointers from dylib", all_pointers.len());
+
+        // Leak the library to keep code valid (intentional!)
+        Box::leak(Box::new(lib));
+
+        // Clean up object file (dylib must stay for loaded code)
+        let _ = std::fs::remove_file(&obj_path);
+
+        // Build name -> pointer map for global storage (so other backends can reuse)
+        let global_ptrs: HashMap<String, usize> = function_symbols.iter()
+            .filter_map(|(id, name)| all_pointers.get(id).map(|ptr| (name.clone(), *ptr)))
+            .collect();
+
+        // Mark LLVM compilation as done and store pointers globally
         *self.llvm_compiled.lock().unwrap() = true;
+        super::llvm_jit_backend::mark_llvm_compiled_globally_with_pointers(global_ptrs);
 
         Ok(all_pointers)
+    }
+
+    /// Map globally stored LLVM pointers (by name) to this backend's function IDs
+    #[cfg(feature = "llvm-backend")]
+    fn map_global_pointers_to_ids(&self, global_ptrs: &HashMap<String, usize>) -> Result<HashMap<IrFunctionId, usize>, String> {
+        let modules_lock = self.modules.read().unwrap();
+        let mut result = HashMap::new();
+
+        for module in modules_lock.iter() {
+            for (func_id, func) in &module.functions {
+                // Try to find this function in global pointers by name
+                let mangled_name = LLVMJitBackend::mangle_function_name(&func.name);
+                if let Some(&ptr) = global_ptrs.get(&mangled_name) {
+                    result.insert(*func_id, ptr);
+                }
+            }
+        }
+
+        tracing::trace!("[LLVM:AOT] Mapped {} function pointers from global cache", result.len());
+
+        // Mark this instance as using LLVM pointers
+        *self.llvm_compiled.lock().unwrap() = true;
+
+        Ok(result)
+    }
+
+    /// Link object file to dynamic library using system linker
+    ///
+    /// On macOS: Uses clang (via cc wrapper)
+    /// On Linux: Uses gcc or clang
+    ///
+    /// Returns error if no linker is available - caller should fall back to Cranelift
+    #[cfg(feature = "llvm-backend")]
+    fn link_to_dylib(&self, obj_path: &PathBuf, dylib_path: &PathBuf) -> Result<(), String> {
+        // Try to find a suitable linker
+        let linker = Self::find_linker()?;
+
+        // Build linker arguments based on platform
+        #[cfg(target_os = "macos")]
+        let args = vec![
+            "-shared".to_string(),
+            "-o".to_string(),
+            dylib_path.to_str().ok_or("Invalid dylib path")?.to_string(),
+            obj_path.to_str().ok_or("Invalid object path")?.to_string(),
+            "-Wl,-undefined,dynamic_lookup".to_string(),
+        ];
+
+        #[cfg(target_os = "linux")]
+        let args = vec![
+            "-shared".to_string(),
+            "-fPIC".to_string(),
+            "-o".to_string(),
+            dylib_path.to_str().ok_or("Invalid dylib path")?.to_string(),
+            obj_path.to_str().ok_or("Invalid object path")?.to_string(),
+        ];
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        return Err("LLVM AOT compilation not supported on this platform".to_string());
+
+        let output = std::process::Command::new(&linker)
+            .args(&args)
+            .output()
+            .map_err(|e| format!("Failed to run linker '{}': {}", linker, e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("Linker failed: {}", stderr));
+        }
+
+        Ok(())
+    }
+
+    /// Find a suitable linker on the system
+    ///
+    /// Searches for: clang, gcc, cc (in order of preference)
+    /// Returns the path to the linker or an error if none found
+    #[cfg(feature = "llvm-backend")]
+    fn find_linker() -> Result<String, String> {
+        // Check for linkers in order of preference
+        let candidates = ["clang", "gcc", "cc"];
+
+        for linker in &candidates {
+            if let Ok(output) = std::process::Command::new(linker)
+                .arg("--version")
+                .output()
+            {
+                if output.status.success() {
+                    return Ok(linker.to_string());
+                }
+            }
+        }
+
+        Err("No C compiler/linker found (tried: clang, gcc, cc). \
+             LLVM tier 3 optimization requires a system linker. \
+             Install Xcode (macOS) or gcc/clang (Linux), or use precompiled bundles.".to_string())
+    }
+
+    /// Check if LLVM AOT compilation is available on this system
+    #[cfg(feature = "llvm-backend")]
+    pub fn is_llvm_aot_available() -> bool {
+        Self::find_linker().is_ok()
     }
 
     /// Legacy single-function compile (returns just one pointer)
@@ -1350,6 +1878,7 @@ impl TieredBackend {
         let config = self.config.clone();
         let runtime_symbols = Arc::clone(&self.runtime_symbols);
         let llvm_queue = Arc::clone(&self.llvm_queue);
+        let promotion_barrier = Arc::clone(&self.promotion_barrier);
 
         let handle = thread::spawn(move || {
             if config.verbosity >= 1 {
@@ -1376,6 +1905,7 @@ impl TieredBackend {
                     &config,
                     &runtime_symbols,
                     &llvm_queue,
+                    &promotion_barrier,
                 );
 
                 // Sleep before next iteration
@@ -1389,8 +1919,14 @@ impl TieredBackend {
     /// Background worker iteration - processes multiple functions in parallel using rayon
     ///
     /// This drains up to `max_parallel_optimizations` functions from the queue and
-    /// compiles them concurrently using rayon's parallel iterators. Function pointer
-    /// installation is serialized for thread safety.
+    /// compiles them concurrently using rayon's parallel iterators.
+    ///
+    /// ## Safe Promotion Protocol (Barrier-Based)
+    /// 1. Compile new code in background (no barrier needed)
+    /// 2. Request promotion via barrier (blocks new JIT executions)
+    /// 3. Wait for all in-flight JIT executions to complete
+    /// 4. Atomically swap ALL function pointers
+    /// 5. Release barrier (allows JIT executions to resume)
     fn background_worker_iteration(
         queue: &Arc<Mutex<VecDeque<(IrFunctionId, OptimizationTier)>>>,
         optimizing: &Arc<Mutex<HashSet<IrFunctionId>>>,
@@ -1401,6 +1937,7 @@ impl TieredBackend {
         config: &TieredConfig,
         runtime_symbols: &Arc<Vec<(String, usize)>>,
         llvm_queue: &Arc<Mutex<VecDeque<IrFunctionId>>>,
+        promotion_barrier: &Arc<PromotionBarrier>,
     ) {
         // Drain batch of functions to compile in parallel
         let batch: Vec<(IrFunctionId, OptimizationTier)> = {
@@ -1493,31 +2030,65 @@ impl TieredBackend {
             // Drop modules lock before installing results
             drop(modules_lock);
 
-            // Install results
+            // Install results using the barrier-based safe promotion protocol
             match compile_result {
                 Ok(all_pointers) => {
-                    let mut fp_lock = function_pointers.write().unwrap();
-                    let mut ft_lock = function_tiers.write().unwrap();
-                    let mut optimizing_lock = optimizing.lock().unwrap();
+                    // Step 1: Request promotion - blocks new JIT executions
+                    promotion_barrier.request_promotion();
 
-                    // Install ALL function pointers from the new compilation
-                    let installed_count = all_pointers.len();
-                    for (func_id, ptr) in all_pointers {
-                        fp_lock.insert(func_id, ptr);
-                        ft_lock.insert(func_id, max_tier);
+                    if config.verbosity >= 2 {
+                        debug!("[TieredBackend] Promotion requested, waiting for in-flight executions to drain");
                     }
 
-                    // Mark all batch items as no longer optimizing
-                    for (func_id, _) in &cranelift_batch {
-                        optimizing_lock.remove(func_id);
+                    // Step 2: Wait for all in-flight executions to complete (with timeout)
+                    let drain_timeout = Duration::from_secs(5);
+                    if !promotion_barrier.wait_for_drain(drain_timeout) {
+                        // Timeout - cancel promotion and skip this batch
+                        if config.verbosity >= 1 {
+                            debug!("[TieredBackend] Promotion timed out waiting for drain, cancelling");
+                        }
+                        promotion_barrier.cancel_promotion();
+
+                        // Mark batch items as no longer optimizing so they can be retried
+                        let mut optimizing_lock = optimizing.lock().unwrap();
+                        for (func_id, _) in &cranelift_batch {
+                            optimizing_lock.remove(func_id);
+                        }
+                        return;
                     }
 
-                    if config.verbosity >= 1 {
-                        debug!(
-                            "[TieredBackend] Installed {} functions at {}",
-                            installed_count,
-                            max_tier.description()
-                        );
+                    // Step 3: All executions drained - safe to install pointers atomically
+                    {
+                        let mut fp_lock = function_pointers.write().unwrap();
+                        let mut ft_lock = function_tiers.write().unwrap();
+                        let mut optimizing_lock = optimizing.lock().unwrap();
+
+                        // Install ALL function pointers from the new compilation
+                        let installed_count = all_pointers.len();
+                        for (func_id, ptr) in all_pointers {
+                            fp_lock.insert(func_id, ptr);
+                            ft_lock.insert(func_id, max_tier);
+                        }
+
+                        // Mark all batch items as no longer optimizing
+                        for (func_id, _) in &cranelift_batch {
+                            optimizing_lock.remove(func_id);
+                        }
+
+                        if config.verbosity >= 1 {
+                            debug!(
+                                "[TieredBackend] Installed {} functions at {}",
+                                installed_count,
+                                max_tier.description()
+                            );
+                        }
+                    }
+
+                    // Step 4: Complete promotion - allow JIT executions to resume
+                    promotion_barrier.complete_promotion();
+
+                    if config.verbosity >= 2 {
+                        debug!("[TieredBackend] Promotion complete, executions resumed");
                     }
                 }
                 Err(e) => {
