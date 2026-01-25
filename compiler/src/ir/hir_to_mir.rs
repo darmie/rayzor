@@ -2873,7 +2873,14 @@ impl<'a> HirToMirContext<'a> {
                                     for arg in args {
                                         params.push(self.convert_type(arg.ty));
                                     }
-                                    (params, result_type.clone())
+                                    // Use Void if function doesn't return a value
+                                    // This fixes array.push() returning void but being tracked for drop
+                                    let ret_type = if runtime_call.has_return {
+                                        result_type.clone()
+                                    } else {
+                                        IrType::Void
+                                    };
+                                    (params, ret_type)
                                 });
                             debug!("[Extern method redirect] expected params: {:?}, return type: {:?}", expected_param_types, actual_return_type);
 
@@ -2946,7 +2953,13 @@ impl<'a> HirToMirContext<'a> {
                                                 for arg in args {
                                                     params.push(self.convert_type(arg.ty));
                                                 }
-                                                (params, result_type.clone())
+                                                // Use Void if function doesn't return a value
+                                                let ret_type = if mapping.has_return {
+                                                    result_type.clone()
+                                                } else {
+                                                    IrType::Void
+                                                };
+                                                (params, ret_type)
                                             });
 
                                         // Lower the object (this will be the first parameter)
@@ -3878,6 +3891,7 @@ impl<'a> HirToMirContext<'a> {
                             let returns_raw_value = runtime_call.returns_raw_value;
                             let extend_i64_mask = runtime_call.extend_to_i64_params;
                             let needs_out_param = runtime_call.needs_out_param;
+                            let has_return = runtime_call.has_return;  // Copy for use in fallback closure
 
                             // SPECIAL CASE: Instance methods that need out parameter (like Array.slice, String.split)
                             // These have void return but write result to first out parameter
@@ -4243,7 +4257,15 @@ impl<'a> HirToMirContext<'a> {
                                 // HIR type may be Dynamic/Ptr(Void) but the wrapper returns a concrete type (e.g., Bool)
                                 self.get_stdlib_mir_wrapper_signature(&runtime_func)
                                     .map(|(_, ret_ty)| ret_ty)
-                                    .unwrap_or_else(|| result_type.clone())
+                                    .unwrap_or_else(|| {
+                                        // If no explicit signature, check has_return flag
+                                        // This fixes array.push() returning void but being tracked for drop
+                                        if has_return {
+                                            result_type.clone()
+                                        } else {
+                                            IrType::Void
+                                        }
+                                    })
                             };
                             debug!("[RESOLVED RETURN TYPE] runtime_func={}, result_type={:?}, resolved={:?}",
                                      runtime_func, result_type, resolved_return_type);
