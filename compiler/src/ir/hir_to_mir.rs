@@ -9921,8 +9921,21 @@ impl<'a> HirToMirContext<'a> {
         let lambda_func_id = self.generate_lambda_function(params, body, &filtered_captures_slice, lambda_type)?;
 
         // Step 3: Use MakeClosure instruction to create closure
-        self.builder
-            .build_make_closure(lambda_func_id, captured_values)
+        let result = self.builder
+            .build_make_closure(lambda_func_id, captured_values);
+
+        // Step 4: Transfer ownership of captured variables to the closure
+        // When a variable is captured by a closure, ownership is MOVED into the closure
+        // environment. The enclosing scope should NOT free captured variables.
+        // This prevents double-free when both the enclosing scope and the closure
+        // try to free the same memory.
+        for capture in &filtered_captures {
+            if self.owned_heap_values.remove(&capture.symbol).is_some() {
+                debug!("Transferred ownership of {:?} to closure (removed from owned_heap_values)", capture.symbol);
+            }
+        }
+
+        result
     }
 
     // ========================================================================

@@ -284,6 +284,20 @@ impl DropPointAnalyzer {
                 self.analyze_expr(expr);
             }
 
+            HirExprKind::Lambda { captures, body, .. } => {
+                // CRITICAL: Record captured variables as "used" at the lambda
+                // expression. This prevents the drop analyzer from freeing
+                // captured variables before they're used by the closure.
+                for capture in captures {
+                    self.record_use(capture.symbol);
+                    // Also mark as escaping since the closure may outlive the
+                    // current scope (e.g., when passed to Thread.create)
+                    self.escaping.insert(capture.symbol);
+                }
+                // Also analyze the body in case there are nested expressions
+                self.analyze_expr(body);
+            }
+
             _ => {}
         }
     }
