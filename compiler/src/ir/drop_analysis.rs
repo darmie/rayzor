@@ -62,7 +62,12 @@ pub struct DropPoints {
     pub heap_allocated: HashSet<SymbolId>,
 
     /// Variables that escape (returned, stored in fields, passed to functions)
+    /// Used by last-use analysis to prevent premature freeing
     pub escaping: HashSet<SymbolId>,
+
+    /// Variables captured by lambdas - these truly escape the function scope
+    /// and should NOT be freed at scope exit (the closure owns them)
+    pub lambda_captures: HashSet<SymbolId>,
 }
 
 /// Information about a variable's last use
@@ -101,8 +106,11 @@ pub struct DropPointAnalyzer {
     /// Variables that are reassigned
     reassigned: HashSet<SymbolId>,
 
-    /// Variables that escape the function
+    /// Variables that escape the function (passed to functions, returned, etc.)
     escaping: HashSet<SymbolId>,
+
+    /// Variables captured by lambdas (truly escape scope)
+    lambda_captures: HashSet<SymbolId>,
 }
 
 impl DropPointAnalyzer {
@@ -115,6 +123,7 @@ impl DropPointAnalyzer {
             heap_vars: HashSet::new(),
             reassigned: HashSet::new(),
             escaping: HashSet::new(),
+            lambda_captures: HashSet::new(),
         }
     }
 
@@ -128,6 +137,7 @@ impl DropPointAnalyzer {
         self.heap_vars.clear();
         self.reassigned.clear();
         self.escaping.clear();
+        self.lambda_captures.clear();
 
         // Traverse the function body
         self.analyze_block(body);
@@ -149,6 +159,7 @@ impl DropPointAnalyzer {
             last_use,
             heap_allocated: self.heap_vars.clone(),
             escaping: self.escaping.clone(),
+            lambda_captures: self.lambda_captures.clone(),
         }
     }
 
@@ -254,7 +265,8 @@ impl DropPointAnalyzer {
             HirExprKind::Call { callee, args, .. } => {
                 self.analyze_expr(callee);
                 for arg in args {
-                    // Arguments passed to functions may escape
+                    // Mark arguments as escaping for now - scope-based drops handle final cleanup
+                    // but last-use analysis should not free values passed to functions
                     self.mark_escaping(arg);
                     self.analyze_expr(arg);
                 }
@@ -310,9 +322,11 @@ impl DropPointAnalyzer {
                 // captured variables before they're used by the closure.
                 for capture in captures {
                     self.record_use(capture.symbol);
-                    // Also mark as escaping since the closure may outlive the
-                    // current scope (e.g., when passed to Thread.create)
+                    // Mark as escaping for last-use analysis (don't free early)
                     self.escaping.insert(capture.symbol);
+                    // Also mark as lambda capture - these TRULY escape scope
+                    // and should NOT be freed at scope exit (closure owns them)
+                    self.lambda_captures.insert(capture.symbol);
                 }
                 // Also analyze the body in case there are nested expressions
                 self.analyze_expr(body);

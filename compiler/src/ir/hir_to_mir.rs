@@ -26,7 +26,7 @@ use crate::tast::{
 };
 use log::{debug, warn, trace};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 /// Context for lowering HIR to MIR
@@ -155,6 +155,10 @@ pub struct HirToMirContext<'a> {
 
     /// Current statement index during lowering (for drop point matching)
     current_stmt_index: usize,
+
+    /// Symbols that have been reassigned in the current scope
+    /// These should be skipped at scope exit (they're freed at reassignment time)
+    reassigned_in_scope: HashSet<SymbolId>,
 }
 
 /// SSA-derived optimization hints from DFG analysis
@@ -256,6 +260,7 @@ impl<'a> HirToMirContext<'a> {
             temp_heap_values: Vec::new(),
             current_drop_points: None,
             current_stmt_index: 0,
+            reassigned_in_scope: HashSet::new(),
         };
 
         // Pre-declare malloc so it's available for heap allocations during lowering
@@ -349,39 +354,95 @@ impl<'a> HirToMirContext<'a> {
 
     /// Exit a scope, emitting Free instructions for all owned heap values in that scope
     fn exit_drop_scope(&mut self) {
-        if let Some(scope_values) = self.drop_scope_stack.pop() {
-            for (_symbol_id, ir_id) in scope_values {
-                // Emit free instruction
-                self.builder.build_free(ir_id);
-                trace!("Drop: Freed {:?} on scope exit", ir_id);
+        if let Some(scope) = self.drop_scope_stack.pop() {
+            for (symbol, _scope_ir_id) in scope {
+                // Get the CURRENT value from owned_heap_values, not the stale scope entry.
+                // The scope entry might have an old IrId if the variable was reassigned.
+                let current_ir_id = match self.owned_heap_values.get(&symbol).copied() {
+                    Some(id) => id,
+                    None => {
+                        // Variable was already freed or transferred (e.g., to closure)
+                        continue;
+                    }
+                };
+
+                // Skip lambda captures - they're owned by the closure
+                if let Some(drop_points) = &self.current_drop_points {
+                    if drop_points.lambda_captures.contains(&symbol) {
+                        continue;
+                    }
+                }
+
+                // Free this value if not terminated
+                if !self.is_terminated() {
+                    self.builder.build_free(current_ir_id);
+                }
+
+                // Remove from owned_heap_values since it's been freed
+                self.owned_heap_values.remove(&symbol);
             }
         }
+    }
+
+    /// Cleanup all scopes - used for early return from functions
+    /// Frees all heap values in all active scopes (innermost to outermost)
+    fn cleanup_all_scopes(&mut self) {
+        // Free all values in all scopes (innermost to outermost)
+        // Skip reassigned values (already freed) and lambda captures (owned by closure)
+        for scope in self.drop_scope_stack.iter().rev() {
+            for (symbol, ir_id) in scope {
+                // Skip reassigned symbols
+                if self.reassigned_in_scope.contains(symbol) {
+                    trace!("Drop: Skipping {:?} in cleanup (was reassigned)", symbol);
+                    continue;
+                }
+
+                // Skip lambda captures
+                if let Some(drop_points) = &self.current_drop_points {
+                    if drop_points.lambda_captures.contains(symbol) {
+                        trace!("Drop: Skipping {:?} in cleanup (lambda capture)", symbol);
+                        continue;
+                    }
+                }
+
+                // Free if not terminated
+                if !self.is_terminated() {
+                    self.builder.build_free(*ir_id);
+                    trace!("Drop: Freed {:?} ({:?}) in cleanup_all_scopes", symbol, ir_id);
+                }
+            }
+        }
+        // Note: We don't clear the scopes here because the function is about to return.
+        // The scopes will be cleared when the function context is dropped.
     }
 
     /// Register a heap-allocated value as owned by a variable
     /// This is called when a variable is assigned a newly allocated value (from `new`)
     fn register_owned_value(&mut self, symbol: SymbolId, ir_id: IrId) {
-        // Check if this variable already owns a heap value - if so, free the old one first
+        // Check if this variable already owns a heap value
         if let Some(old_ir_id) = self.owned_heap_values.get(&symbol).copied() {
-            // Free the old value before replacing it
-            self.builder.build_free(old_ir_id);
-            trace!("Drop: Freed old value {:?} on reassignment of {:?}", old_ir_id, symbol);
+            // REASSIGNMENT: Free the old value immediately.
+            // This is always safe because the old value's IrId dominates the current block:
+            // - If from initial assignment: that block dominates all subsequent blocks
+            // - If from phi node: phi is in loop header which dominates loop body
+            if !self.is_terminated() {
+                self.builder.build_free(old_ir_id);
+            }
 
-            // Remove from current scope tracking
-            for scope in self.drop_scope_stack.iter_mut().rev() {
-                scope.retain(|(sym, _)| *sym != symbol);
+            // DON'T update scope entries - this caused dominator issues.
+            // The scope tracks the ORIGINAL declaration which may be from a different block.
+            // Reassigned values are handled here at reassignment time, not at scope exit.
+            // Mark this symbol as reassigned so scope exit skips it.
+            self.reassigned_in_scope.insert(symbol);
+        } else {
+            // New declaration - add to current scope for cleanup on scope exit
+            if let Some(current_scope) = self.drop_scope_stack.last_mut() {
+                current_scope.push((symbol, ir_id));
             }
         }
 
-        // Register the new owned value
+        // Track the current value
         self.owned_heap_values.insert(symbol, ir_id);
-
-        // Add to current scope for cleanup on scope exit
-        if let Some(current_scope) = self.drop_scope_stack.last_mut() {
-            current_scope.push((symbol, ir_id));
-        }
-
-        trace!("Drop: Registered {:?} as owned by {:?}", ir_id, symbol);
     }
 
     /// Register a temporary heap-allocated value that needs dropping after use
@@ -1006,6 +1067,7 @@ impl<'a> HirToMirContext<'a> {
         self.owned_heap_values.clear();
         self.drop_scope_stack.clear();
         self.temp_heap_values.clear();
+        self.reassigned_in_scope.clear();
 
         // Run drop point analysis on the function body to find last-use points
         // This enables precise drop insertion at the exact point a variable is no longer used
@@ -1051,7 +1113,12 @@ impl<'a> HirToMirContext<'a> {
             for (i, stmt) in body.statements.iter().enumerate() {
                 debug!("[lower_function_body]: {} - stmt[{}] = {:?}", func_name, i, std::mem::discriminant(stmt));
             }
+            // Enter function-level scope for variables declared at function level
+            // This ensures they're freed on function exit via cleanup_all_scopes()
+            self.enter_drop_scope();
             self.lower_block(body);
+            // Note: cleanup_all_scopes() is called in Return handling
+            // For functions that don't explicitly return, ensure_terminator adds a return
             self.ensure_terminator();
         } else {
             debug!("[lower_function_body]: {} has NO body", func_name);
@@ -1114,6 +1181,15 @@ impl<'a> HirToMirContext<'a> {
             let reg = IrId::new((i + 1) as u32); // +1 because 'this' is parameter 0
             self.symbol_map.insert(param.symbol_id, reg);
         }
+
+        // Clear drop tracking state for this function
+        self.owned_heap_values.clear();
+        self.drop_scope_stack.clear();
+        self.temp_heap_values.clear();
+        self.reassigned_in_scope.clear();
+
+        // Enter function-level scope for tracking heap allocations
+        self.enter_drop_scope();
 
         // Handle super() call if present
         if let Some(super_call) = &constructor.super_call {
@@ -1388,6 +1464,15 @@ impl<'a> HirToMirContext<'a> {
             debug!("lower_instance_method: {} has body with {} statements",
                      self.string_interner.get(hir_func.name).unwrap_or("?"),
                      body.statements.len());
+
+            // Clear per-function drop tracking state
+            self.owned_heap_values.clear();
+            self.drop_scope_stack.clear();
+            self.temp_heap_values.clear();
+            self.reassigned_in_scope.clear();
+
+            // Enter function-level scope for variables declared at function level
+            self.enter_drop_scope();
             self.lower_block(body);
             debug!("lower_instance_method: {} - after lower_block",
                      self.string_interner.get(hir_func.name).unwrap_or("?"));
@@ -1496,6 +1581,15 @@ impl<'a> HirToMirContext<'a> {
             let param_reg = IrId::new((i + 1) as u32); // Parameters start after 'this'
             self.symbol_map.insert(param.symbol_id, param_reg);
         }
+
+        // Clear per-function drop tracking state
+        self.owned_heap_values.clear();
+        self.drop_scope_stack.clear();
+        self.temp_heap_values.clear();
+        self.reassigned_in_scope.clear();
+
+        // Enter function-level scope
+        self.enter_drop_scope();
 
         // Lower field initializations
         for field_init in &constructor.field_inits {
@@ -1677,7 +1771,9 @@ impl<'a> HirToMirContext<'a> {
                         self.bind_pattern_with_type(pattern, final_value, var_type, *is_mutable);
 
                         // Register heap-allocated value for drop tracking
-                        if is_heap_alloc {
+                        // Only register AutoDrop types (user-defined classes), not RuntimeManaged
+                        // extern types (Thread, Channel, Arc, Mutex) or NoDrop types
+                        if is_heap_alloc && self.type_needs_drop(init_expr.ty) {
                             if let HirPattern::Variable { symbol, .. } = pattern {
                                 self.register_owned_value(*symbol, final_value);
                             }
@@ -1722,7 +1818,6 @@ impl<'a> HirToMirContext<'a> {
                 // 2. Method calls returning class instances (e.g., `z.mul(z).add(c)`)
                 // We use type_needs_drop to detect any heap-allocated value, not just `new`
                 let rhs_type_needs_drop = self.type_needs_drop(rhs.ty);
-
 
                 // For simple variable assignment, check if we need to free the old value
                 // We do this BEFORE evaluating RHS to avoid double-free if RHS reuses the variable
@@ -1785,7 +1880,12 @@ impl<'a> HirToMirContext<'a> {
                         // IMPORTANT: Check type_needs_drop, not just HirExprKind::New
                         // This handles method calls returning heap-allocated values
                         // e.g., z = z.mul(z).add(c) where mul/add return new Complex
-                        if rhs_type_needs_drop {
+                        //
+                        // WORKAROUND: Type inference sometimes returns Dynamic for method chains.
+                        // If the LHS variable was previously tracked as needing drop, continue
+                        // tracking it even if the RHS type is Dynamic. This prevents leaks.
+                        let lhs_was_tracked = lhs_symbol.map_or(false, |s| self.owned_heap_values.contains_key(&s));
+                        if rhs_type_needs_drop || lhs_was_tracked {
                             if let Some(symbol) = lhs_symbol {
                                 self.register_owned_value(symbol, value);
                             }
@@ -1813,6 +1913,8 @@ impl<'a> HirToMirContext<'a> {
                     }
                     result
                 });
+                // Cleanup all scopes before returning - free all owned heap values
+                self.cleanup_all_scopes();
                 debug!("[Return]: Building return instruction with value: {:?}", ret_value);
                 self.builder.build_return(ret_value);
                 // debug!("Return instruction built");
@@ -1845,6 +1947,8 @@ impl<'a> HirToMirContext<'a> {
                         );
                     }
 
+                    // Free loop body allocations before breaking out
+                    self.exit_drop_scope();
                     self.builder.build_branch(break_block);
                 } else {
                     self.add_error("Break outside of loop", SourceLocation::unknown());
@@ -1853,7 +1957,11 @@ impl<'a> HirToMirContext<'a> {
 
             HirStatement::Continue(label) => {
                 if let Some(loop_ctx) = self.find_loop_context(label.as_ref()) {
-                    self.builder.build_branch(loop_ctx.continue_block);
+                    // Copy continue_block before mutable borrow
+                    let continue_block = loop_ctx.continue_block;
+                    // Free loop body allocations before continuing to next iteration
+                    self.exit_drop_scope();
+                    self.builder.build_branch(continue_block);
                 } else {
                     self.add_error("Continue outside of loop", SourceLocation::unknown());
                 }
@@ -6411,6 +6519,7 @@ impl<'a> HirToMirContext<'a> {
         // Body block
         debug!("[lower_while_loop] Switching to body_block and lowering body ({} statements)", body.statements.len());
         self.builder.switch_to_block(body_block);
+        self.enter_drop_scope();  // Enter scope for loop body allocations
         self.lower_block(body);
         debug!("[lower_while_loop] Body lowered");
 
@@ -6447,6 +6556,7 @@ impl<'a> HirToMirContext<'a> {
 
         // Branch back to condition if body didn't terminate
         if !self.is_terminated() {
+            self.exit_drop_scope();  // Free loop body allocations before next iteration
             self.builder.build_branch(cond_block);
         }
 
@@ -8981,6 +9091,7 @@ impl<'a> HirToMirContext<'a> {
         });
 
         // Lower the body statements
+        self.enter_drop_scope();  // Enter scope for loop body allocations
         self.lower_block(body);
 
         // Get the block we're in after the body (might be different if there are nested blocks)
@@ -8993,6 +9104,7 @@ impl<'a> HirToMirContext<'a> {
 
         // Branch to condition block if not already terminated
         if !self.is_terminated() {
+            self.exit_drop_scope();  // Free loop body allocations before condition check
             self.builder.build_branch(cond_block);
         }
 
@@ -9222,10 +9334,12 @@ impl<'a> HirToMirContext<'a> {
         }
 
         // Lower the loop body
+        self.enter_drop_scope();  // Enter scope for loop body allocations
         self.lower_block(body);
 
         // Increment index: _i++
         if !self.is_terminated() {
+            self.exit_drop_scope();  // Free loop body allocations before next iteration
             let Some(idx_to_inc) = self.builder.build_load(index_ptr, IrType::I64) else {
                 self.loop_stack.pop();
                 return;

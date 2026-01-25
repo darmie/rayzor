@@ -4360,10 +4360,46 @@ impl<'a> AstLowering<'a> {
                     }
                 }
             }
+            TypedExpressionKind::MethodCall { .. } | TypedExpressionKind::FunctionCall { .. } => {
+                // For method chains like z.mul(z).add(c), the receiver is a MethodCall.
+                // We need to infer the type of that expression and resolve the method on it.
+                if let Ok(receiver_type) = self.infer_expression_type(&receiver.kind) {
+                    if let Some(class_symbol) = self.resolve_type_to_class_symbol(receiver_type) {
+                        if let Some(methods) = self.class_methods.get(&class_symbol) {
+                            if let Some((_, method_symbol, _)) =
+                                methods.iter().find(|(name, _, _)| *name == method_name)
+                            {
+                                return *method_symbol;
+                            }
+                        }
+                    }
+                }
+            }
+            TypedExpressionKind::New { class_type, .. } => {
+                // For `new Complex().method()`, resolve method on the class type
+                if let Some(class_symbol) = self.resolve_type_to_class_symbol(*class_type) {
+                    if let Some(methods) = self.class_methods.get(&class_symbol) {
+                        if let Some((_, method_symbol, _)) =
+                            methods.iter().find(|(name, _, _)| *name == method_name)
+                        {
+                            return *method_symbol;
+                        }
+                    }
+                }
+            }
             _ => {
-                // For other receiver types, we'll need full type resolution
-                // Macro call expressions are handled at compile-time
-                // Runtime representation uses the expanded form
+                // For other receiver types, try general type inference
+                if let Ok(receiver_type) = self.infer_expression_type(&receiver.kind) {
+                    if let Some(class_symbol) = self.resolve_type_to_class_symbol(receiver_type) {
+                        if let Some(methods) = self.class_methods.get(&class_symbol) {
+                            if let Some((_, method_symbol, _)) =
+                                methods.iter().find(|(name, _, _)| *name == method_name)
+                            {
+                                return *method_symbol;
+                            }
+                        }
+                    }
+                }
             }
         }
 
