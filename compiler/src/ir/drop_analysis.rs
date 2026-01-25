@@ -31,6 +31,26 @@ use std::collections::{HashMap, HashSet};
 use crate::tast::SymbolId;
 use super::hir::{HirBlock, HirStatement, HirExpr, HirExprKind, HirLValue, HirPattern};
 
+/// Defines how a type should be dropped/cleaned up
+///
+/// This is part of the Drop trait system that determines automatic memory management behavior.
+/// The behavior is determined at compile time based on the type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropBehavior {
+    /// Compiler generates Free instruction for this type.
+    /// Used for user-defined classes allocated with `new`.
+    AutoDrop,
+
+    /// Runtime manages the lifetime, no Free instruction generated.
+    /// Used for stdlib types like Thread, Channel, Arc, Mutex.
+    /// These types have their own reference counting or cleanup mechanisms.
+    RuntimeManaged,
+
+    /// No cleanup needed for this type.
+    /// Used for primitives, arrays (runtime-managed buffers), and Dynamic.
+    NoDrop,
+}
+
 /// Drop point information for a function
 #[derive(Debug, Clone, Default)]
 pub struct DropPoints {

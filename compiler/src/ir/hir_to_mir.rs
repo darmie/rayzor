@@ -18,7 +18,7 @@ use crate::ir::{
     IrPhiNode, IrSourceLocation, IrTerminator, IrType, IrTypeDef, IrTypeDefId, IrTypeDefinition,
     IrValue, Linkage, UnaryOp,
 };
-use crate::ir::drop_analysis::{DropPointAnalyzer, DropPoints};
+use crate::ir::drop_analysis::{DropBehavior, DropPointAnalyzer, DropPoints};
 use crate::stdlib::{MethodSignature, StdlibMapping};
 use crate::tast::{
     InternedString, SourceLocation, StringInterner, SymbolId, SymbolTable, TypeId, TypeKind,
@@ -399,27 +399,40 @@ impl<'a> HirToMirContext<'a> {
         }
     }
 
-    /// Check if a type represents a heap-allocated value that needs drop
-    fn type_needs_drop(&self, type_id: TypeId) -> bool {
+    /// Determine the drop behavior for a type using the Drop trait system.
+    ///
+    /// Uses the type's `is_extern` flag to identify runtime-managed types.
+    /// - Extern classes (Thread, Channel, Arc, etc.) → RuntimeManaged
+    /// - User-defined classes → AutoDrop
+    /// - Primitives, arrays, Dynamic → NoDrop
+    fn get_drop_behavior(&self, type_id: TypeId) -> DropBehavior {
         let type_table = self.type_table.borrow();
         if let Some(type_info) = type_table.get(type_id) {
-            let result = match &type_info.kind {
-                // Class instances are heap-allocated
-                TypeKind::Class { .. } => true,
-                // Arrays: The HaxeArray struct is stack-allocated, with internal buffer
-                // managed by the runtime (haxe_array_push_i64 etc). The runtime handles
-                // its own memory, so we don't emit Free for arrays.
-                TypeKind::Array { .. } => false,
-                // Dynamic values contain boxed/heap-allocated content
-                // Method calls with unresolved return types often fall back to Dynamic
-                TypeKind::Dynamic => true,
+            // Extern types are runtime-managed
+            if type_info.flags.is_extern {
+                return DropBehavior::RuntimeManaged;
+            }
+
+            match &type_info.kind {
+                TypeKind::Class { .. } => {
+                    // User-defined (non-extern) classes need AutoDrop
+                    DropBehavior::AutoDrop
+                }
+                // Arrays: runtime-managed buffer, no Free needed
+                TypeKind::Array { .. } => DropBehavior::NoDrop,
+                // Dynamic: unknown ownership at compile time, no Free
+                TypeKind::Dynamic => DropBehavior::NoDrop,
                 // Other types don't need drop
-                _ => false,
-            };
-            result
+                _ => DropBehavior::NoDrop,
+            }
         } else {
-            false
+            DropBehavior::NoDrop
         }
+    }
+
+    /// Check if a type needs drop (convenience wrapper for get_drop_behavior)
+    fn type_needs_drop(&self, type_id: TypeId) -> bool {
+        self.get_drop_behavior(type_id) == DropBehavior::AutoDrop
     }
 
     /// Check drop points and emit Free for variables at their last use
