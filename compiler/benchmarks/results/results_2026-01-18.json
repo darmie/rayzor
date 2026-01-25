@@ -2,38 +2,38 @@
   "date": "2026-01-18",
   "benchmarks": [
     {
-      "name": "mandelbrot_simple",
+      "name": "mandelbrot_tiny",
       "results": [
         {
-          "name": "mandelbrot_simple",
+          "name": "mandelbrot_tiny",
           "target": "rayzor-cranelift",
-          "compile_time_ms": 89.92741699999999,
-          "runtime_ms": 152.58837499999998,
-          "total_time_ms": 242.515792,
+          "compile_time_ms": 87.050208,
+          "runtime_ms": 0.018042000000000002,
+          "total_time_ms": 87.06825,
           "iterations": 10
         },
         {
-          "name": "mandelbrot_simple",
+          "name": "mandelbrot_tiny",
           "target": "rayzor-interpreter",
-          "compile_time_ms": 81.35945799999999,
-          "runtime_ms": 11766.700834,
-          "total_time_ms": 11848.060292,
+          "compile_time_ms": 72.964792,
+          "runtime_ms": 0.163792,
+          "total_time_ms": 73.12858399999999,
           "iterations": 10
         },
         {
-          "name": "mandelbrot_simple",
+          "name": "mandelbrot_tiny",
           "target": "rayzor-llvm",
-          "compile_time_ms": 125.724167,
-          "runtime_ms": 354.76495800000004,
-          "total_time_ms": 480.489125,
+          "compile_time_ms": 133.072875,
+          "runtime_ms": 0.0026249999999999997,
+          "total_time_ms": 133.0755,
           "iterations": 10
         },
         {
-          "name": "mandelbrot_simple",
+          "name": "mandelbrot_tiny",
           "target": "rayzor-tiered",
-          "compile_time_ms": 79.06575000000001,
-          "runtime_ms": 150.43758300000002,
-          "total_time_ms": 229.503333,
+          "compile_time_ms": 79.277666,
+          "runtime_ms": 0.005542,
+          "total_time_ms": 79.28320799999999,
           "iterations": 10
         }
       ]
