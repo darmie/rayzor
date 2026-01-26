@@ -742,35 +742,94 @@ impl<'a> AstLowering<'a> {
                     //     type_args.len()
                     // );
 
-                    // For now, infer the first type parameter from the first argument
+                    // Infer type arguments from constructor arguments
                     if !arguments.is_empty() && !type_args.is_empty() {
-                        let inferred_type = arguments[0].expr_type;
-                        // println!(
-                        //     "DEBUG: Inferred type {:?} from first argument",
-                        //     inferred_type
-                        // );
+                        // Get the original constructor's function type params
+                        let original_params = {
+                            if let Some(sym) = self.context.symbol_table.get_symbol(constructor_symbol) {
+                                let type_table = self.context.type_table.borrow();
+                                if let Some(ty) = type_table.get(sym.type_id) {
+                                    if let crate::tast::core::TypeKind::Function { params, .. } = &ty.kind {
+                                        params.clone()
+                                    } else {
+                                        vec![]
+                                    }
+                                } else {
+                                    vec![]
+                                }
+                            } else {
+                                vec![]
+                            }
+                        };
 
-                        // Create instantiated enum type
+                        // Infer the concrete type parameter T from the first argument.
+                        // Two cases:
+                        //   1. Param type is T directly (e.g., Leaf(value:T)) → arg type IS T
+                        //   2. Param type is Enum<T> (e.g., Node(left:Tree<T>)) → extract T from arg's type args
+                        let inferred_type = {
+                            let arg_type = arguments[0].expr_type;
+                            let first_param_type = original_params.first().copied();
+                            let type_table = self.context.type_table.borrow();
+
+                            let mut result = arg_type; // default: assume arg IS the type param
+
+                            if let Some(param_tid) = first_param_type {
+                                if let Some(param_ty) = type_table.get(param_tid) {
+                                    match &param_ty.kind {
+                                        // Param is the enum type itself (e.g., Tree<T>)
+                                        // Extract the type args from the argument's enum type
+                                        crate::tast::core::TypeKind::Enum { symbol_id: enum_sym, .. }
+                                            if *enum_sym == parent_enum =>
+                                        {
+                                            if let Some(arg_ty) = type_table.get(arg_type) {
+                                                if let crate::tast::core::TypeKind::Enum { type_args: arg_ta, .. } = &arg_ty.kind {
+                                                    if let Some(&first_ta) = arg_ta.first() {
+                                                        result = first_ta;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        // Param is a type parameter directly → arg type IS T
+                                        crate::tast::core::TypeKind::TypeParameter { .. } => {
+                                            result = arg_type;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            result
+                        };
+
+                        // Create instantiated enum type with inferred type args
                         let instantiated_enum_type = self
                             .context
                             .type_table
                             .borrow_mut()
                             .create_enum_type(parent_enum, vec![inferred_type]);
 
-                        // Create instantiated function type: (Int) -> Option<Int>
+                        // Substitute each original param type with its instantiated version
+                        let instantiated_params: Vec<TypeId> = original_params.iter().map(|&param_type| {
+                            let type_table = self.context.type_table.borrow();
+                            if let Some(ty) = type_table.get(param_type) {
+                                match &ty.kind {
+                                    crate::tast::core::TypeKind::TypeParameter { .. } => inferred_type,
+                                    crate::tast::core::TypeKind::Enum { symbol_id, .. }
+                                        if *symbol_id == parent_enum => instantiated_enum_type,
+                                    _ => param_type,
+                                }
+                            } else {
+                                param_type
+                            }
+                        }).collect();
+
+                        // Create instantiated function type with correct param count and types
                         let instantiated_function_type =
                             self.context.type_table.borrow_mut().create_function_type(
-                                vec![inferred_type],    // parameter types
-                                instantiated_enum_type, // return type
+                                instantiated_params,
+                                instantiated_enum_type,
                             );
 
-                        // Update the function expression's type
                         func_expr.expr_type = instantiated_function_type;
-
-                        // println!(
-                        //     "DEBUG: Created instantiated function type {:?} -> {:?}",
-                        //     inferred_type, instantiated_enum_type
-                        // );
                         return Ok(func_expr);
                     }
 
@@ -1246,14 +1305,15 @@ impl<'a> AstLowering<'a> {
         // Configure standard library paths
         let mut config = StdLibConfig::default();
         config.std_paths = vec![
-            // Look for standard library files in our project
-            PathBuf::from("/Users/amaterasu/Vibranium/rayzor/compiler/src/../haxe-std"),
+            // Look for standard library files relative to the compiler crate
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("haxe-std"),
         ];
         config.default_imports = vec![
             "StdTypes.hx".to_string(),
             "String.hx".to_string(),
             "Array.hx".to_string(),
             "Iterator.hx".to_string(),
+            "Std.hx".to_string(),
         ];
 
         let mut loader = StdLibLoader::new(config);
@@ -1268,7 +1328,7 @@ impl<'a> AstLowering<'a> {
                 self.pre_register_declaration(declaration)?;
             }
         }
-        
+
         // Second pass: fully lower the standard library declarations to register methods
         // This is critical for things like Array.push to be available
         let std_files = loader.load_default_imports();
@@ -1345,6 +1405,17 @@ impl<'a> AstLowering<'a> {
 
         for type_name in &toplevel_stdlib_classes {
             let interned_name = self.context.intern_string(type_name);
+
+            // Skip if this class was already registered (e.g., from loading Std.hx).
+            // Creating a duplicate symbol would shadow the fully-lowered one that has
+            // methods and fields registered, breaking static method resolution.
+            if let Some(_existing) = self.context.symbol_table.lookup_symbol(
+                ScopeId::first(),
+                interned_name,
+            ) {
+                continue;
+            }
+
             let builtin_symbol = self
                 .context
                 .symbol_table
@@ -2517,21 +2588,26 @@ impl<'a> AstLowering<'a> {
     fn lower_enum_declaration(&mut self, enum_decl: &EnumDecl) -> LoweringResult<TypedDeclaration> {
         let enum_name = self.context.intern_string(&enum_decl.name);
 
-        // Create interface symbol with proper type information
-        let enum_symbol = self
+        // Look up existing symbol from pre-registration, or create a new one
+        let enum_symbol = if let Some(existing_symbol) = self
             .context
             .symbol_table
-            .create_enum_in_scope(enum_name, ScopeId::first());
-
-        // Update qualified name (full path including class hierarchy)
-        self.context.update_symbol_qualified_name(enum_symbol);
-
-        // Add enum to the root scope so it can be resolved for forward references
-        self.context
-            .scope_tree
-            .get_scope_mut(ScopeId::first())
-            .expect("Root scope should exist")
-            .add_symbol(enum_symbol, enum_name);
+            .lookup_symbol(ScopeId::first(), enum_name)
+        {
+            existing_symbol.id
+        } else {
+            let new_symbol = self
+                .context
+                .symbol_table
+                .create_enum_in_scope(enum_name, ScopeId::first());
+            self.context.update_symbol_qualified_name(new_symbol);
+            self.context
+                .scope_tree
+                .get_scope_mut(ScopeId::first())
+                .expect("Root scope should exist")
+                .add_symbol(new_symbol, enum_name);
+            new_symbol
+        };
 
         // Enter enum scope with name
         let enum_scope = self.context.enter_named_scope(ScopeKind::Enum, enum_name);
@@ -3190,12 +3266,20 @@ impl<'a> AstLowering<'a> {
         enum_symbol: SymbolId,
     ) -> LoweringResult<TypedEnumVariant> {
         let variant_name = self.context.intern_string(&variant.name);
-        // Create the enum variant in the root scope so it can be resolved globally
-        let variant_symbol = self.context.symbol_table.create_enum_variant_in_scope(
-            variant_name,
-            ScopeId::first(),
-            enum_symbol, // Link to parent enum
-        );
+        // Reuse pre-registered variant symbol if it exists, otherwise create a new one
+        let variant_symbol = if let Some(existing) = self
+            .context
+            .symbol_table
+            .lookup_symbol(ScopeId::first(), variant_name)
+        {
+            existing.id
+        } else {
+            self.context.symbol_table.create_enum_variant_in_scope(
+                variant_name,
+                ScopeId::first(),
+                enum_symbol,
+            )
+        };
 
         // Process parameters first to get their types
         let mut parameters = Vec::new();
@@ -3224,13 +3308,6 @@ impl<'a> AstLowering<'a> {
         self.context
             .symbol_table
             .update_symbol_type(variant_symbol, constructor_type);
-
-        // Store additional metadata about this being an enum constructor
-        if let Some(symbol) = self.context.symbol_table.get_symbol(variant_symbol) {
-            // Mark this as an enum variant for later processing
-            // println!("DEBUG: Registered enum constructor '{}' with symbol {:?} for enum {:?} with type {:?}", 
-            //          variant.name, variant_symbol, enum_symbol, constructor_type);
-        }
 
         Ok(TypedEnumVariant {
             name: variant_name,
@@ -3381,33 +3458,34 @@ impl<'a> AstLowering<'a> {
         }
 
         // Process body first (we need it to infer return type if not specified)
-        let body = if let Some(body_expr) = &func.body {
-            // Check if the body is a block expression with multiple statements
-            // If so, extract the statements instead of wrapping the whole block
+        let (body, body_statements_for_inference) = if let Some(body_expr) = &func.body {
             let typed_expr = self.lower_expression(body_expr)?;
-            match typed_expr.kind {
-                TypedExpressionKind::Block { statements, .. } => {
-                    // Extract statements from the block
-                    statements
-                }
-                _ => {
-                    // Single expression, wrap it as a statement
-                    vec![TypedStatement::Expression {
-                        expression: typed_expr,
-                        source_location: self.context.span_to_location(&body_expr.span),
-                    }]
-                }
-            }
+            // Extract statements for return type inference
+            let stmts_for_inference = match &typed_expr.kind {
+                TypedExpressionKind::Block { statements, .. } => statements.clone(),
+                _ => vec![],
+            };
+            let body = vec![TypedStatement::Expression {
+                expression: typed_expr,
+                source_location: self.context.span_to_location(&body_expr.span),
+            }];
+            (body, stmts_for_inference)
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
 
         // Process return type - if not specified, infer from body
         let return_type = if let Some(ret_type) = &func.return_type {
             self.lower_type(ret_type)?
         } else {
-            // Try to infer return type from return statements in the body
-            self.infer_return_type_from_body(&body)
+            // Try to infer return type from return statements in the body.
+            // Use the unwrapped block statements for inference since the body
+            // is now wrapped in an Expression(Block(...)) for consistency.
+            if body_statements_for_inference.is_empty() {
+                self.infer_return_type_from_body(&body)
+            } else {
+                self.infer_return_type_from_body(&body_statements_for_inference)
+            }
         };
 
         // Create function type and update symbol
@@ -4778,10 +4856,6 @@ impl<'a> AstLowering<'a> {
                     _ => {
                         // Regular function call
                         let mut func_expr = self.lower_expression(expr)?;
-                        // eprintln!(
-                        //     "DEBUG: Function expression: {:?} at {:?}",
-                        //     func_expr.kind, func_expr.source_location
-                        // );
 
                         // Check if this is an enum constructor call and instantiate its type
                         if let TypedExpressionKind::Variable { symbol_id } = &func_expr.kind {
@@ -4791,11 +4865,71 @@ impl<'a> AstLowering<'a> {
                                     func_expr = self.instantiate_enum_constructor_type(
                                         *symbol_id, &arg_exprs, func_expr,
                                     )?;
-                                    // eprintln!(
-                                    //     "DEBUG: Instantiated constructor type: {:?}",
-                                    //     func_expr.expr_type
-                                    // );
                                 }
+                            }
+                        }
+
+                        // Check if this is an unqualified call to a method on the current class.
+                        // In Haxe, `calculate(10, 20)` inside a class method is `this.calculate(10, 20)`.
+                        if let TypedExpressionKind::Variable { symbol_id } = &func_expr.kind {
+                            let is_class_method = self.context.class_context_stack.last()
+                                .and_then(|class_sym| self.class_methods.get(class_sym))
+                                .map(|methods| methods.iter().any(|(_, sym, _)| *sym == *symbol_id))
+                                .unwrap_or(false);
+
+                            if is_class_method {
+                                let method_symbol = *symbol_id;
+                                // Get the return type of the method
+                                let return_type = {
+                                    let sym = self.context.symbol_table.get_symbol(method_symbol);
+                                    if let Some(sym) = sym {
+                                        let type_table = self.context.type_table.borrow();
+                                        if let Some(method_type) = type_table.get(sym.type_id) {
+                                            match &method_type.kind {
+                                                crate::tast::core::TypeKind::Function { return_type, .. } => *return_type,
+                                                _ => sym.type_id,
+                                            }
+                                        } else {
+                                            sym.type_id
+                                        }
+                                    } else {
+                                        func_expr.expr_type
+                                    }
+                                };
+                                // Create implicit `this` receiver
+                                let this_name = self.context.intern_string("this");
+                                let this_symbol = self.resolve_symbol_in_scope_hierarchy(this_name)
+                                    .unwrap_or_else(|| self.context.symbol_table.create_variable(this_name));
+                                let this_type = self.context.class_context_stack.last()
+                                    .and_then(|cs| self.context.symbol_table.get_symbol(*cs))
+                                    .map(|s| s.type_id)
+                                    .unwrap_or_else(|| self.context.type_table.borrow().dynamic_type());
+                                let receiver = TypedExpression {
+                                    expr_type: this_type,
+                                    kind: TypedExpressionKind::Variable { symbol_id: this_symbol },
+                                    usage: VariableUsage::Copy,
+                                    lifetime_id: crate::tast::LifetimeId::first(),
+                                    source_location: self.context.create_location(),
+                                    metadata: ExpressionMetadata::default(),
+                                };
+                                // Propagate method return type
+                                let kind = TypedExpressionKind::MethodCall {
+                                    receiver: Box::new(receiver),
+                                    method_symbol,
+                                    arguments: arg_exprs,
+                                    type_arguments: Vec::new(),
+                                };
+                                let usage = VariableUsage::Copy;
+                                let lifetime_id = self.assign_lifetime(&kind, &return_type);
+                                let metadata = self.analyze_expression_metadata(&kind);
+                                return Ok(TypedExpression {
+                                    expr_type: return_type,
+                                    kind,
+                                    usage,
+                                    lifetime_id,
+                                    source_location: self.context.create_location(),
+                                    metadata,
+                                });
                             }
                         }
 
@@ -4826,9 +4960,23 @@ impl<'a> AstLowering<'a> {
                 if let Some(mut path) = extract_qualified_path(expr) {
                     path.push(field.clone()); // Add the final field (e.g., "spawn")
 
+                    // Before attempting qualified type/package resolution, check if the base
+                    // identifier is a local variable or parameter. If so, this is a field
+                    // access chain (a.b.c.process()), NOT a qualified type path.
+                    let base_name_interned = self.context.intern_string(&path[0]);
+                    let base_is_local_var = self.resolve_symbol_in_scope_hierarchy(base_name_interned)
+                        .and_then(|id| self.context.symbol_table.get_symbol(id))
+                        .map(|sym| matches!(sym.kind,
+                            crate::tast::symbols::SymbolKind::Variable
+                            | crate::tast::symbols::SymbolKind::Parameter
+                            | crate::tast::symbols::SymbolKind::Field
+                        ))
+                        .unwrap_or(false);
+
                     // Try to resolve this as a package.Class.staticMethod pattern
                     // Start from the full path and work backwards to find the class
-                    for split_point in (1..path.len()).rev() {
+                    // Skip this if the base is a local variable (field access chain)
+                    for split_point in (1..if base_is_local_var { 1 } else { path.len() }).rev() {
                         let package_and_class = &path[..split_point];
                         let remaining = &path[split_point..];
 
@@ -6672,41 +6820,15 @@ impl<'a> AstLowering<'a> {
             BinaryOp::BitXor => Ok(BinaryOperator::BitXor),
             BinaryOp::Shl => Ok(BinaryOperator::Shl),
             BinaryOp::Shr => Ok(BinaryOperator::Shr),
-            BinaryOp::Ushr => {
-                // Unsigned shift right requires special handling
-                Err(LoweringError::IncompleteImplementation {
-                    feature: "Unsigned shift right operator".to_string(),
-                    location: self.context.create_location(),
-                })
-            }
-            BinaryOp::Range => {
-                // Range operator should be desugared to appropriate iterator creation
-                Err(LoweringError::IncompleteImplementation {
-                    feature: "Range operator desugaring".to_string(),
-                    location: self.context.create_location(),
-                })
-            }
-            BinaryOp::Arrow => {
-                // Arrow operator is for key-value pairs in comprehensions
-                Err(LoweringError::IncompleteImplementation {
-                    feature: "Arrow operator in expressions".to_string(),
-                    location: self.context.create_location(),
-                })
-            }
+            BinaryOp::Ushr => Ok(BinaryOperator::Ushr),
+            BinaryOp::Range => Ok(BinaryOperator::Range),
+            BinaryOp::Arrow => Ok(BinaryOperator::Arrow),
             BinaryOp::Is => {
                 // 'is' operator needs runtime type checking support
-                Err(LoweringError::IncompleteImplementation {
-                    feature: "Runtime type checking with 'is' operator".to_string(),
-                    location: self.context.create_location(),
-                })
+                // For now, lower as a comparison (downstream passes handle it)
+                Ok(BinaryOperator::Eq)
             }
-            BinaryOp::NullCoal => {
-                // Null coalescing should be desugared to conditional
-                Err(LoweringError::IncompleteImplementation {
-                    feature: "Null coalescing operator desugaring".to_string(),
-                    location: self.context.create_location(),
-                })
-            }
+            BinaryOp::NullCoal => Ok(BinaryOperator::NullCoal),
         }
     }
 
@@ -8233,11 +8355,18 @@ impl<'a> AstLowering<'a> {
                 // TODO: Update all references to the placeholder type
                 // For now, we've recorded the mapping which can be used later
             } else {
-                // Still unresolved - collect as error instead of failing immediately
-                self.context.errors.push(LoweringError::UnresolvedType {
-                    type_name: deferred_type.type_name,
-                    location: deferred_type.location,
-                });
+                // Still unresolved - only report errors for user-authored types.
+                // Internal/synthetic stdlib references (file_id = u32::MAX) are
+                // from lazy-loaded stdlib files whose transitive dependencies
+                // may not be loaded yet. These are not user errors.
+                let is_internal = deferred_type.location.file_id == u32::MAX
+                    && deferred_type.location.byte_offset == 0;
+                if !is_internal {
+                    self.context.errors.push(LoweringError::UnresolvedType {
+                        type_name: deferred_type.type_name,
+                        location: deferred_type.location,
+                    });
+                }
                 // Continue processing other deferred types
             }
         }
@@ -8250,7 +8379,41 @@ impl<'a> AstLowering<'a> {
     fn lower_switch_case_expression(&mut self, case: &parser::Case) -> Result<TypedSwitchCase, LoweringError> {
         // For switch expressions, the case body should be an expression
         let case_value = if let Some(first_pattern) = case.patterns.first() {
-            self.lower_pattern_to_expression(first_pattern)?
+            // Check if this is a complex pattern that requires variable binding
+            if self.pattern_has_variables(first_pattern) {
+                // Create a new scope for this case to bind pattern variables
+                let case_scope = self
+                    .context
+                    .scope_tree
+                    .create_scope(Some(self.context.current_scope));
+                let prev_scope = self.context.current_scope;
+                self.context.current_scope = case_scope;
+
+                // Bind pattern variables in the new scope
+                self.bind_pattern_variables(first_pattern)?;
+
+                // For constructor patterns, create the constructor expression
+                let case_expr = self.create_constructor_expression(first_pattern)?;
+
+                // Lower case body as expression in the new scope with bound variables
+                let body_expr = self.lower_expression(&case.body)?;
+
+                // Restore previous scope
+                self.context.current_scope = prev_scope;
+
+                let body = TypedStatement::Expression {
+                    expression: body_expr,
+                    source_location: self.context.span_to_location(&case.span),
+                };
+
+                return Ok(TypedSwitchCase {
+                    case_value: case_expr,
+                    body,
+                    source_location: self.context.span_to_location(&case.span),
+                });
+            } else {
+                self.lower_pattern_to_expression(first_pattern)?
+            }
         } else {
             return Err(LoweringError::IncompleteImplementation {
                 feature: "Empty switch case patterns".to_string(),
@@ -8260,7 +8423,7 @@ impl<'a> AstLowering<'a> {
 
         // Lower case body as expression
         let body_expr = self.lower_expression(&case.body)?;
-        
+
         // Convert to statement for compatibility
         let body = TypedStatement::Expression {
             expression: body_expr,

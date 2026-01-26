@@ -1233,6 +1233,33 @@ impl<'a> TypeChecker<'a> {
                 self.check_inheritance_compatibility(source_id, _target_id)
             }
 
+            // === Enum Types ===
+            (
+                TypeKind::Enum {
+                    symbol_id: source_sym,
+                    type_args: source_args,
+                    ..
+                },
+                TypeKind::Enum {
+                    symbol_id: target_sym,
+                    type_args: target_args,
+                    ..
+                },
+            ) => {
+                if source_sym == target_sym {
+                    // Same base enum: always compatible. Different constructors of the
+                    // same enum (e.g., Ok(1) and Err("failed")) may have different
+                    // partially-inferred type arguments but are the same enum type.
+                    if source_args == target_args {
+                        TypeCompatibility::Identical
+                    } else {
+                        TypeCompatibility::Assignable
+                    }
+                } else {
+                    TypeCompatibility::Incompatible
+                }
+            }
+
             // === Generic Instances ===
             (
                 TypeKind::GenericInstance {

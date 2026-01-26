@@ -50,7 +50,11 @@ fn parse_and_lower(haxe_code: &str) -> Result<TypedFile, String> {
         &mut namespace_resolver,
         &mut import_resolver,
     );
-    
+
+    // Skip loading full stdlib from .hx files (unit tests don't have access to stdlib sources)
+    // This still registers top-level stdlib symbols (Array, String, Math, etc.)
+    lowering.set_skip_stdlib_loading(true);
+
     // Lower to TAST
     match lowering.lower_file(&haxe_file) {
         Ok(typed_file) => Ok(typed_file),
@@ -330,7 +334,7 @@ mod tests {
             class C {
                 public var a:A;
                 public var b:B;
-                
+
                 public function process():Void {
                     a.b.c.process();
                 }

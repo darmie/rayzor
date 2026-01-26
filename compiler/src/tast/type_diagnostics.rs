@@ -583,7 +583,7 @@ impl<'a> TypeDiagnosticEmitter<'a> {
 
         let mut builder = DiagnosticBuilder::error(
             format!(
-                "Method '{}' overrides parent method but missing 'override' modifier",
+                "Method '{}' overrides parent method but is missing the 'override' modifier",
                 method_name_str
             ),
             source_span.clone(),

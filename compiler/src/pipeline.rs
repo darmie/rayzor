@@ -1020,8 +1020,12 @@ impl HaxeCompilationPipeline {
         
         // Add type checking errors to the collection (type_errors already initialized above with lowering errors)
         if !diagnostics.is_empty() {
-            // Convert each diagnostic to a CompilationError
-            for diagnostic in &diagnostics.diagnostics {
+            // Convert only Error-severity diagnostics to CompilationErrors.
+            // Hints and warnings (e.g., dead code) are informational and
+            // should not block compilation or count as errors.
+            for diagnostic in diagnostics.diagnostics.iter().filter(|d| {
+                matches!(d.severity, diagnostics::DiagnosticSeverity::Error)
+            }) {
                 // Extract the span location
                 let location = SourceLocation {
                     file_id: diagnostic.span.file_id.as_usize() as u32,
@@ -1030,10 +1034,19 @@ impl HaxeCompilationPipeline {
                     byte_offset: diagnostic.span.start.byte_offset as u32,
                 };
 
-                // Use the raw message from the diagnostic (not formatted)
-                // Formatting will happen later in ErrorFormatter
+                // Build a self-contained message that includes error code, notes, and help text
+                let mut message = diagnostic.message.clone();
+                if let Some(ref code) = diagnostic.code {
+                    message = format!("[{}] {}", code, message);
+                }
+                if !diagnostic.notes.is_empty() {
+                    message = format!("{}\n{}", message, diagnostic.notes.join("\n"));
+                }
+                if !diagnostic.help.is_empty() {
+                    message = format!("{}. {}", message, diagnostic.help.join(" "));
+                }
                 let compilation_error = CompilationError {
-                    message: diagnostic.message.clone(),
+                    message,
                     location,
                     category: ErrorCategory::TypeError,
                     suggestion: if diagnostic.help.is_empty() { None } else { Some(diagnostic.help.join(" ")) },
@@ -1905,15 +1918,9 @@ impl HaxeCompilationPipeline {
         // Perform basic flow analysis without CFG/DFG (they're built in stage 4)
         let flow_safety_results = type_flow_guard.analyze_file(typed_file);
         
-        // Collect both errors and warnings
-        let mut compilation_errors = self.convert_flow_safety_errors(flow_safety_results.errors);
-        
-        // Add warnings as well (converted to warnings)
-        for warning in flow_safety_results.warnings {
-            compilation_errors.push(self.convert_flow_safety_warning(warning));
-        }
-        
-        compilation_errors
+        // Only collect actual errors — warnings (dead code, unreachable code) are
+        // informational and should not be treated as compilation errors.
+        self.convert_flow_safety_errors(flow_safety_results.errors)
     }
     
     /// Stage 4b: Run enhanced flow analysis with CFG/DFG integration

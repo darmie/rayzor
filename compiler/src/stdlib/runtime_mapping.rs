@@ -2601,32 +2601,32 @@ mod tests {
     fn test_string_methods() {
         let mapping = StdlibMapping::new();
 
-        // Test charAt
+        // Test charAt (MIR wrapper, 1 param)
         let sig = MethodSignature {
             class: "String",
             method: "charAt",
             is_static: false,
             is_constructor: false,
-            param_count: 0, // Will be ignored in lookup by key
+            param_count: 1,
         };
         let call = mapping.get(&sig).expect("charAt should be mapped");
-        assert_eq!(call.runtime_name, "haxe_string_char_at");
+        assert_eq!(call.runtime_name, "String_charAt");
         assert!(!call.needs_out_param);
         assert!(call.has_self_param);
         assert_eq!(call.param_count, 1);
         assert!(call.has_return);
 
-        // Test toUpperCase
+        // Test toUpperCase (returns primitive PtrString, 0 params)
         let sig = MethodSignature {
             class: "String",
             method: "toUpperCase",
             is_static: false,
             is_constructor: false,
-            param_count: 0, // Will be ignored in lookup by key
+            param_count: 0,
         };
         let call = mapping.get(&sig).expect("toUpperCase should be mapped");
-        assert_eq!(call.runtime_name, "haxe_string_to_upper_case");
-        assert!(call.needs_out_param); // Returns String
+        assert_eq!(call.runtime_name, "haxe_string_upper");
+        assert!(!call.needs_out_param);
         assert!(call.has_self_param);
     }
 
@@ -2639,11 +2639,11 @@ mod tests {
             method: "push",
             is_static: false,
             is_constructor: false,
-            param_count: 0, // Will be ignored in lookup by key
+            param_count: 1,
         };
         let call = mapping.get(&sig).expect("push should be mapped");
-        assert_eq!(call.runtime_name, "haxe_array_push");
-        assert!(call.has_return); // Returns new length
+        assert_eq!(call.runtime_name, "array_push");
+        assert!(!call.has_return); // Void return
     }
 
     #[test]
@@ -2655,7 +2655,7 @@ mod tests {
             method: "sin",
             is_static: true,
             is_constructor: false,
-            param_count: 0, // Will be ignored in lookup by key
+            param_count: 1,
         };
         let call = mapping.get(&sig).expect("sin should be mapped");
         assert_eq!(call.runtime_name, "haxe_math_sin");
@@ -2675,7 +2675,7 @@ mod tests {
     fn test_constructor_mapping() {
         let mapping = StdlibMapping::new();
 
-        // Test Channel constructor
+        // Test Channel constructor (MIR wrapper - returns pointer directly)
         let sig = MethodSignature {
             class: "Channel",
             method: "new",
@@ -2685,7 +2685,8 @@ mod tests {
         };
         let call = mapping.get(&sig).expect("Channel constructor should be mapped");
         assert_eq!(call.runtime_name, "Channel_init");
-        assert!(call.needs_out_param); // Returns complex type (opaque pointer)
+        assert!(!call.needs_out_param); // MIR wrapper returns pointer directly
+        assert!(call.has_return); // Returns PtrU8
         assert!(!call.has_self_param); // Constructors don't have self
         assert_eq!(call.param_count, 1);
     }
@@ -2694,7 +2695,7 @@ mod tests {
     fn test_vec_methods() {
         let mapping = StdlibMapping::new();
 
-        // Test VecI32 constructor
+        // Test VecI32 constructor (MIR wrapper)
         let sig = MethodSignature {
             class: "VecI32",
             method: "new",
@@ -2703,61 +2704,62 @@ mod tests {
             param_count: 0
         };
         let call = mapping.get(&sig).expect("VecI32 constructor should be mapped");
-        assert_eq!(call.runtime_name, "rayzor_vec_i32_new");
-        assert!(call.needs_out_param); // Returns complex type (pointer)
+        assert_eq!(call.runtime_name, "VecI32_new");
+        assert!(!call.needs_out_param); // MIR wrapper returns pointer directly
+        assert!(call.has_return);
         assert!(!call.has_self_param);
         assert_eq!(call.param_count, 0);
 
-        // Test VecI32 push
+        // Test VecI32 push (MIR wrapper, void return)
         let sig = MethodSignature {
             class: "VecI32",
             method: "push",
             is_static: false,
             is_constructor: false,
-            param_count: 0, // Will be ignored in lookup by key
+            param_count: 1,
         };
         let call = mapping.get(&sig).expect("VecI32.push should be mapped");
-        assert_eq!(call.runtime_name, "rayzor_vec_i32_push");
-        assert!(!call.needs_out_param); // Returns void
-        assert!(call.has_self_param); // Instance method
+        assert_eq!(call.runtime_name, "VecI32_push");
+        assert!(!call.needs_out_param);
+        assert!(call.has_self_param);
         assert_eq!(call.param_count, 1);
         assert!(!call.has_return);
 
-        // Test VecF64 get
+        // Test VecF64 get (MIR wrapper, returns F64)
         let sig = MethodSignature {
             class: "VecF64",
             method: "get",
             is_static: false,
             is_constructor: false,
-            param_count: 0, // Will be ignored in lookup by key
+            param_count: 1,
         };
         let call = mapping.get(&sig).expect("VecF64.get should be mapped");
-        assert_eq!(call.runtime_name, "rayzor_vec_f64_get");
+        assert_eq!(call.runtime_name, "VecF64_get");
         assert!(call.has_self_param);
         assert_eq!(call.param_count, 1);
         assert!(call.has_return);
 
-        // Test VecPtr for reference types
+        // Test VecPtr push (MIR wrapper, void return)
         let sig = MethodSignature {
             class: "VecPtr",
             method: "push",
             is_static: false,
             is_constructor: false,
-            param_count: 0, // Will be ignored in lookup by key
+            param_count: 1,
         };
         let call = mapping.get(&sig).expect("VecPtr.push should be mapped");
-        assert_eq!(call.runtime_name, "rayzor_vec_ptr_push");
+        assert_eq!(call.runtime_name, "VecPtr_push");
 
-        // Test VecBool
+        // Test VecBool pop (MIR wrapper, returns Bool)
         let sig = MethodSignature {
             class: "VecBool",
             method: "pop",
             is_static: false,
             is_constructor: false,
-            param_count: 0, // Will be ignored in lookup by key
+            param_count: 0,
         };
         let call = mapping.get(&sig).expect("VecBool.pop should be mapped");
-        assert_eq!(call.runtime_name, "rayzor_vec_bool_pop");
-        assert!(call.has_return); // Returns bool
+        assert_eq!(call.runtime_name, "VecBool_pop");
+        assert!(call.has_return);
     }
 }

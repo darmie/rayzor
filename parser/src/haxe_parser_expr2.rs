@@ -759,21 +759,27 @@ fn case<'a>(full: &'a str, input: &'a str) -> PResult<'a, Case> {
         separated_list1(alt((symbol("|"), symbol(","))), |i| pattern(full, i))
     ).parse(input)?;
     
-    // Try to parse guard - if we see 'if', we require proper guard syntax
+    // Try to parse guard - if we see 'if', parse the guard expression.
+    // Supports both `case n if (expr):` and `case n if expr:` forms.
     let (input, guard) = {
         // First, check if there's an 'if' keyword
         if let Ok((after_if, _)) = keyword("if").parse(input) {
-            // println!("Found 'if' keyword for case guard");
-            // We found 'if', so we MUST have a properly formed guard
-            // Check for opening parenthesis first
-            // The context wrapper will automatically handle error creation and byte offset calculation
-            let (input, guard_expr) = delimited(
-                context("[E0040] expected '(' after 'if' in case guard | help: case guard expressions must be enclosed in parentheses: case pattern if (condition):", symbol("(")),
-                context("[E0042] expected guard expression | help: provide a boolean expression for the guard condition", |i| expression(full, i)),
-                context("[E0041] expected ')' after guard expression | help: guard expressions must be properly closed with ')'", symbol(")"))
-            ).parse(after_if)?;
-
-            (input, Some(guard_expr))
+            // We found 'if', so we MUST have a guard expression.
+            // Try parenthesized form first: if (expr)
+            if let Ok((input, guard_expr)) = delimited(
+                symbol("("),
+                |i| expression(full, i),
+                symbol(")")
+            ).parse(after_if) {
+                (input, Some(guard_expr))
+            } else {
+                // No parentheses — parse a bare expression up to the ':'
+                let (input, guard_expr) = context(
+                    "[E0042] expected guard expression | help: provide a boolean expression for the guard condition",
+                    |i| expression(full, i)
+                ).parse(after_if)?;
+                (input, Some(guard_expr))
+            }
         } else {
             // No 'if' keyword found, no guard
             (input, None)

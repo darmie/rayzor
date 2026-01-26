@@ -1373,7 +1373,20 @@ pub enum BinaryOperator {
     SubAssign,
     ModAssign,
     MulAssign,
-    DivAssign
+    DivAssign,
+
+    // Range
+    /// Range operator: 0...10 (creates IntIterator)
+    Range,
+
+    /// Null coalescing: a ?? b (returns a if non-null, else b)
+    NullCoal,
+
+    /// Arrow operator: key => value (for map comprehensions)
+    Arrow,
+
+    /// Unsigned shift right: a >>> b
+    Ushr,
 }
 
 /// Unary operators

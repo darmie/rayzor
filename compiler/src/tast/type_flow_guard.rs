@@ -213,7 +213,7 @@ impl<'a> TypeFlowGuard<'a> {
         }
         
         for dead_code in &analysis_result.dead_code {
-            self.results.errors.push(FlowSafetyError::DeadCode {
+            self.results.warnings.push(FlowSafetyError::DeadCode {
                 location: dead_code.location,
             });
         }
