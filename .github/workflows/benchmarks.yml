@@ -1,0 +1,42 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  benchmark:
+    name: Benchmark Suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run nbody benchmark
+        run: cargo run --release --package compiler --example benchmark_runner -- nbody --json
+
+      - name: Run mandelbrot benchmark
+        run: cargo run --release --package compiler --example benchmark_runner -- mandelbrot --json
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: compiler/benchmarks/results/
+          retention-days: 90
+
+      - name: Upload benchmark charts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-charts
+          path: compiler/benchmarks/charts/
+          retention-days: 90

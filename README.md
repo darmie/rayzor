@@ -2,9 +2,11 @@
 
 > A high-performance, next-generation Haxe compiler with tiered JIT compilation and native code generation
 
+[![Tests](https://github.com/darmie/rayzor/actions/workflows/tests.yml/badge.svg)](https://github.com/darmie/rayzor/actions/workflows/tests.yml)
+[![Examples](https://github.com/darmie/rayzor/actions/workflows/examples.yml/badge.svg)](https://github.com/darmie/rayzor/actions/workflows/examples.yml)
+[![Benchmarks](https://github.com/darmie/rayzor/actions/workflows/benchmarks.yml/badge.svg)](https://github.com/darmie/rayzor/actions/workflows/benchmarks.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org)
-[![Status](https://img.shields.io/badge/status-active%20development-yellow.svg)](https://github.com/yourusername/rayzor)
 
 ---
 

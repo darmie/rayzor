@@ -1,0 +1,33 @@
+name: Examples
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  examples:
+    name: Compiler Examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Core Types E2E
+        run: cargo run --release --package compiler --example test_core_types_e2e
+
+      - name: sys.thread stdlib
+        run: cargo run --release --package compiler --example test_sys_thread
+
+      - name: Rayzor stdlib E2E
+        run: cargo run --release --package compiler --example test_rayzor_stdlib_e2e
+
+      - name: Haxe stdlib
+        run: cargo run --release --package compiler --example test_haxe_stdlib
