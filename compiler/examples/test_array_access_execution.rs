@@ -45,7 +45,7 @@ fn main() -> Result<(), String> {
     unit.add_file(source, "test.hx")?;
 
     // Lower to TAST
-    let typed_files = unit.lower_to_tast()?;
+    let typed_files = unit.lower_to_tast().expect("expected to lower");
     println!("✓ TAST generated\n");
 
     // Lower to HIR → MIR

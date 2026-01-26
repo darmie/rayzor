@@ -10,7 +10,7 @@ fn main() -> Result<(), String> {
 
     // Test 1: Arrow function with capture
     println!("TEST 1: Arrow function capturing outer variable");
-    println!("─".repeat(70));
+    println!("{}", "─".repeat(70));
     test_source("arrow_capture", r#"
 package test;
 
@@ -29,7 +29,7 @@ class Main {
 
     // Test 2: Traditional function with capture
     println!("TEST 2: Traditional function() capturing outer variable");
-    println!("─".repeat(70));
+    println!("{}", "─".repeat(70));
     test_source("function_capture", r#"
 package test;
 
@@ -48,7 +48,7 @@ class Main {
 
     // Test 3: Arrow function with complex capture (like channel test)
     println!("TEST 3: Arrow function with multiple captures (channel-like)");
-    println!("─".repeat(70));
+    println!("{}", "─".repeat(70));
     test_source("arrow_multi_capture", r#"
 package test;
 
@@ -77,7 +77,7 @@ class Main {
 
     // Test 4: Traditional function with complex capture
     println!("TEST 4: Traditional function() with multiple captures");
-    println!("─".repeat(70));
+    println!("{}", "─".repeat(70));
     test_source("function_multi_capture", r#"
 package test;
 

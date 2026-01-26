@@ -580,6 +580,16 @@ pub struct AstLowering<'a> {
     pub pending_usings: Vec<String>,
 }
 
+/// Result of type parameter substitution for generic method return types
+enum TypeSubstitutionResult {
+    /// No substitution needed, return this type as-is
+    NoChange(TypeId),
+    /// Direct substitution to this type (type parameter was replaced)
+    DirectSubstitution(TypeId),
+    /// Need to create a new GenericInstance with these type arguments
+    NeedGenericInstance { base_type: TypeId, type_args: Vec<TypeId> },
+}
+
 impl<'a> AstLowering<'a> {
     /// Get the current class symbol if we're in a class context
     fn get_current_class_symbol(&self) -> Option<SymbolId> {
@@ -7348,22 +7358,8 @@ impl<'a> AstLowering<'a> {
                 method_symbol,
                 ..
             } => {
-                // Extract return type from method signature
-                if let Some(symbol) = self.context.symbol_table.get_symbol(*method_symbol) {
-                    let type_table = self.context.type_table.borrow();
-                    if let Some(method_type) = type_table.get(symbol.type_id) {
-                        match &method_type.kind {
-                            crate::tast::core::TypeKind::Function { return_type, .. } => {
-                                Ok(*return_type)
-                            }
-                            _ => Ok(type_table.dynamic_type()),
-                        }
-                    } else {
-                        Ok(type_table.dynamic_type())
-                    }
-                } else {
-                    Ok(self.context.type_table.borrow().dynamic_type())
-                }
+                // Extract return type from method signature and substitute type parameters
+                self.infer_method_call_return_type(*method_symbol, receiver.expr_type)
             }
             TypedExpressionKind::StaticMethodCall {
                 method_symbol,
@@ -7568,6 +7564,282 @@ impl<'a> AstLowering<'a> {
                 Ok(self.context.type_table.borrow().dynamic_type())
             }
         }
+    }
+
+    /// Infer the return type of a method call, substituting type parameters from the receiver.
+    fn infer_method_call_return_type(
+        &mut self,
+        method_symbol: SymbolId,
+        receiver_type: TypeId,
+    ) -> LoweringResult<TypeId> {
+        // Phase 1: Collect all necessary information with immutable borrow
+        let substitution_result = {
+            let type_table = self.context.type_table.borrow();
+
+            // Get the method symbol
+            let method_type_id = match self.context.symbol_table.get_symbol(method_symbol) {
+                Some(symbol) => symbol.type_id,
+                None => return Ok(type_table.dynamic_type()),
+            };
+
+            // Get the method's function type
+            let return_type = match type_table.get(method_type_id) {
+                Some(method_type) => match &method_type.kind {
+                    crate::tast::core::TypeKind::Function { return_type, .. } => *return_type,
+                    _ => return Ok(type_table.dynamic_type()),
+                },
+                None => return Ok(type_table.dynamic_type()),
+            };
+
+            // Compute the substitution
+            self.compute_type_substitution(return_type, receiver_type, &type_table)
+        };
+
+        // Phase 2: Create new type if needed (with mutable borrow)
+        match substitution_result {
+            TypeSubstitutionResult::NoChange(type_id) => Ok(type_id),
+            TypeSubstitutionResult::DirectSubstitution(type_id) => Ok(type_id),
+            TypeSubstitutionResult::NeedGenericInstance { base_type, type_args } => {
+                Ok(self.context.type_table.borrow_mut().create_generic_instance(base_type, type_args))
+            }
+        }
+    }
+
+    /// Compute what substitution is needed (without creating new types)
+    fn compute_type_substitution(
+        &self,
+        return_type: TypeId,
+        receiver_type: TypeId,
+        type_table: &std::cell::Ref<'_, crate::tast::TypeTable>,
+    ) -> TypeSubstitutionResult {
+        // Get receiver's substitution info
+        let receiver_type_info = match type_table.get(receiver_type) {
+            Some(info) => info,
+            None => return TypeSubstitutionResult::NoChange(return_type),
+        };
+
+        // Extract base type parameters and type arguments from receiver
+        let (base_type_params, type_args) = match &receiver_type_info.kind {
+            crate::tast::core::TypeKind::GenericInstance { base_type, type_args, .. } => {
+                // Get the base class's type parameters
+                if let Some(base_info) = type_table.get(*base_type) {
+                    match &base_info.kind {
+                        crate::tast::core::TypeKind::Class { type_args: params, .. } |
+                        crate::tast::core::TypeKind::Interface { type_args: params, .. } => {
+                            (params.clone(), type_args.clone())
+                        }
+                        _ => return TypeSubstitutionResult::NoChange(return_type),
+                    }
+                } else {
+                    return TypeSubstitutionResult::NoChange(return_type);
+                }
+            }
+            _ => return TypeSubstitutionResult::NoChange(return_type),
+        };
+
+        // Get the return type info
+        let return_type_info = match type_table.get(return_type) {
+            Some(info) => info,
+            None => return TypeSubstitutionResult::NoChange(return_type),
+        };
+
+        match &return_type_info.kind {
+            crate::tast::core::TypeKind::TypeParameter { symbol_id, .. } => {
+                // Direct type parameter - find and substitute
+                for (i, param_type_id) in base_type_params.iter().enumerate() {
+                    if let Some(param_info) = type_table.get(*param_type_id) {
+                        if let crate::tast::core::TypeKind::TypeParameter { symbol_id: param_sym, .. } = &param_info.kind {
+                            if param_sym == symbol_id {
+                                if i < type_args.len() {
+                                    return TypeSubstitutionResult::DirectSubstitution(type_args[i]);
+                                }
+                            }
+                        }
+                    }
+                }
+                TypeSubstitutionResult::NoChange(return_type)
+            }
+            crate::tast::core::TypeKind::GenericInstance { base_type, type_args: ret_type_args, .. } => {
+                // Generic return type - need to substitute type args recursively
+                let mut new_type_args = Vec::with_capacity(ret_type_args.len());
+                let mut changed = false;
+
+                for arg in ret_type_args {
+                    match self.compute_type_substitution(*arg, receiver_type, type_table) {
+                        TypeSubstitutionResult::NoChange(_) => new_type_args.push(*arg),
+                        TypeSubstitutionResult::DirectSubstitution(new_arg) => {
+                            new_type_args.push(new_arg);
+                            changed = true;
+                        }
+                        TypeSubstitutionResult::NeedGenericInstance { base_type, type_args } => {
+                            // Would need to create nested type - for now just use the original
+                            // This is a limitation, but handles most common cases
+                            new_type_args.push(*arg);
+                        }
+                    }
+                }
+
+                if changed {
+                    // Check if this exact type already exists
+                    if let Some(existing) = self.find_existing_generic_instance(*base_type, &new_type_args, type_table) {
+                        return TypeSubstitutionResult::DirectSubstitution(existing);
+                    }
+                    return TypeSubstitutionResult::NeedGenericInstance {
+                        base_type: *base_type,
+                        type_args: new_type_args,
+                    };
+                }
+                TypeSubstitutionResult::NoChange(return_type)
+            }
+            _ => TypeSubstitutionResult::NoChange(return_type),
+        }
+    }
+
+    /// Substitute type parameters in a type with actual type arguments from a receiver type.
+    ///
+    /// For example, if we have:
+    /// - return_type = T (a TypeParameter)
+    /// - receiver_type = Arc<Channel<Int>> (a GenericInstance)
+    ///
+    /// This function will substitute T with Channel<Int>.
+    fn substitute_type_params_in_type(
+        &self,
+        return_type: TypeId,
+        receiver_type: TypeId,
+        type_table: &std::cell::Ref<'_, crate::tast::TypeTable>,
+    ) -> TypeId {
+        // Collect all necessary info in one pass, then we can release the borrow if needed
+
+        // Get the receiver's substitution info (base_type_params and type_args)
+        let substitution_info: Option<(Vec<TypeId>, Vec<TypeId>)> = {
+            let receiver_type_info = match type_table.get(receiver_type) {
+                Some(info) => info,
+                None => return return_type,
+            };
+
+            match &receiver_type_info.kind {
+                crate::tast::core::TypeKind::GenericInstance { base_type, type_args, .. } => {
+                    // Get the base class's type parameters
+                    if let Some(base_info) = type_table.get(*base_type) {
+                        match &base_info.kind {
+                            crate::tast::core::TypeKind::Class { type_args: params, .. } |
+                            crate::tast::core::TypeKind::Interface { type_args: params, .. } => {
+                                Some((params.clone(), type_args.clone()))
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        };
+
+        let (base_type_params, type_args) = match substitution_info {
+            Some(info) => info,
+            None => return return_type,
+        };
+
+        // Get the return type info
+        let return_type_info = match type_table.get(return_type) {
+            Some(info) => info,
+            None => return return_type,
+        };
+
+        // Now substitute based on return type kind
+        match &return_type_info.kind {
+            crate::tast::core::TypeKind::TypeParameter { symbol_id, .. } => {
+                // Find which type parameter this is and substitute
+                for (i, param_type_id) in base_type_params.iter().enumerate() {
+                    if let Some(param_info) = type_table.get(*param_type_id) {
+                        if let crate::tast::core::TypeKind::TypeParameter { symbol_id: param_sym, .. } = &param_info.kind {
+                            if param_sym == symbol_id {
+                                // Found matching type parameter, substitute with type argument
+                                if i < type_args.len() {
+                                    return type_args[i];
+                                }
+                            }
+                        }
+                    }
+                }
+                return_type
+            }
+            crate::tast::core::TypeKind::GenericInstance { base_type, type_args: ret_type_args, .. } => {
+                // Recursively substitute type parameters in the type arguments
+                // E.g., Arc<T>.clone() returns Arc<T>, substitute T in the Arc<T>
+                // First, collect all info we need
+                let base = *base_type;
+                let ret_args: Vec<TypeId> = ret_type_args.clone();
+
+                let mut new_type_args = Vec::with_capacity(ret_args.len());
+                let mut changed = false;
+                for arg in &ret_args {
+                    let substituted = self.substitute_type_params_in_type(*arg, receiver_type, type_table);
+                    if substituted != *arg {
+                        changed = true;
+                    }
+                    new_type_args.push(substituted);
+                }
+                if changed {
+                    // Need to create a new type - but we can't mutably borrow here
+                    // Return a signal that we need to create a new type
+                    // For now, we'll use an existing type if it matches, or return the original
+                    // Actually, let's check if the type already exists
+                    // This is a limitation - we may need to refactor more significantly
+                    // For now, try to find if the substituted type exists
+                    if let Some(existing) = self.find_existing_generic_instance(base, &new_type_args, type_table) {
+                        return existing;
+                    }
+                    // Fallback: return original (the substitution will need to happen elsewhere)
+                    return return_type;
+                }
+                return_type
+            }
+            crate::tast::core::TypeKind::Class { symbol_id: _sym_id, type_args: class_type_args } if !class_type_args.is_empty() => {
+                // For class types with type args that are type parameters, substitute them
+                let class_args: Vec<TypeId> = class_type_args.clone();
+
+                let mut new_type_args = Vec::with_capacity(class_args.len());
+                let mut changed = false;
+                for arg in &class_args {
+                    let substituted = self.substitute_type_params_in_type(*arg, receiver_type, type_table);
+                    if substituted != *arg {
+                        changed = true;
+                    }
+                    new_type_args.push(substituted);
+                }
+                if changed {
+                    // Same limitation as above
+                    return return_type;
+                }
+                return_type
+            }
+            _ => return_type,
+        }
+    }
+
+    /// Try to find an existing GenericInstance with the given base type and type args
+    fn find_existing_generic_instance(
+        &self,
+        base_type: TypeId,
+        type_args: &[TypeId],
+        type_table: &std::cell::Ref<'_, crate::tast::TypeTable>,
+    ) -> Option<TypeId> {
+        // Search through existing types to find a matching GenericInstance
+        // This is O(n) but avoids the borrow conflict
+        for (type_id, type_info) in type_table.iter() {
+            if let crate::tast::core::TypeKind::GenericInstance {
+                base_type: existing_base,
+                type_args: existing_args,
+                ..
+            } = &type_info.kind {
+                if *existing_base == base_type && existing_args == type_args {
+                    return Some(type_id);
+                }
+            }
+        }
+        None
     }
 
     /// Determine variable usage based on expression kind (simplified for TAST)

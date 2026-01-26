@@ -469,13 +469,51 @@ impl<'a> HirToMirContext<'a> {
     fn get_drop_behavior(&self, type_id: TypeId) -> DropBehavior {
         let type_table = self.type_table.borrow();
         if let Some(type_info) = type_table.get(type_id) {
-            // Extern types are runtime-managed
-            if type_info.flags.is_extern {
-                return DropBehavior::RuntimeManaged;
-            }
-
             match &type_info.kind {
-                TypeKind::Class { .. } => {
+                // GenericInstance: Check if the base type is extern (e.g., Arc<T>, Channel<T>)
+                TypeKind::GenericInstance { base_type, .. } => {
+                    // Recursively check the base type
+                    if let Some(base_info) = type_table.get(*base_type) {
+                        // Check if base class is a stdlib class (Arc, Channel, Thread, Mutex, etc.)
+                        if let Some(symbol_id) = base_info.symbol_id() {
+                            if let Some(symbol) = self.symbol_table.get_symbol(symbol_id) {
+                                if let Some(class_name) = self.string_interner.get(symbol.name) {
+                                    if self.stdlib_mapping.is_stdlib_class(class_name)
+                                       || self.stdlib_mapping.is_generic_stdlib_class(class_name) {
+                                        return DropBehavior::RuntimeManaged;
+                                    }
+                                }
+                            }
+                            // Also check hierarchy info if available
+                            if let Some(hierarchy) = self.symbol_table.get_class_hierarchy(symbol_id) {
+                                if hierarchy.is_extern {
+                                    return DropBehavior::RuntimeManaged;
+                                }
+                            }
+                        }
+                        // Base type is a non-extern Class
+                        if matches!(&base_info.kind, TypeKind::Class { .. }) {
+                            return DropBehavior::AutoDrop;
+                        }
+                    }
+                    DropBehavior::NoDrop
+                }
+                TypeKind::Class { symbol_id, .. } => {
+                    // Check if class is a stdlib class
+                    if let Some(symbol) = self.symbol_table.get_symbol(*symbol_id) {
+                        if let Some(class_name) = self.string_interner.get(symbol.name) {
+                            if self.stdlib_mapping.is_stdlib_class(class_name)
+                               || self.stdlib_mapping.is_generic_stdlib_class(class_name) {
+                                return DropBehavior::RuntimeManaged;
+                            }
+                        }
+                    }
+                    // Also check hierarchy info if available
+                    if let Some(hierarchy) = self.symbol_table.get_class_hierarchy(*symbol_id) {
+                        if hierarchy.is_extern {
+                            return DropBehavior::RuntimeManaged;
+                        }
+                    }
                     // User-defined (non-extern) classes need AutoDrop
                     DropBehavior::AutoDrop
                 }
@@ -2235,6 +2273,28 @@ impl<'a> HirToMirContext<'a> {
                     (None, None, Vec::new())
                 }
             }
+            TypeKind::GenericInstance { base_type, type_args, .. } => {
+                // For generic instances like Deque<Int>, Channel<String>, Arc<T>
+                // Get the base type's class name (e.g., "Deque" from Deque<Int>)
+                if let Some(base_info) = type_table.get(*base_type) {
+                    if let TypeKind::Class { symbol_id, .. } = &base_info.kind {
+                        let (name, qname) = if let Some(class_info) = self.symbol_table.get_symbol(*symbol_id) {
+                            let n = self.string_interner.get(class_info.name);
+                            let qn = class_info.qualified_name
+                                .and_then(|qn| self.string_interner.get(qn))
+                                .map(|qn| qn.replace(".", "_"));
+                            (n, qn)
+                        } else {
+                            (None, None)
+                        };
+                        (name, qname, type_args.clone())
+                    } else {
+                        (None, None, Vec::new())
+                    }
+                } else {
+                    (None, None, Vec::new())
+                }
+            }
             _ => (None, None, Vec::new()),
         };
 
@@ -3044,7 +3104,13 @@ impl<'a> HirToMirContext<'a> {
                                 actual_return_type.clone(),
                             );
 
-                            return self.builder.build_call_direct(extern_func_id, arg_regs, actual_return_type);
+                            // Call the extern function
+                            let call_result = self.builder.build_call_direct(extern_func_id, arg_regs, actual_return_type.clone())?;
+
+                            // Auto-unbox if runtime returns Ptr(U8) but HIR expects primitive
+                            // (e.g., Deque<Int>.pop() returns boxed int that needs unboxing)
+                            debug!("[EXTERN CALL UNBOX] runtime_func={}, actual_return_type={:?}, result_type={:?}", runtime_func, actual_return_type, result_type);
+                            return self.maybe_unbox_for_extern_return(call_result, &actual_return_type, &result_type);
                         }
 
                         // FALLBACK: For extern classes not in type_table (like rayzor.Bytes),
@@ -3116,7 +3182,11 @@ impl<'a> HirToMirContext<'a> {
                                             actual_return_type.clone(),
                                         );
 
-                                        return self.builder.build_call_direct(extern_func_id, arg_regs, actual_return_type);
+                                        // Call the extern function
+                                        let call_result = self.builder.build_call_direct(extern_func_id, arg_regs, actual_return_type.clone())?;
+
+                                        // Auto-unbox if runtime returns Ptr(U8) but HIR expects primitive
+                                        return self.maybe_unbox_for_extern_return(call_result, &actual_return_type, &result_type);
                                     }
                                 }
                             }
@@ -3291,22 +3361,37 @@ impl<'a> HirToMirContext<'a> {
                             }
                         }
 
-                        // Check if the object type is a rayzor stdlib class
+                        // Check if the object type is a rayzor stdlib class (or GenericInstance like Deque<Int>)
                         let type_table = self.type_table.borrow();
-                        if let Some(type_info) = type_table.get(object_type) {
-                            if let TypeKind::Class { symbol_id, .. } = &type_info.kind {
-                                if let Some(class_symbol) = self.symbol_table.get_symbol(*symbol_id)
+                        let class_symbol_id = if let Some(type_info) = type_table.get(object_type) {
+                            match &type_info.kind {
+                                TypeKind::Class { symbol_id, .. } => Some(*symbol_id),
+                                TypeKind::GenericInstance { base_type, .. } => {
+                                    // For GenericInstance like Deque<Int>, get the base class symbol
+                                    if let Some(base_info) = type_table.get(*base_type) {
+                                        if let TypeKind::Class { symbol_id, .. } = &base_info.kind {
+                                            debug!("[STDLIB FALLBACK] GenericInstance base class symbol_id={:?}", symbol_id);
+                                            Some(*symbol_id)
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                }
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
+
+                        if let Some(symbol_id) = class_symbol_id {
+                            if let Some(class_symbol) = self.symbol_table.get_symbol(symbol_id)
                                 {
                                     if let Some(class_name) =
                                         self.string_interner.get(class_symbol.name)
                                     {
-                                        // eprintln!(
-                                        //     "DEBUG: Object is class '{}', qualified_name={:?}",
-                                        //     class_name,
-                                        //     class_symbol
-                                        //         .qualified_name
-                                        //         .and_then(|qn| self.string_interner.get(qn))
-                                        // );
+                                        debug!("[STDLIB FALLBACK] Found class '{}', checking for stdlib method", class_name);
 
                                         // Check if it's a rayzor stdlib class by using qualified name
                                         let qualified_name_opt = class_symbol
@@ -3367,7 +3452,6 @@ impl<'a> HirToMirContext<'a> {
                                     }
                                 }
                             }
-                        }
                         drop(type_table);
 
                         // eprintln!("WARNING: Method {:?} not found in function_map", field);
@@ -3388,6 +3472,115 @@ impl<'a> HirToMirContext<'a> {
                         is_method,
                         args.len()
                     );
+
+                    // EXTERN CLASS METHOD HANDLING:
+                    // When MethodCall is desugared to Call with Variable callee,
+                    // is_method=true and args[0] is the receiver (for instance methods).
+                    // For static methods, there is no receiver - all args are actual arguments.
+                    // We need to check if this is an extern class method and redirect to runtime.
+                    if *is_method && !args.is_empty() {
+                        let receiver = &args[0];
+                        let receiver_type = receiver.ty;
+                        // Calculate actual param count (excluding the receiver) for overload disambiguation
+                        // e.g., s.indexOf("World", 0) has args=[s, "World", 0], param_count=2
+                        let param_count = args.len().saturating_sub(1);
+                        // Try to find stdlib runtime mapping for this method
+                        if let Some((class_name, method_name, runtime_call)) =
+                            self.get_stdlib_runtime_info(*symbol, receiver_type, Some(param_count))
+                        {
+                            // Skip methods that need ptr_conversion - let them fall through to
+                            // the existing handler which properly handles params_need_ptr_conversion
+                            if runtime_call.params_need_ptr_conversion != 0 {
+                                debug!("[EXTERN METHOD VAR] Skipping {} - has ptr_conversion, using fallback path", runtime_call.runtime_name);
+                            } else {
+                            let runtime_func = runtime_call.runtime_name;
+                            let is_instance_method = runtime_call.has_self_param;
+                            debug!("[EXTERN METHOD VAR] Redirecting {}.{} -> {} (instance={})", class_name, method_name, runtime_func, is_instance_method);
+
+                            // Get expected parameter types from the extern function signature
+                            let (expected_param_types, actual_return_type) = self.get_stdlib_mir_wrapper_signature(runtime_func)
+                                .map(|(params, ret)| (params, ret))
+                                .unwrap_or_else(|| {
+                                    // When is_method=true, args[0] is always receiver/class - skip it
+                                    // For instance methods, add self param first
+                                    let mut params = if is_instance_method {
+                                        vec![IrType::Ptr(Box::new(IrType::U8))]
+                                    } else {
+                                        vec![]
+                                    };
+                                    // Always skip args[0] since is_method=true
+                                    for arg in args.iter().skip(1) {
+                                        params.push(self.convert_type(arg.ty));
+                                    }
+                                    let ret_type = if runtime_call.has_return {
+                                        result_type.clone()
+                                    } else {
+                                        IrType::Void
+                                    };
+                                    (params, ret_type)
+                                });
+
+                            // Build argument list based on whether this is instance or static method
+                            // IMPORTANT: When is_method=true, args[0] is ALWAYS the receiver/class:
+                            // - For instance methods: args[0] is the instance receiver, pass it to runtime
+                            // - For static methods: args[0] is the CLASS type, SKIP it (not a real arg)
+                            let mut arg_regs = Vec::new();
+                            let args_to_process: &[HirExpr] = if is_instance_method {
+                                // Instance method: args[0] is receiver, rest are actual args
+                                let receiver_reg = self.lower_expression(receiver)?;
+                                arg_regs.push(receiver_reg);
+                                &args[1..]
+                            } else {
+                                // Static method with is_method=true: args[0] is the CLASS type, skip it
+                                // The actual arguments start at args[1]
+                                &args[1..]
+                            };
+
+                            // Lower the arguments and auto-box if needed
+                            let param_offset = if is_instance_method { 1 } else { 0 };
+                            for (i, arg) in args_to_process.iter().enumerate() {
+                                let arg_reg = self.lower_expression(arg)?;
+                                let actual_ty = self.convert_type(arg.ty);
+                                let expected_ty = expected_param_types.get(i + param_offset)
+                                    .cloned()
+                                    .unwrap_or_else(|| actual_ty.clone());
+                                let final_reg = self.maybe_box_for_extern_call(arg_reg, &actual_ty, &expected_ty)?;
+                                arg_regs.push(final_reg);
+                            }
+
+                            // Use expected parameter types for registration
+                            let param_types = if expected_param_types.len() == arg_regs.len() {
+                                expected_param_types.clone()
+                            } else {
+                                // When is_method=true, args[0] is always receiver/class type - skip it
+                                // For instance methods, add self param first; for static methods, no self param
+                                let mut params = if is_instance_method {
+                                    vec![IrType::Ptr(Box::new(IrType::U8))]
+                                } else {
+                                    vec![]
+                                };
+                                // Always skip args[0] since is_method=true means args[0] is receiver/class
+                                for arg in args.iter().skip(1) {
+                                    params.push(self.convert_type(arg.ty));
+                                }
+                                params
+                            };
+
+                            // Register the extern function
+                            let extern_func_id = self.get_or_register_extern_function(
+                                runtime_func,
+                                param_types,
+                                actual_return_type.clone(),
+                            );
+
+                            // Call the extern function
+                            let call_result = self.builder.build_call_direct(extern_func_id, arg_regs, actual_return_type.clone())?;
+
+                            // Auto-unbox if runtime returns Ptr(U8) but HIR expects primitive
+                            return self.maybe_unbox_for_extern_return(call_result, &actual_return_type, &result_type);
+                            } // end else (no ptr_conversion needed)
+                        }
+                    }
 
                     // SPECIAL CASE: Handle global trace() function
                     // Route to type-specific trace functions based on argument type
@@ -7510,6 +7703,79 @@ impl<'a> HirToMirContext<'a> {
             // Other types - pass through without boxing (may cause issues, but let's see)
             _ => {
                 debug!("[EXTERN BOXING] Skipping boxing for type {:?}", actual_ty);
+                Some(value)
+            }
+        }
+    }
+
+    /// Auto-unbox return values from extern calls when runtime returns Ptr(U8) but HIR expects a primitive
+    ///
+    /// This is the inverse of `maybe_box_for_extern_call`. Generic extern classes like Deque<Int>
+    /// store elements as boxed pointers (Ptr(U8)), so when calling pop() the runtime returns
+    /// a boxed pointer that needs to be unboxed to the actual type T.
+    ///
+    /// Also handles nullable types: Null<Int> (Ptr(I32)) - we need to unbox the inner type.
+    fn maybe_unbox_for_extern_return(&mut self, value: IrId, actual_ty: &IrType, expected_ty: &IrType) -> Option<IrId> {
+        // Only unbox if actual is Ptr(U8) and expected is a primitive
+        let actual_is_ptr_u8 = matches!(actual_ty, IrType::Ptr(inner) if matches!(**inner, IrType::U8 | IrType::Void));
+
+        if !actual_is_ptr_u8 {
+            return Some(value);
+        }
+
+        let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
+
+        // Check if expected type is nullable (Ptr(primitive)) - if so, unbox to the inner primitive type
+        // Null<Int> becomes Ptr(I32), we need to unbox to I32
+        let target_type = match expected_ty {
+            IrType::Ptr(inner) => match inner.as_ref() {
+                IrType::I32 | IrType::I64 | IrType::Bool | IrType::F32 | IrType::F64 => {
+                    debug!("[EXTERN UNBOXING] Nullable primitive detected: Ptr({:?}) -> {:?}", inner, inner);
+                    inner.as_ref()
+                }
+                _ => expected_ty,
+            }
+            _ => expected_ty,
+        };
+
+        match target_type {
+            IrType::I32 => {
+                debug!("[EXTERN UNBOXING] Unboxing Ptr(U8) return to I32");
+                // haxe_unbox_int_ptr returns i64, need to truncate to i32
+                let unbox_func_id = self.get_or_register_extern_function("haxe_unbox_int_ptr", vec![ptr_u8], IrType::I64);
+                let i64_val = self.builder.build_call_direct(unbox_func_id, vec![value], IrType::I64)?;
+                self.builder.build_cast(i64_val, IrType::I64, IrType::I32)
+            }
+            IrType::I64 => {
+                debug!("[EXTERN UNBOXING] Unboxing Ptr(U8) return to I64");
+                let unbox_func_id = self.get_or_register_extern_function("haxe_unbox_int_ptr", vec![ptr_u8], IrType::I64);
+                self.builder.build_call_direct(unbox_func_id, vec![value], IrType::I64)
+            }
+            IrType::Bool => {
+                debug!("[EXTERN UNBOXING] Unboxing Ptr(U8) return to Bool");
+                let unbox_func_id = self.get_or_register_extern_function("haxe_unbox_bool_ptr", vec![ptr_u8], IrType::Bool);
+                self.builder.build_call_direct(unbox_func_id, vec![value], IrType::Bool)
+            }
+            IrType::F32 => {
+                debug!("[EXTERN UNBOXING] Unboxing Ptr(U8) return to F32");
+                let unbox_func_id = self.get_or_register_extern_function("haxe_unbox_float_ptr", vec![ptr_u8], IrType::F64);
+                let f64_val = self.builder.build_call_direct(unbox_func_id, vec![value], IrType::F64)?;
+                self.builder.build_cast(f64_val, IrType::F64, IrType::F32)
+            }
+            IrType::F64 => {
+                debug!("[EXTERN UNBOXING] Unboxing Ptr(U8) return to F64");
+                let unbox_func_id = self.get_or_register_extern_function("haxe_unbox_float_ptr", vec![ptr_u8], IrType::F64);
+                self.builder.build_call_direct(unbox_func_id, vec![value], IrType::F64)
+            }
+            IrType::String => {
+                debug!("[EXTERN UNBOXING] String type - using reference unboxing");
+                // Use haxe_unbox_reference_ptr for strings (returns the pointer directly)
+                let unbox_func_id = self.get_or_register_extern_function("haxe_unbox_reference_ptr", vec![ptr_u8], IrType::String);
+                self.builder.build_call_direct(unbox_func_id, vec![value], IrType::String)
+            }
+            // Already a pointer type or other complex type - no unboxing needed
+            _ => {
+                debug!("[EXTERN UNBOXING] No unboxing needed for expected type {:?}", expected_ty);
                 Some(value)
             }
         }
