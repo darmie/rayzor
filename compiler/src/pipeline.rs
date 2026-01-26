@@ -629,9 +629,10 @@ impl HaxeCompilationPipeline {
         
         // Stage 1: Parse source code to AST
         let parse_start = std::time::Instant::now();
-        match self.parse_source(file_path.as_ref(), source) {
+        let parse_result = self.parse_source(file_path.as_ref(), source);
+        self.stats.parse_time_us += parse_start.elapsed().as_micros() as u64;
+        match parse_result {
             Ok((ast_file, source_map)) => {
-                self.stats.parse_time_us += parse_start.elapsed().as_micros() as u64;
                 
                 // Stage 2: Lower AST to TAST
                 let lowering_start = std::time::Instant::now();

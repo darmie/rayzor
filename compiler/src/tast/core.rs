@@ -810,45 +810,45 @@ impl TypeTable {
     /// Create a class type
     pub fn create_class_type(&mut self, symbol_id: SymbolId, type_args: Vec<TypeId>) -> TypeId {
         let cache_key = if type_args.is_empty() {
-            TypeCacheKey::NamedType(symbol_id)
+            TypeCacheKey::NamedType(symbol_id, 0)
         } else {
-            TypeCacheKey::GenericType(symbol_id, type_args.clone())
+            TypeCacheKey::GenericType(symbol_id, type_args.clone(), 0)
         };
-        
+
         // Check cache first
         if let Some(cached_id) = self.type_cache.get(&cache_key) {
             return cached_id;
         }
-        
+
         let type_id = self.intern_type(TypeKind::Class { symbol_id, type_args });
         self.type_cache.insert(cache_key, type_id);
         type_id
     }
-    
+
     /// Create an interface type
     pub fn create_interface_type(&mut self, symbol_id: SymbolId, type_args: Vec<TypeId>) -> TypeId {
         let cache_key = if type_args.is_empty() {
-            TypeCacheKey::NamedType(symbol_id)
+            TypeCacheKey::NamedType(symbol_id, 1)
         } else {
-            TypeCacheKey::GenericType(symbol_id, type_args.clone())
+            TypeCacheKey::GenericType(symbol_id, type_args.clone(), 1)
         };
-        
+
         // Check cache first
         if let Some(cached_id) = self.type_cache.get(&cache_key) {
             return cached_id;
         }
-        
+
         let type_id = self.intern_type(TypeKind::Interface { symbol_id, type_args });
         self.type_cache.insert(cache_key, type_id);
         type_id
     }
-    
+
     /// Create an enum type
     pub fn create_enum_type(&mut self, symbol_id: SymbolId, type_args: Vec<TypeId>) -> TypeId {
         let cache_key = if type_args.is_empty() {
-            TypeCacheKey::NamedType(symbol_id)
+            TypeCacheKey::NamedType(symbol_id, 2)
         } else {
-            TypeCacheKey::GenericType(symbol_id, type_args.clone())
+            TypeCacheKey::GenericType(symbol_id, type_args.clone(), 2)
         };
         
         // Check cache first

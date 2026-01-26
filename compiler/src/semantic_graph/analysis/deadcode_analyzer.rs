@@ -527,13 +527,13 @@ impl DeadCodeAnalyzer {
             let debug_use_count = ssa_var.uses.iter()
                 .filter(|&&use_id| self.is_debug_use(use_id))
                 .count();
-            
+
             // If all uses are debug-like, consider it debug-only
             return debug_use_count == ssa_var.uses.len();
         }
-        
-        // Check if the variable type suggests debug usage
-        self.is_debug_type(ssa_var.var_type)
+
+        // Variable has no uses at all — it's simply unused, not "debug-only"
+        false
     }
     
     /// Find dead stores (variables assigned but never used after assignment)

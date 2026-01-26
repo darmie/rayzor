@@ -2497,13 +2497,20 @@ impl DfgBuilder {
         // 5. Store captured variables in closure
         let capture_stores = self.create_capture_stores(alloc_node_id, &captured_vars)?;
 
-        // 6. Create a composite node that represents the initialized closure
-        // Since we don't have a Lambda variant, we'll return a Load of the allocation
-        // with metadata indicating it's a closure
+        // 6. Create a Load node that represents loading the initialized closure
+        // with metadata indicating it's a closure and its capture count
+        let mut annotations = HashMap::new();
+        let capture_count = captured_vars.len();
+        annotations.insert("capture_count".to_string(), capture_count.to_string());
+        if capture_count > 0 {
+            annotations.insert("closure".to_string(), "true".to_string());
+        }
+
         Ok(DataFlowNode {
             id: node_id,
-            kind: DataFlowNodeKind::Closure {
-                closure_id: alloc_node_id,
+            kind: DataFlowNodeKind::Load {
+                address: alloc_node_id,
+                memory_type: MemoryType::Heap,
             },
             value_type: expression.expr_type,
             source_location: expression.source_location,
@@ -2515,7 +2522,10 @@ impl DfgBuilder {
             uses: new_id_set(),
             defines: None,
             basic_block: self.ssa_state.current_block,
-            metadata: NodeMetadata::default(),
+            metadata: NodeMetadata {
+                annotations,
+                ..Default::default()
+            },
         })
     }
 

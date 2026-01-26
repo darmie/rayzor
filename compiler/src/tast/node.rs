@@ -1817,7 +1817,7 @@ mod tests {
     fn test_function_effects() {
         let effects = FunctionEffects {
             can_throw: true,
-            async_kind: AsyncKind::Sync,
+            async_kind: AsyncKind::Async,
             is_pure: false,
             is_inline: true,
             exception_types:vec![],

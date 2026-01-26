@@ -30,10 +30,10 @@ impl CacheStats {
 /// Cache key for type lookups
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum TypeCacheKey {
-    /// Named type lookup by symbol
-    NamedType(SymbolId),
-    /// Named type with generic arguments
-    GenericType(SymbolId, Vec<TypeId>),
+    /// Named type lookup by symbol + kind tag (0=class, 1=interface, 2=enum)
+    NamedType(SymbolId, u8),
+    /// Named type with generic arguments + kind tag
+    GenericType(SymbolId, Vec<TypeId>, u8),
     /// Array type lookup
     ArrayType(TypeId),
     /// Map type lookup
@@ -288,40 +288,40 @@ mod tests {
     #[test]
     fn test_cache_basic_operations() {
         let cache = TypeCache::new();
-        let key = TypeCacheKey::NamedType(SymbolId::from_raw(1));
+        let key = TypeCacheKey::NamedType(SymbolId::from_raw(1), 0);
         let type_id = TypeId::from_raw(100);
-        
+
         // Test miss
         assert_eq!(cache.get(&key), None);
-        
+
         // Test insert and hit
         cache.insert(key.clone(), type_id);
         assert_eq!(cache.get(&key), Some(type_id));
-        
+
         // Test stats
         let stats = cache.stats();
         assert_eq!(stats.hits, 1);
         assert_eq!(stats.misses, 1);
         assert_eq!(stats.total_lookups, 2);
     }
-    
+
     #[test]
     fn test_cache_promotion() {
         let cache = TypeCache::with_sizes(2, 4, true);
-        
+
         // Fill L1
-        cache.insert(TypeCacheKey::NamedType(SymbolId::from_raw(1)), TypeId::from_raw(1));
-        cache.insert(TypeCacheKey::NamedType(SymbolId::from_raw(2)), TypeId::from_raw(2));
-        
+        cache.insert(TypeCacheKey::NamedType(SymbolId::from_raw(1), 0), TypeId::from_raw(1));
+        cache.insert(TypeCacheKey::NamedType(SymbolId::from_raw(2), 0), TypeId::from_raw(2));
+
         // This should go to L2
-        cache.insert(TypeCacheKey::NamedType(SymbolId::from_raw(3)), TypeId::from_raw(3));
-        
+        cache.insert(TypeCacheKey::NamedType(SymbolId::from_raw(3), 0), TypeId::from_raw(3));
+
         let (l1_size, l2_size) = cache.sizes();
         assert_eq!(l1_size, 2);
         assert_eq!(l2_size, 1);
-        
+
         // Access L2 entry multiple times to trigger promotion
-        let key3 = TypeCacheKey::NamedType(SymbolId::from_raw(3));
+        let key3 = TypeCacheKey::NamedType(SymbolId::from_raw(3), 0);
         for _ in 0..4 {
             cache.get(&key3);
         }
