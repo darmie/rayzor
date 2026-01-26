@@ -467,26 +467,19 @@ impl<'a> HirToMirContext<'a> {
     /// - User-defined classes → AutoDrop
     /// - Primitives, arrays, Dynamic → NoDrop
     fn get_drop_behavior(&self, type_id: TypeId) -> DropBehavior {
+        use crate::tast::symbols::SymbolFlags;
+
         let type_table = self.type_table.borrow();
         if let Some(type_info) = type_table.get(type_id) {
             match &type_info.kind {
                 // GenericInstance: Check if the base type is extern (e.g., Arc<T>, Channel<T>)
                 TypeKind::GenericInstance { base_type, .. } => {
-                    // Recursively check the base type
                     if let Some(base_info) = type_table.get(*base_type) {
-                        // Check if base class is a stdlib class (Arc, Channel, Thread, Mutex, etc.)
                         if let Some(symbol_id) = base_info.symbol_id() {
+                            // Use SymbolFlags::EXTERN from the TypedAST - set during parsing
+                            // for all `extern class` declarations (Deque, Channel, Arc, Vec, etc.)
                             if let Some(symbol) = self.symbol_table.get_symbol(symbol_id) {
-                                if let Some(class_name) = self.string_interner.get(symbol.name) {
-                                    if self.stdlib_mapping.is_stdlib_class(class_name)
-                                       || self.stdlib_mapping.is_generic_stdlib_class(class_name) {
-                                        return DropBehavior::RuntimeManaged;
-                                    }
-                                }
-                            }
-                            // Also check hierarchy info if available
-                            if let Some(hierarchy) = self.symbol_table.get_class_hierarchy(symbol_id) {
-                                if hierarchy.is_extern {
+                                if symbol.flags.contains(SymbolFlags::EXTERN) {
                                     return DropBehavior::RuntimeManaged;
                                 }
                             }
@@ -499,18 +492,9 @@ impl<'a> HirToMirContext<'a> {
                     DropBehavior::NoDrop
                 }
                 TypeKind::Class { symbol_id, .. } => {
-                    // Check if class is a stdlib class
+                    // Use SymbolFlags::EXTERN from the TypedAST
                     if let Some(symbol) = self.symbol_table.get_symbol(*symbol_id) {
-                        if let Some(class_name) = self.string_interner.get(symbol.name) {
-                            if self.stdlib_mapping.is_stdlib_class(class_name)
-                               || self.stdlib_mapping.is_generic_stdlib_class(class_name) {
-                                return DropBehavior::RuntimeManaged;
-                            }
-                        }
-                    }
-                    // Also check hierarchy info if available
-                    if let Some(hierarchy) = self.symbol_table.get_class_hierarchy(*symbol_id) {
-                        if hierarchy.is_extern {
+                        if symbol.flags.contains(SymbolFlags::EXTERN) {
                             return DropBehavior::RuntimeManaged;
                         }
                     }
@@ -766,13 +750,14 @@ impl<'a> HirToMirContext<'a> {
                                 false
                             };
 
-                            // Also skip if this is a generic stdlib class (like Vec<T>)
-                            // that has monomorphized variants with MIR wrappers
-                            let is_generic_stdlib = class_name
-                                .map(|n| self.stdlib_mapping.is_generic_stdlib_class(n))
+                            // Also skip if this is an extern class - extern classes have
+                            // their methods handled by runtime mappings or MIR wrappers
+                            let is_extern_class = self.symbol_table
+                                .get_symbol(class.symbol_id)
+                                .map(|sym| sym.flags.contains(crate::tast::symbols::SymbolFlags::EXTERN))
                                 .unwrap_or(false);
 
-                            has_mapping || is_generic_stdlib
+                            has_mapping || is_extern_class
                         } else {
                             false
                         };
@@ -834,8 +819,11 @@ impl<'a> HirToMirContext<'a> {
                                 if check_class_runtime(class_name_str) {
                                     true
                                 } else {
-                                    // Also skip if this is a generic stdlib class (like Vec<T>)
-                                    self.stdlib_mapping.is_generic_stdlib_class(class_name_str)
+                                    // Also skip if this is an extern class (using TAST flags)
+                                    self.symbol_table
+                                        .get_symbol(class.symbol_id)
+                                        .map(|sym| sym.flags.contains(crate::tast::symbols::SymbolFlags::EXTERN))
+                                        .unwrap_or(false)
                                 }
                             } else {
                                 false

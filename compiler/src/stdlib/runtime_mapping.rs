@@ -445,42 +445,6 @@ impl StdlibMapping {
         self.find_by_runtime_name(runtime_name).map(|call| call.source)
     }
 
-    /// Check if a class name is a generic stdlib class that requires monomorphization
-    /// For example, "Vec" is generic and maps to VecI32, VecI64, VecF64, etc.
-    /// Returns the base name if it's a generic stdlib class, None otherwise
-    pub fn is_generic_stdlib_class(&self, class_name: &str) -> bool {
-        // Generic stdlib classes have monomorphized variants registered
-        // Vec -> VecI32, VecI64, VecF64, VecPtr, VecBool
-        match class_name {
-            "Vec" => self.is_stdlib_class("VecI32"),
-            _ => false,
-        }
-    }
-
-    /// Get the monomorphized class name for a generic stdlib class
-    /// E.g., Vec<Int> -> VecI32, Vec<Float> -> VecF64
-    /// Returns None if the class is not a generic stdlib class or the type param is unknown
-    pub fn get_monomorphized_class(&self, class_name: &str, type_param: &str) -> Option<&'static str> {
-        match class_name {
-            "Vec" => {
-                let mono_class = match type_param {
-                    "Int" => "VecI32",
-                    "Int64" => "VecI64",
-                    "Float" => "VecF64",
-                    "Bool" => "VecBool",
-                    _ => "VecPtr", // Pointer/reference types
-                };
-                // Verify the monomorphized class exists in our mapping
-                if self.is_stdlib_class(mono_class) {
-                    Some(mono_class)
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
-
     /// Check if a stdlib class uses MIR wrapper functions instead of direct extern calls.
     /// MIR wrapper classes have functions defined in stdlib/thread.rs, stdlib/channel.rs, etc.
     /// that need to be called as regular MIR functions (not extern C functions).
