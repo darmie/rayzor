@@ -1,4 +1,4 @@
-use parser::{parse_haxe_file_with_diagnostics, ErrorFormatter};
+use parser::{ErrorFormatter, TypeDeclaration, parse_haxe_file_with_diagnostics};
 
 fn main() {
     println!("Testing @:coreType metadata parsing...");
@@ -32,7 +32,7 @@ fn main() {
             // Print parsed declarations
             for (i, decl) in parse_result.file.declarations.iter().enumerate() {
                 match decl {
-                    parser::Declaration::Type(type_decl) => {
+                   TypeDeclaration::Abstract(type_decl) => {
                         println!("Declaration {}: {:?}", i + 1, type_decl.name);
                     }
                     _ => {

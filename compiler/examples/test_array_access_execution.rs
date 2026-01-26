@@ -4,6 +4,7 @@ use compiler::compilation::{CompilationUnit, CompilationConfig};
 use compiler::codegen::CraneliftBackend;
 use compiler::ir::hir_to_mir::lower_hir_to_mir;
 use compiler::ir::tast_to_hir::lower_tast_to_hir;
+use compiler::tast::SymbolTable;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -28,11 +29,11 @@ fn main() -> Result<(), String> {
         }
 
         class Main {
-            public static function main():Int {
+            public static function main() {
                 var v:Vec2 = null;
                 var setResult = v[2] = 5;  // Should call set(2, 5) which returns 7
                 var getResult = v[3];  // Should call get(3) which returns 30
-                return setResult + getResult;  // Should return 7 + 30 = 37
+                trace(setResult + getResult);  // Should return 7 + 30 = 37
             }
         }
     "#;
@@ -62,7 +63,8 @@ fn main() -> Result<(), String> {
                 .map_err(|e| format!("HIR error: {:?}", e))?
         };
 
-        let mir = lower_hir_to_mir(&hir, &*string_interner_rc.borrow(), &unit.type_table)
+        let symbol_table = SymbolTable::new();
+        let mir = lower_hir_to_mir(&hir, &*string_interner_rc.borrow(), &unit.type_table, &symbol_table)
             .map_err(|e| format!("MIR error: {:?}", e))?;
         if !mir.functions.is_empty() {
             mir_modules.push(mir);
