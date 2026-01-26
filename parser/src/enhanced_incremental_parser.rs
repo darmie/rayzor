@@ -59,6 +59,9 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> EnhancedPar
     let file_id = FileId::new(0); // First file in source map
     // let mut collector = ContextErrorCollector::new(file_id);
     
+    // Always run style validation for enhanced diagnostics
+    validate_source_style(input, &mut result, file_id);
+
     // Try to parse the full file first
     if let Ok(file) = crate::haxe_parser::parse_haxe_file(file_name, input, false) {
         return result.with_file(file);
@@ -130,6 +133,89 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> EnhancedPar
     // }
     
     result
+}
+
+/// Strip access modifiers and other keywords from the beginning of a line
+fn strip_modifiers(s: &str) -> &str {
+    let modifiers = ["public ", "private ", "static ", "override ", "inline ", "extern ", "final "];
+    let mut result = s;
+    loop {
+        let mut changed = false;
+        for m in &modifiers {
+            if result.starts_with(m) {
+                result = &result[m.len()..];
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    result
+}
+
+/// Post-parse validation that detects common style issues even when the full parse succeeds.
+/// The enhanced parser provides richer diagnostics — missing semicolons, braces, etc.
+fn validate_source_style(input: &str, result: &mut EnhancedParseResult, file_id: FileId) {
+    let lines: Vec<&str> = input.lines().collect();
+    let mut brace_depth: i32 = 0;
+    let mut line_byte_offset: usize = 0;
+
+    for (line_idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let line_number = line_idx + 1;
+
+        // Count braces on this line to track depth
+        let mut in_string = false;
+        for ch in trimmed.chars() {
+            match ch {
+                '"' | '\'' => in_string = !in_string,
+                '{' if !in_string => brace_depth += 1,
+                '}' if !in_string => brace_depth -= 1,
+                _ => {}
+            }
+        }
+
+        let stripped = strip_modifiers(trimmed);
+
+        // Check for var declarations without trailing semicolon (inside class/function bodies)
+        if brace_depth >= 1
+            && stripped.starts_with("var ")
+            && !trimmed.ends_with(';')
+            && !trimmed.ends_with('{')
+            && !trimmed.is_empty()
+        {
+            let end_of_content = line.trim_end().len();
+            let byte_pos = line_byte_offset + end_of_content;
+            let span = create_span_for_error(line_number, end_of_content + 1, byte_pos, 1, file_id);
+            result.add_diagnostic(HaxeDiagnostics::missing_semicolon(span, "variable declaration"));
+        }
+
+        // Check for function declarations without opening brace
+        if brace_depth >= 1 && stripped.starts_with("function ") {
+            let has_brace = trimmed.contains('{');
+            if !has_brace {
+                // Check if next non-empty line starts with '{'
+                let next_has_brace = lines
+                    .get(line_idx + 1)
+                    .map(|l| l.trim().starts_with('{'))
+                    .unwrap_or(false);
+                if !next_has_brace {
+                    let end_of_content = line.trim_end().len();
+                    let byte_pos = line_byte_offset + end_of_content;
+                    let span =
+                        create_span_for_error(line_number, end_of_content + 1, byte_pos, 1, file_id);
+                    result.add_diagnostic(HaxeDiagnostics::missing_closing_delimiter(
+                        span.clone(),
+                        span,
+                        '{',
+                    ));
+                }
+            }
+        }
+
+        line_byte_offset += line.len() + 1; // +1 for newline character
+    }
 }
 
 /// Identify the next declaration type in the input

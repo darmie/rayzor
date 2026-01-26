@@ -389,6 +389,11 @@ pub extern "C" fn haxe_string_contains(s: *const HaxeString, needle: *const Haxe
 mod tests {
     use super::*;
 
+    /// Safe concat wrapper for testing
+    fn haxe_string_concat(a: &HaxeString, b: &HaxeString) -> HaxeString {
+        haxe_string_concat_impl(a as *const HaxeString, b as *const HaxeString)
+    }
+
     #[test]
     fn test_string_new() {
         let s = haxe_string_new();

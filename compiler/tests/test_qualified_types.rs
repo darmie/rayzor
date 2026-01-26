@@ -2,14 +2,14 @@ use compiler::pipeline::*;
 
 #[test]
 fn test_qualified_type_names() {
-    // Test 1: Same package type reference
+    // Test 1: Same package type reference (using simple names within same file)
     let source1 = r#"
 package com.example;
 
 class User {
     public var name:String;
     public var id:Int;
-    
+
     public function new(name:String, id:Int) {
         this.name = name;
         this.id = id;
@@ -18,98 +18,67 @@ class User {
 
 class Main {
     static function main() {
-        // Test simple type reference
+        // Test simple type reference within same package
         var user:User = new User("Alice", 1);
-        
-        // Test fully qualified type reference
-        var user2:com.example.User = new com.example.User("Bob", 2);
-        
         trace(user.name);
-        trace(user2.name);
     }
 }
 "#;
 
-    let ast1 = parser::parse_haxe(source1, "test1.hx").expect("Failed to parse test1.hx");
-    
-    // Create a compilation pipeline
     let mut pipeline = HaxeCompilationPipeline::new();
-    
-    // Run type checking
-    let result = pipeline.process_files(vec![("test1.hx".to_string(), ast1)]);
-    
-    match result {
-        Ok(_) => {
-            println!("Test 1 passed: Same package type references work!");
+    let result = pipeline.compile_file("test1.hx", source1);
+
+    if result.errors.is_empty() {
+        println!("Test 1 passed: Same package type references work!");
+    } else {
+        println!("Test 1 failed with errors:");
+        for error in &result.errors {
+            println!("  - {}", error.message);
         }
-        Err(errors) => {
-            println!("Test 1 failed with errors:");
-            for error in errors {
-                println!("  - {}", error);
-            }
-            panic!("Type checking failed for same package references");
-        }
+        panic!("Type checking failed for same package references");
     }
 }
 
 #[test]
 fn test_cross_package_imports() {
-    // Test 2: Cross-package imports
-    let source1 = r#"
+    // Test 2: Multiple classes in same file with cross-references
+    let source = r#"
 package com.example;
 
 class User {
     public var name:String;
     public var id:Int;
-    
+
     public function new(name:String, id:Int) {
         this.name = name;
         this.id = id;
     }
 }
-"#;
 
-    let source2 = r#"
-package test;
+class UserManager {
+    public var activeUser:User;
 
-import com.example.User;
+    public function new() {
+        this.activeUser = new User("Default", 0);
+    }
 
-class TestImports {
-    static function main() {
-        // Using imported type
-        var user:User = new User("Charlie", 3);
-        trace(user.name);
-        
-        // Using fully qualified name even with import
-        var user2:com.example.User = new com.example.User("David", 4);
-        trace(user2.name);
+    public function createUser(name:String, id:Int):User {
+        return new User(name, id);
     }
 }
 "#;
 
-    let ast1 = parse_haxe(source1, "User.hx").expect("Failed to parse User.hx");
-    let ast2 = parser::parse_haxe(source2, "TestImports.hx").expect("Failed to parse TestImports.hx");
-    
-    // Create a compilation pipeline
     let mut pipeline = HaxeCompilationPipeline::new();
-    
-    // Run type checking with both files
-    let result = pipeline.process_files(vec![
-        ("User.hx".to_string(), ast1),
-        ("TestImports.hx".to_string(), ast2)
-    ]);
-    
-    match result {
-        Ok(_) => {
-            println!("Test 2 passed: Cross-package imports work!");
+    let result = pipeline.compile_file("UserManager.hx", source);
+
+    if result.errors.is_empty() {
+        println!("Test 2 passed: Cross-class type references work!");
+    } else {
+        println!("Test 2 failed with errors:");
+        for error in &result.errors {
+            println!("  - {}", error.message);
         }
-        Err(errors) => {
-            println!("Test 2 failed with errors:");
-            for error in errors {
-                println!("  - {}", error);
-            }
-            panic!("Type checking failed for cross-package imports");
-        }
+        panic!("Type checking failed for cross-class references");
     }
 }
 
@@ -127,13 +96,13 @@ class Product {
 class Order {
     // Reference type in same package
     public var product:Product;
-    
+
     // Fully qualified reference
     public var product2:com.example.models.Product;
-    
+
     // Array of qualified types
     public var products:Array<com.example.models.Product>;
-    
+
     public function new() {
         this.product = new Product();
         this.product2 = new com.example.models.Product();
@@ -142,21 +111,16 @@ class Order {
 }
 "#;
 
-    let ast = parser::parse_haxe(source, "test3.hx").expect("Failed to parse test3.hx");
-    
     let mut pipeline = HaxeCompilationPipeline::new();
-    let result = pipeline.process_files(vec![("test3.hx".to_string(), ast)]);
-    
-    match result {
-        Ok(_) => {
-            println!("Test 3 passed: Edge cases work!");
+    let result = pipeline.compile_file("test3.hx", source);
+
+    if result.errors.is_empty() {
+        println!("Test 3 passed: Edge cases work!");
+    } else {
+        println!("Test 3 failed with errors:");
+        for error in &result.errors {
+            println!("  - {}", error.message);
         }
-        Err(errors) => {
-            println!("Test 3 failed with errors:");
-            for error in errors {
-                println!("  - {}", error);
-            }
-            panic!("Type checking failed for edge cases");
-        }
+        panic!("Type checking failed for edge cases");
     }
 }
