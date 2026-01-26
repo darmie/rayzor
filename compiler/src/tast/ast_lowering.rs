@@ -2350,27 +2350,60 @@ impl<'a> AstLowering<'a> {
         // PRE-REGISTER ALL METHODS before lowering any method bodies.
         // This is critical for intra-class method calls: when main() calls iterate(),
         // iterate must already be registered in the class scope, even if it's defined later.
+        // We also pre-compute function types from signatures to enable forward references.
         for field in &class_decl.fields {
             if let ClassFieldKind::Function(func) = &field.kind {
                 let method_name = self.context.intern_string(&func.name);
+                let is_static = field.modifiers.iter().any(|m| matches!(m, parser::haxe_ast::Modifier::Static));
 
-                // Check if this method was already registered (e.g., from parent class)
-                if self.context.symbol_table.lookup_symbol(class_scope, method_name).is_none() {
+                // Get or create the method symbol
+                let method_symbol = if let Some(existing) = self.context.symbol_table.lookup_symbol(class_scope, method_name) {
+                    existing.id
+                } else {
                     // Create the function symbol in the class scope
-                    let method_symbol = self.context.symbol_table.create_function_in_scope(method_name, class_scope);
+                    let sym = self.context.symbol_table.create_function_in_scope(method_name, class_scope);
 
                     // Add to the class scope so it can be resolved during method body lowering
                     if let Some(scope) = self.context.scope_tree.get_scope_mut(class_scope) {
-                        scope.add_symbol(method_symbol, method_name);
+                        scope.add_symbol(sym, method_name);
                     }
 
                     // Mark as static if applicable (needed for resolution)
-                    let is_static = field.modifiers.iter().any(|m| matches!(m, parser::haxe_ast::Modifier::Static));
                     if is_static {
                         self.context.symbol_table.add_symbol_flags(
-                            method_symbol,
+                            sym,
                             crate::tast::symbols::SymbolFlags::STATIC,
                         );
+                    }
+
+                    sym
+                };
+
+                // Pre-compute function type from AST signature for forward reference resolution
+                let param_types: Vec<TypeId> = func.params.iter()
+                    .map(|p| {
+                        if let Some(ref type_hint) = p.type_hint {
+                            self.lower_type(type_hint).unwrap_or_else(|_| self.context.type_table.borrow().dynamic_type())
+                        } else {
+                            self.context.type_table.borrow().dynamic_type()
+                        }
+                    })
+                    .collect();
+                let return_type = if let Some(ref ret_type) = func.return_type {
+                    self.lower_type(ret_type).unwrap_or_else(|_| self.context.type_table.borrow().dynamic_type())
+                } else {
+                    self.context.type_table.borrow().dynamic_type()
+                };
+                let function_type = self.context.type_table.borrow_mut()
+                    .create_function_type(param_types, return_type);
+                self.context.symbol_table.update_symbol_type(method_symbol, function_type);
+
+                // Add to class_methods for forward reference resolution in lower_call_expression
+                if func.name != "new" {
+                    if let Some(methods_list) = self.class_methods.get_mut(&class_symbol) {
+                        if !methods_list.iter().any(|(name, _, _)| *name == method_name) {
+                            methods_list.push((method_name, method_symbol, is_static));
+                        }
                     }
                 }
             }
@@ -4630,682 +4663,10 @@ impl<'a> AstLowering<'a> {
                 }
             }
             ExprKind::Call { expr, args } => {
-                let arg_exprs = args
-                    .iter()
-                    .map(|arg| self.lower_expression(arg))
-                    .collect::<Result<Vec<_>, _>>()?;
-
-                // Check if this is a method call (field access being called)
-                match &expr.kind {
-                    ExprKind::Field {
-                        expr: obj_expr,
-                        field,
-                    } => {
-                        // Check if this is a static method call (Class.method)
-                        if let ExprKind::Ident(class_name) = &obj_expr.kind {
-                            let class_name_interned = self.context.intern_string(class_name);
-
-                            // Try to resolve as a class symbol
-                            if let Some(symbol_id) =
-                                self.resolve_symbol_in_scope_hierarchy(class_name_interned)
-                            {
-                                if let Some(symbol) =
-                                    self.context.symbol_table.get_symbol(symbol_id)
-                                {
-                                    // Check if this symbol represents a class declaration (not just a variable of class type)
-                                    if symbol.kind == crate::tast::symbols::SymbolKind::Class {
-                                        // This is a class name, so this is a static method call
-                                        //
-                                        // For extern classes (Std, Math, Sys, etc.), the type_id may be invalid
-                                        // because they don't have concrete type definitions in the type table.
-                                        // In that case, use the symbol_id directly as the class_symbol.
-                                        let class_symbol = if symbol.type_id == TypeId::invalid() {
-                                            // Extern class - use the symbol_id directly
-                                            symbol_id
-                                        } else if let Ok(type_table) = self.context.type_table.try_borrow() {
-                                            // Try to get the class symbol from the type table
-                                            if let Some(type_info) = type_table.get(symbol.type_id) {
-                                                if let crate::tast::core::TypeKind::Class { symbol_id: ts_symbol, .. } = &type_info.kind {
-                                                    *ts_symbol
-                                                } else {
-                                                    // Type exists but isn't a Class - use symbol_id as fallback
-                                                    symbol_id
-                                                }
-                                            } else {
-                                                // Type not in table - use symbol_id as fallback
-                                                symbol_id
-                                            }
-                                        } else {
-                                            // Can't borrow type table - use symbol_id as fallback
-                                            symbol_id
-                                        };
-
-                                        // This is a static method call
-                                        let method_name =
-                                            self.context.intern_string(field);
-
-                                        // Look for the method in this class
-                                        let method_symbol = if let Some(methods) =
-                                            self.class_methods.get(&class_symbol)
-                                        {
-                                            let found = methods
-                                                .iter()
-                                                .find(|(name, _, _)| {
-                                                    *name == method_name
-                                                })
-                                                .map(|(_, symbol, _)| *symbol);
-
-                                            if let Some(sym) = found {
-                                                sym
-                                            } else {
-
-                                                let new_symbol = self.context
-                                                    .symbol_table
-                                                    .create_function(method_name);
-
-                                                // IMPORTANT: Set qualified name for the new symbol based on class + method
-                                                if let Some(class_sym) = self.context.symbol_table.get_symbol(class_symbol) {
-                                                    if let Some(class_qname) = class_sym.qualified_name
-                                                        .and_then(|qn| self.context.string_interner.get(qn))
-                                                    {
-                                                        let method_qname = format!("{}.{}", class_qname,
-                                                            self.context.string_interner.get(method_name).unwrap_or(""));
-                                                        let method_qname_interned = self.context.intern_string(&method_qname);
-                                                        self.context.symbol_table.update_qualified_name(
-                                                            new_symbol,
-                                                            &self.context.scope_tree,
-                                                            &self.context.string_interner
-                                                        );
-                                                        // Override with our computed qualified name
-                                                        if let Some(sym_mut) = self.context.symbol_table.get_symbol_mut(new_symbol) {
-                                                            sym_mut.qualified_name = Some(method_qname_interned);
-                                                        }
-                                                    }
-                                                }
-                                                new_symbol
-                                            }
-                                        } else {
-                                            let new_symbol = self.context
-                                                .symbol_table
-                                                .create_function(method_name);
-
-                                            // IMPORTANT: Set qualified name for the new symbol based on class + method
-                                            if let Some(class_sym) = self.context.symbol_table.get_symbol(class_symbol) {
-                                                if let Some(class_qname) = class_sym.qualified_name
-                                                    .and_then(|qn| self.context.string_interner.get(qn))
-                                                {
-                                                    let method_qname = format!("{}.{}", class_qname,
-                                                        self.context.string_interner.get(method_name).unwrap_or(""));
-                                                    let method_qname_interned = self.context.intern_string(&method_qname);
-                                                    if let Some(sym_mut) = self.context.symbol_table.get_symbol_mut(new_symbol) {
-                                                        sym_mut.qualified_name = Some(method_qname_interned);
-                                                    }
-                                                }
-                                            }
-                                            new_symbol
-                                        };
-
-                                        let kind =
-                                            TypedExpressionKind::StaticMethodCall {
-                                                class_symbol,
-                                                method_symbol,
-                                                arguments: arg_exprs,
-                                                type_arguments: Vec::new(),
-                                            };
-
-                                        // Get method return type by extracting it from the Function type
-                                        let expr_type = if let Some(symbol) = self
-                                            .context
-                                            .symbol_table
-                                            .get_symbol(method_symbol)
-                                        {
-                                            let type_table = self.context.type_table.borrow();
-                                            if let Some(method_type) = type_table.get(symbol.type_id) {
-                                                match &method_type.kind {
-                                                    crate::tast::core::TypeKind::Function { return_type, .. } => {
-                                                        *return_type
-                                                    }
-                                                    _ => symbol.type_id,
-                                                }
-                                            } else {
-                                                symbol.type_id
-                                            }
-                                        } else {
-                                            self.context
-                                                .type_table
-                                                .borrow()
-                                                .dynamic_type()
-                                        };
-
-                                        let usage = VariableUsage::Copy;
-                                        let lifetime_id =
-                                            self.assign_lifetime(&kind, &expr_type);
-                                        let metadata =
-                                            self.analyze_expression_metadata(&kind);
-
-                                        // Calculate the span for the field name specifically
-                                        // The field appears after the object expression and a dot
-                                        let field_span = parser::haxe_ast::Span::new(
-                                            obj_expr.span.end + 1, // +1 for the dot
-                                            obj_expr.span.end + 1 + field.len(),
-                                        );
-
-                                        return Ok(TypedExpression {
-                                            expr_type,
-                                            kind,
-                                            usage,
-                                            lifetime_id,
-                                            source_location: self
-                                                .context
-                                                .span_to_location(&field_span),
-                                            metadata,
-                                        });
-                                    }
-                                }
-                            }
-                        }
-
-                        // Not a static call, proceed with instance method call
-                        let receiver_expr = self.lower_expression(obj_expr)?;
-                        let method_name = self.context.intern_string(field);
-
-                        // First, try to resolve as a regular method on the receiver
-                        let method_symbol = self.resolve_method_symbol(&receiver_expr, method_name);
-
-                        // Check if the resolved symbol is a placeholder (newly created function)
-                        // If so, try to find a static extension method from 'using' modules
-                        let is_placeholder = self.context.symbol_table.get_symbol(method_symbol)
-                            .map(|s| s.kind == crate::tast::symbols::SymbolKind::Function)
-                            .unwrap_or(false);
-
-                        if is_placeholder {
-                            // Try to find a static extension method
-                            if let Some((class_symbol, static_method_symbol)) =
-                                self.find_static_extension_method(method_name, receiver_expr.expr_type)
-                            {
-                                // Found a static extension! Convert to static method call
-                                // with receiver as first argument
-                                let mut new_args = vec![receiver_expr];
-                                new_args.extend(arg_exprs);
-
-                                TypedExpressionKind::StaticMethodCall {
-                                    class_symbol,
-                                    method_symbol: static_method_symbol,
-                                    arguments: new_args,
-                                    type_arguments: Vec::new(),
-                                }
-                            } else {
-                                // No static extension found, use regular method call
-                                TypedExpressionKind::MethodCall {
-                                    receiver: Box::new(receiver_expr),
-                                    method_symbol,
-                                    arguments: arg_exprs,
-                                    type_arguments: Vec::new(),
-                                }
-                            }
-                        } else {
-                            // Method was found on the receiver, use it
-                            TypedExpressionKind::MethodCall {
-                                receiver: Box::new(receiver_expr),
-                                method_symbol,
-                                arguments: arg_exprs,
-                                type_arguments: Vec::new(),
-                            }
-                        }
-                    }
-                    _ => {
-                        // Regular function call
-                        let mut func_expr = self.lower_expression(expr)?;
-
-                        // Check if this is an enum constructor call and instantiate its type
-                        if let TypedExpressionKind::Variable { symbol_id } = &func_expr.kind {
-                            if let Some(symbol) = self.context.symbol_table.get_symbol(*symbol_id) {
-                                if symbol.kind == crate::tast::symbols::SymbolKind::EnumVariant {
-                                    // This is an enum constructor - instantiate its function type
-                                    func_expr = self.instantiate_enum_constructor_type(
-                                        *symbol_id, &arg_exprs, func_expr,
-                                    )?;
-                                }
-                            }
-                        }
-
-                        // Check if this is an unqualified call to a method on the current class.
-                        // In Haxe, `calculate(10, 20)` inside a class method is `this.calculate(10, 20)`.
-                        if let TypedExpressionKind::Variable { symbol_id } = &func_expr.kind {
-                            let is_class_method = self.context.class_context_stack.last()
-                                .and_then(|class_sym| self.class_methods.get(class_sym))
-                                .map(|methods| methods.iter().any(|(_, sym, _)| *sym == *symbol_id))
-                                .unwrap_or(false);
-
-                            if is_class_method {
-                                let method_symbol = *symbol_id;
-                                // Get the return type of the method
-                                let return_type = {
-                                    let sym = self.context.symbol_table.get_symbol(method_symbol);
-                                    if let Some(sym) = sym {
-                                        let type_table = self.context.type_table.borrow();
-                                        if let Some(method_type) = type_table.get(sym.type_id) {
-                                            match &method_type.kind {
-                                                crate::tast::core::TypeKind::Function { return_type, .. } => *return_type,
-                                                _ => sym.type_id,
-                                            }
-                                        } else {
-                                            sym.type_id
-                                        }
-                                    } else {
-                                        func_expr.expr_type
-                                    }
-                                };
-                                // Create implicit `this` receiver
-                                let this_name = self.context.intern_string("this");
-                                let this_symbol = self.resolve_symbol_in_scope_hierarchy(this_name)
-                                    .unwrap_or_else(|| self.context.symbol_table.create_variable(this_name));
-                                let this_type = self.context.class_context_stack.last()
-                                    .and_then(|cs| self.context.symbol_table.get_symbol(*cs))
-                                    .map(|s| s.type_id)
-                                    .unwrap_or_else(|| self.context.type_table.borrow().dynamic_type());
-                                let receiver = TypedExpression {
-                                    expr_type: this_type,
-                                    kind: TypedExpressionKind::Variable { symbol_id: this_symbol },
-                                    usage: VariableUsage::Copy,
-                                    lifetime_id: crate::tast::LifetimeId::first(),
-                                    source_location: self.context.create_location(),
-                                    metadata: ExpressionMetadata::default(),
-                                };
-                                // Propagate method return type
-                                let kind = TypedExpressionKind::MethodCall {
-                                    receiver: Box::new(receiver),
-                                    method_symbol,
-                                    arguments: arg_exprs,
-                                    type_arguments: Vec::new(),
-                                };
-                                let usage = VariableUsage::Copy;
-                                let lifetime_id = self.assign_lifetime(&kind, &return_type);
-                                let metadata = self.analyze_expression_metadata(&kind);
-                                return Ok(TypedExpression {
-                                    expr_type: return_type,
-                                    kind,
-                                    usage,
-                                    lifetime_id,
-                                    source_location: self.context.create_location(),
-                                    metadata,
-                                });
-                            }
-                        }
-
-                        TypedExpressionKind::FunctionCall {
-                            function: Box::new(func_expr),
-                            arguments: arg_exprs,
-                            type_arguments: Vec::new(),
-                        }
-                    }
-                }
+                return self.lower_call_expression(expression, expr, args);
             }
             ExprKind::Field { expr, field } => {
-                // Helper function to extract a fully qualified path from nested Field expressions
-                // For example: rayzor.concurrent.Thread -> vec!["rayzor", "concurrent", "Thread"]
-                fn extract_qualified_path(expr: &parser::Expr) -> Option<Vec<String>> {
-                    match &expr.kind {
-                        ExprKind::Ident(name) => Some(vec![name.clone()]),
-                        ExprKind::Field { expr: inner_expr, field } => {
-                            let mut path = extract_qualified_path(inner_expr)?;
-                            path.push(field.clone());
-                            Some(path)
-                        }
-                        _ => None, // Not a qualified path
-                    }
-                }
-
-                // Try to extract a fully qualified path (e.g., rayzor.concurrent.Thread)
-                if let Some(mut path) = extract_qualified_path(expr) {
-                    path.push(field.clone()); // Add the final field (e.g., "spawn")
-
-                    // Before attempting qualified type/package resolution, check if the base
-                    // identifier is a local variable or parameter. If so, this is a field
-                    // access chain (a.b.c.process()), NOT a qualified type path.
-                    let base_name_interned = self.context.intern_string(&path[0]);
-                    let base_is_local_var = self.resolve_symbol_in_scope_hierarchy(base_name_interned)
-                        .and_then(|id| self.context.symbol_table.get_symbol(id))
-                        .map(|sym| matches!(sym.kind,
-                            crate::tast::symbols::SymbolKind::Variable
-                            | crate::tast::symbols::SymbolKind::Parameter
-                            | crate::tast::symbols::SymbolKind::Field
-                        ))
-                        .unwrap_or(false);
-
-                    // Try to resolve this as a package.Class.staticMethod pattern
-                    // Start from the full path and work backwards to find the class
-                    // Skip this if the base is a local variable (field access chain)
-                    for split_point in (1..if base_is_local_var { 1 } else { path.len() }).rev() {
-                        let package_and_class = &path[..split_point];
-                        let remaining = &path[split_point..];
-
-                        // Try to resolve the package+class part as a symbol
-                        // For "rayzor.concurrent.Thread.spawn", try:
-                        // - "rayzor.concurrent.Thread" (class) with "spawn" (method)
-                        // - "rayzor.concurrent" (class) with "Thread.spawn" (not valid, skip)
-                        // - "rayzor" (class) with "concurrent.Thread.spawn" (not valid, skip)
-
-                        // For static field access like rayzor.concurrent.Thread.spawn:
-                        // - path = ["rayzor", "concurrent", "Thread", "spawn"]
-                        // - When split at 2: package_and_class=["rayzor", "concurrent"], remaining=["Thread", "spawn"]
-                        // - Package = ["rayzor", "concurrent"]
-                        // - Class = remaining[0] = "Thread"
-                        // - Field = remaining[1] = "spawn"
-                        //
-                        // For class name access like rayzor.concurrent.Thread:
-                        // - path = ["rayzor", "concurrent", "Thread"]
-                        // - When split at 2: package_and_class=["rayzor", "concurrent"], remaining=["Thread"]
-                        // - Package = ["rayzor", "concurrent"]
-                        // - Class = remaining[0] = "Thread"
-                        // - Field = None (just accessing the class itself)
-                        if remaining.len() == 1 {
-                            // Just accessing a class name (e.g., rayzor.concurrent.Thread)
-                            let package_parts = package_and_class;
-                            let class_name = &remaining[0];
-
-                            let class_name_interned = self.context.intern_string(class_name);
-
-                            // Build fully qualified class name
-                            let qualified_class_name = if package_parts.is_empty() {
-                                class_name.clone()
-                            } else {
-                                format!("{}.{}", package_parts.join("."), class_name)
-                            };
-                            let qualified_class_interned = self.context.intern_string(&qualified_class_name);
-
-                            
-
-                            // Construct QualifiedPath for namespace resolver
-                            let qualified_path = {
-                                let package_interned: Vec<_> = package_parts.iter()
-                                    .map(|p| self.context.intern_string(p))
-                                    .collect();
-                                crate::tast::namespace::QualifiedPath::new(
-                                    package_interned,
-                                    class_name_interned,
-                                )
-                            };
-
-                                  
-
-                            // Try to resolve the class
-                            let symbol_id_opt = self.context.namespace_resolver.lookup_symbol(&qualified_path)
-                                .or_else(|| {
-                                    self.context.symbol_table.lookup_symbol(
-                                        crate::tast::ScopeId::first(),
-                                        qualified_class_interned,
-                                    ).map(|s| s.id)
-                                })
-                                .or_else(|| self.resolve_symbol_in_scope_hierarchy(qualified_class_interned))
-                                .or_else(|| self.resolve_symbol_in_scope_hierarchy(class_name_interned));
-
-
-                            if let Some(symbol_id) = symbol_id_opt {
-                                if let Some(symbol) = self.context.symbol_table.get_symbol(symbol_id) {
-                                    if symbol.kind == crate::tast::symbols::SymbolKind::Class {
-                                        // Return a reference to the class itself
-                                        let class_type = symbol.type_id;
-                                        return Ok(TypedExpression {
-                                            expr_type: class_type,
-                                            kind: TypedExpressionKind::Variable {
-                                                symbol_id,
-                                            },
-                                            usage: VariableUsage::Borrow,
-                                            lifetime_id: crate::tast::LifetimeId::first(),
-                                            source_location: self.context.create_location(),
-                                            metadata: ExpressionMetadata::default(),
-                                        });
-                                    }
-                                }
-                            } else if package_parts.len() >= 2 || (!package_parts.is_empty() && matches!(package_parts[0].as_str(), "haxe" | "rayzor" | "sys" | "cpp" | "cs" | "java" | "python" | "lua" | "eval" | "neko" | "hl" | "flash")) {
-                                // Qualified class not found AND looks like a package path
-                                // Either has 2+ package components OR starts with known stdlib/project package
-                                // This indicates a package path like rayzor.concurrent.Thread or haxe.ds.StringMap
-                                // Return UnresolvedType to trigger on-demand loading
-                                return Err(LoweringError::UnresolvedType {
-                                    type_name: qualified_class_name.clone(),
-                                    location: self.context.create_location_from_span(expression.span),
-                                });
-                            }
-                        } else if remaining.len() == 2 {
-                            let package_parts = package_and_class; // Full package path
-                            let class_name = &remaining[0]; // Class is first element of remaining
-                            let field_name = &remaining[1]; // Field is second element of remaining
-
-                            let class_name_interned = self.context.intern_string(class_name);
-                            let field_name_interned = self.context.intern_string(field_name);
-
-                            // Build fully qualified class name for fallback lookup
-                            let qualified_class_name = if package_parts.is_empty() {
-                                class_name.clone()
-                            } else {
-                                format!("{}.{}", package_parts.join("."), class_name)
-                            };
-                            let qualified_class_interned = self.context.intern_string(&qualified_class_name);
-
-                                  
-
-                            // Construct QualifiedPath for namespace resolver
-                            let qualified_path = {
-                                let package_interned: Vec<_> = package_parts.iter()
-                                    .map(|p| self.context.intern_string(p))
-                                    .collect();
-                                crate::tast::namespace::QualifiedPath::new(
-                                    package_interned,
-                                    class_name_interned,
-                                )
-                            };
-
-                            // Try to resolve the class using the namespace resolver
-                           
-                            let symbol_id_opt = self.context.namespace_resolver.lookup_symbol(&qualified_path)
-                                .or_else(|| {
-                                    // Fallback: Try to look up in root scope using full path string
-                                    self.context.symbol_table.lookup_symbol(
-                                        crate::tast::ScopeId::first(), // Root scope
-                                        qualified_class_interned,
-                                    ).map(|s| s.id)
-                                })
-                                .or_else(|| self.resolve_symbol_in_scope_hierarchy(qualified_class_interned))
-                                .or_else(|| self.resolve_symbol_in_scope_hierarchy(class_name_interned));
-
-
-                            if let Some(symbol_id) = symbol_id_opt {
-                                if let Some(symbol) = self.context.symbol_table.get_symbol(symbol_id) {
-                                    if symbol.kind == crate::tast::symbols::SymbolKind::Class {
-                                        // Found the class! Now look up the static field
-                                        {
-
-                                                   
-                                            let field_info = if let Some(fields) = self.class_fields.get(&symbol_id) {
-                                                fields
-                                                    .iter()
-                                                    .find(|(name, _, _)| *name == field_name_interned)
-                                                    .map(|(_, symbol, is_static)| (*symbol, *is_static))
-                                            } else {
-                                                None
-                                            };
-
-                                            if let Some((field_symbol, _is_static)) = field_info {
-                                                let expr_type = if let Some(field) =
-                                                    self.find_field_in_class(&symbol_id, field_symbol)
-                                                {
-                                                    field.1 // field type
-                                                } else {
-                                                    self.context.type_table.borrow().dynamic_type()
-                                                };
-
-                                                let kind = TypedExpressionKind::StaticFieldAccess {
-                                                    class_symbol: symbol_id,
-                                                    field_symbol,
-                                                };
-
-                                                let usage = VariableUsage::Copy;
-                                                let lifetime_id = self.assign_lifetime(&kind, &expr_type);
-                                                let metadata = self.analyze_expression_metadata(&kind);
-
-                                                return Ok(TypedExpression {
-                                                    expr_type,
-                                                    kind,
-                                                    usage,
-                                                    lifetime_id,
-                                                    source_location: self.context.create_location(),
-                                                    metadata,
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                            } else if package_parts.len() >= 2 || (!package_parts.is_empty() && matches!(package_parts[0].as_str(), "haxe" | "rayzor" | "sys" | "cpp" | "cs" | "java" | "python" | "lua" | "eval" | "neko" | "hl" | "flash")) {
-                                // Qualified class not found AND looks like a package path
-                                // Either has 2+ package components OR starts with known stdlib/project package
-                                // This indicates a package path like rayzor.concurrent.Thread or haxe.ds.StringMap
-                                // Return UnresolvedType to trigger on-demand loading
-                                return Err(LoweringError::UnresolvedType {
-                                    type_name: qualified_class_name.clone(),
-                                    location: self.context.create_location_from_span(expression.span),
-                                });
-                            }
-                        }
-
-                }
-
-                }
-            
-
-                // Check if the expression is an identifier that refers to a class (static access)
-                if let ExprKind::Ident(class_name) = &expr.kind {
-                    let class_name_interned = self.context.intern_string(class_name);
-
-                    // Try to resolve as a class symbol
-                    if let Some(symbol_id) =
-                        self.resolve_symbol_in_scope_hierarchy(class_name_interned)
-                    {
-                        if let Some(symbol) = self.context.symbol_table.get_symbol(symbol_id) {
-                            // Check if this symbol represents a class declaration (not just a variable of class type)
-                            if symbol.kind == crate::tast::symbols::SymbolKind::Class {
-                                // This is a class name, so this is static field access
-                                let class_symbol = symbol_id;
-                                let field_name = self.context.intern_string(field);
-
-                                // Look for the field in this class and check if it's static
-                                let field_info =
-                                    if let Some(fields) = self.class_fields.get(&class_symbol) {
-                                        fields
-                                            .iter()
-                                            .find(|(name, _, _)| *name == field_name)
-                                            .map(|(_, symbol, is_static)| (*symbol, *is_static))
-                                    } else {
-                                        None
-                                    };
-
-                                if let Some((field_symbol, is_static)) = field_info {
-                                    // Create StaticFieldAccess for any Class.field syntax
-                                    // The type checker will validate if it's allowed
-                                    let expr_type = if let Some(field) =
-                                        self.find_field_in_class(&class_symbol, field_symbol)
-                                    {
-                                        field.1 // field type
-                                    } else {
-                                        self.context.type_table.borrow().dynamic_type()
-                                    };
-
-                                    let kind = TypedExpressionKind::StaticFieldAccess {
-                                        class_symbol,
-                                        field_symbol,
-                                    };
-
-                                    let usage = VariableUsage::Copy;
-                                    let lifetime_id = self.assign_lifetime(&kind, &expr_type);
-                                    let metadata = self.analyze_expression_metadata(&kind);
-
-                                    // Calculate the span for the field name specifically
-                                    // The field appears after the object expression and a dot
-                                    let field_span = parser::haxe_ast::Span::new(
-                                        expr.span.end + 1, // +1 for the dot
-                                        expr.span.end + 1 + field.len(),
-                                    );
-
-                                    return Ok(TypedExpression {
-                                        expr_type,
-                                        kind,
-                                        usage,
-                                        lifetime_id,
-                                        source_location: self.context.span_to_location(&field_span),
-                                        metadata,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Not a static access, proceed with instance field access
-                let obj_expr = self.lower_expression(expr)?;
-                let field_name = self.context.intern_string(field);
-
-                // For field access, we need to look up the field symbol from the object's type
-                // Create type parameter with deferred constraint resolution
-                // But we can try to resolve it if the object is 'this'
-                let field_symbol = match &obj_expr.kind {
-                    TypedExpressionKind::This { this_type: _ } => {
-                        // If accessing field on 'this', try to find it in current class
-                        if let Some(class_symbol) = self.context.class_context_stack.last() {
-                            if let Some(fields) = self.class_fields.get(class_symbol) {
-                                fields
-                                    .iter()
-                                    .find(|(name, _, _)| *name == field_name)
-                                    .map(|(_, symbol, _)| *symbol)
-                                    .unwrap_or_else(|| {
-                                        self.context.symbol_table.create_field(field_name)
-                                    })
-                            } else {
-                                self.context.symbol_table.create_field(field_name)
-                            }
-                        } else {
-                            self.context.symbol_table.create_field(field_name)
-                        }
-                    }
-                    TypedExpressionKind::Variable { symbol_id } => {
-                        // If accessing field on a variable/parameter, try to resolve from its type
-                        if let Some(symbol) = self.context.symbol_table.get_symbol(*symbol_id) {
-                            if let Some(class_symbol) =
-                                self.resolve_type_to_class_symbol(symbol.type_id)
-                            {
-                                // Look for the field in this class
-                                if let Some(fields) = self.class_fields.get(&class_symbol) {
-                                    if let Some((_, field_symbol_id, _)) =
-                                        fields.iter().find(|(name, _, _)| *name == field_name)
-                                    {
-                                        *field_symbol_id
-                                    } else {
-                                        // Field not found, create placeholder
-                                        self.context.symbol_table.create_field(field_name)
-                                    }
-                                } else {
-                                    // No fields tracked for this class, create placeholder
-                                    self.context.symbol_table.create_field(field_name)
-                                }
-                            } else {
-                                // Can't resolve object type to class, create placeholder
-                                self.context.symbol_table.create_field(field_name)
-                            }
-                        } else {
-                            // Object symbol not found, create placeholder
-                            self.context.symbol_table.create_field(field_name)
-                        }
-                    }
-                    _ => {
-                        // For other objects, create placeholder - type checker will resolve
-                        self.context.symbol_table.create_field(field_name)
-                    }
-                };
-
-                TypedExpressionKind::FieldAccess {
-                    object: Box::new(obj_expr),
-                    field_symbol,
-                }
+                return self.lower_field_expression(expression, expr, field);
             }
             ExprKind::Index { expr, index } => {
                 let array_expr = self.lower_expression(expr)?;
@@ -5641,394 +5002,7 @@ impl<'a> AstLowering<'a> {
                 iter,
                 body,
             } => {
-                // Check if the iterator is a range expression (0...len)
-                // If so, desugar it to a while loop instead of trying to lower as iterable
-                if let ExprKind::Binary { op: BinaryOp::Range, left, right } = &iter.kind {
-                    // Desugar: for (i in start...end) { body }
-                    // Into: var i = start; while (i < end) { body; i++; }
-
-                    let start_expr = self.lower_expression(left)?;
-                    let end_expr = self.lower_expression(right)?;
-
-                    // Create the loop body scope
-                    let loop_body_scope_id = ScopeId::from_raw(self.context.next_scope_id());
-
-                    // Create the loop variable
-                    let var_name = self.context.intern_string(var);
-                    let int_type = self.context.type_table.borrow().int_type();
-                    let var_symbol = self.context.symbol_table.create_variable_with_type(
-                        var_name,
-                        loop_body_scope_id,
-                        int_type,
-                    );
-
-                    // Enter the loop body scope
-                    let old_scope = self.context.current_scope;
-                    self.context.current_scope = loop_body_scope_id;
-
-                    let body_stmt = self.convert_expression_to_statement(body)?;
-
-                    // Restore the previous scope
-                    self.context.current_scope = old_scope;
-
-                    // Create: var i = start
-                    let init_stmt = TypedStatement::VarDeclaration {
-                        symbol_id: var_symbol,
-                        var_type: int_type,
-                        initializer: Some(start_expr),
-                        source_location: SourceLocation::unknown(),
-                        mutability: crate::tast::Mutability::Mutable,
-                    };
-
-                    // Create: i < end
-                    let var_ref = TypedExpression {
-                        expr_type: int_type,
-                        kind: TypedExpressionKind::Variable { symbol_id: var_symbol },
-                        usage: VariableUsage::Copy,
-                        lifetime_id: LifetimeId::static_lifetime(),
-                        source_location: SourceLocation::unknown(),
-                        metadata: ExpressionMetadata::default(),
-                    };
-
-                    let condition = TypedExpression {
-                        expr_type: self.context.type_table.borrow().bool_type(),
-                        kind: TypedExpressionKind::BinaryOp {
-                            left: Box::new(var_ref.clone()),
-                            operator: BinaryOperator::Lt,
-                            right: Box::new(end_expr),
-                        },
-                        usage: VariableUsage::Copy,
-                        lifetime_id: LifetimeId::static_lifetime(),
-                        source_location: SourceLocation::unknown(),
-                        metadata: ExpressionMetadata::default(),
-                    };
-
-                    // Create: i++
-                    let one_literal = TypedExpression {
-                        expr_type: int_type,
-                        kind: TypedExpressionKind::Literal { value: LiteralValue::Int(1) },
-                        usage: VariableUsage::Copy,
-                        lifetime_id: LifetimeId::static_lifetime(),
-                        source_location: SourceLocation::unknown(),
-                        metadata: ExpressionMetadata::default(),
-                    };
-
-                    let increment = TypedExpression {
-                        expr_type: int_type,
-                        kind: TypedExpressionKind::BinaryOp {
-                            left: Box::new(var_ref),
-                            operator: BinaryOperator::AddAssign,
-                            right: Box::new(one_literal),
-                        },
-                        usage: VariableUsage::Copy,
-                        lifetime_id: LifetimeId::static_lifetime(),
-                        source_location: SourceLocation::unknown(),
-                        metadata: ExpressionMetadata::default(),
-                    };
-
-                    let increment_stmt = TypedStatement::Expression {
-                        expression: increment,
-                        source_location: SourceLocation::unknown(),
-                    };
-
-                    // Create while body: { body; i++ }
-                    let while_body = TypedStatement::Block {
-                        statements: vec![body_stmt, increment_stmt],
-                        scope_id: loop_body_scope_id,
-                        source_location: SourceLocation::unknown(),
-                    };
-
-                    // Create: while (i < end) { body; i++ }
-                    let while_stmt = TypedStatement::While {
-                        condition,
-                        body: Box::new(while_body),
-                        source_location: SourceLocation::unknown(),
-                    };
-
-                    // Return block: { var i = start; while (i < end) { body; i++ } }
-                    return Ok(TypedExpression {
-                        expr_type: self.context.type_table.borrow().void_type(),
-                        kind: TypedExpressionKind::Block {
-                            statements: vec![init_stmt, while_stmt],
-                            scope_id: ScopeId::from_raw(self.context.next_scope_id()),
-                        },
-                        usage: VariableUsage::Move,
-                        lifetime_id: LifetimeId::static_lifetime(),
-                        source_location: SourceLocation::unknown(),
-                        metadata: ExpressionMetadata::default(),
-                    });
-                }
-
-                // Not a range - check if it's an Array (we can inline the iterator)
-
-                // Lower the iterable expression first
-                let iterable_expr = self.lower_expression(iter)?;
-
-                // Check if the iterable is an Array type - if so, we inline the iterator pattern
-                // to avoid needing to compile ArrayIterator with its generic type parameters
-                let is_array = {
-                    let type_table = self.context.type_table.borrow();
-                    if let Some(actual_type) = type_table.get(iterable_expr.expr_type) {
-                        matches!(&actual_type.kind, TypeKind::Array { .. })
-                    } else {
-                        false
-                    }
-                };
-
-                if is_array && key_var.is_none() {
-                    // INLINE ARRAY ITERATOR PATTERN:
-                    // for (x in arr) becomes:
-                    // {
-                    //     var _i = 0;
-                    //     var _len = arr.length;
-                    //     while (_i < _len) {
-                    //         var x = arr[_i];
-                    //         body;
-                    //         _i++;
-                    //     }
-                    // }
-
-                    let loop_body_scope_id = ScopeId::from_raw(self.context.next_scope_id());
-                    let source_location = self.context.create_location_from_span(expression.span);
-                    let int_type = self.context.type_table.borrow().int_type();
-                    let bool_type = self.context.type_table.borrow().bool_type();
-                    let element_type = self.infer_element_type_from_iterable(&iterable_expr);
-
-                    // Create loop variable
-                    let var_name = self.context.intern_string(var);
-                    let var_symbol = self.context.symbol_table.create_variable_with_type(
-                        var_name,
-                        loop_body_scope_id,
-                        element_type,
-                    );
-
-                    // Create internal _i counter
-                    let counter_name = self.context.intern_string("_i");
-                    let counter_symbol = self.context.symbol_table.create_variable_with_type(
-                        counter_name,
-                        loop_body_scope_id,
-                        int_type,
-                    );
-
-                    // Create internal _len variable
-                    let len_name = self.context.intern_string("_len");
-                    let len_symbol = self.context.symbol_table.create_variable_with_type(
-                        len_name,
-                        loop_body_scope_id,
-                        int_type,
-                    );
-
-                    // var _i = 0
-                    let zero_literal = TypedExpression {
-                        expr_type: int_type,
-                        kind: TypedExpressionKind::Literal { value: LiteralValue::Int(0) },
-                        usage: VariableUsage::Copy,
-                        lifetime_id: LifetimeId::static_lifetime(),
-                        source_location,
-                        metadata: ExpressionMetadata::default(),
-                    };
-                    let counter_init = TypedStatement::VarDeclaration {
-                        symbol_id: counter_symbol,
-                        var_type: int_type,
-                        initializer: Some(zero_literal),
-                        source_location,
-                        mutability: crate::tast::Mutability::Mutable,
-                    };
-
-                    // var _len = arr.length (field access)
-                    // Create a symbol for the field access. The name "length" will be used during
-                    // HIR->MIR lowering to look up the stdlib runtime function (haxe_array_length)
-                    let length_name = self.context.intern_string("length");
-                    let length_symbol = self.context.symbol_table.create_variable(length_name);
-
-                    let length_access = TypedExpression {
-                        expr_type: int_type,
-                        kind: TypedExpressionKind::FieldAccess {
-                            object: Box::new(iterable_expr.clone()),
-                            field_symbol: length_symbol,
-                        },
-                        usage: VariableUsage::Copy,
-                        lifetime_id: LifetimeId::static_lifetime(),
-                        source_location,
-                        metadata: ExpressionMetadata::default(),
-                    };
-                    let len_init = TypedStatement::VarDeclaration {
-                        symbol_id: len_symbol,
-                        var_type: int_type,
-                        initializer: Some(length_access),
-                        source_location,
-                        mutability: crate::tast::Mutability::Immutable,
-                    };
-
-                    // _i < _len
-                    let counter_ref = TypedExpression {
-                        expr_type: int_type,
-                        kind: TypedExpressionKind::Variable { symbol_id: counter_symbol },
-                        usage: VariableUsage::Copy,
-                        lifetime_id: LifetimeId::static_lifetime(),
-                        source_location,
-                        metadata: ExpressionMetadata::default(),
-                    };
-                    let len_ref = TypedExpression {
-                        expr_type: int_type,
-                        kind: TypedExpressionKind::Variable { symbol_id: len_symbol },
-                        usage: VariableUsage::Copy,
-                        lifetime_id: LifetimeId::static_lifetime(),
-                        source_location,
-                        metadata: ExpressionMetadata::default(),
-                    };
-                    let condition = TypedExpression {
-                        expr_type: bool_type,
-                        kind: TypedExpressionKind::BinaryOp {
-                            left: Box::new(counter_ref.clone()),
-                            operator: BinaryOperator::Lt,
-                            right: Box::new(len_ref),
-                        },
-                        usage: VariableUsage::Copy,
-                        lifetime_id: LifetimeId::static_lifetime(),
-                        source_location,
-                        metadata: ExpressionMetadata::default(),
-                    };
-
-                    // var x = arr[_i]
-                    let array_access = TypedExpression {
-                        expr_type: element_type,
-                        kind: TypedExpressionKind::ArrayAccess {
-                            array: Box::new(iterable_expr),
-                            index: Box::new(counter_ref.clone()),
-                        },
-                        usage: VariableUsage::Copy,
-                        lifetime_id: LifetimeId::static_lifetime(),
-                        source_location,
-                        metadata: ExpressionMetadata::default(),
-                    };
-                    let var_decl = TypedStatement::VarDeclaration {
-                        symbol_id: var_symbol,
-                        var_type: element_type,
-                        initializer: Some(array_access),
-                        source_location,
-                        mutability: crate::tast::Mutability::Immutable,
-                    };
-
-                    // Convert body
-                    let old_scope = self.context.current_scope;
-                    self.context.current_scope = loop_body_scope_id;
-                    let body_stmt = self.convert_expression_to_statement(body)?;
-                    self.context.current_scope = old_scope;
-
-                    // _i++
-                    let one_literal = TypedExpression {
-                        expr_type: int_type,
-                        kind: TypedExpressionKind::Literal { value: LiteralValue::Int(1) },
-                        usage: VariableUsage::Copy,
-                        lifetime_id: LifetimeId::static_lifetime(),
-                        source_location,
-                        metadata: ExpressionMetadata::default(),
-                    };
-                    let increment = TypedExpression {
-                        expr_type: int_type,
-                        kind: TypedExpressionKind::BinaryOp {
-                            left: Box::new(counter_ref),
-                            operator: BinaryOperator::AddAssign,
-                            right: Box::new(one_literal),
-                        },
-                        usage: VariableUsage::Copy,
-                        lifetime_id: LifetimeId::static_lifetime(),
-                        source_location,
-                        metadata: ExpressionMetadata::default(),
-                    };
-                    let increment_stmt = TypedStatement::Expression {
-                        expression: increment,
-                        source_location,
-                    };
-
-                    // while body: { var x = arr[_i]; body; _i++ }
-                    let while_body = TypedStatement::Block {
-                        statements: vec![var_decl, body_stmt, increment_stmt],
-                        scope_id: loop_body_scope_id,
-                        source_location,
-                    };
-
-                    // while (_i < _len) { ... }
-                    let while_stmt = TypedStatement::While {
-                        condition,
-                        body: Box::new(while_body),
-                        source_location,
-                    };
-
-                    // Return block: { var _i = 0; var _len = arr.length; while (...) }
-                    return Ok(TypedExpression {
-                        expr_type: self.context.type_table.borrow().void_type(),
-                        kind: TypedExpressionKind::Block {
-                            statements: vec![counter_init, len_init, while_stmt],
-                            scope_id: ScopeId::from_raw(self.context.next_scope_id()),
-                        },
-                        usage: VariableUsage::Move,
-                        lifetime_id: LifetimeId::static_lifetime(),
-                        source_location,
-                        metadata: ExpressionMetadata::default(),
-                    });
-                }
-
-                // For non-Array types, use the generic iterator pattern (requires iterator classes)
-                let _iterator_type_name = self.infer_iterator_type_name(&iterable_expr.expr_type);
-
-                // Create the loop body scope
-                let loop_body_scope_id = ScopeId::from_raw(self.context.next_scope_id());
-
-                // Create the loop variable
-                let var_name = self.context.intern_string(var);
-                let element_type = self.infer_element_type_from_iterable(&iterable_expr);
-                let var_symbol = self.context.symbol_table.create_variable_with_type(
-                    var_name,
-                    loop_body_scope_id,
-                    element_type,
-                );
-
-                // Handle optional key variable for key-value iteration
-                let key_symbol = if let Some(ref key) = key_var {
-                    let key_name = self.context.intern_string(key);
-                    let int_type = self.context.type_table.borrow().int_type();
-                    Some(self.context.symbol_table.create_variable_with_type(
-                        key_name,
-                        loop_body_scope_id,
-                        int_type,
-                    ))
-                } else {
-                    None
-                };
-
-                // Enter the loop body scope
-                let old_scope = self.context.current_scope;
-                self.context.current_scope = loop_body_scope_id;
-
-                let body_stmt = self.convert_expression_to_statement(body)?;
-
-                // Restore the previous scope
-                self.context.current_scope = old_scope;
-
-                // Use the existing convert_for_in_to_c_style_for function for generic iterators
-                let for_stmt = self.convert_for_in_to_c_style_for(
-                    var_symbol,
-                    key_symbol,
-                    iterable_expr,
-                    body_stmt,
-                    loop_body_scope_id,
-                    self.context.create_location_from_span(expression.span),
-                )?;
-
-                // Wrap in an expression
-                return Ok(TypedExpression {
-                    expr_type: self.context.type_table.borrow().void_type(),
-                    kind: TypedExpressionKind::Block {
-                        statements: vec![for_stmt],
-                        scope_id: ScopeId::from_raw(self.context.next_scope_id()),
-                    },
-                    usage: VariableUsage::Move,
-                    lifetime_id: LifetimeId::static_lifetime(),
-                    source_location: self.context.create_location_from_span(expression.span),
-                    metadata: ExpressionMetadata::default(),
-                });
+                return self.lower_for_expression(expression, var, key_var.as_deref(), iter, body);
             }
             ExprKind::Array(elements) => {
                 let element_exprs = elements
@@ -6134,7 +5108,7 @@ impl<'a> AstLowering<'a> {
 
                 result
             }
-            ExprKind::Try { expr, catches } => {
+            ExprKind::Try { expr, catches, finally_block } => {
                 // Lower the try expression
                 let try_expr = Box::new(self.lower_expression(expr)?);
 
@@ -6145,9 +5119,17 @@ impl<'a> AstLowering<'a> {
                     catch_clauses.push(typed_catch);
                 }
 
+                // Lower finally block if present
+                let typed_finally = if let Some(finally_expr) = finally_block {
+                    Some(Box::new(self.lower_expression(finally_expr)?))
+                } else {
+                    None
+                };
+
                 TypedExpressionKind::Try {
                     try_expr,
                     catch_clauses,
+                    finally_block: typed_finally,
                 }
             }
             ExprKind::This => {
@@ -6560,7 +5542,1173 @@ impl<'a> AstLowering<'a> {
 
         Ok(typed_expr)
     }
-    
+
+    /// Lower a function call expression (ExprKind::Call).
+    /// Extracted from lower_expression to reduce stack frame size.
+    #[inline(never)]
+    fn lower_call_expression(
+        &mut self,
+        expression: &Expr,
+        expr: &Expr,
+        args: &[Expr],
+    ) -> LoweringResult<TypedExpression> {
+        let arg_exprs = args
+            .iter()
+            .map(|arg| self.lower_expression(arg))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Check if this is a method call (field access being called)
+        let kind = match &expr.kind {
+            ExprKind::Field {
+                expr: obj_expr,
+                field,
+            } => {
+                // Check if this is a static method call (Class.method)
+                if let ExprKind::Ident(class_name) = &obj_expr.kind {
+                    let class_name_interned = self.context.intern_string(class_name);
+
+                    // Try to resolve as a class symbol
+                    if let Some(symbol_id) =
+                        self.resolve_symbol_in_scope_hierarchy(class_name_interned)
+                    {
+                        if let Some(symbol) =
+                            self.context.symbol_table.get_symbol(symbol_id)
+                        {
+                            // Check if this symbol represents a class declaration (not just a variable of class type)
+                            if symbol.kind == crate::tast::symbols::SymbolKind::Class {
+                                // This is a class name, so this is a static method call
+                                //
+                                // For extern classes (Std, Math, Sys, etc.), the type_id may be invalid
+                                // because they don't have concrete type definitions in the type table.
+                                // In that case, use the symbol_id directly as the class_symbol.
+                                let class_symbol = if symbol.type_id == TypeId::invalid() {
+                                    // Extern class - use the symbol_id directly
+                                    symbol_id
+                                } else if let Ok(type_table) = self.context.type_table.try_borrow() {
+                                    // Try to get the class symbol from the type table
+                                    if let Some(type_info) = type_table.get(symbol.type_id) {
+                                        if let crate::tast::core::TypeKind::Class { symbol_id: ts_symbol, .. } = &type_info.kind {
+                                            *ts_symbol
+                                        } else {
+                                            // Type exists but isn't a Class - use symbol_id as fallback
+                                            symbol_id
+                                        }
+                                    } else {
+                                        // Type not in table - use symbol_id as fallback
+                                        symbol_id
+                                    }
+                                } else {
+                                    // Can't borrow type table - use symbol_id as fallback
+                                    symbol_id
+                                };
+
+                                // This is a static method call
+                                let method_name =
+                                    self.context.intern_string(field);
+
+                                // Look for the method in this class
+                                let method_symbol = if let Some(methods) =
+                                    self.class_methods.get(&class_symbol)
+                                {
+                                    let found = methods
+                                        .iter()
+                                        .find(|(name, _, _)| {
+                                            *name == method_name
+                                        })
+                                        .map(|(_, symbol, _)| *symbol);
+
+                                    if let Some(sym) = found {
+                                        sym
+                                    } else {
+
+                                        let new_symbol = self.context
+                                            .symbol_table
+                                            .create_function(method_name);
+
+                                        // IMPORTANT: Set qualified name for the new symbol based on class + method
+                                        if let Some(class_sym) = self.context.symbol_table.get_symbol(class_symbol) {
+                                            if let Some(class_qname) = class_sym.qualified_name
+                                                .and_then(|qn| self.context.string_interner.get(qn))
+                                            {
+                                                let method_qname = format!("{}.{}", class_qname,
+                                                    self.context.string_interner.get(method_name).unwrap_or(""));
+                                                let method_qname_interned = self.context.intern_string(&method_qname);
+                                                self.context.symbol_table.update_qualified_name(
+                                                    new_symbol,
+                                                    &self.context.scope_tree,
+                                                    &self.context.string_interner
+                                                );
+                                                // Override with our computed qualified name
+                                                if let Some(sym_mut) = self.context.symbol_table.get_symbol_mut(new_symbol) {
+                                                    sym_mut.qualified_name = Some(method_qname_interned);
+                                                }
+                                            }
+                                        }
+                                        new_symbol
+                                    }
+                                } else {
+                                    let new_symbol = self.context
+                                        .symbol_table
+                                        .create_function(method_name);
+
+                                    // IMPORTANT: Set qualified name for the new symbol based on class + method
+                                    if let Some(class_sym) = self.context.symbol_table.get_symbol(class_symbol) {
+                                        if let Some(class_qname) = class_sym.qualified_name
+                                            .and_then(|qn| self.context.string_interner.get(qn))
+                                        {
+                                            let method_qname = format!("{}.{}", class_qname,
+                                                self.context.string_interner.get(method_name).unwrap_or(""));
+                                            let method_qname_interned = self.context.intern_string(&method_qname);
+                                            if let Some(sym_mut) = self.context.symbol_table.get_symbol_mut(new_symbol) {
+                                                sym_mut.qualified_name = Some(method_qname_interned);
+                                            }
+                                        }
+                                    }
+                                    new_symbol
+                                };
+
+                                let kind =
+                                    TypedExpressionKind::StaticMethodCall {
+                                        class_symbol,
+                                        method_symbol,
+                                        arguments: arg_exprs,
+                                        type_arguments: Vec::new(),
+                                    };
+
+                                // Get method return type by extracting it from the Function type
+                                let expr_type = if let Some(symbol) = self
+                                    .context
+                                    .symbol_table
+                                    .get_symbol(method_symbol)
+                                {
+                                    let type_table = self.context.type_table.borrow();
+                                    if let Some(method_type) = type_table.get(symbol.type_id) {
+                                        match &method_type.kind {
+                                            crate::tast::core::TypeKind::Function { return_type, .. } => {
+                                                *return_type
+                                            }
+                                            _ => symbol.type_id,
+                                        }
+                                    } else {
+                                        symbol.type_id
+                                    }
+                                } else {
+                                    self.context
+                                        .type_table
+                                        .borrow()
+                                        .dynamic_type()
+                                };
+
+                                let usage = VariableUsage::Copy;
+                                let lifetime_id =
+                                    self.assign_lifetime(&kind, &expr_type);
+                                let metadata =
+                                    self.analyze_expression_metadata(&kind);
+
+                                // Calculate the span for the field name specifically
+                                // The field appears after the object expression and a dot
+                                let field_span = parser::haxe_ast::Span::new(
+                                    obj_expr.span.end + 1, // +1 for the dot
+                                    obj_expr.span.end + 1 + field.len(),
+                                );
+
+                                return Ok(TypedExpression {
+                                    expr_type,
+                                    kind,
+                                    usage,
+                                    lifetime_id,
+                                    source_location: self
+                                        .context
+                                        .span_to_location(&field_span),
+                                    metadata,
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // Not a static call, proceed with instance method call
+                let receiver_expr = self.lower_expression(obj_expr)?;
+                let method_name = self.context.intern_string(field);
+
+                // First, try to resolve as a regular method on the receiver
+                let method_symbol = self.resolve_method_symbol(&receiver_expr, method_name);
+
+                // Check if the resolved symbol is a placeholder (newly created function)
+                // If so, try to find a static extension method from 'using' modules
+                let is_placeholder = self.context.symbol_table.get_symbol(method_symbol)
+                    .map(|s| s.kind == crate::tast::symbols::SymbolKind::Function)
+                    .unwrap_or(false);
+
+                if is_placeholder {
+                    // Try to find a static extension method
+                    if let Some((class_symbol, static_method_symbol)) =
+                        self.find_static_extension_method(method_name, receiver_expr.expr_type)
+                    {
+                        // Found a static extension! Convert to static method call
+                        // with receiver as first argument
+                        let mut new_args = vec![receiver_expr];
+                        new_args.extend(arg_exprs);
+
+                        TypedExpressionKind::StaticMethodCall {
+                            class_symbol,
+                            method_symbol: static_method_symbol,
+                            arguments: new_args,
+                            type_arguments: Vec::new(),
+                        }
+                    } else {
+                        // No static extension found, use regular method call
+                        TypedExpressionKind::MethodCall {
+                            receiver: Box::new(receiver_expr),
+                            method_symbol,
+                            arguments: arg_exprs,
+                            type_arguments: Vec::new(),
+                        }
+                    }
+                } else {
+                    // Method was found on the receiver, use it
+                    TypedExpressionKind::MethodCall {
+                        receiver: Box::new(receiver_expr),
+                        method_symbol,
+                        arguments: arg_exprs,
+                        type_arguments: Vec::new(),
+                    }
+                }
+            }
+            _ => {
+                // Regular function call
+                let mut func_expr = self.lower_expression(expr)?;
+
+                // Check if this is an enum constructor call and instantiate its type
+                if let TypedExpressionKind::Variable { symbol_id } = &func_expr.kind {
+                    if let Some(symbol) = self.context.symbol_table.get_symbol(*symbol_id) {
+                        if symbol.kind == crate::tast::symbols::SymbolKind::EnumVariant {
+                            // This is an enum constructor - instantiate its function type
+                            func_expr = self.instantiate_enum_constructor_type(
+                                *symbol_id, &arg_exprs, func_expr,
+                            )?;
+                        }
+                    }
+                }
+
+                // Check if this is an unqualified call to a method on the current class.
+                // In Haxe, `calculate(10, 20)` inside a class method is `this.calculate(10, 20)`,
+                // and `staticMethod()` is `ClassName.staticMethod()`.
+                if let TypedExpressionKind::Variable { symbol_id } = &func_expr.kind {
+                    let method_info = self.context.class_context_stack.last()
+                        .and_then(|class_sym| {
+                            self.class_methods.get(class_sym).and_then(|methods| {
+                                methods.iter()
+                                    .find(|(_, sym, _)| *sym == *symbol_id)
+                                    .map(|(_, _, is_static)| (*class_sym, *is_static))
+                            })
+                        });
+
+                    if let Some((class_symbol, is_static)) = method_info {
+                        let method_symbol = *symbol_id;
+                        // Get the return type of the method
+                        let return_type = {
+                            let sym = self.context.symbol_table.get_symbol(method_symbol);
+                            if let Some(sym) = sym {
+                                let type_table = self.context.type_table.borrow();
+                                if let Some(method_type) = type_table.get(sym.type_id) {
+                                    match &method_type.kind {
+                                        crate::tast::core::TypeKind::Function { return_type, .. } => *return_type,
+                                        _ => sym.type_id,
+                                    }
+                                } else {
+                                    sym.type_id
+                                }
+                            } else {
+                                func_expr.expr_type
+                            }
+                        };
+
+                        let kind = if is_static {
+                            // Static methods: create StaticMethodCall with the class symbol
+                            TypedExpressionKind::StaticMethodCall {
+                                class_symbol,
+                                method_symbol,
+                                arguments: arg_exprs,
+                                type_arguments: Vec::new(),
+                            }
+                        } else {
+                            // Instance methods: create MethodCall with implicit `this` receiver
+                            let this_name = self.context.intern_string("this");
+                            let this_symbol = self.resolve_symbol_in_scope_hierarchy(this_name)
+                                .unwrap_or_else(|| self.context.symbol_table.create_variable(this_name));
+                            let this_type = self.context.class_context_stack.last()
+                                .and_then(|cs| self.context.symbol_table.get_symbol(*cs))
+                                .map(|s| s.type_id)
+                                .unwrap_or_else(|| self.context.type_table.borrow().dynamic_type());
+                            let receiver = TypedExpression {
+                                expr_type: this_type,
+                                kind: TypedExpressionKind::Variable { symbol_id: this_symbol },
+                                usage: VariableUsage::Copy,
+                                lifetime_id: crate::tast::LifetimeId::first(),
+                                source_location: self.context.create_location(),
+                                metadata: ExpressionMetadata::default(),
+                            };
+                            TypedExpressionKind::MethodCall {
+                                receiver: Box::new(receiver),
+                                method_symbol,
+                                arguments: arg_exprs,
+                                type_arguments: Vec::new(),
+                            }
+                        };
+
+                        let usage = VariableUsage::Copy;
+                        let lifetime_id = self.assign_lifetime(&kind, &return_type);
+                        let metadata = self.analyze_expression_metadata(&kind);
+                        return Ok(TypedExpression {
+                            expr_type: return_type,
+                            kind,
+                            usage,
+                            lifetime_id,
+                            source_location: self.context.create_location(),
+                            metadata,
+                        });
+                    }
+                }
+
+                TypedExpressionKind::FunctionCall {
+                    function: Box::new(func_expr),
+                    arguments: arg_exprs,
+                    type_arguments: Vec::new(),
+                }
+            }
+        };
+
+        // Build the TypedExpression for the non-early-return paths
+        let expr_type = self.infer_expression_type(&kind)?;
+        let usage = self.determine_variable_usage(&kind);
+        let lifetime_id = self.assign_lifetime(&kind, &expr_type);
+        let metadata = self.analyze_expression_metadata(&kind);
+
+        Ok(TypedExpression {
+            expr_type,
+            kind,
+            usage,
+            lifetime_id,
+            source_location: self.context.span_to_location(&expression.span),
+            metadata,
+        })
+    }
+
+    /// Lower a field access expression (ExprKind::Field).
+    /// Extracted from lower_expression to reduce stack frame size.
+    #[inline(never)]
+    fn lower_field_expression(
+        &mut self,
+        expression: &Expr,
+        expr: &Expr,
+        field: &str,
+    ) -> LoweringResult<TypedExpression> {
+        // Helper function to extract a fully qualified path from nested Field expressions
+        // For example: rayzor.concurrent.Thread -> vec!["rayzor", "concurrent", "Thread"]
+        fn extract_qualified_path(expr: &parser::Expr) -> Option<Vec<String>> {
+            match &expr.kind {
+                ExprKind::Ident(name) => Some(vec![name.clone()]),
+                ExprKind::Field { expr: inner_expr, field } => {
+                    let mut path = extract_qualified_path(inner_expr)?;
+                    path.push(field.clone());
+                    Some(path)
+                }
+                _ => None, // Not a qualified path
+            }
+        }
+
+        // Try to extract a fully qualified path (e.g., rayzor.concurrent.Thread)
+        if let Some(mut path) = extract_qualified_path(expr) {
+            path.push(field.to_string()); // Add the final field (e.g., "spawn")
+
+            // Before attempting qualified type/package resolution, check if the base
+            // identifier is a local variable or parameter. If so, this is a field
+            // access chain (a.b.c.process()), NOT a qualified type path.
+            let base_name_interned = self.context.intern_string(&path[0]);
+            let base_is_local_var = self.resolve_symbol_in_scope_hierarchy(base_name_interned)
+                .and_then(|id| self.context.symbol_table.get_symbol(id))
+                .map(|sym| matches!(sym.kind,
+                    crate::tast::symbols::SymbolKind::Variable
+                    | crate::tast::symbols::SymbolKind::Parameter
+                    | crate::tast::symbols::SymbolKind::Field
+                ))
+                .unwrap_or(false);
+
+            // Try to resolve this as a package.Class.staticMethod pattern
+            // Start from the full path and work backwards to find the class
+            // Skip this if the base is a local variable (field access chain)
+            for split_point in (1..if base_is_local_var { 1 } else { path.len() }).rev() {
+                let package_and_class = &path[..split_point];
+                let remaining = &path[split_point..];
+
+                // Try to resolve the package+class part as a symbol
+                // For "rayzor.concurrent.Thread.spawn", try:
+                // - "rayzor.concurrent.Thread" (class) with "spawn" (method)
+                // - "rayzor.concurrent" (class) with "Thread.spawn" (not valid, skip)
+                // - "rayzor" (class) with "concurrent.Thread.spawn" (not valid, skip)
+
+                // For static field access like rayzor.concurrent.Thread.spawn:
+                // - path = ["rayzor", "concurrent", "Thread", "spawn"]
+                // - When split at 2: package_and_class=["rayzor", "concurrent"], remaining=["Thread", "spawn"]
+                // - Package = ["rayzor", "concurrent"]
+                // - Class = remaining[0] = "Thread"
+                // - Field = remaining[1] = "spawn"
+                //
+                // For class name access like rayzor.concurrent.Thread:
+                // - path = ["rayzor", "concurrent", "Thread"]
+                // - When split at 2: package_and_class=["rayzor", "concurrent"], remaining=["Thread"]
+                // - Package = ["rayzor", "concurrent"]
+                // - Class = remaining[0] = "Thread"
+                // - Field = None (just accessing the class itself)
+                if remaining.len() == 1 {
+                    // Just accessing a class name (e.g., rayzor.concurrent.Thread)
+                    let package_parts = package_and_class;
+                    let class_name = &remaining[0];
+
+                    let class_name_interned = self.context.intern_string(class_name);
+
+                    // Build fully qualified class name
+                    let qualified_class_name = if package_parts.is_empty() {
+                        class_name.clone()
+                    } else {
+                        format!("{}.{}", package_parts.join("."), class_name)
+                    };
+                    let qualified_class_interned = self.context.intern_string(&qualified_class_name);
+
+
+
+                    // Construct QualifiedPath for namespace resolver
+                    let qualified_path = {
+                        let package_interned: Vec<_> = package_parts.iter()
+                            .map(|p| self.context.intern_string(p))
+                            .collect();
+                        crate::tast::namespace::QualifiedPath::new(
+                            package_interned,
+                            class_name_interned,
+                        )
+                    };
+
+
+
+                    // Try to resolve the class
+                    let symbol_id_opt = self.context.namespace_resolver.lookup_symbol(&qualified_path)
+                        .or_else(|| {
+                            self.context.symbol_table.lookup_symbol(
+                                crate::tast::ScopeId::first(),
+                                qualified_class_interned,
+                            ).map(|s| s.id)
+                        })
+                        .or_else(|| self.resolve_symbol_in_scope_hierarchy(qualified_class_interned))
+                        .or_else(|| self.resolve_symbol_in_scope_hierarchy(class_name_interned));
+
+
+                    if let Some(symbol_id) = symbol_id_opt {
+                        if let Some(symbol) = self.context.symbol_table.get_symbol(symbol_id) {
+                            if symbol.kind == crate::tast::symbols::SymbolKind::Class {
+                                // Return a reference to the class itself
+                                let class_type = symbol.type_id;
+                                return Ok(TypedExpression {
+                                    expr_type: class_type,
+                                    kind: TypedExpressionKind::Variable {
+                                        symbol_id,
+                                    },
+                                    usage: VariableUsage::Borrow,
+                                    lifetime_id: crate::tast::LifetimeId::first(),
+                                    source_location: self.context.create_location(),
+                                    metadata: ExpressionMetadata::default(),
+                                });
+                            }
+                        }
+                    } else if package_parts.len() >= 2 || (!package_parts.is_empty() && matches!(package_parts[0].as_str(), "haxe" | "rayzor" | "sys" | "cpp" | "cs" | "java" | "python" | "lua" | "eval" | "neko" | "hl" | "flash")) {
+                        // Qualified class not found AND looks like a package path
+                        // Either has 2+ package components OR starts with known stdlib/project package
+                        // This indicates a package path like rayzor.concurrent.Thread or haxe.ds.StringMap
+                        // Return UnresolvedType to trigger on-demand loading
+                        return Err(LoweringError::UnresolvedType {
+                            type_name: qualified_class_name.clone(),
+                            location: self.context.create_location_from_span(expression.span),
+                        });
+                    }
+                } else if remaining.len() == 2 {
+                    let package_parts = package_and_class; // Full package path
+                    let class_name = &remaining[0]; // Class is first element of remaining
+                    let field_name = &remaining[1]; // Field is second element of remaining
+
+                    let class_name_interned = self.context.intern_string(class_name);
+                    let field_name_interned = self.context.intern_string(field_name);
+
+                    // Build fully qualified class name for fallback lookup
+                    let qualified_class_name = if package_parts.is_empty() {
+                        class_name.clone()
+                    } else {
+                        format!("{}.{}", package_parts.join("."), class_name)
+                    };
+                    let qualified_class_interned = self.context.intern_string(&qualified_class_name);
+
+
+
+                    // Construct QualifiedPath for namespace resolver
+                    let qualified_path = {
+                        let package_interned: Vec<_> = package_parts.iter()
+                            .map(|p| self.context.intern_string(p))
+                            .collect();
+                        crate::tast::namespace::QualifiedPath::new(
+                            package_interned,
+                            class_name_interned,
+                        )
+                    };
+
+                    // Try to resolve the class using the namespace resolver
+
+                    let symbol_id_opt = self.context.namespace_resolver.lookup_symbol(&qualified_path)
+                        .or_else(|| {
+                            // Fallback: Try to look up in root scope using full path string
+                            self.context.symbol_table.lookup_symbol(
+                                crate::tast::ScopeId::first(), // Root scope
+                                qualified_class_interned,
+                            ).map(|s| s.id)
+                        })
+                        .or_else(|| self.resolve_symbol_in_scope_hierarchy(qualified_class_interned))
+                        .or_else(|| self.resolve_symbol_in_scope_hierarchy(class_name_interned));
+
+
+                    if let Some(symbol_id) = symbol_id_opt {
+                        if let Some(symbol) = self.context.symbol_table.get_symbol(symbol_id) {
+                            if symbol.kind == crate::tast::symbols::SymbolKind::Class {
+                                // Found the class! Now look up the static field
+                                {
+
+
+                                    let field_info = if let Some(fields) = self.class_fields.get(&symbol_id) {
+                                        fields
+                                            .iter()
+                                            .find(|(name, _, _)| *name == field_name_interned)
+                                            .map(|(_, symbol, is_static)| (*symbol, *is_static))
+                                    } else {
+                                        None
+                                    };
+
+                                    if let Some((field_symbol, _is_static)) = field_info {
+                                        let expr_type = if let Some(field) =
+                                            self.find_field_in_class(&symbol_id, field_symbol)
+                                        {
+                                            field.1 // field type
+                                        } else {
+                                            self.context.type_table.borrow().dynamic_type()
+                                        };
+
+                                        let kind = TypedExpressionKind::StaticFieldAccess {
+                                            class_symbol: symbol_id,
+                                            field_symbol,
+                                        };
+
+                                        let usage = VariableUsage::Copy;
+                                        let lifetime_id = self.assign_lifetime(&kind, &expr_type);
+                                        let metadata = self.analyze_expression_metadata(&kind);
+
+                                        return Ok(TypedExpression {
+                                            expr_type,
+                                            kind,
+                                            usage,
+                                            lifetime_id,
+                                            source_location: self.context.create_location(),
+                                            metadata,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    } else if package_parts.len() >= 2 || (!package_parts.is_empty() && matches!(package_parts[0].as_str(), "haxe" | "rayzor" | "sys" | "cpp" | "cs" | "java" | "python" | "lua" | "eval" | "neko" | "hl" | "flash")) {
+                        // Qualified class not found AND looks like a package path
+                        // Either has 2+ package components OR starts with known stdlib/project package
+                        // This indicates a package path like rayzor.concurrent.Thread or haxe.ds.StringMap
+                        // Return UnresolvedType to trigger on-demand loading
+                        return Err(LoweringError::UnresolvedType {
+                            type_name: qualified_class_name.clone(),
+                            location: self.context.create_location_from_span(expression.span),
+                        });
+                    }
+                }
+
+            }
+
+        }
+
+
+        // Check if the expression is an identifier that refers to a class (static access)
+        if let ExprKind::Ident(class_name) = &expr.kind {
+            let class_name_interned = self.context.intern_string(class_name);
+
+            // Try to resolve as a class symbol
+            if let Some(symbol_id) =
+                self.resolve_symbol_in_scope_hierarchy(class_name_interned)
+            {
+                if let Some(symbol) = self.context.symbol_table.get_symbol(symbol_id) {
+                    // Check if this symbol represents a class declaration (not just a variable of class type)
+                    if symbol.kind == crate::tast::symbols::SymbolKind::Class {
+                        // This is a class name, so this is static field access
+                        let class_symbol = symbol_id;
+                        let field_name = self.context.intern_string(field);
+
+                        // Look for the field in this class and check if it's static
+                        let field_info =
+                            if let Some(fields) = self.class_fields.get(&class_symbol) {
+                                fields
+                                    .iter()
+                                    .find(|(name, _, _)| *name == field_name)
+                                    .map(|(_, symbol, is_static)| (*symbol, *is_static))
+                            } else {
+                                None
+                            };
+
+                        if let Some((field_symbol, is_static)) = field_info {
+                            // Create StaticFieldAccess for any Class.field syntax
+                            // The type checker will validate if it's allowed
+                            let expr_type = if let Some(field) =
+                                self.find_field_in_class(&class_symbol, field_symbol)
+                            {
+                                field.1 // field type
+                            } else {
+                                self.context.type_table.borrow().dynamic_type()
+                            };
+
+                            let kind = TypedExpressionKind::StaticFieldAccess {
+                                class_symbol,
+                                field_symbol,
+                            };
+
+                            let usage = VariableUsage::Copy;
+                            let lifetime_id = self.assign_lifetime(&kind, &expr_type);
+                            let metadata = self.analyze_expression_metadata(&kind);
+
+                            // Calculate the span for the field name specifically
+                            // The field appears after the object expression and a dot
+                            let field_span = parser::haxe_ast::Span::new(
+                                expr.span.end + 1, // +1 for the dot
+                                expr.span.end + 1 + field.len(),
+                            );
+
+                            return Ok(TypedExpression {
+                                expr_type,
+                                kind,
+                                usage,
+                                lifetime_id,
+                                source_location: self.context.span_to_location(&field_span),
+                                metadata,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Not a static access, proceed with instance field access
+        let obj_expr = self.lower_expression(expr)?;
+        let field_name = self.context.intern_string(field);
+
+        // For field access, we need to look up the field symbol from the object's type
+        // Create type parameter with deferred constraint resolution
+        // But we can try to resolve it if the object is 'this'
+        let field_symbol = match &obj_expr.kind {
+            TypedExpressionKind::This { this_type: _ } => {
+                // If accessing field on 'this', try to find it in current class
+                if let Some(class_symbol) = self.context.class_context_stack.last() {
+                    if let Some(fields) = self.class_fields.get(class_symbol) {
+                        fields
+                            .iter()
+                            .find(|(name, _, _)| *name == field_name)
+                            .map(|(_, symbol, _)| *symbol)
+                            .unwrap_or_else(|| {
+                                self.context.symbol_table.create_field(field_name)
+                            })
+                    } else {
+                        self.context.symbol_table.create_field(field_name)
+                    }
+                } else {
+                    self.context.symbol_table.create_field(field_name)
+                }
+            }
+            TypedExpressionKind::Variable { symbol_id } => {
+                // If accessing field on a variable/parameter, try to resolve from its type
+                if let Some(symbol) = self.context.symbol_table.get_symbol(*symbol_id) {
+                    if let Some(class_symbol) =
+                        self.resolve_type_to_class_symbol(symbol.type_id)
+                    {
+                        // Look for the field in this class
+                        if let Some(fields) = self.class_fields.get(&class_symbol) {
+                            if let Some((_, field_symbol_id, _)) =
+                                fields.iter().find(|(name, _, _)| *name == field_name)
+                            {
+                                *field_symbol_id
+                            } else {
+                                // Field not found, create placeholder
+                                self.context.symbol_table.create_field(field_name)
+                            }
+                        } else {
+                            // No fields tracked for this class, create placeholder
+                            self.context.symbol_table.create_field(field_name)
+                        }
+                    } else {
+                        // Can't resolve object type to class, create placeholder
+                        self.context.symbol_table.create_field(field_name)
+                    }
+                } else {
+                    // Object symbol not found, create placeholder
+                    self.context.symbol_table.create_field(field_name)
+                }
+            }
+            _ => {
+                // For other objects, create placeholder - type checker will resolve
+                self.context.symbol_table.create_field(field_name)
+            }
+        };
+
+        let kind = TypedExpressionKind::FieldAccess {
+            object: Box::new(obj_expr),
+            field_symbol,
+        };
+
+        // Build the TypedExpression for the non-early-return path
+        let expr_type = self.infer_expression_type(&kind)?;
+        let usage = self.determine_variable_usage(&kind);
+        let lifetime_id = self.assign_lifetime(&kind, &expr_type);
+        let metadata = self.analyze_expression_metadata(&kind);
+
+        Ok(TypedExpression {
+            expr_type,
+            kind,
+            usage,
+            lifetime_id,
+            source_location: self.context.span_to_location(&expression.span),
+            metadata,
+        })
+    }
+
+    /// Lower a for-in loop expression (ExprKind::For).
+    /// Extracted from lower_expression to reduce stack frame size.
+    #[inline(never)]
+    fn lower_for_expression(
+        &mut self,
+        expression: &Expr,
+        var: &str,
+        key_var: Option<&str>,
+        iter: &Expr,
+        body: &Expr,
+    ) -> LoweringResult<TypedExpression> {
+        // Check if the iterator is a range expression (0...len)
+        // If so, desugar it to a while loop instead of trying to lower as iterable
+        if let ExprKind::Binary { op: BinaryOp::Range, left, right } = &iter.kind {
+            // Desugar: for (i in start...end) { body }
+            // Into: var i = start; while (i < end) { body; i++; }
+
+            let start_expr = self.lower_expression(left)?;
+            let end_expr = self.lower_expression(right)?;
+
+            // Create the loop body scope
+            let loop_body_scope_id = ScopeId::from_raw(self.context.next_scope_id());
+
+            // Create the loop variable
+            let var_name = self.context.intern_string(var);
+            let int_type = self.context.type_table.borrow().int_type();
+            let var_symbol = self.context.symbol_table.create_variable_with_type(
+                var_name,
+                loop_body_scope_id,
+                int_type,
+            );
+
+            // Enter the loop body scope
+            let old_scope = self.context.current_scope;
+            self.context.current_scope = loop_body_scope_id;
+
+            let body_stmt = self.convert_expression_to_statement(body)?;
+
+            // Restore the previous scope
+            self.context.current_scope = old_scope;
+
+            // Create: var i = start
+            let init_stmt = TypedStatement::VarDeclaration {
+                symbol_id: var_symbol,
+                var_type: int_type,
+                initializer: Some(start_expr),
+                source_location: SourceLocation::unknown(),
+                mutability: crate::tast::Mutability::Mutable,
+            };
+
+            // Create: i < end
+            let var_ref = TypedExpression {
+                expr_type: int_type,
+                kind: TypedExpressionKind::Variable { symbol_id: var_symbol },
+                usage: VariableUsage::Copy,
+                lifetime_id: LifetimeId::static_lifetime(),
+                source_location: SourceLocation::unknown(),
+                metadata: ExpressionMetadata::default(),
+            };
+
+            let condition = TypedExpression {
+                expr_type: self.context.type_table.borrow().bool_type(),
+                kind: TypedExpressionKind::BinaryOp {
+                    left: Box::new(var_ref.clone()),
+                    operator: BinaryOperator::Lt,
+                    right: Box::new(end_expr),
+                },
+                usage: VariableUsage::Copy,
+                lifetime_id: LifetimeId::static_lifetime(),
+                source_location: SourceLocation::unknown(),
+                metadata: ExpressionMetadata::default(),
+            };
+
+            // Create: i++
+            let one_literal = TypedExpression {
+                expr_type: int_type,
+                kind: TypedExpressionKind::Literal { value: LiteralValue::Int(1) },
+                usage: VariableUsage::Copy,
+                lifetime_id: LifetimeId::static_lifetime(),
+                source_location: SourceLocation::unknown(),
+                metadata: ExpressionMetadata::default(),
+            };
+
+            let increment = TypedExpression {
+                expr_type: int_type,
+                kind: TypedExpressionKind::BinaryOp {
+                    left: Box::new(var_ref),
+                    operator: BinaryOperator::AddAssign,
+                    right: Box::new(one_literal),
+                },
+                usage: VariableUsage::Copy,
+                lifetime_id: LifetimeId::static_lifetime(),
+                source_location: SourceLocation::unknown(),
+                metadata: ExpressionMetadata::default(),
+            };
+
+            let increment_stmt = TypedStatement::Expression {
+                expression: increment,
+                source_location: SourceLocation::unknown(),
+            };
+
+            // Create while body: { body; i++ }
+            let while_body = TypedStatement::Block {
+                statements: vec![body_stmt, increment_stmt],
+                scope_id: loop_body_scope_id,
+                source_location: SourceLocation::unknown(),
+            };
+
+            // Create: while (i < end) { body; i++ }
+            let while_stmt = TypedStatement::While {
+                condition,
+                body: Box::new(while_body),
+                source_location: SourceLocation::unknown(),
+            };
+
+            // Return block: { var i = start; while (i < end) { body; i++ } }
+            return Ok(TypedExpression {
+                expr_type: self.context.type_table.borrow().void_type(),
+                kind: TypedExpressionKind::Block {
+                    statements: vec![init_stmt, while_stmt],
+                    scope_id: ScopeId::from_raw(self.context.next_scope_id()),
+                },
+                usage: VariableUsage::Move,
+                lifetime_id: LifetimeId::static_lifetime(),
+                source_location: SourceLocation::unknown(),
+                metadata: ExpressionMetadata::default(),
+            });
+        }
+
+        // Not a range - check if it's an Array (we can inline the iterator)
+
+        // Lower the iterable expression first
+        let iterable_expr = self.lower_expression(iter)?;
+
+        // Check if the iterable is an Array type - if so, we inline the iterator pattern
+        // to avoid needing to compile ArrayIterator with its generic type parameters
+        let is_array = {
+            let type_table = self.context.type_table.borrow();
+            if let Some(actual_type) = type_table.get(iterable_expr.expr_type) {
+                matches!(&actual_type.kind, TypeKind::Array { .. })
+            } else {
+                false
+            }
+        };
+
+        if is_array && key_var.is_none() {
+            // INLINE ARRAY ITERATOR PATTERN:
+            // for (x in arr) becomes:
+            // {
+            //     var _i = 0;
+            //     var _len = arr.length;
+            //     while (_i < _len) {
+            //         var x = arr[_i];
+            //         body;
+            //         _i++;
+            //     }
+            // }
+
+            let loop_body_scope_id = ScopeId::from_raw(self.context.next_scope_id());
+            let source_location = self.context.create_location_from_span(expression.span);
+            let int_type = self.context.type_table.borrow().int_type();
+            let bool_type = self.context.type_table.borrow().bool_type();
+            let element_type = self.infer_element_type_from_iterable(&iterable_expr);
+
+            // Create loop variable
+            let var_name = self.context.intern_string(var);
+            let var_symbol = self.context.symbol_table.create_variable_with_type(
+                var_name,
+                loop_body_scope_id,
+                element_type,
+            );
+
+            // Create internal _i counter
+            let counter_name = self.context.intern_string("_i");
+            let counter_symbol = self.context.symbol_table.create_variable_with_type(
+                counter_name,
+                loop_body_scope_id,
+                int_type,
+            );
+
+            // Create internal _len variable
+            let len_name = self.context.intern_string("_len");
+            let len_symbol = self.context.symbol_table.create_variable_with_type(
+                len_name,
+                loop_body_scope_id,
+                int_type,
+            );
+
+            // var _i = 0
+            let zero_literal = TypedExpression {
+                expr_type: int_type,
+                kind: TypedExpressionKind::Literal { value: LiteralValue::Int(0) },
+                usage: VariableUsage::Copy,
+                lifetime_id: LifetimeId::static_lifetime(),
+                source_location,
+                metadata: ExpressionMetadata::default(),
+            };
+            let counter_init = TypedStatement::VarDeclaration {
+                symbol_id: counter_symbol,
+                var_type: int_type,
+                initializer: Some(zero_literal),
+                source_location,
+                mutability: crate::tast::Mutability::Mutable,
+            };
+
+            // var _len = arr.length (field access)
+            // Create a symbol for the field access. The name "length" will be used during
+            // HIR->MIR lowering to look up the stdlib runtime function (haxe_array_length)
+            let length_name = self.context.intern_string("length");
+            let length_symbol = self.context.symbol_table.create_variable(length_name);
+
+            let length_access = TypedExpression {
+                expr_type: int_type,
+                kind: TypedExpressionKind::FieldAccess {
+                    object: Box::new(iterable_expr.clone()),
+                    field_symbol: length_symbol,
+                },
+                usage: VariableUsage::Copy,
+                lifetime_id: LifetimeId::static_lifetime(),
+                source_location,
+                metadata: ExpressionMetadata::default(),
+            };
+            let len_init = TypedStatement::VarDeclaration {
+                symbol_id: len_symbol,
+                var_type: int_type,
+                initializer: Some(length_access),
+                source_location,
+                mutability: crate::tast::Mutability::Immutable,
+            };
+
+            // _i < _len
+            let counter_ref = TypedExpression {
+                expr_type: int_type,
+                kind: TypedExpressionKind::Variable { symbol_id: counter_symbol },
+                usage: VariableUsage::Copy,
+                lifetime_id: LifetimeId::static_lifetime(),
+                source_location,
+                metadata: ExpressionMetadata::default(),
+            };
+            let len_ref = TypedExpression {
+                expr_type: int_type,
+                kind: TypedExpressionKind::Variable { symbol_id: len_symbol },
+                usage: VariableUsage::Copy,
+                lifetime_id: LifetimeId::static_lifetime(),
+                source_location,
+                metadata: ExpressionMetadata::default(),
+            };
+            let condition = TypedExpression {
+                expr_type: bool_type,
+                kind: TypedExpressionKind::BinaryOp {
+                    left: Box::new(counter_ref.clone()),
+                    operator: BinaryOperator::Lt,
+                    right: Box::new(len_ref),
+                },
+                usage: VariableUsage::Copy,
+                lifetime_id: LifetimeId::static_lifetime(),
+                source_location,
+                metadata: ExpressionMetadata::default(),
+            };
+
+            // var x = arr[_i]
+            let array_access = TypedExpression {
+                expr_type: element_type,
+                kind: TypedExpressionKind::ArrayAccess {
+                    array: Box::new(iterable_expr),
+                    index: Box::new(counter_ref.clone()),
+                },
+                usage: VariableUsage::Copy,
+                lifetime_id: LifetimeId::static_lifetime(),
+                source_location,
+                metadata: ExpressionMetadata::default(),
+            };
+            let var_decl = TypedStatement::VarDeclaration {
+                symbol_id: var_symbol,
+                var_type: element_type,
+                initializer: Some(array_access),
+                source_location,
+                mutability: crate::tast::Mutability::Immutable,
+            };
+
+            // Convert body
+            let old_scope = self.context.current_scope;
+            self.context.current_scope = loop_body_scope_id;
+            let body_stmt = self.convert_expression_to_statement(body)?;
+            self.context.current_scope = old_scope;
+
+            // _i++
+            let one_literal = TypedExpression {
+                expr_type: int_type,
+                kind: TypedExpressionKind::Literal { value: LiteralValue::Int(1) },
+                usage: VariableUsage::Copy,
+                lifetime_id: LifetimeId::static_lifetime(),
+                source_location,
+                metadata: ExpressionMetadata::default(),
+            };
+            let increment = TypedExpression {
+                expr_type: int_type,
+                kind: TypedExpressionKind::BinaryOp {
+                    left: Box::new(counter_ref),
+                    operator: BinaryOperator::AddAssign,
+                    right: Box::new(one_literal),
+                },
+                usage: VariableUsage::Copy,
+                lifetime_id: LifetimeId::static_lifetime(),
+                source_location,
+                metadata: ExpressionMetadata::default(),
+            };
+            let increment_stmt = TypedStatement::Expression {
+                expression: increment,
+                source_location,
+            };
+
+            // while body: { var x = arr[_i]; body; _i++ }
+            let while_body = TypedStatement::Block {
+                statements: vec![var_decl, body_stmt, increment_stmt],
+                scope_id: loop_body_scope_id,
+                source_location,
+            };
+
+            // while (_i < _len) { ... }
+            let while_stmt = TypedStatement::While {
+                condition,
+                body: Box::new(while_body),
+                source_location,
+            };
+
+            // Return block: { var _i = 0; var _len = arr.length; while (...) }
+            return Ok(TypedExpression {
+                expr_type: self.context.type_table.borrow().void_type(),
+                kind: TypedExpressionKind::Block {
+                    statements: vec![counter_init, len_init, while_stmt],
+                    scope_id: ScopeId::from_raw(self.context.next_scope_id()),
+                },
+                usage: VariableUsage::Move,
+                lifetime_id: LifetimeId::static_lifetime(),
+                source_location,
+                metadata: ExpressionMetadata::default(),
+            });
+        }
+
+        // For non-Array types, use the generic iterator pattern (requires iterator classes)
+        let _iterator_type_name = self.infer_iterator_type_name(&iterable_expr.expr_type);
+
+        // Validate that the iterable type is actually iterable
+        {
+            let type_table = self.context.type_table.borrow();
+            if let Some(actual_type) = type_table.get(iterable_expr.expr_type) {
+                use crate::tast::core::TypeKind;
+                let is_iterable = matches!(&actual_type.kind,
+                    TypeKind::Array { .. }
+                    | TypeKind::Map { .. }
+                    | TypeKind::String
+                    | TypeKind::Dynamic
+                    | TypeKind::Class { .. }
+                    | TypeKind::Interface { .. }
+                );
+                if !is_iterable {
+                    drop(type_table);
+                    self.context.add_error(LoweringError::TypeInferenceError {
+                        expression: "Type is not iterable".to_string(),
+                        location: iterable_expr.source_location,
+                    });
+                }
+            }
+        }
+
+        // Create the loop body scope
+        let loop_body_scope_id = ScopeId::from_raw(self.context.next_scope_id());
+
+        // Create the loop variable
+        let var_name = self.context.intern_string(var);
+        let element_type = self.infer_element_type_from_iterable(&iterable_expr);
+        let var_symbol = self.context.symbol_table.create_variable_with_type(
+            var_name,
+            loop_body_scope_id,
+            element_type,
+        );
+
+        // Handle optional key variable for key-value iteration
+        let key_symbol = if let Some(key) = key_var {
+            let key_name = self.context.intern_string(key);
+            let int_type = self.context.type_table.borrow().int_type();
+            Some(self.context.symbol_table.create_variable_with_type(
+                key_name,
+                loop_body_scope_id,
+                int_type,
+            ))
+        } else {
+            None
+        };
+
+        // Enter the loop body scope
+        let old_scope = self.context.current_scope;
+        self.context.current_scope = loop_body_scope_id;
+
+        let body_stmt = self.convert_expression_to_statement(body)?;
+
+        // Restore the previous scope
+        self.context.current_scope = old_scope;
+
+        // Use the existing convert_for_in_to_c_style_for function for generic iterators
+        let for_stmt = self.convert_for_in_to_c_style_for(
+            var_symbol,
+            key_symbol,
+            iterable_expr,
+            body_stmt,
+            loop_body_scope_id,
+            self.context.create_location_from_span(expression.span),
+        )?;
+
+        // Wrap in an expression
+        Ok(TypedExpression {
+            expr_type: self.context.type_table.borrow().void_type(),
+            kind: TypedExpressionKind::Block {
+                statements: vec![for_stmt],
+                scope_id: ScopeId::from_raw(self.context.next_scope_id()),
+            },
+            usage: VariableUsage::Move,
+            lifetime_id: LifetimeId::static_lifetime(),
+            source_location: self.context.create_location_from_span(expression.span),
+            metadata: ExpressionMetadata::default(),
+        })
+    }
+
     /// Lower array comprehension: [for (i in 0...10) i * 2]
     fn lower_array_comprehension(
         &mut self,
@@ -9119,6 +9267,9 @@ impl<'a> AstLowering<'a> {
             // Default to dynamic type if no type specified
             self.context.type_table.borrow().dynamic_type()
         };
+
+        // Set the catch variable's type so field accesses (e.g., e.length) resolve correctly
+        self.context.symbol_table.update_symbol_type(var_symbol, exception_type);
 
         // Lower filter condition if present (in the catch scope where the exception var is available)
         let filter = if let Some(filter_expr) = &catch.filter {

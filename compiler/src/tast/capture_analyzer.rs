@@ -344,13 +344,16 @@ impl CaptureAnalyzer {
                 }
             }
 
-            TypedExpressionKind::Try { try_expr, catch_clauses } => {
+            TypedExpressionKind::Try { try_expr, catch_clauses, finally_block } => {
                 self.collect_from_expression(try_expr, referenced, locals);
                 for catch in catch_clauses {
                     let mut catch_locals = locals.clone();
                     catch_locals.insert(catch.exception_variable);
                     // catch.body is a TypedStatement, not an expression
                     self.collect_variable_references(&catch.body, referenced, &mut catch_locals);
+                }
+                if let Some(finally) = finally_block {
+                    self.collect_from_expression(finally, referenced, locals);
                 }
             }
 

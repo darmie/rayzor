@@ -702,10 +702,11 @@ pub enum ExprKind {
         cond: Box<Expr>,
     },
     
-    /// Try-catch
+    /// Try-catch-finally
     Try {
         expr: Box<Expr>,
         catches: Vec<Catch>,
+        finally_block: Option<Box<Expr>>,
     },
     
     /// Cast: `cast expr` or `cast(expr, Type)`

@@ -2126,29 +2126,31 @@ impl<'a> TypeChecker<'a> {
         type_args: &[TypeId],
         location: SourceLocation,
     ) -> TypeCheckResult<TypeId> {
-        let binding = self.type_table.borrow();
-        let base = binding.get(base_type).ok_or_else(|| TypeCheckError {
-            kind: TypeErrorKind::UndefinedType {
-                name: self.string_interner.intern("<invalid-type>"),
-            },
-            location,
-            context: "Base type not found".to_string(),
-            suggestion: None,
-        })?;
+        // Extract needed info in a scoped borrow so it's dropped before borrow_mut below
+        let expected_param_count = {
+            let binding = self.type_table.borrow();
+            let base = binding.get(base_type).ok_or_else(|| TypeCheckError {
+                kind: TypeErrorKind::UndefinedType {
+                    name: self.string_interner.intern("<invalid-type>"),
+                },
+                location,
+                context: "Base type not found".to_string(),
+                suggestion: None,
+            })?;
 
-        // Check if the base type is actually generic
-        let expected_param_count = match &base.kind {
-            TypeKind::Class {
-                type_args: params, ..
+            match &base.kind {
+                TypeKind::Class {
+                    type_args: params, ..
+                }
+                | TypeKind::Interface {
+                    type_args: params, ..
+                }
+                | TypeKind::Enum {
+                    type_args: params, ..
+                } => params.len(),
+                _ => 0,
             }
-            | TypeKind::Interface {
-                type_args: params, ..
-            }
-            | TypeKind::Enum {
-                type_args: params, ..
-            } => params.len(),
-            _ => 0,
-        };
+        }; // binding dropped here
 
         if expected_param_count != type_args.len() {
             return Err(TypeCheckError {

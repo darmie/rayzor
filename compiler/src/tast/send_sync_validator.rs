@@ -426,10 +426,13 @@ impl<'a> SendSyncValidator<'a> {
                 }
             }
 
-            TypedExpressionKind::Try { try_expr, catch_clauses } => {
+            TypedExpressionKind::Try { try_expr, catch_clauses, finally_block } => {
                 self.validate_expression(try_expr)?;
                 for catch in catch_clauses {
                     self.validate_statement(&catch.body)?;
+                }
+                if let Some(finally) = finally_block {
+                    self.validate_expression(finally)?;
                 }
             }
 

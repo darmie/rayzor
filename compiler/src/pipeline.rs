@@ -980,7 +980,23 @@ impl HaxeCompilationPipeline {
         // AstLowering now collects ALL errors within a file and continues processing
         // This allows us to report multiple errors per file in a single compilation
         let (mut typed_file, mut type_errors): (TypedFile, Vec<CompilationError>) = match lowering.lower_file(&ast_file) {
-            Ok(typed_file) => (typed_file, Vec::new()),
+            Ok(typed_file) => {
+                // Collect any non-fatal errors accumulated during lowering
+                let non_fatal_errors: Vec<CompilationError> = lowering.get_all_errors()
+                    .iter()
+                    .map(|err| {
+                        let (message, suggestion) = self.extract_lowering_error_message(err);
+                        CompilationError {
+                            message,
+                            location: self.extract_location_from_lowering_error(err),
+                            category: self.categorize_lowering_error(err),
+                            suggestion,
+                            related_errors: Vec::new(),
+                        }
+                    })
+                    .collect();
+                (typed_file, non_fatal_errors)
+            }
             Err(_lowering_error) => {
                 // Extract ALL collected errors from the lowering context
                 let all_lowering_errors = lowering.get_all_errors();

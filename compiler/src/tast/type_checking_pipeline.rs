@@ -8,7 +8,7 @@ use super::{
     type_diagnostics::{TypeDiagnosticEmitter, TypeErrorContext},
     node::{TypedFile, TypedClass, TypedInterface, TypedEnum, TypedExpression, TypedStatement,
            TypedExpressionKind, TypedFunction, TypedMethodSignature, BinaryOperator, CastKind,
-           StringInterpolationPart, TypedField},
+           StringInterpolationPart, TypedField, TypedSwitchCase, TypedMapEntry},
     TypeTable, SymbolTable, StringInterner, TypeId, SymbolId, SourceLocation,
     ScopeTree, InternedString, TypeKind, Visibility, AccessLevel,
     type_checker::TypeCompatibility,
@@ -814,278 +814,12 @@ impl<'a> TypeCheckingPhase<'a> {
     
     /// Check an expression and return its type
     pub fn check_expression(&mut self, expr: &TypedExpression) -> Result<TypeId, String> {
-        let kind_name = match &expr.kind {
-            TypedExpressionKind::Literal { .. } => "Literal",
-            TypedExpressionKind::Variable { .. } => "Variable",
-            TypedExpressionKind::FieldAccess { .. } => "FieldAccess",
-            TypedExpressionKind::StaticFieldAccess { .. } => "StaticFieldAccess",
-            TypedExpressionKind::ArrayAccess { .. } => "ArrayAccess",
-            TypedExpressionKind::FunctionCall { .. } => "FunctionCall",
-            TypedExpressionKind::MethodCall { .. } => "MethodCall",
-            TypedExpressionKind::StaticMethodCall { .. } => "StaticMethodCall",
-            TypedExpressionKind::BinaryOp { .. } => "BinaryOp",
-            TypedExpressionKind::UnaryOp { .. } => "UnaryOp",
-            TypedExpressionKind::Block { .. } => "Block",
-            TypedExpressionKind::Conditional { .. } => "Conditional",
-            TypedExpressionKind::Switch { .. } => "Switch",
-            TypedExpressionKind::Try { .. } => "Try",
-            TypedExpressionKind::While { .. } => "While",
-            TypedExpressionKind::For { .. } => "For",
-            TypedExpressionKind::ForIn { .. } => "ForIn",
-            TypedExpressionKind::Throw { .. } => "Throw",
-            TypedExpressionKind::Return { .. } => "Return",
-            TypedExpressionKind::Break => "Break",
-            TypedExpressionKind::Continue => "Continue",
-            TypedExpressionKind::Cast { .. } => "Cast",
-            TypedExpressionKind::Is { .. } => "Is",
-            TypedExpressionKind::ObjectLiteral { .. } => "ObjectLiteral",
-            TypedExpressionKind::ArrayLiteral { .. } => "ArrayLiteral",
-            TypedExpressionKind::MapLiteral { .. } => "MapLiteral",
-            TypedExpressionKind::StringInterpolation { .. } => "StringInterpolation",
-            TypedExpressionKind::FunctionLiteral { .. } => "FunctionLiteral",
-            TypedExpressionKind::New { .. } => "New",
-            TypedExpressionKind::This { .. } => "This",
-            TypedExpressionKind::Super { .. } => "Super",
-            TypedExpressionKind::Null => "Null",
-            TypedExpressionKind::VarDeclarationExpr { .. } => "VarDeclarationExpr",
-            TypedExpressionKind::FinalDeclarationExpr { .. } => "FinalDeclarationExpr",
-            TypedExpressionKind::Meta { .. } => "Meta",
-            TypedExpressionKind::DollarIdent { .. } => "DollarIdent",
-            TypedExpressionKind::CompilerSpecific { .. } => "CompilerSpecific",
-            TypedExpressionKind::MacroExpression { .. } => "MacroExpression",
-            TypedExpressionKind::PatternPlaceholder { .. } => "PatternPlaceholder",
-            TypedExpressionKind::ArrayComprehension { .. } => "ArrayComprehension",
-            TypedExpressionKind::MapComprehension { .. } => "MapComprehension",
-            TypedExpressionKind::Await { expression, await_type } => todo!(),
-        };
-        eprintln!("DEBUG check_expression: {} at {:?}, expr_type: {:?}", kind_name, expr.source_location, expr.expr_type);
         match &expr.kind {
-            TypedExpressionKind::BinaryOp { left, right, operator:op } => {
-                        let lhs_type = self.check_expression(left)?;
-                        let rhs_type = self.check_expression(right)?;
-
-                        // OPERATOR OVERLOADING: Check if left operand has an abstract type with @:op metadata
-                        if let Some((method_symbol, _abstract_symbol)) = self.find_operator_method(lhs_type, op) {
-                            eprintln!("DEBUG: Found operator method for {:?} on type {:?}: method symbol {:?}",
-                                      op, lhs_type, method_symbol);
-                            // TODO: For now, just log that we found it - actual rewriting will be done in AST lowering
-                            // The HIR lowering will automatically inline the method call
-                        }
-
-                        // Check operand compatibility for the operator
-                        match op {
-                            BinaryOperator::Add => {
-                                // Add can be either numeric addition or string concatenation
-                                let type_table = self.type_checker.type_table.borrow();
-                                let int_type = type_table.int_type();
-                                let float_type = type_table.float_type();
-                                let string_type = type_table.string_type();
-                                drop(type_table);
-                        
-                                let lhs_compat_int = self.type_checker.check_compatibility(lhs_type, int_type);
-                                let lhs_compat_float = self.type_checker.check_compatibility(lhs_type, float_type);
-                                let lhs_compat_string = self.type_checker.check_compatibility(lhs_type, string_type);
-                        
-                                let lhs_is_numeric = matches!(lhs_compat_int, TypeCompatibility::Identical | TypeCompatibility::Assignable) ||
-                                                   matches!(lhs_compat_float, TypeCompatibility::Identical | TypeCompatibility::Assignable);
-                                let lhs_is_string = matches!(lhs_compat_string, TypeCompatibility::Identical | TypeCompatibility::Assignable);
-                        
-                                let rhs_compat_int = self.type_checker.check_compatibility(rhs_type, int_type);
-                                let rhs_compat_float = self.type_checker.check_compatibility(rhs_type, float_type);
-                                let rhs_compat_string = self.type_checker.check_compatibility(rhs_type, string_type);
-                        
-                                let rhs_is_numeric = matches!(rhs_compat_int, TypeCompatibility::Identical | TypeCompatibility::Assignable) ||
-                                                   matches!(rhs_compat_float, TypeCompatibility::Identical | TypeCompatibility::Assignable);
-                                let rhs_is_string = matches!(rhs_compat_string, TypeCompatibility::Identical | TypeCompatibility::Assignable);
-                        
-                                // Check if this is valid string concatenation or numeric addition
-                                if lhs_is_string || rhs_is_string {
-                                    // String concatenation - both operands should be strings
-                                    if !lhs_is_string {
-                                        self.emit_enhanced_type_error(
-                                            lhs_type, 
-                                            string_type, 
-                                            expr.source_location,
-                                            "Left operand of string concatenation must be string",
-                                            &TypeErrorContext::BinaryOperation { operator: *op, other_type: rhs_type }
-                                        );
-                                    }
-                                    if !rhs_is_string {
-                                        self.emit_enhanced_type_error(
-                                            rhs_type, 
-                                            string_type, 
-                                            expr.source_location,
-                                            "Right operand of string concatenation must be string",
-                                            &TypeErrorContext::BinaryOperation { operator: *op, other_type: lhs_type }
-                                        );
-                                    }
-                                } else if lhs_is_numeric && rhs_is_numeric {
-                                    // Numeric addition - both operands are numeric, this is valid
-                                } else {
-                                    // Neither string concatenation nor numeric addition
-                                    self.emit_enhanced_type_error(
-                                        lhs_type, 
-                                        int_type, 
-                                        expr.source_location,
-                                        "Left operand of Add must be numeric",
-                                        &TypeErrorContext::BinaryOperation { operator: *op, other_type: rhs_type }
-                                    );
-                                    self.emit_enhanced_type_error(
-                                        rhs_type, 
-                                        int_type, 
-                                        expr.source_location,
-                                        "Right operand of Add must be numeric",
-                                        &TypeErrorContext::BinaryOperation { operator: *op, other_type: lhs_type }
-                                    );
-                                }
-                            }
-                            BinaryOperator::Sub | BinaryOperator::Mul | BinaryOperator::Div => {
-                                // Purely numeric operations
-                                let type_table = self.type_checker.type_table.borrow();
-                                let int_type = type_table.int_type();
-                                let float_type = type_table.float_type();
-                                drop(type_table);
-                        
-                                let lhs_compat_int = self.type_checker.check_compatibility(lhs_type, int_type);
-                                let lhs_compat_float = self.type_checker.check_compatibility(lhs_type, float_type);
-                        
-                                let is_numeric = matches!(lhs_compat_int, TypeCompatibility::Identical | TypeCompatibility::Assignable) ||
-                                               matches!(lhs_compat_float, TypeCompatibility::Identical | TypeCompatibility::Assignable);
-                        
-                                if !is_numeric {
-                                    self.emit_enhanced_type_error(
-                                        lhs_type, 
-                                        int_type, 
-                                        expr.source_location,
-                                        &format!("Left operand of {:?} must be numeric", op),
-                                        &TypeErrorContext::BinaryOperation { operator: *op, other_type: rhs_type }
-                                    );
-                                }
-                        
-                                // Check right operand too
-                                let rhs_compat_int = self.type_checker.check_compatibility(rhs_type, int_type);
-                                let rhs_compat_float = self.type_checker.check_compatibility(rhs_type, float_type);
-                        
-                                let rhs_is_numeric = matches!(rhs_compat_int, TypeCompatibility::Identical | TypeCompatibility::Assignable) ||
-                                                   matches!(rhs_compat_float, TypeCompatibility::Identical | TypeCompatibility::Assignable);
-                        
-                                if !rhs_is_numeric {
-                                    self.emit_enhanced_type_error(
-                                        rhs_type, 
-                                        int_type, 
-                                        expr.source_location,
-                                        &format!("Right operand of {:?} must be numeric", op),
-                                        &TypeErrorContext::BinaryOperation { operator: *op, other_type: lhs_type }
-                                    );
-                                }
-                            }
-                            BinaryOperator::Eq | BinaryOperator::Ne => {
-                                // Equality - just check types are compatible
-                                let compatibility = self.type_checker.check_compatibility(lhs_type, rhs_type);
-                                if matches!(compatibility, TypeCompatibility::Incompatible) {
-                                    self.emit_error(TypeCheckError {
-                                        kind: TypeErrorKind::TypeMismatch {
-                                            expected: lhs_type,
-                                            actual: rhs_type,
-                                        },
-                                        location: expr.source_location,
-                                        context: "Cannot compare incompatible types".to_string(),
-                                        suggestion: Some("Ensure both operands have compatible types".to_string()),
-                                    });
-                                }
-                            }
-                            _ => {
-                                // TODO: Handle other operators
-                            }
-                        }
+            TypedExpressionKind::BinaryOp { left, right, operator: op } => {
+                        self.check_binary_op_expr(left, right, op, expr.source_location)?;
                     }
             TypedExpressionKind::FunctionCall { function, arguments, type_arguments: _ } => {
-                        let callee_type = self.check_expression(function)?;
-                
-                        // Check argument types first
-                        let mut arg_types = Vec::new();
-                        for arg in arguments {
-                            let arg_type = self.check_expression(arg)?;
-                            arg_types.push(arg_type);
-                        }
-                
-                        // Check function signature matches arguments
-                        let (param_types, is_function) = {
-                            let type_table = self.type_checker.type_table.borrow();
-                            if let Some(function_type) = type_table.get(callee_type) {
-                                match &function_type.kind {
-                                    super::TypeKind::Function { params, .. } => {
-                                        (params.clone(), true)
-                                    }
-                                    _ => (Vec::new(), false)
-                                }
-                            } else {
-                                (Vec::new(), false)
-                            }
-                        };
-                
-                        if is_function {
-                            // Check parameter count
-                            if param_types.len() != arg_types.len() {
-                                self.emit_error(TypeCheckError {
-                                    kind: TypeErrorKind::TypeMismatch {
-                                        expected: callee_type, // Not ideal but best we can do
-                                        actual: callee_type,
-                                    },
-                                    location: expr.source_location,
-                                    context: format!(
-                                        "Function expects {} arguments but {} were provided", 
-                                        param_types.len(), 
-                                        arg_types.len()
-                                    ),
-                                    suggestion: Some(format!(
-                                        "Provide exactly {} argument{}", 
-                                        param_types.len(),
-                                        if param_types.len() == 1 { "" } else { "s" }
-                                    )),
-                                });
-                            } else {
-                                // Check each parameter type
-                                for (i, (expected_type, actual_type)) in param_types.iter().zip(&arg_types).enumerate() {
-                                    let compatibility = self.type_checker.check_compatibility(*actual_type, *expected_type);
-                                    if matches!(compatibility, TypeCompatibility::Incompatible) {
-                                        self.emit_enhanced_type_error(
-                                            *actual_type,
-                                            *expected_type,
-                                            expr.source_location,
-                                            &format!("Argument {} type mismatch", i + 1),
-                                            &TypeErrorContext::FunctionCall { 
-                                                param_index: i, 
-                                                expected_type: *expected_type 
-                                            }
-                                        );
-                                    }
-                                }
-                            }
-                        } else {
-                            // Not a function type or type not found
-                    
-                            // Not a function type - always report error
-                            {
-                                // Create a function type for the expected type in the error message
-                                let expected_function_type = {
-                                    let mut type_table = self.type_checker.type_table.borrow_mut();
-                                    // Create a generic function type (args) -> return
-                                    let dynamic_type = type_table.dynamic_type();
-                                    type_table.create_function_type(vec![], dynamic_type)
-                                };
-                        
-                                self.emit_error(TypeCheckError {
-                                    kind: TypeErrorKind::TypeMismatch {
-                                        expected: expected_function_type,
-                                        actual: callee_type,
-                                    },
-                                    location: expr.source_location,
-                                    context: "Cannot call non-function type".to_string(),
-                                    suggestion: Some("Ensure the expression evaluates to a function".to_string()),
-                                });
-                            }
-                        }
+                        self.check_function_call_expr(function, arguments, expr.source_location)?;
                     }
             TypedExpressionKind::FieldAccess { object, field_symbol } => {
                         let object_type = self.check_expression(object)?;
@@ -1110,18 +844,16 @@ impl<'a> TypeCheckingPhase<'a> {
                             let arg_type = self.check_expression(arg)?;
                             arg_types.push(arg_type);
                         }
-                
+
                         // Check if method exists on the class and is static
-                        // Copy the necessary class and method data to avoid borrow checker issues
                         let class_and_method_data = self.find_class_by_symbol(*class_symbol).and_then(|class_def| {
                             class_def.methods.iter()
                                 .find(|m| m.symbol_id == *method_symbol)
                                 .map(|method| (class_def.name, class_def.symbol_id, method.name, method.is_static))
                         });
-                
-                        if let Some((class_name, class_id, method_name, is_static)) = class_and_method_data {
+
+                        if let Some((class_name, _class_id, method_name, is_static)) = class_and_method_data {
                             if !is_static {
-                                // Accessing instance method through static context
                                 self.emit_error(TypeCheckError {
                                     kind: TypeErrorKind::InstanceAccessFromStatic {
                                         member_name: method_name,
@@ -1129,15 +861,60 @@ impl<'a> TypeCheckingPhase<'a> {
                                     },
                                     location: expr.source_location,
                                     context: "Instance methods cannot be accessed statically".to_string(),
-                                    suggestion: Some(format!("Create an instance of {} to call this method", 
+                                    suggestion: Some(format!("Create an instance of {} to call this method",
                                         self.string_interner.get(class_name).unwrap_or("<class>")
                                     )),
                                 });
                                 return Err("Instance method accessed statically".to_string());
                             }
                         }
-                
-                        // Static method call type checking completed
+
+                        // Validate argument count and types against the method's function type
+                        let method_type_id = self.type_checker.symbol_table
+                            .get_symbol(*method_symbol)
+                            .map(|s| s.type_id);
+                        if let Some(method_type_id) = method_type_id {
+                            let param_info = {
+                                let type_table = self.type_checker.type_table.borrow();
+                                type_table.get(method_type_id).and_then(|t| {
+                                    if let super::TypeKind::Function { params, .. } = &t.kind {
+                                        Some(params.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            };
+                            if let Some(param_types) = param_info {
+                                if param_types.len() != arg_types.len() {
+                                    self.emit_error(TypeCheckError {
+                                        kind: TypeErrorKind::TypeMismatch {
+                                            expected: method_type_id,
+                                            actual: method_type_id,
+                                        },
+                                        location: expr.source_location,
+                                        context: format!(
+                                            "Method expects {} arguments but {} were provided",
+                                            param_types.len(),
+                                            arg_types.len()
+                                        ),
+                                        suggestion: None,
+                                    });
+                                } else {
+                                    for (i, (expected, actual)) in param_types.iter().zip(&arg_types).enumerate() {
+                                        let compat = self.type_checker.check_compatibility(*actual, *expected);
+                                        if matches!(compat, TypeCompatibility::Incompatible) {
+                                            self.emit_enhanced_type_error(
+                                                *actual,
+                                                *expected,
+                                                arguments[i].source_location,
+                                                &format!("Argument {} type mismatch", i + 1),
+                                                &TypeErrorContext::FunctionCall { param_index: i, expected_type: *expected },
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
             TypedExpressionKind::Block { statements, scope_id: _ } => {
                         // Check all statements in the block
@@ -1267,115 +1044,7 @@ impl<'a> TypeCheckingPhase<'a> {
                         }
                     }
             TypedExpressionKind::MethodCall { receiver, method_symbol, arguments, type_arguments: _ } => {
-                        // Check receiver type
-                        let receiver_type = self.check_expression(receiver)?;
-                
-                        // Check argument types
-                        let mut arg_types = Vec::new();
-                        for arg in arguments {
-                            let arg_type = self.check_expression(arg)?;
-                            arg_types.push(arg_type);
-                        }
-                
-                        // Check if method is not static (instance method call)
-                        let type_table = self.type_checker.type_table.borrow();
-                        if let Some(type_info) = type_table.get(receiver_type) {
-                            if let super::TypeKind::Class { symbol_id: class_symbol, .. } = &type_info.kind {
-                                // Copy the class data to avoid borrow checker issues
-                                let class_symbol_copy = *class_symbol;
-                                drop(type_table); // Release borrow before calling method
-                        
-                                // Check if method is static (instance method call)
-                                let class_and_method_data = self.find_class_by_symbol(class_symbol_copy).and_then(|class_def| {
-                                    eprintln!("DEBUG method call: Looking for method_symbol={:?} in class '{}'", method_symbol, self.string_interner.get(class_def.name).unwrap_or("<unknown>"));
-                                    for method in &class_def.methods {
-                                        eprintln!("DEBUG method call:   Method '{}' has symbol_id={:?}, is_static={}", 
-                                            self.string_interner.get(method.name).unwrap_or("<unknown>"), 
-                                            method.symbol_id, 
-                                            method.is_static);
-                                    }
-                                    class_def.methods.iter()
-                                        .find(|m| m.symbol_id == *method_symbol)
-                                        .map(|method| (class_def.name, class_def.symbol_id, method.name, method.is_static))
-                                });
-                        
-                                if let Some((class_name, class_id, method_name, is_static)) = class_and_method_data {
-                                    if is_static {
-                                        // Accessing static method through instance
-                                        self.emit_error(TypeCheckError {
-                                            kind: TypeErrorKind::StaticAccessFromInstance {
-                                                member_name: method_name,
-                                                class_name,
-                                            },
-                                            location: expr.source_location,
-                                            context: "Static methods should be accessed through the class, not an instance".to_string(),
-                                            suggestion: Some(format!("Use {}.{} instead", 
-                                                self.string_interner.get(class_name).unwrap_or("<class>"),
-                                                self.string_interner.get(method_name).unwrap_or("<method>")
-                                            )),
-                                        });
-                                        // Don't return early - continue checking other expressions
-                                    }
-                                }
-                            }
-                        }
-                
-                        // Look up the method's function type from the symbol
-                        if let Some(method_info) = self.type_checker.symbol_table.get_symbol(*method_symbol) {
-                            // Get the method's function type
-                            let method_type = method_info.type_id;
-                    
-                            // Check if it's a function type
-                            let (param_types, is_function) = {
-                                let type_table = self.type_checker.type_table.borrow();
-                                if let Some(function_type) = type_table.get(method_type) {
-                                    match &function_type.kind {
-                                        super::TypeKind::Function { params, .. } => {
-                                            (params.clone(), true)
-                                        }
-                                        _ => (Vec::new(), false)
-                                    }
-                                } else {
-                                    (Vec::new(), false)
-                                }
-                            };
-                    
-                            if is_function {
-                                // First try the main signature
-                                let main_signature_matches = self.check_signature_compatibility(&param_types, &arg_types);
-                        
-                                if !main_signature_matches {
-                                    // If main signature doesn't match, try overloads
-                                    let overload_match_found = self.check_method_overloads(*method_symbol, &arg_types, expr.source_location);
-                            
-                                    if !overload_match_found {
-                                        // No overload matched, emit error
-                                        self.emit_error(TypeCheckError {
-                                            kind: TypeErrorKind::TypeMismatch {
-                                                expected: method_type,
-                                                actual: method_type,
-                                            },
-                                            location: expr.source_location,
-                                            context: format!(
-                                                "Method call does not match any available signature. Expected {} arguments but {} were provided", 
-                                                param_types.len(), 
-                                                arg_types.len()
-                                            ),
-                                            suggestion: Some("Check method signature and available overloads".to_string()),
-                                        });
-                                    }
-                                }
-                            }
-                        } else {
-                            self.emit_error(TypeCheckError {
-                                kind: TypeErrorKind::InferenceFailed {
-                                    reason: format!("Method symbol not found: {:?}", method_symbol),
-                                },
-                                location: expr.source_location,
-                                context: "Method call on unknown method".to_string(),
-                                suggestion: None,
-                            });
-                        }
+                        self.check_method_call_expr(receiver, *method_symbol, arguments, expr.source_location)?;
                     }
             TypedExpressionKind::UnaryOp { operand, operator } => {
                         let operand_type = self.check_expression(operand)?;
@@ -1463,91 +1132,34 @@ impl<'a> TypeCheckingPhase<'a> {
                         }
                     }
             TypedExpressionKind::Switch { discriminant, cases, default_case } => {
-                        let discriminant_type = self.check_expression(discriminant)?;
-                
-                        // For switch expressions, collect branch types to ensure they're compatible
-                        let mut branch_types = Vec::new();
-                        let mut branch_locations = Vec::new();
-                
-                        // Check each case
-                        for case in cases {
-                            // Check case value
-                            let pattern = &case.case_value;
-                            let pattern_type = self.check_expression(pattern)?;
-                            // Pattern type should be compatible with discriminant
-                            let compatibility = self.type_checker.check_compatibility(pattern_type, discriminant_type);
-                            if matches!(compatibility, TypeCompatibility::Incompatible) {
-                                self.emit_enhanced_type_error(
-                                    pattern_type,
-                                    discriminant_type,
-                                    pattern.source_location,
-                                    "Switch pattern type must match discriminant type",
-                                    &TypeErrorContext::SwitchPattern
-                                );
-                            }
-                    
-                            // Note: TypedSwitchCase doesn't have guards in the current implementation
-                    
-                            // Check case body
-                            self.check_statement(&case.body)?;
-                    
-                            // For switch expressions, extract the expression type from the body
-                            if let TypedStatement::Expression { expression, .. } = &case.body {
-                                branch_types.push(expression.expr_type);
-                                branch_locations.push(expression.source_location);
-                            }
-                        }
-                
-                        // Check default case if present
-                        if let Some(default) = default_case {
-                            let default_type = self.check_expression(default)?;
-                            branch_types.push(default_type);
-                            branch_locations.push(default.source_location);
-                        }
-                
-                        // For switch expressions, ensure all branches have compatible types
-                        if !branch_types.is_empty() && expr.expr_type != self.type_checker.type_table.borrow().void_type() {
-                            let expected_type = branch_types[0];
-                            for (i, (&branch_type, &location)) in branch_types.iter().zip(branch_locations.iter()).enumerate().skip(1) {
-                                let compatibility = self.type_checker.check_compatibility(branch_type, expected_type);
-                                if matches!(compatibility, TypeCompatibility::Incompatible) {
-                                    self.emit_enhanced_type_error(
-                                        branch_type,
-                                        expected_type,
-                                        location,
-                                        "Switch expression branches must have compatible types",
-                                        &TypeErrorContext::SwitchExpression
-                                    );
-                                }
-                            }
-                        }
+                        self.check_switch_expr(discriminant, cases, default_case.as_deref(), expr.expr_type, expr.source_location)?;
                     }
-            TypedExpressionKind::Try { try_expr, catch_clauses } => {
+            TypedExpressionKind::Try { try_expr, catch_clauses, finally_block } => {
                         // Check try block
                         let try_type = self.check_expression(try_expr)?;
-                
+
                         // Check catch clauses and verify type consistency
                         for catch in catch_clauses {
                             // Validate exception type
                             self.validate_exception_type(catch.exception_type, catch.source_location)?;
-                    
+
                             // Check exception variable is properly declared in symbol table
                             if self.type_checker.symbol_table.get_symbol(catch.exception_variable).is_none() {
                                 self.emit_error(TypeCheckError {
-                                    kind: TypeErrorKind::UndefinedSymbol { 
-                                        name: self.string_interner.intern("<exception_var>") 
+                                    kind: TypeErrorKind::UndefinedSymbol {
+                                        name: self.string_interner.intern("<exception_var>")
                                     },
                                     location: catch.source_location,
                                     context: "Exception variable not found in symbol table".to_string(),
                                     suggestion: Some("This is likely an internal compiler error".to_string()),
                                 });
                             }
-                    
+
                             // Check optional filter expression
                             if let Some(filter_expr) = &catch.filter {
                                 let filter_type = self.check_expression(filter_expr)?;
                                 let bool_type = self.type_checker.type_table.borrow().bool_type();
-                        
+
                                 let compatibility = self.type_checker.check_compatibility(filter_type, bool_type);
                                 if matches!(compatibility, TypeCompatibility::Incompatible) {
                                     self.emit_enhanced_type_error(
@@ -1559,17 +1171,15 @@ impl<'a> TypeCheckingPhase<'a> {
                                     );
                                 }
                             }
-                    
+
                             // Check catch body and get its return type
                             self.check_statement(&catch.body)?;
-                    
-                            // For try expressions, each catch should return the same type as the try block
-                            // TODO: This would require analyzing the catch body as an expression
-                            // For now, we assume catch bodies are statements, not expressions
                         }
-                
-                        // The result type is the try block type (assuming catches don't change it)
-                        // In a full implementation, we'd need to unify try and catch result types
+
+                        // Check finally block if present
+                        if let Some(finally) = finally_block {
+                            self.check_expression(finally)?;
+                        }
                     }
             TypedExpressionKind::While { condition, then_expr } => {
                         // Check condition is boolean
@@ -1700,72 +1310,7 @@ impl<'a> TypeCheckingPhase<'a> {
                         // This would create an anonymous structural type
                     }
             TypedExpressionKind::MapLiteral { entries } => {
-                        if !entries.is_empty() {
-                            // Check first entry to establish expected types
-                            let first_key_type = self.check_expression(&entries[0].key)?;
-                            let first_value_type = self.check_expression(&entries[0].value)?;
-                    
-                            // Track duplicate keys if they're compile-time constants
-                            let mut constant_keys = std::collections::HashSet::new();
-                    
-                            // Check remaining entries for type consistency
-                            for (index, entry) in entries.iter().enumerate() {
-                                let key_type = self.check_expression(&entry.key)?;
-                                let value_type = self.check_expression(&entry.value)?;
-                        
-                                // Check key type consistency
-                                let key_compatibility = self.type_checker.check_compatibility(key_type, first_key_type);
-                                if matches!(key_compatibility, TypeCompatibility::Incompatible) {
-                                    self.emit_enhanced_type_error(
-                                        key_type,
-                                        first_key_type,
-                                        entry.key.source_location,
-                                        &format!("Map key type mismatch at index {}", index),
-                                        &TypeErrorContext::ArrayAccess // Reuse context
-                                    );
-                                }
-                        
-                                // Check value type consistency
-                                let value_compatibility = self.type_checker.check_compatibility(value_type, first_value_type);
-                                if matches!(value_compatibility, TypeCompatibility::Incompatible) {
-                                    self.emit_enhanced_type_error(
-                                        value_type,
-                                        first_value_type,
-                                        entry.value.source_location,
-                                        &format!("Map value type mismatch at index {}", index),
-                                        &TypeErrorContext::ArrayAccess // Reuse context
-                                    );
-                                }
-                        
-                                // Check for duplicate literal keys (strings, numbers, etc.)
-                                if let TypedExpressionKind::Literal { value } = &entry.key.kind {
-                                    let key_str = match value {
-                                        super::node::LiteralValue::String(s) => Some(s.clone()),
-                                        super::node::LiteralValue::Int(i) => Some(i.to_string()),
-                                        super::node::LiteralValue::Float(f) => Some(f.to_string()),
-                                        super::node::LiteralValue::Bool(b) => Some(b.to_string()),
-                                        _ => None,
-                                    };
-                            
-                                    if let Some(key_str) = key_str {
-                                        if constant_keys.contains(&key_str) {
-                                            self.emit_error(TypeCheckError {
-                                                kind: TypeErrorKind::UndefinedType { 
-                                                    name: self.string_interner.intern(&key_str)
-                                                },
-                                                location: entry.key.source_location,
-                                                context: format!("Duplicate map key '{}'", key_str),
-                                                suggestion: Some("Map keys must be unique".to_string()),
-                                            });
-                                        }
-                                        constant_keys.insert(key_str);
-                                    }
-                                }
-                            }
-                    
-                            // TODO: Validate map key types are valid (hashable/comparable)
-                            // In Haxe, most types can be map keys, but some restrictions apply
-                        }
+                        self.check_map_literal_expr(entries, expr.source_location)?;
                     }
             TypedExpressionKind::ArrayLiteral { elements } => {
                         // Check each element
@@ -1922,135 +1467,6 @@ impl<'a> TypeCheckingPhase<'a> {
                     TypedExpressionKind::MacroExpression { .. } => {
                         // These are compiler-specific and don't need type checking
                     }
-            TypedExpressionKind::FieldAccess { object, field_symbol } => {
-                        let object_type = self.check_expression(object)?;
-                
-                        // Debug output
-                        if let Some(field_name_str) = self.type_checker.symbol_table.get_symbol(*field_symbol)
-                            .and_then(|s| self.string_interner.get(s.name)) {
-                        }
-                
-                        // Find the field in the object's type
-                        let type_table = self.type_checker.type_table.borrow();
-                        if let Some(type_info) = type_table.get(object_type) {
-                            if let super::TypeKind::Class { symbol_id: class_symbol, .. } = &type_info.kind {
-                                let class_symbol_copy = *class_symbol;
-                                drop(type_table);
-                        
-                                // Find the class definition and check if the field is static
-                                if let Some(class_def) = self.find_class_by_symbol(class_symbol_copy) {
-                                    if let Some(field) = class_def.fields.iter().find(|f| f.symbol_id == *field_symbol) {
-                                        let field_name_str = self.string_interner.get(field.name).unwrap_or("<field>");
-                                
-                                        if field.is_static {
-                                            // Accessing static field through instance
-                                            self.emit_error(TypeCheckError {
-                                                kind: TypeErrorKind::StaticAccessFromInstance {
-                                                    member_name: field.name,
-                                                    class_name: class_def.name,
-                                                },
-                                                location: expr.source_location,
-                                                context: "Static fields should be accessed through the class, not an instance".to_string(),
-                                                suggestion: Some(format!("Use {}.{} instead", 
-                                                    self.string_interner.get(class_def.name).unwrap_or("<class>"),
-                                                    self.string_interner.get(field.name).unwrap_or("<field>")
-                                                )),
-                                            });
-                                            // Don't return early - continue checking other expressions
-                                        }
-                                    } else {
-                                    }
-                                }
-                            }
-                        }
-                    }
-            TypedExpressionKind::StaticFieldAccess { class_symbol, field_symbol } => {
-                        // Debug output
-                        if let Some(field_name_str) = self.type_checker.symbol_table.get_symbol(*field_symbol)
-                            .and_then(|s| self.string_interner.get(s.name)) {
-                        }
-                
-                        // Find the class definition and check if the field is actually static
-                        if let Some(class_def) = self.find_class_by_symbol(*class_symbol) {
-                            if let Some(field) = class_def.fields.iter().find(|f| f.symbol_id == *field_symbol) {
-                                let field_name_str = self.string_interner.get(field.name).unwrap_or("<field>");
-                        
-                                if !field.is_static {
-                                    // Accessing instance field from static context
-                                    self.emit_error(TypeCheckError {
-                                        kind: TypeErrorKind::InstanceAccessFromStatic {
-                                            member_name: field.name,
-                                            class_name: class_def.name,
-                                        },
-                                        location: expr.source_location,
-                                        context: "Instance fields cannot be accessed from static context".to_string(),
-                                        suggestion: Some("Create an instance of the class to access this field".to_string()),
-                                    });
-                                    // Don't return early - continue checking other expressions
-                                }
-                            } else {
-                            }
-                        }
-                    }
-            TypedExpressionKind::StaticMethodCall { class_symbol, method_symbol, arguments, .. } => {
-                        // Check arguments
-                        for arg in arguments {
-                            self.check_expression(arg)?;
-                        }
-                
-                        // Find the class definition and check if the method is actually static
-                        if let Some(class_def) = self.find_class_by_symbol(*class_symbol) {
-                            if let Some(method) = class_def.methods.iter().find(|m| m.symbol_id == *method_symbol) {
-                                if !method.is_static {
-                                    // Accessing instance method from static context
-                                    self.emit_error(TypeCheckError {
-                                        kind: TypeErrorKind::InstanceAccessFromStatic {
-                                            member_name: method.name,
-                                            class_name: class_def.name,
-                                        },
-                                        location: expr.source_location,
-                                        context: "Instance methods cannot be accessed from static context".to_string(),
-                                        suggestion: Some("Create an instance of the class to call this method".to_string()),
-                                    });
-                                    // Don't return early - continue checking other expressions
-                                }
-                            }
-                        }
-                    }
-            TypedExpressionKind::FunctionCall { function, arguments, .. } => {
-                        // Check function expression
-                        self.check_expression(function)?;
-                
-                        // Check arguments
-                        for arg in arguments {
-                            self.check_expression(arg)?;
-                        }
-                
-                        // TODO: Check argument types match function signature
-                    }
-            TypedExpressionKind::Block { statements, scope_id: _ } => {
-                        // Check all statements in the block
-                        for stmt in statements {
-                            self.check_statement(stmt)?;
-                        }
-                    }
-            TypedExpressionKind::ObjectLiteral { fields } => {
-                        // Check each field value
-                        for field in fields {
-                            self.check_expression(&field.value)?;
-                        }
-                
-                        // TODO: Validate field names and types against anonymous structure type
-                    }
-            TypedExpressionKind::MapLiteral { entries } => {
-                        // Check each key-value pair
-                        for entry in entries {
-                            self.check_expression(&entry.key)?;
-                            self.check_expression(&entry.value)?;
-                        }
-                
-                        // TODO: Validate key and value types
-                    }
             TypedExpressionKind::PatternPlaceholder { .. } => {
                         // Pattern placeholders are handled in later compilation phases
                         // They have a dynamic type until resolved
@@ -2078,16 +1494,497 @@ TypedExpressionKind::Await { expression, await_type } => todo!(),
         // Return the annotated type
         let result_type = expr.expr_type;
         
-        // Debug switch expressions
-        match &expr.kind {
-            TypedExpressionKind::Switch { .. } => {
-            }
-            _ => {}
-        }
-        
         Ok(result_type)
     }
-    
+
+    /// Check a binary operation expression (extracted to reduce stack frame size)
+    #[inline(never)]
+    fn check_binary_op_expr(
+        &mut self,
+        left: &TypedExpression,
+        right: &TypedExpression,
+        op: &BinaryOperator,
+        source_location: SourceLocation,
+    ) -> Result<(), String> {
+        let lhs_type = self.check_expression(left)?;
+        let rhs_type = self.check_expression(right)?;
+
+        // OPERATOR OVERLOADING: Check if left operand has an abstract type with @:op metadata
+        if let Some((method_symbol, _abstract_symbol)) = self.find_operator_method(lhs_type, op) {
+            // TODO: For now, operator overloading is detected - actual rewriting will be done in AST lowering
+            // The HIR lowering will automatically inline the method call
+        }
+
+        // Check operand compatibility for the operator
+        match op {
+            BinaryOperator::Add => {
+                // Add can be either numeric addition or string concatenation
+                let type_table = self.type_checker.type_table.borrow();
+                let int_type = type_table.int_type();
+                let float_type = type_table.float_type();
+                let string_type = type_table.string_type();
+                drop(type_table);
+
+                let lhs_compat_int = self.type_checker.check_compatibility(lhs_type, int_type);
+                let lhs_compat_float = self.type_checker.check_compatibility(lhs_type, float_type);
+                let lhs_compat_string = self.type_checker.check_compatibility(lhs_type, string_type);
+
+                let lhs_is_numeric = matches!(lhs_compat_int, TypeCompatibility::Identical | TypeCompatibility::Assignable) ||
+                                   matches!(lhs_compat_float, TypeCompatibility::Identical | TypeCompatibility::Assignable);
+                let lhs_is_string = matches!(lhs_compat_string, TypeCompatibility::Identical | TypeCompatibility::Assignable);
+
+                let rhs_compat_int = self.type_checker.check_compatibility(rhs_type, int_type);
+                let rhs_compat_float = self.type_checker.check_compatibility(rhs_type, float_type);
+                let rhs_compat_string = self.type_checker.check_compatibility(rhs_type, string_type);
+
+                let rhs_is_numeric = matches!(rhs_compat_int, TypeCompatibility::Identical | TypeCompatibility::Assignable) ||
+                                   matches!(rhs_compat_float, TypeCompatibility::Identical | TypeCompatibility::Assignable);
+                let rhs_is_string = matches!(rhs_compat_string, TypeCompatibility::Identical | TypeCompatibility::Assignable);
+
+                // Check if this is valid string concatenation or numeric addition
+                if lhs_is_string || rhs_is_string {
+                    // String concatenation - Haxe allows implicit conversion of any type to string
+                    // when concatenating with +, so this is always valid
+                } else if lhs_is_numeric && rhs_is_numeric {
+                    // Numeric addition - both operands are numeric, this is valid
+                } else {
+                    // Neither string concatenation nor numeric addition
+                    self.emit_enhanced_type_error(
+                        lhs_type,
+                        int_type,
+                        source_location,
+                        "Left operand of Add must be numeric",
+                        &TypeErrorContext::BinaryOperation { operator: *op, other_type: rhs_type }
+                    );
+                    self.emit_enhanced_type_error(
+                        rhs_type,
+                        int_type,
+                        source_location,
+                        "Right operand of Add must be numeric",
+                        &TypeErrorContext::BinaryOperation { operator: *op, other_type: lhs_type }
+                    );
+                }
+            }
+            BinaryOperator::Sub | BinaryOperator::Mul | BinaryOperator::Div => {
+                // Purely numeric operations
+                let type_table = self.type_checker.type_table.borrow();
+                let int_type = type_table.int_type();
+                let float_type = type_table.float_type();
+                drop(type_table);
+
+                let lhs_compat_int = self.type_checker.check_compatibility(lhs_type, int_type);
+                let lhs_compat_float = self.type_checker.check_compatibility(lhs_type, float_type);
+
+                let is_numeric = matches!(lhs_compat_int, TypeCompatibility::Identical | TypeCompatibility::Assignable) ||
+                               matches!(lhs_compat_float, TypeCompatibility::Identical | TypeCompatibility::Assignable);
+
+                if !is_numeric {
+                    self.emit_enhanced_type_error(
+                        lhs_type,
+                        int_type,
+                        source_location,
+                        &format!("Left operand of {:?} must be numeric", op),
+                        &TypeErrorContext::BinaryOperation { operator: *op, other_type: rhs_type }
+                    );
+                }
+
+                // Check right operand too
+                let rhs_compat_int = self.type_checker.check_compatibility(rhs_type, int_type);
+                let rhs_compat_float = self.type_checker.check_compatibility(rhs_type, float_type);
+
+                let rhs_is_numeric = matches!(rhs_compat_int, TypeCompatibility::Identical | TypeCompatibility::Assignable) ||
+                                   matches!(rhs_compat_float, TypeCompatibility::Identical | TypeCompatibility::Assignable);
+
+                if !rhs_is_numeric {
+                    self.emit_enhanced_type_error(
+                        rhs_type,
+                        int_type,
+                        source_location,
+                        &format!("Right operand of {:?} must be numeric", op),
+                        &TypeErrorContext::BinaryOperation { operator: *op, other_type: lhs_type }
+                    );
+                }
+            }
+            BinaryOperator::Eq | BinaryOperator::Ne => {
+                // Equality - just check types are compatible
+                let compatibility = self.type_checker.check_compatibility(lhs_type, rhs_type);
+                if matches!(compatibility, TypeCompatibility::Incompatible) {
+                    self.emit_error(TypeCheckError {
+                        kind: TypeErrorKind::TypeMismatch {
+                            expected: lhs_type,
+                            actual: rhs_type,
+                        },
+                        location: source_location,
+                        context: "Cannot compare incompatible types".to_string(),
+                        suggestion: Some("Ensure both operands have compatible types".to_string()),
+                    });
+                }
+            }
+            _ => {
+                // TODO: Handle other operators
+            }
+        }
+        Ok(())
+    }
+
+    /// Check a function call expression (extracted to reduce stack frame size)
+    #[inline(never)]
+    fn check_function_call_expr(
+        &mut self,
+        function: &TypedExpression,
+        arguments: &[TypedExpression],
+        source_location: SourceLocation,
+    ) -> Result<(), String> {
+        let callee_type = self.check_expression(function)?;
+
+        // Check argument types first
+        let mut arg_types = Vec::new();
+        for arg in arguments {
+            let arg_type = self.check_expression(arg)?;
+            arg_types.push(arg_type);
+        }
+
+        // Check function signature matches arguments
+        let (param_types, is_function) = {
+            let type_table = self.type_checker.type_table.borrow();
+            if let Some(function_type) = type_table.get(callee_type) {
+                match &function_type.kind {
+                    super::TypeKind::Function { params, .. } => {
+                        (params.clone(), true)
+                    }
+                    _ => (Vec::new(), false)
+                }
+            } else {
+                (Vec::new(), false)
+            }
+        };
+
+        if is_function {
+            // Check parameter count
+            if param_types.len() != arg_types.len() {
+                self.emit_error(TypeCheckError {
+                    kind: TypeErrorKind::TypeMismatch {
+                        expected: callee_type, // Not ideal but best we can do
+                        actual: callee_type,
+                    },
+                    location: source_location,
+                    context: format!(
+                        "Function expects {} arguments but {} were provided",
+                        param_types.len(),
+                        arg_types.len()
+                    ),
+                    suggestion: Some(format!(
+                        "Provide exactly {} argument{}",
+                        param_types.len(),
+                        if param_types.len() == 1 { "" } else { "s" }
+                    )),
+                });
+            } else {
+                // Check each parameter type
+                for (i, (expected_type, actual_type)) in param_types.iter().zip(&arg_types).enumerate() {
+                    let compatibility = self.type_checker.check_compatibility(*actual_type, *expected_type);
+                    if matches!(compatibility, TypeCompatibility::Incompatible) {
+                        self.emit_enhanced_type_error(
+                            *actual_type,
+                            *expected_type,
+                            source_location,
+                            &format!("Argument {} type mismatch", i + 1),
+                            &TypeErrorContext::FunctionCall {
+                                param_index: i,
+                                expected_type: *expected_type
+                            }
+                        );
+                    }
+                }
+            }
+        } else {
+            // Not a function type or type not found
+
+            // Not a function type - always report error
+            {
+                // Create a function type for the expected type in the error message
+                let expected_function_type = {
+                    let mut type_table = self.type_checker.type_table.borrow_mut();
+                    // Create a generic function type (args) -> return
+                    let dynamic_type = type_table.dynamic_type();
+                    type_table.create_function_type(vec![], dynamic_type)
+                };
+
+                self.emit_error(TypeCheckError {
+                    kind: TypeErrorKind::TypeMismatch {
+                        expected: expected_function_type,
+                        actual: callee_type,
+                    },
+                    location: source_location,
+                    context: "Cannot call non-function type".to_string(),
+                    suggestion: Some("Ensure the expression evaluates to a function".to_string()),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Check a method call expression (extracted to reduce stack frame size)
+    #[inline(never)]
+    fn check_method_call_expr(
+        &mut self,
+        receiver: &TypedExpression,
+        method_symbol: SymbolId,
+        arguments: &[TypedExpression],
+        source_location: SourceLocation,
+    ) -> Result<(), String> {
+        // Check receiver type
+        let receiver_type = self.check_expression(receiver)?;
+
+        // Check argument types
+        let mut arg_types = Vec::new();
+        for arg in arguments {
+            let arg_type = self.check_expression(arg)?;
+            arg_types.push(arg_type);
+        }
+
+        // Check if method is not static (instance method call)
+        let type_table = self.type_checker.type_table.borrow();
+        if let Some(type_info) = type_table.get(receiver_type) {
+            if let super::TypeKind::Class { symbol_id: class_symbol, .. } = &type_info.kind {
+                // Copy the class data to avoid borrow checker issues
+                let class_symbol_copy = *class_symbol;
+                drop(type_table); // Release borrow before calling method
+
+                // Check if method is static (instance method call)
+                let class_and_method_data = self.find_class_by_symbol(class_symbol_copy).and_then(|class_def| {
+                    class_def.methods.iter()
+                        .find(|m| m.symbol_id == method_symbol)
+                        .map(|method| (class_def.name, class_def.symbol_id, method.name, method.is_static))
+                });
+
+                if let Some((class_name, class_id, method_name, is_static)) = class_and_method_data {
+                    if is_static {
+                        // Accessing static method through instance
+                        self.emit_error(TypeCheckError {
+                            kind: TypeErrorKind::StaticAccessFromInstance {
+                                member_name: method_name,
+                                class_name,
+                            },
+                            location: source_location,
+                            context: "Static methods should be accessed through the class, not an instance".to_string(),
+                            suggestion: Some(format!("Use {}.{} instead",
+                                self.string_interner.get(class_name).unwrap_or("<class>"),
+                                self.string_interner.get(method_name).unwrap_or("<method>")
+                            )),
+                        });
+                        // Don't return early - continue checking other expressions
+                    }
+                }
+            }
+        }
+
+        // Look up the method's function type from the symbol
+        if let Some(method_info) = self.type_checker.symbol_table.get_symbol(method_symbol) {
+            // Get the method's function type
+            let method_type = method_info.type_id;
+
+            // Check if it's a function type
+            let (param_types, is_function) = {
+                let type_table = self.type_checker.type_table.borrow();
+                if let Some(function_type) = type_table.get(method_type) {
+                    match &function_type.kind {
+                        super::TypeKind::Function { params, .. } => {
+                            (params.clone(), true)
+                        }
+                        _ => (Vec::new(), false)
+                    }
+                } else {
+                    (Vec::new(), false)
+                }
+            };
+
+            if is_function {
+                // First try the main signature
+                let main_signature_matches = self.check_signature_compatibility(&param_types, &arg_types);
+
+                if !main_signature_matches {
+                    // If main signature doesn't match, try overloads
+                    let overload_match_found = self.check_method_overloads(method_symbol, &arg_types, source_location);
+
+                    if !overload_match_found {
+                        // No overload matched, emit error
+                        self.emit_error(TypeCheckError {
+                            kind: TypeErrorKind::TypeMismatch {
+                                expected: method_type,
+                                actual: method_type,
+                            },
+                            location: source_location,
+                            context: format!(
+                                "Method call does not match any available signature. Expected {} arguments but {} were provided",
+                                param_types.len(),
+                                arg_types.len()
+                            ),
+                            suggestion: Some("Check method signature and available overloads".to_string()),
+                        });
+                    }
+                }
+            }
+        } else {
+            self.emit_error(TypeCheckError {
+                kind: TypeErrorKind::InferenceFailed {
+                    reason: format!("Method symbol not found: {:?}", method_symbol),
+                },
+                location: source_location,
+                context: "Method call on unknown method".to_string(),
+                suggestion: None,
+            });
+        }
+        Ok(())
+    }
+
+    /// Check a switch expression (extracted to reduce stack frame size)
+    #[inline(never)]
+    fn check_switch_expr(
+        &mut self,
+        discriminant: &TypedExpression,
+        cases: &[TypedSwitchCase],
+        default_case: Option<&TypedExpression>,
+        expr_type: TypeId,
+        source_location: SourceLocation,
+    ) -> Result<(), String> {
+        let discriminant_type = self.check_expression(discriminant)?;
+
+        // For switch expressions, collect branch types to ensure they're compatible
+        let mut branch_types = Vec::new();
+        let mut branch_locations = Vec::new();
+
+        // Check each case
+        for case in cases {
+            // Check case value
+            let pattern = &case.case_value;
+            let pattern_type = self.check_expression(pattern)?;
+            // Pattern type should be compatible with discriminant
+            let compatibility = self.type_checker.check_compatibility(pattern_type, discriminant_type);
+            if matches!(compatibility, TypeCompatibility::Incompatible) {
+                self.emit_enhanced_type_error(
+                    pattern_type,
+                    discriminant_type,
+                    pattern.source_location,
+                    "Switch pattern type must match discriminant type",
+                    &TypeErrorContext::SwitchPattern
+                );
+            }
+
+            // Note: TypedSwitchCase doesn't have guards in the current implementation
+
+            // Check case body
+            self.check_statement(&case.body)?;
+
+            // For switch expressions, extract the expression type from the body
+            if let TypedStatement::Expression { expression, .. } = &case.body {
+                branch_types.push(expression.expr_type);
+                branch_locations.push(expression.source_location);
+            }
+        }
+
+        // Check default case if present
+        if let Some(default) = default_case {
+            let default_type = self.check_expression(default)?;
+            branch_types.push(default_type);
+            branch_locations.push(default.source_location);
+        }
+
+        // For switch expressions, ensure all branches have compatible types
+        if !branch_types.is_empty() && expr_type != self.type_checker.type_table.borrow().void_type() {
+            let expected_type = branch_types[0];
+            for (i, (&branch_type, &location)) in branch_types.iter().zip(branch_locations.iter()).enumerate().skip(1) {
+                let compatibility = self.type_checker.check_compatibility(branch_type, expected_type);
+                if matches!(compatibility, TypeCompatibility::Incompatible) {
+                    self.emit_enhanced_type_error(
+                        branch_type,
+                        expected_type,
+                        location,
+                        "Switch expression branches must have compatible types",
+                        &TypeErrorContext::SwitchExpression
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Check a map literal expression (extracted to reduce stack frame size)
+    #[inline(never)]
+    fn check_map_literal_expr(
+        &mut self,
+        entries: &[TypedMapEntry],
+        source_location: SourceLocation,
+    ) -> Result<(), String> {
+        if !entries.is_empty() {
+            // Check first entry to establish expected types
+            let first_key_type = self.check_expression(&entries[0].key)?;
+            let first_value_type = self.check_expression(&entries[0].value)?;
+
+            // Track duplicate keys if they're compile-time constants
+            let mut constant_keys = std::collections::HashSet::new();
+
+            // Check remaining entries for type consistency
+            for (index, entry) in entries.iter().enumerate() {
+                let key_type = self.check_expression(&entry.key)?;
+                let value_type = self.check_expression(&entry.value)?;
+
+                // Check key type consistency
+                let key_compatibility = self.type_checker.check_compatibility(key_type, first_key_type);
+                if matches!(key_compatibility, TypeCompatibility::Incompatible) {
+                    self.emit_enhanced_type_error(
+                        key_type,
+                        first_key_type,
+                        entry.key.source_location,
+                        &format!("Map key type mismatch at index {}", index),
+                        &TypeErrorContext::ArrayAccess // Reuse context
+                    );
+                }
+
+                // Check value type consistency
+                let value_compatibility = self.type_checker.check_compatibility(value_type, first_value_type);
+                if matches!(value_compatibility, TypeCompatibility::Incompatible) {
+                    self.emit_enhanced_type_error(
+                        value_type,
+                        first_value_type,
+                        entry.value.source_location,
+                        &format!("Map value type mismatch at index {}", index),
+                        &TypeErrorContext::ArrayAccess // Reuse context
+                    );
+                }
+
+                // Check for duplicate literal keys (strings, numbers, etc.)
+                if let TypedExpressionKind::Literal { value } = &entry.key.kind {
+                    let key_str = match value {
+                        super::node::LiteralValue::String(s) => Some(s.clone()),
+                        super::node::LiteralValue::Int(i) => Some(i.to_string()),
+                        super::node::LiteralValue::Float(f) => Some(f.to_string()),
+                        super::node::LiteralValue::Bool(b) => Some(b.to_string()),
+                        _ => None,
+                    };
+
+                    if let Some(key_str) = key_str {
+                        if constant_keys.contains(&key_str) {
+                            self.emit_error(TypeCheckError {
+                                kind: TypeErrorKind::UndefinedType {
+                                    name: self.string_interner.intern(&key_str)
+                                },
+                                location: entry.key.source_location,
+                                context: format!("Duplicate map key '{}'", key_str),
+                                suggestion: Some("Map keys must be unique".to_string()),
+                            });
+                        }
+                        constant_keys.insert(key_str);
+                    }
+                }
+            }
+
+            // TODO: Validate map key types are valid (hashable/comparable)
+            // In Haxe, most types can be map keys, but some restrictions apply
+        }
+        Ok(())
+    }
+
     /// Check a statement
     pub fn check_statement(&mut self, stmt: &TypedStatement) -> Result<(), String> {
         match stmt {
@@ -2414,21 +2311,14 @@ TypedExpressionKind::Await { expression, await_type } => todo!(),
 
     /// Check if a field is accessible from the current context
     fn check_field_accessibility(&mut self, class_symbol: &SymbolId, field_symbol: SymbolId, location: SourceLocation, is_static_access: bool) -> Result<(), String> {
-        // Debug output
-        eprintln!("DEBUG check_field_accessibility: class_symbol={:?}, field_symbol={:?}, is_static_access={}",
-            class_symbol, field_symbol, is_static_access);
-
         // Get field information and extract needed data to avoid borrow conflicts
         let (field_name, field_visibility, is_static) = if let Some(field_info) = self.find_field_by_symbol(field_symbol) {
-            eprintln!("DEBUG check_field_accessibility: Found field, visibility={:?}", field_info.visibility);
             (field_info.name, field_info.visibility, field_info.is_static)
         } else {
-            eprintln!("DEBUG check_field_accessibility: Field not found!");
             return Ok(());
         };
 
         let field_name_str = self.string_interner.get(field_name).unwrap_or("<field>");
-        eprintln!("DEBUG check_field_accessibility: field_name='{}', visibility={:?}", field_name_str, field_visibility);
         
         // Get class name for error messages
         let class_name = if let Some(class_def) = self.find_class_by_symbol(*class_symbol) {
@@ -2736,8 +2626,7 @@ TypedExpressionKind::Await { expression, await_type } => todo!(),
     
     /// Find a field by symbol ID
     fn find_field_by_symbol(&self, field_symbol: SymbolId) -> Option<&TypedField> {
-        eprintln!("DEBUG find_field_by_symbol: Looking for field_symbol={:?}", field_symbol);
-        
+
         if let Some(typed_file_ptr) = self.current_typed_file {
             // SAFETY: This is safe because we only set current_typed_file during the lifetime
             // of the TypedFile reference in check_file, and we clear it after use
@@ -4075,7 +3964,12 @@ class NestedTryCatchTest {
         let result = crate::pipeline::compile_haxe_source(haxe_code);
         
         // Nested try-catch should compile without errors
-        assert!(result.errors.is_empty(), "Nested try-catch should not have errors");
+        if !result.errors.is_empty() {
+            for (i, e) in result.errors.iter().enumerate() {
+                eprintln!("Error {}: {} (category: {:?})", i, e.message, e.category);
+            }
+        }
+        assert!(result.errors.is_empty(), "Nested try-catch should not have errors, got {} errors", result.errors.len());
     }
     
     #[test]

@@ -482,16 +482,20 @@ impl<'a> EffectAnalyzer<'a> {
                 }
             }
             
-            TypedExpressionKind::Try { try_expr, catch_clauses } => {
+            TypedExpressionKind::Try { try_expr, catch_clauses, finally_block } => {
                 let mut try_effects = self.analyze_expression(try_expr);
-                
+
                 // Try expressions can catch exceptions
                 try_effects.can_throw = false;
-                
+
                 for catch in catch_clauses {
                     effects.merge(self.analyze_catch_clause(catch));
                 }
-                
+
+                if let Some(finally) = finally_block {
+                    effects.merge(self.analyze_expression(finally));
+                }
+
                 effects.merge(try_effects);
             }
             

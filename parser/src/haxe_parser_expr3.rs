@@ -42,12 +42,14 @@ pub fn try_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let (input, _) = context("[E0060] expected 'try' keyword", keyword("try")).parse(input)?;
     let (input, expr) = context("[E0061] expected expression after 'try' | help: provide the expression that might throw an exception", |i| expression(full, i)).parse(input)?;
     let (input, catches) = context("[E0062] expected at least one 'catch' clause after try expression | help: try blocks must have at least one catch clause", many1(|i| catch_clause(full, i))).parse(input)?;
+    let (input, finally_block) = opt(preceded(keyword("finally"), |i| expression(full, i))).parse(input)?;
     let end = position(full, input);
-    
+
     Ok((input, Expr {
         kind: ExprKind::Try {
             expr: Box::new(expr),
             catches,
+            finally_block: finally_block.map(Box::new),
         },
         span: Span::new(start, end),
     }))

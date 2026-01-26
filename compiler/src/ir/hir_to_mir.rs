@@ -6320,8 +6320,14 @@ impl<'a> HirToMirContext<'a> {
                 self.lower_inline_code(target, code)
             }
 
+            HirExprKind::TryCatch { try_expr, .. } => {
+                // Lower try-catch as an expression: lower the try body as the value.
+                // Exception handling is managed at the statement level;
+                // at the expression level, just lower the try body.
+                self.lower_expression(try_expr)
+            }
+
             _ => {
-                // debug!("Unsupported expression type in MIR");
                 self.add_error("Unsupported expression type in MIR", expr.source_location);
                 None
             }

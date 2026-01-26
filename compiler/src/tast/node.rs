@@ -1223,10 +1223,11 @@ pub enum TypedExpressionKind {
         default_case: Option<Box<TypedExpression>>,
     },
 
-    /// Try-catch expression: `try expr catch (e:Type) handler`
+    /// Try-catch-finally expression: `try expr catch (e:Type) handler finally expr`
     Try {
         try_expr: Box<TypedExpression>,
         catch_clauses: Vec<TypedCatchClause>,
+        finally_block: Option<Box<TypedExpression>>,
     },
 
     /// Pattern placeholder for complex patterns that need later compilation

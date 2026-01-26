@@ -1315,13 +1315,16 @@ impl CompilationUnit {
                     extract_expr_deps(iter, deps);
                     extract_expr_deps(body, deps);
                 }
-                ExprKind::Try { expr, catches } => {
+                ExprKind::Try { expr, catches, finally_block } => {
                     extract_expr_deps(expr, deps);
                     for catch in catches {
                         if let Some(ty) = &catch.type_hint {
                             extract_type_deps(ty, deps);
                         }
                         extract_expr_deps(&catch.body, deps);
+                    }
+                    if let Some(finally) = finally_block {
+                        extract_expr_deps(finally, deps);
                     }
                 }
                 ExprKind::Cast { expr, type_hint } => {

@@ -1630,10 +1630,8 @@ impl<'a> TastToHirContext<'a> {
                 };
                 HirExprKind::Block(block)
             }
-            TypedExpressionKind::Try { try_expr, catch_clauses } => {
-                // Lower try-catch expression to HIR
-                // try { expr } catch(e:Type) { handle } becomes a TryCatch expression
-                
+            TypedExpressionKind::Try { try_expr, catch_clauses, finally_block } => {
+                // Lower try-catch-finally expression to HIR
                 let try_body = self.lower_expression(try_expr);
                 let catch_handlers = catch_clauses.iter().map(|clause| {
                     // Lower the catch body
@@ -1648,7 +1646,7 @@ impl<'a> TastToHirContext<'a> {
                                 HirExprKind::Block(HirBlock {
                                     statements: vec![stmt],
                                     expr: None,
-                                    scope: self.current_scope, // Use current scope
+                                    scope: self.current_scope,
                                 }),
                                 self.get_void_type(),
                                 self.current_lifetime,
@@ -1656,7 +1654,7 @@ impl<'a> TastToHirContext<'a> {
                             )
                         }
                     };
-                    
+
                     crate::ir::hir::HirCatchHandler {
                         exception_var: clause.exception_variable,
                         exception_type: clause.exception_type,
@@ -1664,11 +1662,13 @@ impl<'a> TastToHirContext<'a> {
                         body: Box::new(body),
                     }
                 }).collect();
-                
+
+                let finally_expr = finally_block.as_ref().map(|f| Box::new(self.lower_expression(f)));
+
                 HirExprKind::TryCatch {
                     try_expr: Box::new(try_body),
                     catch_handlers,
-                    finally_expr: None, // TODO: Add finally support if needed
+                    finally_expr,
                 }
             }
             TypedExpressionKind::StaticMethodCall { class_symbol, method_symbol, type_arguments, arguments } => {

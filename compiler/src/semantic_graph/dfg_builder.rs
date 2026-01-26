@@ -1269,6 +1269,7 @@ impl DfgBuilder {
             TypedExpressionKind::Try {
                 try_expr,
                 catch_clauses,
+                ..
             } => {
                 // Build try-catch expression
                 let try_node = self.build_expression(try_expr)?;
