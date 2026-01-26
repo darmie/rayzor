@@ -21,13 +21,14 @@
 
 use libloading::Library;
 use serde::Deserialize;
+use std::ffi::CStr;
 use std::path::Path;
 
 use crate::compiler_plugin::CompilerPlugin;
 use crate::ir::mir_builder::MirBuilder;
 use crate::ir::{CallingConvention, IrType};
 use super::{FunctionSource, IrTypeDescriptor, MethodSignature, RuntimeFunctionCall};
-use super::hl_types::HlTypeKind;
+use super::hl_types::{self, HlTypeKind};
 
 // ============================================================================
 // Manifest Structures (JSON format)
@@ -260,6 +261,130 @@ impl HdllPlugin {
 
         Ok(HdllPlugin {
             name: manifest.name,
+            library,
+            functions,
+        })
+    }
+
+    /// Load an HDLL plugin by introspecting `hlp_` symbols.
+    ///
+    /// This is the primary loading method for HDLL libraries. Hashlink HDLL
+    /// libraries use the `DEFINE_PRIM` macro to generate `hlp_<name>` symbols
+    /// that are self-describing: calling each `hlp_` function returns the
+    /// actual function pointer and sets a type signature string.
+    ///
+    /// # Arguments
+    ///
+    /// * `lib_path` - Path to the `.hdll` (`.dylib`/`.so`/`.dll`) file
+    /// * `lib_name` - Library name from `@:hlNative` (e.g., "simplex")
+    /// * `class_name` - Haxe class name (e.g., "SimplexGenerator")
+    /// * `methods` - List of `(method_name, is_static)` from the Haxe class
+    ///
+    /// # How `hlp_` symbols work
+    ///
+    /// Each `DEFINE_PRIM(_RET, name, _ARGS)` in the C source generates:
+    /// ```c
+    /// void* hlp_name(const char** sign) {
+    ///     *sign = "arg_codes_return_code";  // e.g., "ii_i"
+    ///     return (void*)libname_name;       // actual function pointer
+    /// }
+    /// ```
+    pub fn load_with_introspection(
+        lib_path: &Path,
+        lib_name: &str,
+        class_name: &str,
+        methods: &[(&str, bool)],
+    ) -> Result<Self, HdllError> {
+        let library = unsafe {
+            Library::new(lib_path)
+                .map_err(|e| HdllError::LoadError(format!("Failed to load {}: {}", lib_path.display(), e)))?
+        };
+
+        let mut functions = Vec::new();
+
+        for (method_name, is_static) in methods {
+            let hlp_symbol = format!("hlp_{}", method_name);
+
+            // The hlp_ function takes a pointer-to-pointer for the signature string
+            // and returns the actual function pointer.
+            type HlpFn = unsafe extern "C" fn(*mut *const std::os::raw::c_char) -> *const ();
+
+            let fn_ptr: *const ();
+            let signature: String;
+
+            unsafe {
+                let hlp_fn: libloading::Symbol<HlpFn> = library
+                    .get(hlp_symbol.as_bytes())
+                    .map_err(|e| HdllError::SymbolError(
+                        hlp_symbol.clone(),
+                        format!("hlp_ symbol not found (is DEFINE_PRIM used?): {}", e),
+                    ))?;
+
+                let mut sign_ptr: *const std::os::raw::c_char = std::ptr::null();
+                fn_ptr = hlp_fn(&mut sign_ptr);
+
+                if sign_ptr.is_null() {
+                    return Err(HdllError::SymbolError(
+                        hlp_symbol,
+                        "hlp_ function returned null signature".to_string(),
+                    ));
+                }
+
+                signature = CStr::from_ptr(sign_ptr)
+                    .to_str()
+                    .map_err(|e| HdllError::SymbolError(
+                        hlp_symbol.clone(),
+                        format!("Invalid UTF-8 in signature: {}", e),
+                    ))?
+                    .to_string();
+            }
+
+            if fn_ptr.is_null() {
+                return Err(HdllError::SymbolError(
+                    hlp_symbol,
+                    "hlp_ function returned null function pointer".to_string(),
+                ));
+            }
+
+            // Parse the HL signature string (e.g., "ii_i" -> params=[I32,I32], ret=I32)
+            let (param_kinds, return_kind) = hl_types::parse_hl_signature(&signature)
+                .ok_or_else(|| HdllError::SymbolError(
+                    hlp_symbol.clone(),
+                    format!("Failed to parse HL signature '{}'", signature),
+                ))?;
+
+            let param_types: Vec<IrTypeDescriptor> = param_kinds
+                .iter()
+                .map(|k| k.to_ir_type_descriptor())
+                .collect();
+            let return_type = return_kind.to_ir_type_descriptor();
+
+            // The actual C symbol is lib_name + "_" + method_name
+            let symbol_name = format!("{}_{}", lib_name, method_name);
+
+            log::debug!(
+                "HDLL introspection: {} -> sig='{}', params={:?}, ret={:?}",
+                symbol_name, signature, param_types, return_type
+            );
+
+            functions.push(HdllFunction {
+                symbol_name,
+                class_name: class_name.to_string(),
+                method_name: method_name.to_string(),
+                is_static: *is_static,
+                param_types,
+                return_type,
+                fn_ptr,
+            });
+        }
+
+        log::info!(
+            "Loaded HDLL plugin '{}' via introspection with {} functions from {}",
+            lib_name, functions.len(), lib_path.display()
+        );
+
+        Ok(HdllPlugin {
+            name: lib_name.to_string(),
             library,
             functions,
         })

@@ -129,6 +129,54 @@ impl HlTypeKind {
         }
     }
 
+    /// Parse a Hashlink type from a single-character type code.
+    ///
+    /// These codes are used in HL function signatures returned by `hlp_` symbols.
+    /// The codes are defined in `hl.h` and match the `DEFINE_PRIM` macro type suffixes.
+    ///
+    /// # Type Code Reference
+    ///
+    /// | Code | Type      | Code | Type     |
+    /// |------|-----------|------|----------|
+    /// | `v`  | Void      | `O`  | Object   |
+    /// | `c`  | UI8       | `A`  | Array    |
+    /// | `s`  | UI16      | `T`  | Type     |
+    /// | `i`  | I32       | `R`  | Ref      |
+    /// | `l`  | I64       | `V`  | Virtual  |
+    /// | `f`  | F32       | `W`  | DynObj   |
+    /// | `d`  | F64       | `X`  | Abstract |
+    /// | `b`  | Bool      | `E`  | Enum     |
+    /// | `B`  | Bytes     | `N`  | Null     |
+    /// | `D`  | Dynamic   | `M`  | Method   |
+    /// | `F`  | Function  | `S`  | Struct   |
+    pub fn from_type_code(c: char) -> Option<Self> {
+        match c {
+            'v' => Some(HlTypeKind::HVoid),
+            'c' => Some(HlTypeKind::HUI8),
+            's' => Some(HlTypeKind::HUI16),
+            'i' => Some(HlTypeKind::HI32),
+            'l' => Some(HlTypeKind::HI64),
+            'f' => Some(HlTypeKind::HF32),
+            'd' => Some(HlTypeKind::HF64),
+            'b' => Some(HlTypeKind::HBool),
+            'B' => Some(HlTypeKind::HBytes),
+            'D' => Some(HlTypeKind::HDyn),
+            'F' => Some(HlTypeKind::HFun),
+            'O' => Some(HlTypeKind::HObj),
+            'A' => Some(HlTypeKind::HArray),
+            'T' => Some(HlTypeKind::HType),
+            'R' => Some(HlTypeKind::HRef),
+            'V' => Some(HlTypeKind::HVirtual),
+            'W' => Some(HlTypeKind::HDynObj),
+            'X' => Some(HlTypeKind::HAbstract),
+            'E' => Some(HlTypeKind::HEnum),
+            'N' => Some(HlTypeKind::HNull),
+            'M' => Some(HlTypeKind::HMethod),
+            'S' => Some(HlTypeKind::HStruct),
+            _ => None,
+        }
+    }
+
     /// Get a string representation suitable for manifests
     pub fn to_manifest_str(&self) -> &'static str {
         match self {
@@ -156,6 +204,43 @@ impl HlTypeKind {
             HlTypeKind::HStruct => "struct",
         }
     }
+}
+
+/// Parse a Hashlink function signature string.
+///
+/// Hashlink HDLL libraries export `hlp_<name>` symbols that return a type
+/// signature string describing the function's parameter and return types.
+///
+/// # Format
+///
+/// The signature format is: `arg_type_codes + "_" + return_type_code`
+///
+/// For example:
+/// - `"ii_i"` = `fn(i32, i32) -> i32`
+/// - `"d_v"` = `fn(f64) -> void`
+/// - `"_v"` = `fn() -> void` (no parameters)
+/// - `"BiB_B"` = `fn(bytes, i32, bytes) -> bytes`
+///
+/// # Returns
+///
+/// Returns `Some((param_types, return_type))` on success, or `None` if the
+/// signature is malformed or contains unknown type codes.
+pub fn parse_hl_signature(sig: &str) -> Option<(Vec<HlTypeKind>, HlTypeKind)> {
+    let (params_str, return_str) = sig.rsplit_once('_')?;
+
+    // Parse return type (single character)
+    if return_str.len() != 1 {
+        return None;
+    }
+    let return_type = HlTypeKind::from_type_code(return_str.chars().next()?)?;
+
+    // Parse parameter types (each is a single character)
+    let mut param_types = Vec::new();
+    for c in params_str.chars() {
+        param_types.push(HlTypeKind::from_type_code(c)?);
+    }
+
+    Some((param_types, return_type))
 }
 
 #[cfg(test)]
@@ -224,5 +309,85 @@ mod tests {
         assert_eq!(HlTypeKind::from_manifest_str("unknown_type"), None);
         assert_eq!(HlTypeKind::from_manifest_str(""), None);
         assert_eq!(HlTypeKind::from_manifest_str("foobar"), None);
+    }
+
+    #[test]
+    fn test_type_code_scalars() {
+        assert_eq!(HlTypeKind::from_type_code('v'), Some(HlTypeKind::HVoid));
+        assert_eq!(HlTypeKind::from_type_code('i'), Some(HlTypeKind::HI32));
+        assert_eq!(HlTypeKind::from_type_code('l'), Some(HlTypeKind::HI64));
+        assert_eq!(HlTypeKind::from_type_code('f'), Some(HlTypeKind::HF32));
+        assert_eq!(HlTypeKind::from_type_code('d'), Some(HlTypeKind::HF64));
+        assert_eq!(HlTypeKind::from_type_code('b'), Some(HlTypeKind::HBool));
+        assert_eq!(HlTypeKind::from_type_code('c'), Some(HlTypeKind::HUI8));
+        assert_eq!(HlTypeKind::from_type_code('s'), Some(HlTypeKind::HUI16));
+    }
+
+    #[test]
+    fn test_type_code_pointers() {
+        assert_eq!(HlTypeKind::from_type_code('B'), Some(HlTypeKind::HBytes));
+        assert_eq!(HlTypeKind::from_type_code('D'), Some(HlTypeKind::HDyn));
+        assert_eq!(HlTypeKind::from_type_code('O'), Some(HlTypeKind::HObj));
+        assert_eq!(HlTypeKind::from_type_code('A'), Some(HlTypeKind::HArray));
+        assert_eq!(HlTypeKind::from_type_code('X'), Some(HlTypeKind::HAbstract));
+    }
+
+    #[test]
+    fn test_type_code_unknown() {
+        assert_eq!(HlTypeKind::from_type_code('z'), None);
+        assert_eq!(HlTypeKind::from_type_code('0'), None);
+        assert_eq!(HlTypeKind::from_type_code(' '), None);
+    }
+
+    #[test]
+    fn test_parse_hl_signature_basic() {
+        // fn(i32, i32) -> i32
+        let (params, ret) = parse_hl_signature("ii_i").unwrap();
+        assert_eq!(params, vec![HlTypeKind::HI32, HlTypeKind::HI32]);
+        assert_eq!(ret, HlTypeKind::HI32);
+    }
+
+    #[test]
+    fn test_parse_hl_signature_no_params() {
+        // fn() -> void
+        let (params, ret) = parse_hl_signature("_v").unwrap();
+        assert!(params.is_empty());
+        assert_eq!(ret, HlTypeKind::HVoid);
+    }
+
+    #[test]
+    fn test_parse_hl_signature_mixed_types() {
+        // fn(bytes, i32, bytes) -> bytes
+        let (params, ret) = parse_hl_signature("BiB_B").unwrap();
+        assert_eq!(params, vec![HlTypeKind::HBytes, HlTypeKind::HI32, HlTypeKind::HBytes]);
+        assert_eq!(ret, HlTypeKind::HBytes);
+    }
+
+    #[test]
+    fn test_parse_hl_signature_float_to_void() {
+        // fn(f64) -> void
+        let (params, ret) = parse_hl_signature("d_v").unwrap();
+        assert_eq!(params, vec![HlTypeKind::HF64]);
+        assert_eq!(ret, HlTypeKind::HVoid);
+    }
+
+    #[test]
+    fn test_parse_hl_signature_abstract() {
+        // fn(abstract, i32) -> abstract
+        let (params, ret) = parse_hl_signature("Xi_X").unwrap();
+        assert_eq!(params, vec![HlTypeKind::HAbstract, HlTypeKind::HI32]);
+        assert_eq!(ret, HlTypeKind::HAbstract);
+    }
+
+    #[test]
+    fn test_parse_hl_signature_invalid() {
+        // No underscore separator
+        assert!(parse_hl_signature("ii").is_none());
+        // Unknown type code
+        assert!(parse_hl_signature("iz_i").is_none());
+        // Multiple return type chars
+        assert!(parse_hl_signature("i_ii").is_none());
+        // Empty string
+        assert!(parse_hl_signature("").is_none());
     }
 }

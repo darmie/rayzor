@@ -45,6 +45,7 @@ pub mod hl_types;
 pub mod hdll_plugin;
 
 use crate::ir::{IrModule, mir_builder::MirBuilder};
+use crate::compiler_plugin::CompilerPluginRegistry;
 
 // Re-export runtime mapping types
 pub use runtime_mapping::{StdlibMapping, MethodSignature, RuntimeFunctionCall, FunctionSource, IrTypeDescriptor};
@@ -91,6 +92,32 @@ pub fn build_stdlib() -> IrModule {
 
     // Build Vec<T> extern declarations (monomorphized specializations)
     vec::build_vec_externs(&mut builder);
+
+    builder.finish()
+}
+
+/// Build the standard library with additional plugin-provided functions.
+///
+/// This extends `build_stdlib()` by also declaring extern functions and
+/// building MIR wrappers from all registered compiler plugins (including
+/// HDLL plugins loaded from `@:hlNative` classes).
+pub fn build_stdlib_with_plugins(registry: &CompilerPluginRegistry) -> IrModule {
+    let mut builder = MirBuilder::new("haxe");
+
+    // Built-in stdlib modules (same as build_stdlib)
+    memory::build_memory_functions(&mut builder);
+    vec_u8::build_vec_u8_type(&mut builder);
+    string::build_string_type(&mut builder);
+    array::build_array_type(&mut builder);
+    stdtypes::build_std_types(&mut builder);
+    thread::build_thread_type(&mut builder);
+    channel::build_channel_type(&mut builder);
+    sync::build_sync_types(&mut builder);
+    vec::build_vec_externs(&mut builder);
+
+    // Plugin-provided extern declarations and MIR wrappers
+    registry.declare_all_externs(&mut builder);
+    registry.build_all_mir_wrappers(&mut builder);
 
     builder.finish()
 }

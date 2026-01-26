@@ -223,6 +223,7 @@ impl<'a> HirToMirContext<'a> {
         type_table: &'a Rc<RefCell<TypeTable>>,
         hir_types: &'a indexmap::IndexMap<TypeId, HirTypeDecl>,
         symbol_table: &'a SymbolTable,
+        stdlib_mapping: StdlibMapping,
     ) -> Self {
         let mut ctx = Self {
             builder: IrBuilder::new(module_name.clone(), source_file),
@@ -247,7 +248,7 @@ impl<'a> HirToMirContext<'a> {
             constructor_map: HashMap::new(),
             constructor_name_map: HashMap::new(),
             current_hir_types: hir_types,
-            stdlib_mapping: StdlibMapping::new(),
+            stdlib_mapping,
             symbol_table,
             current_env_layout: None,
             current_this_type: None,
@@ -2509,8 +2510,6 @@ impl<'a> HirToMirContext<'a> {
         // Override with correct signature if this is a known extern function
         // This is critical for Math functions to get f64 types instead of inferred i64
         if let Some((correct_params, correct_return)) = self.get_extern_function_signature(name) {
-            debug!("[get_or_register_extern] Using registered signature for {}: {} params -> {:?}",
-                     name, correct_params.len(), correct_return);
             param_types = correct_params;
             return_type = correct_return;
         }
@@ -2983,8 +2982,6 @@ impl<'a> HirToMirContext<'a> {
                     debug!("[Method call] method={:?}, field={:?}, in_local={}, in_external={}", method_name, field, in_local, in_external);
 
                     if let Some(func_id) = self.get_function_id(field) {
-                        // debug!("Found method in function_map - func_id={:?}", func_id);
-
                         // FIRST: Try to route through runtime mapping for extern class methods
                         // Check if there's a runtime mapping using the standard approach
                         // BUT: for String methods with optional params, use param-count-aware lookup
@@ -3416,24 +3413,30 @@ impl<'a> HirToMirContext<'a> {
                                                         .filter_map(|a| self.lower_expression(a))
                                                         .collect();
 
-                                                    // Get or register the extern runtime function
-                                                    // Infer param types from actual arguments
-                                                    let param_types: Vec<IrType> = arg_regs.iter()
-                                                        .map(|reg| self.builder.get_register_type(*reg).unwrap_or(IrType::Any))
-                                                        .collect();
+                                                    // Use the function signature from the mapping (hlp_* introspection)
+                                                    // if available; this is the authoritative source of type info.
+                                                    let (expected_param_types, expected_return_type) = self
+                                                        .get_extern_function_signature(&runtime_func)
+                                                        .unwrap_or_else(|| {
+                                                            let param_types: Vec<IrType> = arg_regs.iter()
+                                                                .map(|reg| self.builder.get_register_type(*reg).unwrap_or(IrType::Any))
+                                                                .collect();
+                                                            (param_types, result_type.clone())
+                                                        });
                                                     let runtime_func_id = self
                                                         .get_or_register_extern_function(
                                                             &runtime_func,
-                                                            param_types,
-                                                            result_type.clone(),
+                                                            expected_param_types,
+                                                            expected_return_type.clone(),
                                                         );
 
                                                     // Generate the call to the runtime function
-                                                    return self.builder.build_call_direct(
+                                                    let call_result = self.builder.build_call_direct(
                                                         runtime_func_id,
                                                         arg_regs,
-                                                        result_type,
+                                                        expected_return_type.clone(),
                                                     );
+                                                    return call_result;
                                                 }
                                             }
                                         }
@@ -4668,7 +4671,6 @@ impl<'a> HirToMirContext<'a> {
                                     if let Some(runtime_func) =
                                         self.get_static_stdlib_runtime_func(qual_name, method_name)
                                     {
-                                        // println!("✅ Generating runtime call to {} for {} (qualified name path)", runtime_func, qual_name);
 
                                         // CHECK: Is this a MIR wrapper function or a true extern?
                                         // We check this by asking get_stdlib_mir_wrapper_signature - if it knows about
@@ -4753,29 +4755,33 @@ impl<'a> HirToMirContext<'a> {
                                             }
                                         }
 
-                                        // Get or register the extern runtime function
-                                        // Use actual argument types from TAST, applying ptr conversion where needed
-                                        let param_types: Vec<IrType> = args.iter().enumerate()
-                                            .map(|(i, arg)| {
-                                                // If this param was converted to a pointer, the type is Ptr
-                                                if ptr_conversion_mask != 0 && (ptr_conversion_mask & (1 << i)) != 0 {
-                                                    IrType::Ptr(Box::new(IrType::U8))
-                                                } else {
-                                                    self.convert_type(arg.ty)
-                                                }
-                                            })
-                                            .collect();
+                                        // Use the function signature from the mapping (hlp_* introspection)
+                                        // if available; this is the authoritative source of type info.
+                                        let (expected_param_types, expected_return_type) = self
+                                            .get_extern_function_signature(&runtime_func)
+                                            .unwrap_or_else(|| {
+                                                let param_types: Vec<IrType> = args.iter().enumerate()
+                                                    .map(|(i, arg)| {
+                                                        if ptr_conversion_mask != 0 && (ptr_conversion_mask & (1 << i)) != 0 {
+                                                            IrType::Ptr(Box::new(IrType::U8))
+                                                        } else {
+                                                            self.convert_type(arg.ty)
+                                                        }
+                                                    })
+                                                    .collect();
+                                                (param_types, result_type.clone())
+                                            });
                                         let runtime_func_id = self.get_or_register_extern_function(
                                             &runtime_func,
-                                            param_types,
-                                            result_type.clone(),
+                                            expected_param_types,
+                                            expected_return_type.clone(),
                                         );
 
                                         // Generate the call to the runtime function
                                         return self.builder.build_call_direct(
                                             runtime_func_id,
                                             final_arg_regs,
-                                            result_type,
+                                            expected_return_type,
                                         );
                                     }
                                 }
@@ -4907,29 +4913,33 @@ impl<'a> HirToMirContext<'a> {
                                             }
                                         }
 
-                                        // Get or register the extern runtime function
-                                        // Use actual argument types from TAST, applying ptr conversion where needed
-                                        let param_types: Vec<IrType> = args.iter().enumerate()
-                                            .map(|(i, arg)| {
-                                                // If this param was converted to a pointer, the type is Ptr
-                                                if ptr_conversion_mask != 0 && (ptr_conversion_mask & (1 << i)) != 0 {
-                                                    IrType::Ptr(Box::new(IrType::U8))
-                                                } else {
-                                                    self.convert_type(arg.ty)
-                                                }
-                                            })
-                                            .collect();
+                                        // Use the function signature from the mapping (hlp_* introspection)
+                                        // if available; this is the authoritative source of type info.
+                                        let (expected_param_types, expected_return_type) = self
+                                            .get_extern_function_signature(&runtime_func)
+                                            .unwrap_or_else(|| {
+                                                let param_types: Vec<IrType> = args.iter().enumerate()
+                                                    .map(|(i, arg)| {
+                                                        if ptr_conversion_mask != 0 && (ptr_conversion_mask & (1 << i)) != 0 {
+                                                            IrType::Ptr(Box::new(IrType::U8))
+                                                        } else {
+                                                            self.convert_type(arg.ty)
+                                                        }
+                                                    })
+                                                    .collect();
+                                                (param_types, result_type.clone())
+                                            });
                                         let runtime_func_id = self.get_or_register_extern_function(
                                             &runtime_func,
-                                            param_types,
-                                            result_type.clone(),
+                                            expected_param_types,
+                                            expected_return_type.clone(),
                                         );
 
                                         // Generate the call to the runtime function
                                         return self.builder.build_call_direct(
                                             runtime_func_id,
                                             final_arg_regs,
-                                            result_type,
+                                            expected_return_type,
                                         );
                                     }
                                 }
@@ -5758,10 +5768,8 @@ impl<'a> HirToMirContext<'a> {
                 // try checking all stdlib registered class names to see if ANY constructor matches
                 // This is a last resort for extern stdlib classes that weren't pre-registered
                 if class_name.is_none() && *class_type == TypeId::from_raw(u32::MAX) {
-                    let stdlib_mapping = crate::stdlib::runtime_mapping::StdlibMapping::new();
-
                     // Get ALL classes that have registered constructors from the stdlib mapping
-                    let constructor_classes = stdlib_mapping.get_constructor_classes();
+                    let constructor_classes = self.stdlib_mapping.get_constructor_classes();
 
                     // Try each registered constructor class
                     for potential_class in constructor_classes {
@@ -5772,7 +5780,7 @@ impl<'a> HirToMirContext<'a> {
                             is_constructor: true,
                             param_count: 0,
                         };
-                        if stdlib_mapping.get(&method_sig).is_some() {
+                        if self.stdlib_mapping.get(&method_sig).is_some() {
                             class_name = Some(potential_class);
                             break;
                         }
@@ -5830,35 +5838,38 @@ impl<'a> HirToMirContext<'a> {
 
                 if let Some(class_name) = final_class_name {
                     // Check if this class has a "new" constructor registered in the runtime mapping
-                    let stdlib_mapping = crate::stdlib::runtime_mapping::StdlibMapping::new();
-
                     // Use find_constructor to look up the registered constructor mapping
                     // This returns both the MethodSignature and RuntimeFunctionCall from the registry
                     // PRIORITY: Try qualified class name FIRST (e.g., "sys_thread_Mutex")
                     // This ensures sys.thread.Mutex uses sys_mutex_alloc, not Mutex_init (rayzor.concurrent.Mutex)
-                    let mut found_constructor: Option<(&crate::stdlib::MethodSignature, &crate::stdlib::RuntimeFunctionCall)> = None;
-                    if let Some(sym_id) = actual_symbol_id {
-                        if let Some(sym) = self.symbol_table.get_symbol(sym_id) {
-                            if let Some(qn) = sym.qualified_name {
-                                if let Some(qual_name) = self.string_interner.get(qn) {
-                                    // Convert "sys.thread.Mutex" to "sys_thread_Mutex"
-                                    let qualified_class_name = qual_name.replace(".", "_");
-                                    found_constructor = stdlib_mapping.find_constructor(&qualified_class_name);
-                                    debug!("[NEW EXPR]: find_constructor(qualified='{}') = {:?}",
-                                        qualified_class_name, found_constructor.as_ref().map(|(_, rc)| rc.runtime_name));
+                    // Look up constructor: extract needed data (Copy types) to avoid holding
+                    // a borrow on self.stdlib_mapping while calling self.lower_expression later.
+                    let constructor_info: Option<(&'static str, bool)> = {
+                        let mut found = None;
+                        if let Some(sym_id) = actual_symbol_id {
+                            if let Some(sym) = self.symbol_table.get_symbol(sym_id) {
+                                if let Some(qn) = sym.qualified_name {
+                                    if let Some(qual_name) = self.string_interner.get(qn) {
+                                        let qualified_class_name = qual_name.replace(".", "_");
+                                        if let Some((_, rc)) = self.stdlib_mapping.find_constructor(&qualified_class_name) {
+                                            debug!("[NEW EXPR]: find_constructor(qualified='{}') = {:?}",
+                                                qualified_class_name, rc.runtime_name);
+                                            found = Some((rc.runtime_name, rc.needs_out_param));
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
-
-                    // FALLBACK: If not found via qualified name, try simple class name (e.g., "Mutex")
-                    if found_constructor.is_none() {
-                        found_constructor = stdlib_mapping.find_constructor(class_name);
-                        debug!("[NEW EXPR]: find_constructor('{}') = {:?}", class_name, found_constructor.as_ref().map(|(_, rc)| rc.runtime_name));
-                    }
-                    if let Some((_method_sig, runtime_call)) = found_constructor {
-                        // Found a constructor mapping!
-                        let wrapper_name = runtime_call.runtime_name;
+                        // FALLBACK: If not found via qualified name, try simple class name
+                        if found.is_none() {
+                            if let Some((_, rc)) = self.stdlib_mapping.find_constructor(class_name) {
+                                debug!("[NEW EXPR]: find_constructor('{}') = {:?}", class_name, rc.runtime_name);
+                                found = Some((rc.runtime_name, rc.needs_out_param));
+                            }
+                        }
+                        found
+                    };
+                    if let Some((wrapper_name, needs_out_param)) = constructor_info {
 
                         // Lower arguments
                         let arg_regs: Vec<_> = args
@@ -5878,7 +5889,7 @@ impl<'a> HirToMirContext<'a> {
 
                         // For constructors that return primitive (direct extern call), use extern function
                         // For constructors that need_out_param (wrapper), use MIR forward ref
-                        let wrapper_func_id = if runtime_call.needs_out_param {
+                        let wrapper_func_id = if needs_out_param {
                             // Complex constructors need a MIR wrapper
                             self.register_stdlib_mir_forward_ref(
                                 wrapper_name,
@@ -11419,6 +11430,7 @@ pub fn lower_hir_to_mir_with_externals(
         type_table,
         &hir_module.types,
         symbol_table,
+        StdlibMapping::new(),
     );
 
     // Set the external function map
@@ -11447,6 +11459,7 @@ pub fn lower_hir_to_mir_with_function_map(
     symbol_table: &SymbolTable,
     external_functions: HashMap<SymbolId, IrFunctionId>,
     external_functions_by_name: HashMap<String, IrFunctionId>,
+    stdlib_mapping: StdlibMapping,
 ) -> Result<MirLoweringResult, Vec<LoweringError>> {
     let mut context = HirToMirContext::new(
         hir_module.name.clone(),
@@ -11455,6 +11468,7 @@ pub fn lower_hir_to_mir_with_function_map(
         type_table,
         &hir_module.types,
         symbol_table,
+        stdlib_mapping,
     );
 
     // Set the external function maps (by SymbolId and by qualified name)

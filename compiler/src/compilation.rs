@@ -27,6 +27,8 @@ use std::path::{PathBuf, Path};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::{HashMap, HashSet};
 use log::{debug, info, warn, trace};
+use crate::compiler_plugin::CompilerPluginRegistry;
+use crate::stdlib::hdll_plugin::HdllPlugin;
 
 /// Represents a complete compilation unit with multiple source files
 pub struct CompilationUnit {
@@ -84,6 +86,15 @@ pub struct CompilationUnit {
     /// This is used for cross-file lookups where SymbolIds differ between compilation units
     /// e.g., "StringTools.startsWith" -> IrFunctionId(N)
     stdlib_function_name_map: HashMap<String, crate::ir::IrFunctionId>,
+
+    /// Compiler plugin registry (builtin + HDLL plugins)
+    compiler_plugin_registry: CompilerPluginRegistry,
+
+    /// Function pointers collected from loaded HDLL plugins for JIT linking
+    hdll_symbols: Vec<(String, *const u8)>,
+
+    /// Set of already-loaded HDLL library names to avoid duplicate loading
+    loaded_hdlls: HashSet<String>,
 }
 
 /// Configuration for compilation
@@ -117,6 +128,9 @@ pub struct CompilationConfig {
 
     /// Pipeline configuration for analysis and optimization
     pub pipeline_config: PipelineConfig,
+
+    /// Directories to search for .hdll files (referenced by @:hlNative metadata)
+    pub hdll_search_paths: Vec<PathBuf>,
 }
 
 impl Default for CompilationConfig {
@@ -142,6 +156,7 @@ impl Default for CompilationConfig {
             cache_dir: None, // Auto-discover cache directory when needed
             lazy_stdlib: false, // Default to eager loading for compatibility
             pipeline_config: PipelineConfig::default(),
+            hdll_search_paths: vec![PathBuf::from(".")],
         }
     }
 }
@@ -380,6 +395,9 @@ impl CompilationUnit {
             loaded_stdlib_typed_files: Vec::new(),
             stdlib_function_map: HashMap::new(),
             stdlib_function_name_map: HashMap::new(),
+            compiler_plugin_registry: CompilerPluginRegistry::new(),
+            hdll_symbols: Vec::new(),
+            loaded_hdlls: HashSet::new(),
         }
     }
 
@@ -2315,6 +2333,8 @@ impl CompilationUnit {
         // Name-based external function map for cross-file lookups where SymbolIds differ
         let external_functions_by_name = self.stdlib_function_name_map.clone();
 
+        let stdlib_mapping = self.compiler_plugin_registry.build_combined_mapping();
+
         let mir_result = lower_hir_to_mir_with_function_map(
             &hir_module,
             &self.string_interner,
@@ -2322,6 +2342,7 @@ impl CompilationUnit {
             &self.symbol_table,
             external_functions,
             external_functions_by_name,
+            stdlib_mapping,
         ).map_err(|errors| {
             errors.into_iter().map(|e| CompilationError {
                 message: format!("MIR lowering error: {:?}", e),
@@ -2382,9 +2403,10 @@ impl CompilationUnit {
         }
 
         // Merge stdlib MIR (extern functions for Thread, Channel, Mutex, Arc, etc.)
-        // This ensures extern runtime functions are available
-        use crate::stdlib::build_stdlib;
-        let mut stdlib_mir = build_stdlib();
+        // This ensures extern runtime functions are available.
+        // Uses build_stdlib_with_plugins to include HDLL extern declarations from loaded plugins.
+        use crate::stdlib::build_stdlib_with_plugins;
+        let mut stdlib_mir = build_stdlib_with_plugins(&self.compiler_plugin_registry);
 
         // DEBUG: Check a specific extern function signature before renumbering
         for (func_id, func) in &stdlib_mir.functions {
@@ -2628,6 +2650,9 @@ impl CompilationUnit {
     /// IMPORTANT: On error, this automatically prints formatted diagnostics to stderr
     
     pub fn lower_to_tast(&mut self) -> Result<Vec<TypedFile>, Vec<CompilationError>> {
+
+        // Step 0: Discover @:hlNative metadata in user files and load HDLL plugins
+        self.discover_and_load_hdlls();
 
         // Step 1: Analyze dependencies for user files
         let analysis = match self.analyze_dependencies() {
@@ -3035,6 +3060,147 @@ impl CompilationUnit {
     /// Returns a vector of MIR modules corresponding to the compiled files
     pub fn get_mir_modules(&self) -> Vec<std::sync::Arc<crate::ir::IrModule>> {
         self.mir_modules.clone()
+    }
+
+    /// Get HDLL function pointers for JIT linking.
+    ///
+    /// Returns symbol name and pointer pairs collected from all loaded HDLL plugins.
+    /// These should be merged with runtime symbols when creating the backend.
+    pub fn get_hdll_symbols(&self) -> &[(String, *const u8)] {
+        &self.hdll_symbols
+    }
+
+    /// Scan parsed user files for `@:hlNative` metadata and load corresponding HDLL libraries.
+    ///
+    /// This should be called after user files have been added (so `user_files` is populated)
+    /// but before MIR lowering (so the plugin registry has all HDLL mappings available).
+    ///
+    /// For each class with `@:hlNative("libname")`, this:
+    /// 1. Extracts method names and static flags from the class declaration
+    /// 2. Searches `hdll_search_paths` for `libname.hdll`
+    /// 3. Loads the HDLL via `hlp_` symbol introspection
+    /// 4. Registers the plugin and collects function pointers for JIT linking
+    pub fn discover_and_load_hdlls(&mut self) {
+        // Collect hlNative class info from user files before mutating self
+        let mut hl_native_classes: Vec<(String, String, Vec<(String, bool)>)> = Vec::new();
+
+        for file in &self.user_files {
+            for decl in &file.declarations {
+                if let parser::TypeDeclaration::Class(class_decl) = decl {
+                    if let Some(lib_name) = Self::extract_hl_native_meta(&class_decl.meta) {
+                        let methods: Vec<(String, bool)> = class_decl.fields.iter()
+                            .filter_map(|field| {
+                                if let parser::ClassFieldKind::Function(func) = &field.kind {
+                                    let is_static = field.modifiers.contains(&parser::Modifier::Static);
+                                    Some((func.name.clone(), is_static))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+
+                        if !methods.is_empty() {
+                            info!(
+                                "Found @:hlNative(\"{}\") on class '{}' with {} methods",
+                                lib_name, class_decl.name, methods.len()
+                            );
+                            hl_native_classes.push((lib_name, class_decl.name.clone(), methods));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Now load each HDLL
+        for (lib_name, class_name, methods) in hl_native_classes {
+            if self.loaded_hdlls.contains(&lib_name) {
+                debug!("HDLL '{}' already loaded, skipping", lib_name);
+                continue;
+            }
+
+            let method_refs: Vec<(&str, bool)> = methods.iter()
+                .map(|(name, is_static)| (name.as_str(), *is_static))
+                .collect();
+
+            if let Some(hdll_path) = self.find_hdll(&lib_name) {
+                match HdllPlugin::load_with_introspection(
+                    &hdll_path, &lib_name, &class_name, &method_refs,
+                ) {
+                    Ok(plugin) => {
+                        for (name, ptr) in plugin.get_symbols() {
+                            self.hdll_symbols.push((name.to_string(), ptr));
+                        }
+                        self.compiler_plugin_registry.register(Box::new(plugin));
+                        self.loaded_hdlls.insert(lib_name);
+                    }
+                    Err(e) => {
+                        warn!("Failed to load {}.hdll: {}", lib_name, e);
+                    }
+                }
+            } else {
+                warn!(
+                    "HDLL '{}' not found in search paths: {:?}",
+                    lib_name, self.config.hdll_search_paths
+                );
+            }
+        }
+    }
+
+    /// Extract `@:hlNative("libname")` metadata from a class's metadata list.
+    ///
+    /// Returns `Some(lib_name)` if `@:hlNative` is found, `None` otherwise.
+    fn extract_hl_native_meta(meta: &[parser::Metadata]) -> Option<String> {
+        for m in meta {
+            let name = m.name.strip_prefix(':').unwrap_or(&m.name);
+            if name == "hlNative" {
+                // Extract library name from first parameter
+                if let Some(first_param) = m.params.first() {
+                    if let parser::ExprKind::String(lib_name) = &first_param.kind {
+                        return Some(lib_name.clone());
+                    }
+                }
+                // @:hlNative with no parameters - use class name as fallback
+                return None;
+            }
+        }
+        None
+    }
+
+    /// Search for an HDLL file in the configured search paths.
+    ///
+    /// On macOS, HDLLs are `.dylib` files. On Linux, `.so`. On Windows, `.dll`.
+    /// The Hashlink convention uses `.hdll` extension.
+    fn find_hdll(&self, lib_name: &str) -> Option<PathBuf> {
+        // Try platform-specific names and .hdll extension
+        let candidates = if cfg!(target_os = "macos") {
+            vec![
+                format!("{}.hdll", lib_name),
+                format!("lib{}.dylib", lib_name),
+                format!("{}.dylib", lib_name),
+            ]
+        } else if cfg!(target_os = "windows") {
+            vec![
+                format!("{}.hdll", lib_name),
+                format!("{}.dll", lib_name),
+            ]
+        } else {
+            vec![
+                format!("{}.hdll", lib_name),
+                format!("lib{}.so", lib_name),
+                format!("{}.so", lib_name),
+            ]
+        };
+
+        for dir in &self.config.hdll_search_paths {
+            for candidate in &candidates {
+                let path = dir.join(candidate);
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+        }
+
+        None
     }
 
     /// Get the stdlib typed files that were loaded during compilation
