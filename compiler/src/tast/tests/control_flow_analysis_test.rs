@@ -48,7 +48,7 @@ mod tests {
     #[test]
     fn test_cfg_construction_linear_flow() {
         let mut analyzer = ControlFlowAnalyzer::new();
-        
+
         // Create a simple linear function: x = 1; y = x; z = y;
         let stmts = vec![
             TypedStatement::VarDeclaration {
@@ -79,25 +79,25 @@ mod tests {
         };
 
         let results = analyzer.analyze_function(&function);
-        
+
         // Verify CFG structure
         let cfg = &analyzer.cfg;
         assert!(cfg.blocks.len() >= 2, "Should have at least entry and exit blocks");
-        
+
         // Verify no uninitialized uses in linear flow
         assert_eq!(results.uninitialized_uses.len(), 0, "Should have no uninitialized uses");
-        
+
         // Verify all variables are initialized
         let entry_block = cfg.blocks.get(&cfg.entry_block).unwrap();
         assert_eq!(entry_block.successors.len(), 1, "Entry should have one successor");
-        
+
         println!("✅ CFG linear flow construction test passed");
     }
 
     #[test]
     fn test_cfg_construction_branching() {
         let mut analyzer = ControlFlowAnalyzer::new();
-        
+
         // Create if-else branching
         let if_stmt = TypedStatement::If {
             condition: Box::new(create_var_expr(SymbolId::from_raw(1))),
@@ -125,26 +125,26 @@ mod tests {
 
         let _ = analyzer.analyze_function(&function);
         let cfg = &analyzer.cfg;
-        
+
         // Count branch blocks
         let branch_blocks: Vec<_> = cfg.blocks.values()
             .filter(|b| matches!(b.kind, BlockKind::Branch))
             .collect();
-        
+
         assert!(!branch_blocks.is_empty(), "Should have branch blocks");
-        
+
         // Verify branch has two successors
         for branch in branch_blocks {
             assert_eq!(branch.successors.len(), 2, "Branch should have exactly 2 successors");
         }
-        
+
         println!("✅ CFG branching construction test passed");
     }
 
     #[test]
     fn test_uninitialized_variable_detection() {
         let mut analyzer = ControlFlowAnalyzer::new();
-        
+
         // Create a function that uses uninitialized variable
         let stmts = vec![
             TypedStatement::VarDeclaration {
@@ -174,21 +174,21 @@ mod tests {
         };
 
         let results = analyzer.analyze_function(&function);
-        
+
         // Should detect uninitialized use
-        assert!(!results.uninitialized_uses.is_empty(), 
+        assert!(!results.uninitialized_uses.is_empty(),
             "Should detect uninitialized variable use");
-        
+
         assert_eq!(results.uninitialized_uses[0].variable, SymbolId::from_raw(1),
             "Should detect x as uninitialized");
-        
+
         println!("✅ Uninitialized variable detection test passed");
     }
 
     #[test]
     fn test_dead_code_detection() {
         let mut analyzer = ControlFlowAnalyzer::new();
-        
+
         // Create a function with dead code after return
         let stmts = vec![
             TypedStatement::Return {
@@ -218,26 +218,26 @@ mod tests {
         };
 
         let results = analyzer.analyze_function(&function);
-        
+
         // Should detect dead code
-        assert!(!results.dead_code.is_empty(), 
+        assert!(!results.dead_code.is_empty(),
             "Should detect dead code after return");
-        
+
         println!("✅ Dead code detection test passed");
     }
 
     #[test]
     fn test_resource_tracking() {
         let mut analyzer = ControlFlowAnalyzer::new();
-        
+
         // Simulate file open without close
         let file_var = SymbolId::from_raw(1);
-        
+
         // Create file open expression
         let file_open = TypedExpression {
             kind: TypedExpressionKind::FunctionCall {
                 function: Box::new(TypedExpression {
-                    kind: TypedExpressionKind::Variable { 
+                    kind: TypedExpressionKind::Variable {
                         symbol_id: SymbolId::from_raw(100) // File.open
                     },
                     type_id: TypeId::from_raw(2),
@@ -287,18 +287,18 @@ mod tests {
         });
 
         let results = analyzer.analyze_function(&function);
-        
+
         // Should detect resource leak
-        assert!(!results.resource_leaks.is_empty(), 
+        assert!(!results.resource_leaks.is_empty(),
             "Should detect unclosed file resource");
-        
+
         println!("✅ Resource tracking test passed");
     }
 
     #[test]
     fn test_loop_cfg_construction() {
         let mut analyzer = ControlFlowAnalyzer::new();
-        
+
         // Create a while loop
         let while_stmt = TypedStatement::While {
             condition: Box::new(create_var_expr(SymbolId::from_raw(1))),
@@ -324,31 +324,31 @@ mod tests {
 
         let _ = analyzer.analyze_function(&function);
         let cfg = &analyzer.cfg;
-        
+
         // Verify loop structure
         let loop_headers: Vec<_> = cfg.blocks.values()
             .filter(|b| matches!(b.kind, BlockKind::LoopHeader))
             .collect();
-        
+
         assert!(!loop_headers.is_empty(), "Should have loop header blocks");
-        
+
         // Loop header should have at least 2 predecessors (entry and back edge)
         for header in loop_headers {
-            assert!(header.predecessors.len() >= 1, 
+            assert!(header.predecessors.len() >= 1,
                 "Loop header should have at least one predecessor");
         }
-        
+
         println!("✅ Loop CFG construction test passed");
     }
 
     #[test]
     fn test_variable_state_propagation() {
         let mut analyzer = ControlFlowAnalyzer::new();
-        
+
         // Test that variable states propagate correctly through CFG
         let x = SymbolId::from_raw(1);
         let y = SymbolId::from_raw(2);
-        
+
         let stmts = vec![
             // x = 1
             TypedStatement::VarDeclaration {
@@ -401,21 +401,21 @@ mod tests {
         };
 
         let results = analyzer.analyze_function(&function);
-        
+
         // y should be initialized on all paths
         let uninit_y = results.uninitialized_uses.iter()
             .find(|u| u.variable == y);
-        
-        assert!(uninit_y.is_none(), 
+
+        assert!(uninit_y.is_none(),
             "Variable y should be initialized on all paths");
-        
+
         println!("✅ Variable state propagation test passed");
     }
 
     #[test]
     fn test_break_continue_targets() {
         let mut analyzer = ControlFlowAnalyzer::new();
-        
+
         // Create a loop with break and continue
         let loop_body = vec![
             TypedStatement::If {
@@ -457,11 +457,11 @@ mod tests {
         };
 
         let _ = analyzer.analyze_function(&function);
-        
+
         // Verify break and continue are handled
         assert!(!analyzer.break_targets.is_empty(), "Should track break targets");
         assert!(!analyzer.continue_targets.is_empty(), "Should track continue targets");
-        
+
         println!("✅ Break/continue target tracking test passed");
     }
 
@@ -469,7 +469,7 @@ mod tests {
     fn test_comprehensive_analysis_results() {
         // This test verifies the complete AnalysisResults structure
         let mut analyzer = ControlFlowAnalyzer::new();
-        
+
         // Create a complex function with multiple issues
         let stmts = vec![
             // Uninitialized variable
@@ -514,11 +514,11 @@ mod tests {
         };
 
         let results = analyzer.analyze_function(&function);
-        
+
         // Verify we collected all types of issues
         assert!(!results.uninitialized_uses.is_empty(), "Should find uninitialized uses");
         assert!(!results.dead_code.is_empty(), "Should find dead code");
-        
+
         println!("✅ Comprehensive analysis results test passed");
         println!("   - Uninitialized uses: {}", results.uninitialized_uses.len());
         println!("   - Dead code regions: {}", results.dead_code.len());

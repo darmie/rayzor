@@ -1,9 +1,38 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 /// Test arrow function vs function() capture semantics
 ///
 /// This isolates the capture analysis issue to understand the difference
 /// between arrow functions and traditional function expressions.
-
-use compiler::compilation::{CompilationUnit, CompilationConfig};
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 
 fn main() -> Result<(), String> {
     println!("=== Arrow Function Capture Analysis Test ===\n");
@@ -11,7 +40,9 @@ fn main() -> Result<(), String> {
     // Test 1: Arrow function with capture
     println!("TEST 1: Arrow function capturing outer variable");
     println!("{}", "─".repeat(70));
-    test_source("arrow_capture", r#"
+    test_source(
+        "arrow_capture",
+        r#"
 package test;
 
 class Main {
@@ -23,14 +54,17 @@ class Main {
         var result = f();
     }
 }
-"#)?;
+"#,
+    )?;
 
     println!("\n");
 
     // Test 2: Traditional function with capture
     println!("TEST 2: Traditional function() capturing outer variable");
     println!("{}", "─".repeat(70));
-    test_source("function_capture", r#"
+    test_source(
+        "function_capture",
+        r#"
 package test;
 
 class Main {
@@ -42,14 +76,17 @@ class Main {
         var result = f();
     }
 }
-"#)?;
+"#,
+    )?;
 
     println!("\n");
 
     // Test 3: Arrow function with complex capture (like channel test)
     println!("TEST 3: Arrow function with multiple captures (channel-like)");
     println!("{}", "─".repeat(70));
-    test_source("arrow_multi_capture", r#"
+    test_source(
+        "arrow_multi_capture",
+        r#"
 package test;
 
 class Counter {
@@ -71,14 +108,17 @@ class Main {
         var result = f();
     }
 }
-"#)?;
+"#,
+    )?;
 
     println!("\n");
 
     // Test 4: Traditional function with complex capture
     println!("TEST 4: Traditional function() with multiple captures");
     println!("{}", "─".repeat(70));
-    test_source("function_multi_capture", r#"
+    test_source(
+        "function_multi_capture",
+        r#"
 package test;
 
 class Counter {
@@ -100,7 +140,8 @@ class Main {
         var result = f();
     }
 }
-"#)?;
+"#,
+    )?;
 
     println!("\n=== Test Complete ===");
     Ok(())

@@ -24,7 +24,11 @@ class Type {
             let package = &parse_result.file.package;
             assert!(package.is_some(), "Package should be parsed");
             let pkg = package.as_ref().unwrap();
-            assert_eq!(pkg.path, vec!["haxe", "macro"], "Package path should be haxe.macro");
+            assert_eq!(
+                pkg.path,
+                vec!["haxe", "macro"],
+                "Package path should be haxe.macro"
+            );
         }
         Err(e) => {
             println!("Parse failed: {}", e);
@@ -49,7 +53,11 @@ typedef EitherType<A,B> = Dynamic;
             let package = &parse_result.file.package;
             assert!(package.is_some(), "Package should be parsed");
             let pkg = package.as_ref().unwrap();
-            assert_eq!(pkg.path, vec!["haxe", "extern"], "Package path should be haxe.extern");
+            assert_eq!(
+                pkg.path,
+                vec!["haxe", "extern"],
+                "Package path should be haxe.extern"
+            );
         }
         Err(e) => {
             println!("Parse failed: {}", e);
@@ -75,13 +83,19 @@ class Foo {}
             assert!(package.is_some(), "Package should be parsed");
             let pkg = package.as_ref().unwrap();
             // Note: 'class' is a keyword but should be allowed in package path
-            assert_eq!(pkg.path, vec!["test", "macro", "extern", "class"],
-                      "Package path should allow keywords");
+            assert_eq!(
+                pkg.path,
+                vec!["test", "macro", "extern", "class"],
+                "Package path should allow keywords"
+            );
         }
         Err(e) => {
             println!("Parse failed: {}", e);
         }
     }
 
-    assert!(result.is_ok(), "Should parse package with multiple keyword segments");
+    assert!(
+        result.is_ok(),
+        "Should parse package with multiple keyword segments"
+    );
 }

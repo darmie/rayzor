@@ -6,27 +6,25 @@
 //! - Help text and notes
 //! - Beautiful formatting with source highlighting
 
-use parser::{
-    parse_haxe_file, ErrorFormatter,
-    SourceMap, SourceSpan, SourcePosition, FileId,
-    Diagnostic, Diagnostics, DiagnosticSeverity,
-    DiagnosticBuilder,
-};
 use parser::enhanced_context::HaxeDiagnostics;
+use parser::{
+    parse_haxe_file, DiagnosticBuilder, Diagnostics, ErrorFormatter, SourceMap, SourcePosition,
+    SourceSpan,
+};
 
 fn main() {
     println!("🚀 Enhanced Error Reporting Demo");
     println!("================================\n");
-    
+
     // Test 1: Basic parsing error with suggestions
     demo_basic_errors();
-    
+
     // Test 2: Multiple diagnostics
     demo_multiple_diagnostics();
-    
+
     // Test 3: Advanced diagnostics with suggestions
     demo_advanced_diagnostics();
-    
+
     // Test 4: Real parsing errors
     demo_real_parsing_errors();
 }
@@ -34,7 +32,7 @@ fn main() {
 fn demo_basic_errors() {
     println!("📋 Demo 1: Basic Parsing Errors");
     println!("-------------------------------\n");
-    
+
     let test_code = r#"
 class Test {
     fucntion test() {
@@ -51,7 +49,7 @@ class Test {
             println!("{}", e);
         }
     }
-    
+
     let separator = "=".repeat(60);
     println!("\n{}\n", separator);
 }
@@ -59,9 +57,11 @@ class Test {
 fn demo_multiple_diagnostics() {
     println!("📋 Demo 2: Multiple Diagnostics");
     println!("-------------------------------\n");
-    
+
     let mut source_map = SourceMap::new();
-    let file_id = source_map.add_file("demo.hx".to_string(), r#"
+    let file_id = source_map.add_file(
+        "demo.hx".to_string(),
+        r#"
 class Test {
     fucntion test() {
         var x = 1
@@ -72,10 +72,12 @@ class Test {
         return result
     }
 }
-"#.to_string());
-    
+"#
+        .to_string(),
+    );
+
     let mut diagnostics = Diagnostics::new();
-    
+
     // Typo in function keyword
     let typo_span = SourceSpan::new(
         SourcePosition::new(3, 5, 18),
@@ -87,7 +89,7 @@ class Test {
         "fucntion",
         "unknown keyword, did you mean something else?",
     ));
-    
+
     // Missing semicolon after variable declaration
     let semicolon_span = SourceSpan::new(
         SourcePosition::new(4, 18, 44),
@@ -98,7 +100,7 @@ class Test {
         semicolon_span,
         "variable declaration",
     ));
-    
+
     // Incomplete switch (missing default case)
     let switch_span = SourceSpan::new(
         SourcePosition::new(5, 22, 67),
@@ -109,7 +111,7 @@ class Test {
         switch_span,
         &["default case".to_string()],
     ));
-    
+
     // Missing semicolon after return
     let return_span = SourceSpan::new(
         SourcePosition::new(9, 22, 152),
@@ -120,10 +122,13 @@ class Test {
         return_span,
         "return statement",
     ));
-    
+
     let formatter = ErrorFormatter::with_colors();
-    println!("{}", formatter.format_diagnostics(&diagnostics, &source_map));
-    
+    println!(
+        "{}",
+        formatter.format_diagnostics(&diagnostics, &source_map)
+    );
+
     let separator = "=".repeat(60);
     println!("\n{}\n", separator);
 }
@@ -131,9 +136,11 @@ class Test {
 fn demo_advanced_diagnostics() {
     println!("📋 Demo 3: Advanced Diagnostics with Rich Information");
     println!("----------------------------------------------------\n");
-    
+
     let mut source_map = SourceMap::new();
-    let file_id = source_map.add_file("demo.hx".to_string(), r#"
+    let file_id = source_map.add_file(
+        "demo.hx".to_string(),
+        r#"
 import haxe.ds.Map;
 
 class Calculator {
@@ -149,10 +156,12 @@ class Calculator {
         return fn(a, b);
     }
 }
-"#.to_string());
-    
+"#
+        .to_string(),
+    );
+
     let mut diagnostics = Diagnostics::new();
-    
+
     // Info about missing import
     let type_span = SourceSpan::new(
         SourcePosition::new(5, 18, 67),
@@ -163,7 +172,7 @@ class Calculator {
         type_span,
         "StringMap",
     ));
-    
+
     // Hint about return type annotation
     let function_span = SourceSpan::new(
         SourcePosition::new(12, 5, 200),
@@ -188,12 +197,15 @@ class Calculator {
             ),
             "if (fn != null) fn(a, b) else 0.0".to_string(),
         )
-        .build()
+        .build(),
     );
-    
+
     let formatter = ErrorFormatter::with_colors();
-    println!("{}", formatter.format_diagnostics(&diagnostics, &source_map));
-    
+    println!(
+        "{}",
+        formatter.format_diagnostics(&diagnostics, &source_map)
+    );
+
     let separator = "=".repeat(60);
     println!("\n{}\n", separator);
 }
@@ -201,7 +213,7 @@ class Calculator {
 fn demo_real_parsing_errors() {
     println!("📋 Demo 4: Real Parsing Errors from Parser");
     println!("------------------------------------------\n");
-    
+
     let test_cases = [
         // Missing semicolon after switch expression in variable assignment
         (
@@ -218,9 +230,8 @@ class Test {
         trace(result);
     }
 }
-"#
+"#,
         ),
-        
         // Unclosed parentheses
         (
             "unclosed_paren.hx",
@@ -231,26 +242,25 @@ class Test {
         return x;
     }
 }
-"#
+"#,
         ),
-        
         // Invalid function syntax
         (
-            "invalid_function.hx", 
+            "invalid_function.hx",
             r#"
 class Test {
     fucntion test {
         return "hello";
     }
 }
-"#
+"#,
         ),
     ];
-    
+
     for (filename, code) in &test_cases {
         println!("🔍 Testing: {}", filename);
         println!("{}", "-".repeat(40));
-        
+
         match parse_haxe_file(filename, code, false) {
             Ok(_) => println!("✅ Parsed successfully (unexpected!)"),
             Err(e) => {
@@ -258,7 +268,7 @@ class Test {
                 println!("{}", e);
             }
         }
-        
+
         println!();
     }
 }

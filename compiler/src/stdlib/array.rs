@@ -5,9 +5,8 @@
 /// Array operations that return Array instances (slice, copy) use out-param
 /// convention where the runtime function writes to a provided HaxeArray struct.
 /// The MIR wrappers handle allocation and forwarding.
-
 use crate::ir::mir_builder::MirBuilder;
-use crate::ir::{IrType, CallingConvention};
+use crate::ir::{CallingConvention, IrType};
 
 /// HaxeArray runtime structure size in bytes
 /// struct HaxeArray { ptr: *mut u8, len: usize, cap: usize, elem_size: usize }
@@ -35,7 +34,8 @@ fn declare_array_externs(builder: &mut MirBuilder) {
     let void_ty = IrType::Void;
 
     // haxe_array_push_i64(arr: *mut HaxeArray, val: i64)
-    let func_id = builder.begin_function("haxe_array_push_i64")
+    let func_id = builder
+        .begin_function("haxe_array_push_i64")
         .param("arr", ptr_void.clone())
         .param("val", i64_ty.clone())
         .returns(void_ty.clone())
@@ -44,7 +44,8 @@ fn declare_array_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // haxe_array_pop_ptr(arr: *mut HaxeArray) -> *mut u8
-    let func_id = builder.begin_function("haxe_array_pop_ptr")
+    let func_id = builder
+        .begin_function("haxe_array_pop_ptr")
         .param("arr", ptr_void.clone())
         .returns(ptr_void.clone())
         .calling_convention(CallingConvention::C)
@@ -52,7 +53,8 @@ fn declare_array_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // haxe_array_length(arr: *const HaxeArray) -> usize
-    let func_id = builder.begin_function("haxe_array_length")
+    let func_id = builder
+        .begin_function("haxe_array_length")
         .param("arr", ptr_void.clone())
         .returns(i64_ty.clone())
         .calling_convention(CallingConvention::C)
@@ -60,7 +62,8 @@ fn declare_array_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // haxe_array_slice(out: *mut HaxeArray, arr: *const HaxeArray, start: usize, end: usize)
-    let func_id = builder.begin_function("haxe_array_slice")
+    let func_id = builder
+        .begin_function("haxe_array_slice")
         .param("out", ptr_void.clone())
         .param("arr", ptr_void.clone())
         .param("start", i64_ty.clone())
@@ -71,7 +74,8 @@ fn declare_array_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // haxe_array_copy(out: *mut HaxeArray, arr: *const HaxeArray)
-    let func_id = builder.begin_function("haxe_array_copy")
+    let func_id = builder
+        .begin_function("haxe_array_copy")
         .param("out", ptr_void.clone())
         .param("arr", ptr_void.clone())
         .returns(void_ty.clone())
@@ -80,7 +84,8 @@ fn declare_array_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // haxe_array_join(arr: *const HaxeArray, sep: *const HaxeString) -> *mut HaxeString
-    let func_id = builder.begin_function("haxe_array_join")
+    let func_id = builder
+        .begin_function("haxe_array_join")
         .param("arr", ptr_void.clone())
         .param("sep", ptr_void.clone())
         .returns(ptr_void.clone())
@@ -92,7 +97,8 @@ fn declare_array_externs(builder: &mut MirBuilder) {
 /// Build: fn array_push(arr: Any, value: Any) -> void
 /// Appends an element to the array
 fn build_array_push(builder: &mut MirBuilder) {
-    let func_id = builder.begin_function("array_push")
+    let func_id = builder
+        .begin_function("array_push")
         .param("arr", IrType::Any)
         .param("value", IrType::Any)
         .returns(IrType::Void)
@@ -108,7 +114,8 @@ fn build_array_push(builder: &mut MirBuilder) {
     let value = builder.get_param(1);
 
     // Call runtime function haxe_array_push_i64(arr: *HaxeArray, val: i64)
-    let extern_func = builder.get_function_by_name("haxe_array_push_i64")
+    let extern_func = builder
+        .get_function_by_name("haxe_array_push_i64")
         .expect("haxe_array_push_i64 extern not found");
 
     builder.call(extern_func, vec![arr, value]);
@@ -119,7 +126,8 @@ fn build_array_push(builder: &mut MirBuilder) {
 /// Build: fn array_pop(arr: Any) -> Any
 /// Removes and returns the last element from the array
 fn build_array_pop(builder: &mut MirBuilder) {
-    let func_id = builder.begin_function("array_pop")
+    let func_id = builder
+        .begin_function("array_pop")
         .param("arr", IrType::Any)
         .returns(IrType::Any)
         .calling_convention(CallingConvention::C)
@@ -133,7 +141,8 @@ fn build_array_pop(builder: &mut MirBuilder) {
     let arr = builder.get_param(0);
 
     // Call runtime function haxe_array_pop_ptr(arr: *HaxeArray) -> *mut u8
-    let extern_func = builder.get_function_by_name("haxe_array_pop_ptr")
+    let extern_func = builder
+        .get_function_by_name("haxe_array_pop_ptr")
         .expect("haxe_array_pop_ptr extern not found");
 
     if let Some(result) = builder.call(extern_func, vec![arr]) {
@@ -147,7 +156,8 @@ fn build_array_pop(builder: &mut MirBuilder) {
 /// Build: fn array_length(arr: Any) -> i64
 /// Returns the length of the array (usize as i64)
 fn build_array_length(builder: &mut MirBuilder) {
-    let func_id = builder.begin_function("array_length")
+    let func_id = builder
+        .begin_function("array_length")
         .param("arr", IrType::Any)
         .returns(IrType::I64)
         .calling_convention(CallingConvention::C)
@@ -161,7 +171,8 @@ fn build_array_length(builder: &mut MirBuilder) {
     let arr = builder.get_param(0);
 
     // Call runtime function haxe_array_length(arr: *HaxeArray) -> i64 (usize)
-    let extern_func = builder.get_function_by_name("haxe_array_length")
+    let extern_func = builder
+        .get_function_by_name("haxe_array_length")
         .expect("haxe_array_length extern not found");
 
     if let Some(len_i64) = builder.call(extern_func, vec![arr]) {
@@ -185,7 +196,8 @@ fn build_array_slice(builder: &mut MirBuilder) {
     let i64_ty = IrType::I64;
 
     // Function signature: array_slice(arr: *Array, start: i64, end: i64) -> *Array
-    let func_id = builder.begin_function("array_slice")
+    let func_id = builder
+        .begin_function("array_slice")
         .param("arr", ptr_void.clone())
         .param("start", i64_ty.clone())
         .param("end", i64_ty.clone())
@@ -205,20 +217,20 @@ fn build_array_slice(builder: &mut MirBuilder) {
     // HEAP-allocate space for HaxeArray struct (32 bytes)
     // HaxeArray struct: { ptr: *mut u8, len: usize, cap: usize, elem_size: usize }
     // Must use heap allocation since we're returning this pointer!
-    let malloc_func = builder.get_function_by_name("malloc")
+    let malloc_func = builder
+        .get_function_by_name("malloc")
         .expect("malloc extern not found");
     let size = builder.const_i64(HAXE_ARRAY_STRUCT_SIZE as i64);
-    let out_ptr = builder.call(malloc_func, vec![size])
+    let out_ptr = builder
+        .call(malloc_func, vec![size])
         .expect("malloc should return a pointer");
 
     // Call haxe_array_slice(out_ptr, arr, start, end)
-    let slice_func = builder.get_function_by_name("haxe_array_slice")
+    let slice_func = builder
+        .get_function_by_name("haxe_array_slice")
         .expect("haxe_array_slice extern not found");
 
-    builder.call(
-        slice_func,
-        vec![out_ptr, arr, start, end],
-    );
+    builder.call(slice_func, vec![out_ptr, arr, start, end]);
 
     // Return the pointer to the heap-allocated array
     builder.ret(Some(out_ptr));
@@ -230,7 +242,8 @@ fn build_array_join(builder: &mut MirBuilder) {
     let ptr_void = IrType::Ptr(Box::new(IrType::Void));
 
     // Function signature: array_join(arr: *Array, sep: *String) -> *String
-    let func_id = builder.begin_function("array_join")
+    let func_id = builder
+        .begin_function("array_join")
         .param("arr", ptr_void.clone())
         .param("sep", ptr_void.clone())
         .returns(ptr_void.clone())
@@ -246,7 +259,8 @@ fn build_array_join(builder: &mut MirBuilder) {
     let sep = builder.get_param(1);
 
     // Call haxe_array_join(arr, sep) -> *String
-    let join_func = builder.get_function_by_name("haxe_array_join")
+    let join_func = builder
+        .get_function_by_name("haxe_array_join")
         .expect("haxe_array_join extern not found");
 
     if let Some(result) = builder.call(join_func, vec![arr, sep]) {

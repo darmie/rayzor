@@ -22,11 +22,11 @@
 //! - RwLock for function pointer map: Fast reads, infrequent writes
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex, RwLock, Condvar};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
-use std::path::PathBuf;
 
 use rayon::prelude::*;
 
@@ -179,12 +179,14 @@ impl PromotionBarrier {
     /// Returns immediately - caller should then wait_for_drain().
     pub fn request_promotion(&self) -> bool {
         // Try to transition from Idle to PromotionRequested
-        self.state.compare_exchange(
-            PromotionState::Idle as u8,
-            PromotionState::PromotionRequested as u8,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ).is_ok()
+        self.state
+            .compare_exchange(
+                PromotionState::Idle as u8,
+                PromotionState::PromotionRequested as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
     }
 
     /// Wait for all executions to drain
@@ -198,7 +200,8 @@ impl PromotionBarrier {
             // Check if already drained
             if self.execution_counter.load(Ordering::Acquire) == 0 {
                 // Transition to PromotionInProgress
-                self.state.store(PromotionState::PromotionInProgress as u8, Ordering::Release);
+                self.state
+                    .store(PromotionState::PromotionInProgress as u8, Ordering::Release);
                 return true;
             }
 
@@ -223,7 +226,8 @@ impl PromotionBarrier {
     ///
     /// This sets state back to Idle and wakes up any waiting execution threads.
     pub fn complete_promotion(&self) {
-        self.state.store(PromotionState::Idle as u8, Ordering::Release);
+        self.state
+            .store(PromotionState::Idle as u8, Ordering::Release);
         // Wake up all waiting execution threads
         self.wait_condvar.notify_all();
     }
@@ -278,8 +282,8 @@ impl<'a> Drop for ExecutionGuard<'a> {
 }
 
 use super::cranelift_backend::CraneliftBackend;
-use super::mir_interpreter::{MirInterpreter, InterpValue, InterpError};
-use super::profiling::{ProfileData, ProfileConfig, ProfileStatistics};
+use super::mir_interpreter::{InterpError, InterpValue, MirInterpreter};
+use super::profiling::{ProfileConfig, ProfileData, ProfileStatistics};
 use crate::ir::{IrFunction, IrFunctionId, IrModule};
 
 #[cfg(feature = "llvm-backend")]
@@ -350,24 +354,24 @@ pub struct TieredBackend {
 /// Note: All JIT tiers now use Cranelift. LLVM is available as a standalone backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OptimizationTier {
-    Interpreted,  // Phase 0: MIR interpreter (instant startup, ~5-10x native speed)
-    Baseline,     // Phase 1: Cranelift, fast compilation, minimal optimization
-    Standard,     // Phase 2: Cranelift, moderate optimization
-    Optimized,    // Phase 3: Cranelift, aggressive optimization
-    Maximum,      // Phase 4: Cranelift with maximum MIR optimizations
+    Interpreted, // Phase 0: MIR interpreter (instant startup, ~5-10x native speed)
+    Baseline,    // Phase 1: Cranelift, fast compilation, minimal optimization
+    Standard,    // Phase 2: Cranelift, moderate optimization
+    Optimized,   // Phase 3: Cranelift, aggressive optimization
+    Maximum,     // Phase 4: Cranelift with maximum MIR optimizations
 }
 
 impl OptimizationTier {
     /// Get Cranelift optimization level for this tier (Phase 1-3 only)
     pub fn cranelift_opt_level(&self) -> &'static str {
         match self {
-            OptimizationTier::Interpreted => "none",           // P0: Not used (interpreter)
-            OptimizationTier::Baseline => "none",              // P1: No optimization
-            OptimizationTier::Standard => "speed",             // P2: Moderate
+            OptimizationTier::Interpreted => "none", // P0: Not used (interpreter)
+            OptimizationTier::Baseline => "none",    // P1: No optimization
+            OptimizationTier::Standard => "speed",   // P2: Moderate
             // TODO: "speed_and_size" causes incorrect results in some cases (checksum halved)
             // Using "speed" until the root cause is identified
-            OptimizationTier::Optimized => "speed",            // P3: Was "speed_and_size"
-            OptimizationTier::Maximum => "speed",              // P4: Maximum Cranelift optimization
+            OptimizationTier::Optimized => "speed", // P3: Was "speed_and_size"
+            OptimizationTier::Maximum => "speed",   // P4: Maximum Cranelift optimization
         }
     }
 
@@ -531,10 +535,10 @@ impl TierPreset {
         match self {
             TierPreset::Script => TieredConfig {
                 profile_config: ProfileConfig {
-                    interpreter_threshold: 5,     // Quick promotion from interpreter
-                    warm_threshold: 50,           // Don't optimize too aggressively
+                    interpreter_threshold: 5, // Quick promotion from interpreter
+                    warm_threshold: 50,       // Don't optimize too aggressively
                     hot_threshold: 200,
-                    blazing_threshold: u64::MAX,  // No LLVM for short scripts
+                    blazing_threshold: u64::MAX, // No LLVM for short scripts
                     sample_rate: 1,
                 },
                 enable_background_optimization: false, // Sync optimization for predictability
@@ -550,7 +554,7 @@ impl TierPreset {
                     interpreter_threshold: 10,
                     warm_threshold: 100,
                     hot_threshold: 500,
-                    blazing_threshold: 2000,  // LLVM for sustained hot code
+                    blazing_threshold: 2000, // LLVM for sustained hot code
                     sample_rate: 1,
                 },
                 enable_background_optimization: true,
@@ -566,12 +570,12 @@ impl TierPreset {
                     interpreter_threshold: 5,
                     warm_threshold: 50,
                     hot_threshold: 200,
-                    blazing_threshold: 500,  // Lower LLVM threshold for servers
+                    blazing_threshold: 500, // Lower LLVM threshold for servers
                     sample_rate: 1,
                 },
                 enable_background_optimization: true,
                 optimization_check_interval_ms: 50,
-                max_parallel_optimizations: 8,  // More parallel compilation
+                max_parallel_optimizations: 8, // More parallel compilation
                 verbosity: 0,
                 start_interpreted: true,
                 bailout_strategy: BailoutStrategy::Immediate,
@@ -582,13 +586,13 @@ impl TierPreset {
                     interpreter_threshold: 2,
                     warm_threshold: 3,
                     hot_threshold: 5,
-                    blazing_threshold: u64::MAX,  // Manual LLVM upgrade after warmup
+                    blazing_threshold: u64::MAX, // Manual LLVM upgrade after warmup
                     sample_rate: 1,
                 },
                 enable_background_optimization: false, // Sync for deterministic results
                 optimization_check_interval_ms: 1,
                 max_parallel_optimizations: 4,
-                verbosity: 1,  // Show tier transitions
+                verbosity: 1, // Show tier transitions
                 start_interpreted: true,
                 bailout_strategy: BailoutStrategy::Immediate,
             },
@@ -598,25 +602,25 @@ impl TierPreset {
                 enable_background_optimization: true,
                 optimization_check_interval_ms: 50,
                 max_parallel_optimizations: 2,
-                verbosity: 2,  // Detailed logging
+                verbosity: 2, // Detailed logging
                 start_interpreted: true,
                 bailout_strategy: BailoutStrategy::Immediate,
             },
 
             TierPreset::Embedded => TieredConfig {
                 profile_config: ProfileConfig {
-                    interpreter_threshold: u64::MAX,  // Never promote
+                    interpreter_threshold: u64::MAX, // Never promote
                     warm_threshold: u64::MAX,
                     hot_threshold: u64::MAX,
                     blazing_threshold: u64::MAX,
-                    sample_rate: u64::MAX,  // Disable profiling
+                    sample_rate: u64::MAX, // Disable profiling
                 },
                 enable_background_optimization: false,
                 optimization_check_interval_ms: u64::MAX,
                 max_parallel_optimizations: 0,
                 verbosity: 0,
                 start_interpreted: true,
-                bailout_strategy: BailoutStrategy::Slow,  // High threshold before bailout
+                bailout_strategy: BailoutStrategy::Slow, // High threshold before bailout
             },
         }
     }
@@ -636,12 +640,36 @@ impl TierPreset {
     /// Get recommended use cases for this preset
     pub fn use_cases(&self) -> &'static [&'static str] {
         match self {
-            TierPreset::Script => &["CLI tools", "Build scripts", "One-shot programs", "Shell utilities"],
-            TierPreset::Application => &["Desktop apps", "Web servers", "GUI applications", "General purpose"],
-            TierPreset::Server => &["API servers", "Microservices", "Background workers", "Long-running daemons"],
+            TierPreset::Script => &[
+                "CLI tools",
+                "Build scripts",
+                "One-shot programs",
+                "Shell utilities",
+            ],
+            TierPreset::Application => &[
+                "Desktop apps",
+                "Web servers",
+                "GUI applications",
+                "General purpose",
+            ],
+            TierPreset::Server => &[
+                "API servers",
+                "Microservices",
+                "Background workers",
+                "Long-running daemons",
+            ],
             TierPreset::Benchmark => &["Performance testing", "Profiling", "Optimization analysis"],
-            TierPreset::Development => &["Debugging", "Development iteration", "Testing tier behavior"],
-            TierPreset::Embedded => &["WebAssembly", "Embedded systems", "Memory-constrained", "Predictable latency"],
+            TierPreset::Development => &[
+                "Debugging",
+                "Development iteration",
+                "Testing tier behavior",
+            ],
+            TierPreset::Embedded => &[
+                "WebAssembly",
+                "Embedded systems",
+                "Memory-constrained",
+                "Predictable latency",
+            ],
         }
     }
 }
@@ -773,7 +801,10 @@ impl TieredBackend {
     /// let symbols = get_runtime_symbols();
     /// let backend = TieredBackend::from_preset_with_symbols(TierPreset::Server, &symbols)?;
     /// ```
-    pub fn from_preset_with_symbols(preset: TierPreset, symbols: &[(&str, *const u8)]) -> Result<Self, String> {
+    pub fn from_preset_with_symbols(
+        preset: TierPreset,
+        symbols: &[(&str, *const u8)],
+    ) -> Result<Self, String> {
         Self::with_symbols(preset.to_config(), symbols)
     }
 
@@ -813,7 +844,10 @@ impl TieredBackend {
     }
 
     /// Create a new tiered backend with runtime symbols for interpreter and LLVM FFI
-    pub fn with_symbols(config: TieredConfig, symbols: &[(&str, *const u8)]) -> Result<Self, String> {
+    pub fn with_symbols(
+        config: TieredConfig,
+        symbols: &[(&str, *const u8)],
+    ) -> Result<Self, String> {
         // IMPORTANT: Initialize LLVM on the main thread BEFORE any background workers start.
         // This prevents crashes from LLVM initialization racing with background compilation.
         #[cfg(feature = "llvm-backend")]
@@ -879,7 +913,11 @@ impl TieredBackend {
                 "[TieredBackend] Loading {} functions at {} ({})",
                 module.functions.len(),
                 initial_tier.description(),
-                if self.start_interpreted { "instant startup" } else { "JIT compiled" }
+                if self.start_interpreted {
+                    "instant startup"
+                } else {
+                    "JIT compiled"
+                }
             );
         }
 
@@ -921,7 +959,8 @@ impl TieredBackend {
         self.process_llvm_queue();
 
         // Get current tier
-        let tier = self.function_tiers
+        let tier = self
+            .function_tiers
             .read()
             .unwrap()
             .get(&func_id)
@@ -940,13 +979,17 @@ impl TieredBackend {
         // Debug: print current tier
         if self.config.verbosity >= 2 {
             let count = self.profile_data.get_function_count(func_id);
-            eprintln!("[TieredBackend] Executing {:?} at tier {:?} (count: {})", func_id, tier, count);
+            eprintln!(
+                "[TieredBackend] Executing {:?} at tier {:?} (count: {})",
+                func_id, tier, count
+            );
         }
 
         if tier.uses_interpreter() {
             // Execute via interpreter - find the module containing this function
             let modules = self.modules.read().unwrap();
-            let module_ref = modules.iter()
+            let module_ref = modules
+                .iter()
                 .find(|m| m.functions.contains_key(&func_id))
                 .ok_or_else(|| format!("Function {:?} not found in any module", func_id))?;
             let mut interp = self.interpreter.lock().unwrap();
@@ -958,7 +1001,10 @@ impl TieredBackend {
                 Ok(value) => Ok(value),
                 Err(InterpError::JitBailout(bailout_func_id)) => {
                     // Hot loop detected! Promote to JIT and re-execute
-                    tracing::trace!("[TieredBackend] JIT bailout for {:?} - promoting to Baseline tier", bailout_func_id);
+                    tracing::trace!(
+                        "[TieredBackend] JIT bailout for {:?} - promoting to Baseline tier",
+                        bailout_func_id
+                    );
 
                     // Compile all modules with JIT if not already compiled
                     let needs_compile = self.function_pointers.read().unwrap().is_empty();
@@ -1005,9 +1051,12 @@ impl TieredBackend {
             // Now safe to get function pointer - no promotion can happen while we hold the guard
             let func_ptr = {
                 let fp_guard = self.function_pointers.read().unwrap();
-                fp_guard.get(&func_id)
+                fp_guard
+                    .get(&func_id)
                     .map(|addr| *addr as *const u8)
-                    .ok_or_else(|| format!("JIT function {:?} not found in function_pointers", func_id))?
+                    .ok_or_else(|| {
+                        format!("JIT function {:?} not found in function_pointers", func_id)
+                    })?
             };
 
             // For functions with no args (like main), call directly
@@ -1031,11 +1080,13 @@ impl TieredBackend {
                     debug!("[TieredBackend] JIT function with args - falling back to interpreter");
                 }
                 let modules = self.modules.read().unwrap();
-                let module_ref = modules.iter()
+                let module_ref = modules
+                    .iter()
                     .find(|m| m.functions.contains_key(&func_id))
                     .ok_or_else(|| format!("Function {:?} not found in any module", func_id))?;
                 let mut interp = self.interpreter.lock().unwrap();
-                interp.execute(module_ref, func_id, args)
+                interp
+                    .execute(module_ref, func_id, args)
                     .map_err(|e| format!("Interpreter error: {}", e))
             }
         }
@@ -1188,7 +1239,10 @@ impl TieredBackend {
                     // Optimize the function
                     if let Err(e) = self.optimize_function_internal(func_id, target_tier) {
                         if self.config.verbosity >= 1 {
-                            eprintln!("[TieredBackend] Sync optimization failed for {:?}: {}", func_id, e);
+                            eprintln!(
+                                "[TieredBackend] Sync optimization failed for {:?}: {}",
+                                func_id, e
+                            );
                         }
                     } else {
                         optimized += 1;
@@ -1257,7 +1311,10 @@ impl TieredBackend {
 
         // Verify the function exists
         let modules_lock = self.modules.read().unwrap();
-        if !modules_lock.iter().any(|m| m.functions.contains_key(&func_id)) {
+        if !modules_lock
+            .iter()
+            .any(|m| m.functions.contains_key(&func_id))
+        {
             return Err(format!("Function {:?} not found in any module", func_id));
         }
 
@@ -1314,7 +1371,8 @@ impl TieredBackend {
         }
 
         // Convert runtime symbols to the format Cranelift expects
-        let symbols: Vec<(&str, *const u8)> = self.runtime_symbols
+        let symbols: Vec<(&str, *const u8)> = self
+            .runtime_symbols
             .iter()
             .map(|(name, ptr)| (name.as_str(), *ptr as *const u8))
             .collect();
@@ -1379,32 +1437,35 @@ impl TieredBackend {
         use crate::ir::optimization::PassManager;
 
         // Convert runtime symbols to the format Cranelift expects
-        let symbols: Vec<(&str, *const u8)> = self.runtime_symbols
+        let symbols: Vec<(&str, *const u8)> = self
+            .runtime_symbols
             .iter()
             .map(|(name, ptr)| (name.as_str(), *ptr as *const u8))
             .collect();
 
         // Create a new Cranelift backend with the target optimization level and runtime symbols
-        let mut backend = CraneliftBackend::with_symbols_and_opt(
-            target_tier.cranelift_opt_level(),
-            &symbols,
-        )?;
+        let mut backend =
+            CraneliftBackend::with_symbols_and_opt(target_tier.cranelift_opt_level(), &symbols)?;
 
         // Apply MIR-level optimizations for higher tiers
         let mir_opt_level = target_tier.mir_opt_level();
         let optimized_modules: Vec<IrModule>;
-        let modules_to_compile: &[IrModule] = if mir_opt_level != crate::ir::optimization::OptimizationLevel::O0 {
-            // Clone all modules and apply MIR optimizations
-            optimized_modules = all_modules.iter().map(|m| {
-                let mut module = m.clone();
-                let mut pass_manager = PassManager::for_level(mir_opt_level);
-                let _ = pass_manager.run(&mut module);
-                module
-            }).collect();
-            &optimized_modules
-        } else {
-            all_modules
-        };
+        let modules_to_compile: &[IrModule] =
+            if mir_opt_level != crate::ir::optimization::OptimizationLevel::O0 {
+                // Clone all modules and apply MIR optimizations
+                optimized_modules = all_modules
+                    .iter()
+                    .map(|m| {
+                        let mut module = m.clone();
+                        let mut pass_manager = PassManager::for_level(mir_opt_level);
+                        let _ = pass_manager.run(&mut module);
+                        module
+                    })
+                    .collect();
+                &optimized_modules
+            } else {
+                all_modules
+            };
 
         // Compile all modules to the same backend WITHOUT finalizing between modules
         for module in modules_to_compile {
@@ -1473,7 +1534,10 @@ impl TieredBackend {
         }
 
         if self.config.verbosity >= 1 {
-            debug!("[TieredBackend] Processing {} LLVM compilation(s) on main thread", pending.len());
+            debug!(
+                "[TieredBackend] Processing {} LLVM compilation(s) on main thread",
+                pending.len()
+            );
         }
 
         // Compile with LLVM (this will compile ALL modules and return ALL function pointers)
@@ -1492,7 +1556,10 @@ impl TieredBackend {
                     }
 
                     if self.config.verbosity >= 1 {
-                        debug!("[TieredBackend] LLVM: Installed {} functions at Maximum tier", installed_count);
+                        debug!(
+                            "[TieredBackend] LLVM: Installed {} functions at Maximum tier",
+                            installed_count
+                        );
                     }
                 }
                 Err(e) => {
@@ -1506,7 +1573,10 @@ impl TieredBackend {
         #[cfg(not(feature = "llvm-backend"))]
         {
             if self.config.verbosity >= 1 {
-                debug!("[TieredBackend] LLVM backend not enabled, skipping {} requests", pending.len());
+                debug!(
+                    "[TieredBackend] LLVM backend not enabled, skipping {} requests",
+                    pending.len()
+                );
             }
         }
     }
@@ -1551,9 +1621,7 @@ impl TieredBackend {
             let llvm_compiled = self.llvm_compiled.lock().unwrap();
             if *llvm_compiled {
                 let fp_lock = self.function_pointers.read().unwrap();
-                return Ok(fp_lock.iter()
-                    .map(|(id, ptr)| (*id, *ptr))
-                    .collect());
+                return Ok(fp_lock.iter().map(|(id, ptr)| (*id, *ptr)).collect());
             }
         }
 
@@ -1578,7 +1646,8 @@ impl TieredBackend {
         // Create and leak context for stable JIT code
         let context = Box::leak(Box::new(Context::create()));
 
-        let symbols: Vec<(&str, *const u8)> = self.runtime_symbols
+        let symbols: Vec<(&str, *const u8)> = self
+            .runtime_symbols
             .iter()
             .map(|(name, ptr)| (name.as_str(), *ptr as *const u8))
             .collect();
@@ -1603,7 +1672,8 @@ impl TieredBackend {
         Box::leak(Box::new(backend));
 
         // Build name -> pointer map for global storage
-        let global_ptrs: HashMap<String, usize> = function_symbols.iter()
+        let global_ptrs: HashMap<String, usize> = function_symbols
+            .iter()
             .filter_map(|(id, name)| all_pointers.get(id).map(|ptr| (name.clone(), *ptr)))
             .collect();
 
@@ -1629,9 +1699,7 @@ impl TieredBackend {
             if *llvm_compiled {
                 // Already compiled - return existing pointers
                 let fp_lock = self.function_pointers.read().unwrap();
-                return Ok(fp_lock.iter()
-                    .map(|(id, ptr)| (*id, *ptr))
-                    .collect());
+                return Ok(fp_lock.iter().map(|(id, ptr)| (*id, *ptr)).collect());
             }
         }
 
@@ -1649,7 +1717,9 @@ impl TieredBackend {
 
         // Double-check after acquiring lock
         if super::llvm_jit_backend::is_llvm_compiled_globally() {
-            return Err("LLVM compilation already done by another backend instance (race).".to_string());
+            return Err(
+                "LLVM compilation already done by another backend instance (race).".to_string(),
+            );
         }
 
         // Create temporary paths for object file and dylib
@@ -1664,7 +1734,8 @@ impl TieredBackend {
         // Create LLVM context and backend
         let context = Box::leak(Box::new(Context::create()));
 
-        let symbols: Vec<(&str, *const u8)> = self.runtime_symbols
+        let symbols: Vec<(&str, *const u8)> = self
+            .runtime_symbols
             .iter()
             .map(|(name, ptr)| (name.as_str(), *ptr as *const u8))
             .collect();
@@ -1702,9 +1773,8 @@ impl TieredBackend {
         // Get function pointers from dylib
         let mut all_pointers = HashMap::new();
         for (func_id, symbol_name) in &function_symbols {
-            let symbol_result: Result<libloading::Symbol<*const ()>, _> = unsafe {
-                lib.get(symbol_name.as_bytes())
-            };
+            let symbol_result: Result<libloading::Symbol<*const ()>, _> =
+                unsafe { lib.get(symbol_name.as_bytes()) };
 
             if let Ok(symbol) = symbol_result {
                 let ptr = *symbol as usize;
@@ -1714,7 +1784,10 @@ impl TieredBackend {
             }
         }
 
-        tracing::trace!("[LLVM:AOT] Loaded {} function pointers from dylib", all_pointers.len());
+        tracing::trace!(
+            "[LLVM:AOT] Loaded {} function pointers from dylib",
+            all_pointers.len()
+        );
 
         // Leak the library to keep code valid (intentional!)
         Box::leak(Box::new(lib));
@@ -1723,7 +1796,8 @@ impl TieredBackend {
         let _ = std::fs::remove_file(&obj_path);
 
         // Build name -> pointer map for global storage (so other backends can reuse)
-        let global_ptrs: HashMap<String, usize> = function_symbols.iter()
+        let global_ptrs: HashMap<String, usize> = function_symbols
+            .iter()
             .filter_map(|(id, name)| all_pointers.get(id).map(|ptr| (name.clone(), *ptr)))
             .collect();
 
@@ -1736,7 +1810,10 @@ impl TieredBackend {
 
     /// Map globally stored LLVM pointers (by name) to this backend's function IDs
     #[cfg(feature = "llvm-backend")]
-    fn map_global_pointers_to_ids(&self, global_ptrs: &HashMap<String, usize>) -> Result<HashMap<IrFunctionId, usize>, String> {
+    fn map_global_pointers_to_ids(
+        &self,
+        global_ptrs: &HashMap<String, usize>,
+    ) -> Result<HashMap<IrFunctionId, usize>, String> {
         let modules_lock = self.modules.read().unwrap();
         let mut result = HashMap::new();
 
@@ -1750,7 +1827,10 @@ impl TieredBackend {
             }
         }
 
-        tracing::trace!("[LLVM:AOT] Mapped {} function pointers from global cache", result.len());
+        tracing::trace!(
+            "[LLVM:AOT] Mapped {} function pointers from global cache",
+            result.len()
+        );
 
         // Mark this instance as using LLVM pointers
         *self.llvm_compiled.lock().unwrap() = true;
@@ -1814,10 +1894,7 @@ impl TieredBackend {
         let candidates = ["clang", "gcc", "cc"];
 
         for linker in &candidates {
-            if let Ok(output) = std::process::Command::new(linker)
-                .arg("--version")
-                .output()
-            {
+            if let Ok(output) = std::process::Command::new(linker).arg("--version").output() {
                 if output.status.success() {
                     return Ok(linker.to_string());
                 }
@@ -1826,7 +1903,8 @@ impl TieredBackend {
 
         Err("No C compiler/linker found (tried: clang, gcc, cc). \
              LLVM tier 3 optimization requires a system linker. \
-             Install Xcode (macOS) or gcc/clang (Linux), or use precompiled bundles.".to_string())
+             Install Xcode (macOS) or gcc/clang (Linux), or use precompiled bundles."
+            .to_string())
     }
 
     /// Check if LLVM AOT compilation is available on this system
@@ -1840,17 +1918,15 @@ impl TieredBackend {
     #[allow(dead_code)]
     fn compile_with_llvm(&self, func_id: IrFunctionId) -> Result<usize, String> {
         let all_pointers = self.compile_all_with_llvm()?;
-        all_pointers.get(&func_id)
+        all_pointers
+            .get(&func_id)
             .copied()
             .ok_or_else(|| format!("Function {:?} not found in LLVM compiled module", func_id))
     }
 
     /// Compile function with LLVM backend (Tier 3) - stub when LLVM not enabled
     #[cfg(not(feature = "llvm-backend"))]
-    fn compile_with_llvm(
-        &self,
-        func_id: IrFunctionId,
-    ) -> Result<usize, String> {
+    fn compile_with_llvm(&self, func_id: IrFunctionId) -> Result<usize, String> {
         if self.config.verbosity >= 1 {
             debug!(
                 "[TieredBackend] LLVM backend not enabled, cannot compile {:?} at Tier 3",
@@ -1943,7 +2019,9 @@ impl TieredBackend {
             let mut optimizing_lock = optimizing.lock().unwrap();
 
             // Calculate how many functions we can compile in parallel
-            let available_slots = config.max_parallel_optimizations.saturating_sub(optimizing_lock.len());
+            let available_slots = config
+                .max_parallel_optimizations
+                .saturating_sub(optimizing_lock.len());
             if available_slots == 0 {
                 return;
             }
@@ -1980,7 +2058,7 @@ impl TieredBackend {
         // LLVM requires main thread for symbol mapping, so queue those for main thread
         let (llvm_batch, cranelift_batch): (Vec<_>, Vec<_>) = batch
             .iter()
-            .cloned()  // Clone to get owned values
+            .cloned() // Clone to get owned values
             .partition(|(_, tier)| tier.uses_llvm());
 
         // Queue LLVM requests for main thread compilation (instead of downgrading)
@@ -1995,7 +2073,10 @@ impl TieredBackend {
                 if !llvm_queue_lock.iter().any(|id| *id == func_id) {
                     llvm_queue_lock.push_back(func_id);
                     if config.verbosity >= 1 {
-                        debug!("[TieredBackend] Queued {:?} for LLVM compilation on main thread", func_id);
+                        debug!(
+                            "[TieredBackend] Queued {:?} for LLVM compilation on main thread",
+                            func_id
+                        );
                     }
                 }
             }
@@ -2005,7 +2086,8 @@ impl TieredBackend {
         // Group by target tier to minimize recompilation
         if !cranelift_batch.is_empty() {
             // Find the highest tier requested in this batch
-            let max_tier = cranelift_batch.iter()
+            let max_tier = cranelift_batch
+                .iter()
                 .map(|(_, tier)| *tier)
                 .max()
                 .unwrap_or(OptimizationTier::Baseline);
@@ -2019,11 +2101,8 @@ impl TieredBackend {
             }
 
             // Compile ALL modules at the highest tier
-            let compile_result = Self::compile_all_at_tier_static(
-                &modules_lock[..],
-                max_tier,
-                runtime_symbols
-            );
+            let compile_result =
+                Self::compile_all_at_tier_static(&modules_lock[..], max_tier, runtime_symbols);
 
             // Drop modules lock before installing results
             drop(modules_lock);
@@ -2043,7 +2122,9 @@ impl TieredBackend {
                     if !promotion_barrier.wait_for_drain(drain_timeout) {
                         // Timeout - cancel promotion and skip this batch
                         if config.verbosity >= 1 {
-                            debug!("[TieredBackend] Promotion timed out waiting for drain, cancelling");
+                            debug!(
+                                "[TieredBackend] Promotion timed out waiting for drain, cancelling"
+                            );
                         }
                         promotion_barrier.cancel_promotion();
 
@@ -2124,26 +2205,28 @@ impl TieredBackend {
             .map(|(name, ptr)| (name.as_str(), *ptr as *const u8))
             .collect();
 
-        let mut backend = CraneliftBackend::with_symbols_and_opt(
-            target_tier.cranelift_opt_level(),
-            &symbols,
-        )?;
+        let mut backend =
+            CraneliftBackend::with_symbols_and_opt(target_tier.cranelift_opt_level(), &symbols)?;
 
         // Apply MIR-level optimizations for higher tiers
         let mir_opt_level = target_tier.mir_opt_level();
         let optimized_modules: Vec<IrModule>;
-        let modules_to_compile: &[IrModule] = if mir_opt_level != crate::ir::optimization::OptimizationLevel::O0 {
-            // Clone all modules and apply MIR optimizations
-            optimized_modules = all_modules.iter().map(|m| {
-                let mut module = m.clone();
-                let mut pass_manager = PassManager::for_level(mir_opt_level);
-                let _ = pass_manager.run(&mut module);
-                module
-            }).collect();
-            &optimized_modules
-        } else {
-            all_modules
-        };
+        let modules_to_compile: &[IrModule] =
+            if mir_opt_level != crate::ir::optimization::OptimizationLevel::O0 {
+                // Clone all modules and apply MIR optimizations
+                optimized_modules = all_modules
+                    .iter()
+                    .map(|m| {
+                        let mut module = m.clone();
+                        let mut pass_manager = PassManager::for_level(mir_opt_level);
+                        let _ = pass_manager.run(&mut module);
+                        module
+                    })
+                    .collect();
+                &optimized_modules
+            } else {
+                all_modules
+            };
 
         // Compile all modules to the same backend WITHOUT finalizing between modules
         for module in modules_to_compile {

@@ -4,8 +4,8 @@
 //! by their fully qualified paths. This is essential for applying special
 //! validation rules (e.g., Send/Sync constraints on Thread::spawn).
 
-use crate::tast::{TypeId, TypeTable, SymbolTable, SymbolId};
 use crate::tast::core::TypeKind;
+use crate::tast::{SymbolId, SymbolTable, TypeId, TypeTable};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -56,10 +56,7 @@ pub struct CoreTypeChecker<'a> {
 
 impl<'a> CoreTypeChecker<'a> {
     /// Create a new core type checker
-    pub fn new(
-        type_table: &'a Rc<RefCell<TypeTable>>,
-        symbol_table: &'a SymbolTable,
-    ) -> Self {
+    pub fn new(type_table: &'a Rc<RefCell<TypeTable>>, symbol_table: &'a SymbolTable) -> Self {
         Self {
             type_table,
             symbol_table,
@@ -115,14 +112,10 @@ impl<'a> CoreTypeChecker<'a> {
         let type_info = type_table.get(type_id)?;
 
         match &type_info.kind {
-            TypeKind::Class { type_args, .. } |
-            TypeKind::Interface { type_args, .. } |
-            TypeKind::Enum { type_args, .. } => {
-                type_args.first().copied()
-            }
-            TypeKind::GenericInstance { type_args, .. } => {
-                type_args.first().copied()
-            }
+            TypeKind::Class { type_args, .. }
+            | TypeKind::Interface { type_args, .. }
+            | TypeKind::Enum { type_args, .. } => type_args.first().copied(),
+            TypeKind::GenericInstance { type_args, .. } => type_args.first().copied(),
             _ => None,
         }
     }
@@ -137,10 +130,10 @@ impl<'a> CoreTypeChecker<'a> {
 
         // Get the symbol ID from the type
         let symbol_id = match &type_info.kind {
-            TypeKind::Class { symbol_id, .. } |
-            TypeKind::Interface { symbol_id, .. } |
-            TypeKind::Enum { symbol_id, .. } |
-            TypeKind::Abstract { symbol_id, .. } => *symbol_id,
+            TypeKind::Class { symbol_id, .. }
+            | TypeKind::Interface { symbol_id, .. }
+            | TypeKind::Enum { symbol_id, .. }
+            | TypeKind::Abstract { symbol_id, .. } => *symbol_id,
             TypeKind::GenericInstance { base_type, .. } => {
                 // For generic instances, check the base type
                 return self.is_core_type(*base_type, expected_path);
@@ -185,11 +178,20 @@ impl<'a> CoreTypeChecker<'a> {
     /// Validate Thread::spawn - all captured variables must be Send
     ///
     /// Returns the closure type ID if this is a Thread::spawn call
-    pub fn get_thread_spawn_closure(&self, call_expr: &crate::tast::node::TypedExpression) -> Option<TypeId> {
+    pub fn get_thread_spawn_closure(
+        &self,
+        call_expr: &crate::tast::node::TypedExpression,
+    ) -> Option<TypeId> {
         use crate::tast::node::TypedExpressionKind;
 
         // Check if this is a static method call
-        if let TypedExpressionKind::StaticMethodCall { class_symbol, method_symbol, arguments, .. } = &call_expr.kind {
+        if let TypedExpressionKind::StaticMethodCall {
+            class_symbol,
+            method_symbol,
+            arguments,
+            ..
+        } = &call_expr.kind
+        {
             // Check if the class is Thread
             if !self.check_symbol_path(*class_symbol, self.paths.thread) {
                 return None;

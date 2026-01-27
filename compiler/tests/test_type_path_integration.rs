@@ -1,11 +1,10 @@
 use compiler::pipeline::*;
-use compiler::tast::*;
 
 #[test]
 fn test_type_path_resolution_integration() {
     // Test that the type resolution correctly handles qualified type names
     // after our fix to use the correct parser Type enum variants
-    
+
     let source = r#"
 package com.example.models;
 
@@ -57,24 +56,26 @@ class UserProfile {
 
     // Create pipeline
     let mut pipeline = HaxeCompilationPipeline::new();
-    
+
     // Process the file
     let result = pipeline.compile_file("test.hx", source);
-    
+
     // Check results
     if result.errors.is_empty() {
         println!("✅ Compilation succeeded!");
         println!("  Typed files: {}", result.typed_files.len());
-        
+
         // Verify that types were resolved correctly
         if let Some(typed_file) = result.typed_files.first() {
-            let total_decls = typed_file.classes.len() + typed_file.interfaces.len() + 
-                              typed_file.enums.len() + typed_file.type_aliases.len();
+            let total_decls = typed_file.classes.len()
+                + typed_file.interfaces.len()
+                + typed_file.enums.len()
+                + typed_file.type_aliases.len();
             println!("  Declarations in file: {}", total_decls);
-            
+
             // Check that we have both classes
             let class_count = typed_file.classes.len();
-            
+
             assert_eq!(class_count, 2, "Expected 2 classes, found {}", class_count);
             println!("  Found {} classes", class_count);
         }
@@ -90,7 +91,7 @@ class UserProfile {
 #[test]
 fn test_cross_package_type_resolution() {
     // Test cross-package imports and type resolution
-    
+
     // First file: com.example.models.Product
     let source1 = r#"
 package com.example.models;
@@ -141,11 +142,11 @@ class ProductService {
 
     // Create pipeline
     let mut pipeline = HaxeCompilationPipeline::new();
-    
+
     // Compile both files
     let result1 = pipeline.compile_file("Product.hx", source1);
     let result2 = pipeline.compile_file("ProductService.hx", source2);
-    
+
     // Check first file
     if result1.errors.is_empty() {
         println!("✅ Product.hx compiled successfully");
@@ -156,7 +157,7 @@ class ProductService {
         }
         panic!("Product.hx should compile");
     }
-    
+
     // Check second file
     if result2.errors.is_empty() {
         println!("✅ ProductService.hx compiled successfully");
@@ -172,7 +173,7 @@ class ProductService {
 #[test]
 fn test_type_resolution_edge_cases() {
     // Test various edge cases for type resolution
-    
+
     let source = r#"
 package test.edge.cases;
 
@@ -222,15 +223,19 @@ class EdgeCases {
 
     let mut pipeline = HaxeCompilationPipeline::new();
     let result = pipeline.compile_file("edge_cases.hx", source);
-    
+
     if result.errors.is_empty() {
         println!("✅ Edge cases compiled successfully");
-        
+
         // Verify typedef was processed
         if let Some(typed_file) = result.typed_files.first() {
             let typedef_count = typed_file.type_aliases.len();
-            
-            assert!(typedef_count >= 2, "Expected at least 2 typedefs, found {}", typedef_count);
+
+            assert!(
+                typedef_count >= 2,
+                "Expected at least 2 typedefs, found {}",
+                typedef_count
+            );
             println!("  Found {} typedefs", typedef_count);
         }
     } else {
@@ -245,7 +250,7 @@ class EdgeCases {
 #[test]
 fn test_import_resolution_scenarios() {
     // Test various import scenarios
-    
+
     let source = r#"
 package test.imports;
 
@@ -284,7 +289,7 @@ class ImportTest {
     // It may fail if import resolution is not fully implemented
     let mut pipeline = HaxeCompilationPipeline::new();
     let result = pipeline.compile_file("import_test.hx", source);
-    
+
     if result.errors.is_empty() {
         println!("✅ Import resolution test passed");
     } else {
@@ -296,11 +301,11 @@ class ImportTest {
     }
 }
 
-#[test] 
+#[test]
 fn test_type_resolution_parser_fix() {
     // This test specifically verifies that our fix to type_resolution.rs
     // correctly handles the parser's Type enum variants
-    
+
     let source = r#"
 package verification;
 
@@ -334,9 +339,11 @@ class TypeResolutionTest {
 
     let mut pipeline = HaxeCompilationPipeline::new();
     let result = pipeline.compile_file("type_resolution_test.hx", source);
-    
+
     if result.errors.is_empty() {
-        println!("✅ Type resolution parser fix verified - all Type enum variants handled correctly");
+        println!(
+            "✅ Type resolution parser fix verified - all Type enum variants handled correctly"
+        );
     } else {
         println!("❌ Type resolution test failed:");
         for error in &result.errors {

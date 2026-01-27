@@ -3,8 +3,8 @@
 //! This module provides dependency analysis and topological sorting for Haxe files.
 //! It detects circular dependencies and determines the correct compilation order.
 
-use std::collections::{HashMap, HashSet, VecDeque};
 use parser::HaxeFile;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Represents a file in the dependency graph
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -370,9 +370,13 @@ impl CircularDependency {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parser::{HaxeFile, Package, Import, ImportMode, Span};
+    use parser::{HaxeFile, Import, ImportMode, Package, Span};
 
-    fn create_test_file(name: &str, package: Option<Vec<&str>>, imports: Vec<Vec<&str>>) -> HaxeFile {
+    fn create_test_file(
+        name: &str,
+        package: Option<Vec<&str>>,
+        imports: Vec<Vec<&str>>,
+    ) -> HaxeFile {
         HaxeFile {
             filename: format!("{}.hx", name),
             input: None,

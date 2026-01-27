@@ -2,9 +2,7 @@
 //!
 //! This module provides helper functions for creating common Haxe diagnostics
 
-use crate::{
-    Diagnostic, DiagnosticBuilder, SourceSpan
-};
+use crate::{Diagnostic, DiagnosticBuilder, SourceSpan};
 
 /// Provides common Haxe diagnostic builders
 pub struct HaxeDiagnostics;
@@ -22,7 +20,7 @@ impl HaxeDiagnostics {
         .help(format!("{} must end with a semicolon", after_what))
         .build()
     }
-    
+
     /// Missing closing delimiter
     pub fn missing_closing_delimiter(
         span: SourceSpan,
@@ -35,29 +33,18 @@ impl HaxeDiagnostics {
             '[' => ']',
             _ => delimiter,
         };
-        
-        DiagnosticBuilder::error(
-            format!("missing closing '{}'", closing),
-            span.clone(),
-        )
-        .code("E0003")
-        .label(span.clone(), format!("expected '{}' here", closing))
-        .secondary_label(opening_span, format!("opening '{}' here", delimiter))
-        .suggestion(
-            format!("add '{}'", closing),
-            span,
-            closing.to_string(),
-        )
-        .help(format!("delimiters must be properly matched"))
-        .build()
+
+        DiagnosticBuilder::error(format!("missing closing '{}'", closing), span.clone())
+            .code("E0003")
+            .label(span.clone(), format!("expected '{}' here", closing))
+            .secondary_label(opening_span, format!("opening '{}' here", delimiter))
+            .suggestion(format!("add '{}'", closing), span, closing.to_string())
+            .help("delimiters must be properly matched".to_string())
+            .build()
     }
-    
+
     /// Unexpected token
-    pub fn unexpected_token(
-        span: SourceSpan,
-        found: &str,
-        expected: &[String],
-    ) -> Diagnostic {
+    pub fn unexpected_token(span: SourceSpan, found: &str, expected: &[String]) -> Diagnostic {
         let expected_str = if expected.len() == 1 {
             expected[0].clone()
         } else if expected.len() == 2 {
@@ -67,30 +54,21 @@ impl HaxeDiagnostics {
             let others = expected[..expected.len() - 1].join(", ");
             format!("{}, or {}", others, last)
         };
-        
-        DiagnosticBuilder::error(
-            format!("unexpected token '{}'", found),
-            span.clone(),
-        )
-        .code("E0001")
-        .label(span, format!("expected {}", expected_str))
-        .help("check the syntax of your code")
-        .build()
+
+        DiagnosticBuilder::error(format!("unexpected token '{}'", found), span.clone())
+            .code("E0001")
+            .label(span, format!("expected {}", expected_str))
+            .help("check the syntax of your code")
+            .build()
     }
-    
+
     /// Invalid identifier
-    pub fn invalid_identifier(
-        span: SourceSpan,
-        found: &str,
-        reason: &str,
-    ) -> Diagnostic {
-        let mut builder = DiagnosticBuilder::error(
-            format!("invalid identifier '{}'", found),
-            span.clone(),
-        )
-        .code("E0004")
-        .label(span.clone(), reason);
-        
+    pub fn invalid_identifier(span: SourceSpan, found: &str, reason: &str) -> Diagnostic {
+        let mut builder =
+            DiagnosticBuilder::error(format!("invalid identifier '{}'", found), span.clone())
+                .code("E0004")
+                .label(span.clone(), reason);
+
         // Add suggestions for common typos
         if let Some(suggestion) = suggest_identifier(found) {
             builder = builder.suggestion(
@@ -99,10 +77,10 @@ impl HaxeDiagnostics {
                 suggestion.to_string(),
             );
         }
-        
+
         builder.build()
     }
-    
+
     /// Missing type annotation
     pub fn missing_type_annotation(span: SourceSpan, context: &str) -> Diagnostic {
         DiagnosticBuilder::warning(
@@ -115,83 +93,72 @@ impl HaxeDiagnostics {
         .note("Haxe can infer types, but explicit annotations are recommended")
         .build()
     }
-    
+
     /// Unused import
     pub fn unused_import(span: SourceSpan, import_path: &str) -> Diagnostic {
-        DiagnosticBuilder::warning(
-            format!("unused import '{}'", import_path),
-            span.clone(),
-        )
-        .code("W0002")
-        .label(span.clone(), "import is not used")
-        .suggestion("remove this import", span, "".to_string())
-        .build()
+        DiagnosticBuilder::warning(format!("unused import '{}'", import_path), span.clone())
+            .code("W0002")
+            .label(span.clone(), "import is not used")
+            .suggestion("remove this import", span, "".to_string())
+            .build()
     }
-    
+
     /// Missing import for type
-    pub fn missing_import(span: SourceSpan, type_name: &str, suggested_import: Option<&str>) -> Diagnostic {
+    pub fn missing_import(
+        span: SourceSpan,
+        type_name: &str,
+        suggested_import: Option<&str>,
+    ) -> Diagnostic {
         let mut builder = DiagnosticBuilder::warning(
             format!("type '{}' is not imported", type_name),
             span.clone(),
         )
         .code("W0003")
         .label(span, format!("'{}' used here", type_name));
-        
+
         if let Some(import) = suggested_import {
             builder = builder.help(format!("add 'import {};' to the file", import));
         }
-        
+
         builder.build()
     }
-    
+
     /// Deprecated feature
     pub fn deprecated_feature(
         span: SourceSpan,
         feature: &str,
         alternative: Option<&str>,
     ) -> Diagnostic {
-        let mut builder = DiagnosticBuilder::warning(
-            format!("use of deprecated {}", feature),
-            span.clone(),
-        )
-        .code("W0004")
-        .label(span, "deprecated");
-        
+        let mut builder =
+            DiagnosticBuilder::warning(format!("use of deprecated {}", feature), span.clone())
+                .code("W0004")
+                .label(span, "deprecated");
+
         if let Some(alt) = alternative {
             builder = builder.help(format!("use {} instead", alt));
         }
-        
+
         builder.build()
     }
-    
+
     /// Type mismatch
-    pub fn type_mismatch(
-        span: SourceSpan,
-        expected: &str,
-        found: &str,
-    ) -> Diagnostic {
-        DiagnosticBuilder::error(
-            "type mismatch",
-            span.clone(),
-        )
-        .code("E0020")
-        .label(span, format!("expected '{}', found '{}'", expected, found))
-        .help("ensure the types match or add an explicit cast")
-        .build()
+    pub fn type_mismatch(span: SourceSpan, expected: &str, found: &str) -> Diagnostic {
+        DiagnosticBuilder::error("type mismatch", span.clone())
+            .code("E0020")
+            .label(span, format!("expected '{}', found '{}'", expected, found))
+            .help("ensure the types match or add an explicit cast")
+            .build()
     }
-    
+
     /// Unreachable code
     pub fn unreachable_code(span: SourceSpan) -> Diagnostic {
-        DiagnosticBuilder::warning(
-            "unreachable code",
-            span.clone(),
-        )
-        .code("W0005")
-        .label(span, "this code will never be executed")
-        .help("remove the unreachable code or fix the control flow")
-        .build()
+        DiagnosticBuilder::warning("unreachable code", span.clone())
+            .code("W0005")
+            .label(span, "this code will never be executed")
+            .help("remove the unreachable code or fix the control flow")
+            .build()
     }
-    
+
     /// Naming convention violation
     pub fn naming_convention(
         span: SourceSpan,
@@ -249,7 +216,7 @@ fn to_camel_case(s: &str) -> String {
     if parts.is_empty() {
         return String::new();
     }
-    
+
     let mut result = parts[0].to_lowercase();
     for part in &parts[1..] {
         if !part.is_empty() {
@@ -260,16 +227,13 @@ fn to_camel_case(s: &str) -> String {
 }
 
 fn to_pascal_case(s: &str) -> String {
-    s.split('_')
-        .map(capitalize)
-        .collect::<Vec<_>>()
-        .join("")
+    s.split('_').map(capitalize).collect::<Vec<_>>().join("")
 }
 
 fn to_snake_case(s: &str) -> String {
     let mut result = String::new();
     let mut prev_is_lower = false;
-    
+
     for ch in s.chars() {
         if ch.is_uppercase() && prev_is_lower {
             result.push('_');
@@ -277,7 +241,7 @@ fn to_snake_case(s: &str) -> String {
         result.push(ch.to_lowercase().next().unwrap());
         prev_is_lower = ch.is_lowercase();
     }
-    
+
     result
 }
 
@@ -293,7 +257,7 @@ fn capitalize(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::{DiagnosticSeverity, FileId, SourcePosition};
-    
+
     #[test]
     fn test_missing_semicolon() {
         let span = SourceSpan::new(
@@ -301,15 +265,15 @@ mod tests {
             SourcePosition::new(1, 11, 10),
             FileId::new(0),
         );
-        
+
         let diagnostic = HaxeDiagnostics::missing_semicolon(span, "variable declaration");
-        
+
         assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
         assert_eq!(diagnostic.code, Some("E0002".to_string()));
         assert!(diagnostic.message.contains("variable declaration"));
         assert!(!diagnostic.suggestions.is_empty());
     }
-    
+
     #[test]
     fn test_suggest_identifier() {
         assert_eq!(suggest_identifier("fucntion"), Some("function"));
@@ -317,7 +281,7 @@ mod tests {
         assert_eq!(suggest_identifier("retrun"), Some("return"));
         assert_eq!(suggest_identifier("unknown"), None);
     }
-    
+
     #[test]
     fn test_naming_conventions() {
         assert_eq!(to_camel_case("hello_world"), "helloWorld");

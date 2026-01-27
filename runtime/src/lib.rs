@@ -16,6 +16,13 @@
 //! - Platform-independent
 //! - No external C dependencies
 
+// Runtime FFI functions take raw pointers from JIT-compiled code.
+// The safety contract is between the compiler (which generates valid pointer arguments)
+// and the runtime. Marking every extern "C" function as `unsafe` would be meaningless
+// since callers are machine code, not Rust.
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(clippy::missing_safety_doc)]
+
 use std::alloc::{alloc, dealloc, realloc, Layout};
 use std::ptr;
 
@@ -45,7 +52,7 @@ pub use haxe_string::HaxeString;
 pub use vec::HaxeVec;
 
 // Re-export generic Vec types
-pub use generic_vec::{VecI32, VecI64, VecF64, VecPtr, VecBool};
+pub use generic_vec::{VecBool, VecF64, VecI32, VecI64, VecPtr};
 
 // Re-export plugin
 pub use plugin_impl::get_plugin;
@@ -204,9 +211,7 @@ pub unsafe extern "C" fn rayzor_global_store(global_id: i64, value: i64) {
 /// The stored value, or 0 if not found
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_global_load(global_id: i64) -> i64 {
-    GLOBAL_STORE.with(|store| {
-        store.borrow().get(&global_id).copied().unwrap_or(0) as i64
-    })
+    GLOBAL_STORE.with(|store| store.borrow().get(&global_id).copied().unwrap_or(0) as i64)
 }
 
 #[cfg(test)]

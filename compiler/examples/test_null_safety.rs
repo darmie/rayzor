@@ -1,26 +1,63 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
+#![allow(
+    clippy::needless_return,
+    clippy::absurd_extreme_comparisons,
+    unused_comparisons
+)]
 //! Test null safety detection in TypeFlowGuard
 //!
 //! This tests the TypeFlowGuard's null safety analysis to validate our null dereference detection.
 
 use compiler::tast::{
     control_flow_analysis::ControlFlowAnalyzer,
-    type_flow_guard::TypeFlowGuard,
-    node::{TypedFunction, TypedStatement, TypedExpression, TypedExpressionKind, LiteralValue, 
-           FunctionEffects, VariableUsage, ExpressionMetadata, FunctionMetadata, TypedFile},
+    node::{
+        ExpressionMetadata, FunctionEffects, FunctionMetadata, LiteralValue, TypedExpression,
+        TypedExpressionKind, TypedFile, TypedFunction, TypedStatement, VariableUsage,
+    },
     symbols::{Mutability, Visibility},
-    SymbolTable, TypeTable, SymbolId, TypeId, SourceLocation, StringInterner,
+    type_flow_guard::TypeFlowGuard,
+    SourceLocation, StringInterner, SymbolId, SymbolTable, TypeId, TypeTable,
 };
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 fn test_null_safety_detection() -> bool {
     println!("=== Testing Null Safety Detection ===");
-    
+
     let string_interner = Rc::new(RefCell::new(StringInterner::new()));
     let func_name = string_interner.borrow_mut().intern("test_null");
     let s_symbol = SymbolId::from_raw(1);
     let length_field = SymbolId::from_raw(100);
-    
+
     // Create function: function test_null(): Int { var s: String = null; return s.length; }
     let function = TypedFunction {
         symbol_id: SymbolId::from_raw(0),
@@ -48,7 +85,9 @@ fn test_null_safety_detection() -> bool {
                 value: Some(TypedExpression {
                     kind: TypedExpressionKind::FieldAccess {
                         object: Box::new(TypedExpression {
-                            kind: TypedExpressionKind::Variable { symbol_id: s_symbol },
+                            kind: TypedExpressionKind::Variable {
+                                symbol_id: s_symbol,
+                            },
                             expr_type: TypeId::from_raw(3),
                             usage: VariableUsage::Copy,
                             lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -73,25 +112,36 @@ fn test_null_safety_detection() -> bool {
         is_static: false,
         metadata: FunctionMetadata::default(),
     };
-    
+
     // Test control flow analyzer for null safety
     println!("Running control flow analysis for null safety...");
     let mut analyzer = ControlFlowAnalyzer::new();
     let results = analyzer.analyze_function(&function);
-    
+
     println!("\n=== NULL SAFETY ANALYSIS RESULTS ===");
-    println!("- Null dereferences found: {}", results.null_dereferences.len());
-    println!("- Uninitialized uses found: {}", results.uninitialized_uses.len());
+    println!(
+        "- Null dereferences found: {}",
+        results.null_dereferences.len()
+    );
+    println!(
+        "- Uninitialized uses found: {}",
+        results.uninitialized_uses.len()
+    );
     println!("- Dead code regions found: {}", results.dead_code.len());
-    
+
     for (i, null_deref) in results.null_dereferences.iter().enumerate() {
-        println!("  Null Dereference #{}: Variable {:?} at {}:{}", 
-            i + 1, null_deref.variable, null_deref.location.line, null_deref.location.column);
+        println!(
+            "  Null Dereference #{}: Variable {:?} at {}:{}",
+            i + 1,
+            null_deref.variable,
+            null_deref.location.line,
+            null_deref.location.column
+        );
     }
-    
+
     // Check if we detected null dereference
     let detected_null_deref = !results.null_dereferences.is_empty();
-    
+
     if detected_null_deref {
         println!("\n🎉 SUCCESS: Detected null dereference!");
         return true;
@@ -104,11 +154,11 @@ fn test_null_safety_detection() -> bool {
 
 fn test_type_flow_guard_integration() -> bool {
     println!("\n=== Testing TypeFlowGuard Full Integration ===");
-    
+
     let symbol_table = SymbolTable::new();
     let type_table = Rc::new(RefCell::new(TypeTable::new()));
     let string_interner = Rc::new(RefCell::new(StringInterner::new()));
-    
+
     // Create a complex function with multiple issues:
     // function problematic(): Int {
     //   var x: Int;           // uninitialized
@@ -120,7 +170,7 @@ fn test_type_flow_guard_integration() -> bool {
     let x_var = SymbolId::from_raw(1);
     let s_var = SymbolId::from_raw(2);
     let length_field = SymbolId::from_raw(100);
-    
+
     let function = TypedFunction {
         symbol_id: SymbolId::from_raw(0),
         name: func_name,
@@ -153,8 +203,8 @@ fn test_type_flow_guard_integration() -> bool {
             // throw "error";
             TypedStatement::Throw {
                 exception: TypedExpression {
-                    kind: TypedExpressionKind::Literal { 
-                        value: LiteralValue::String("error".to_string()) 
+                    kind: TypedExpressionKind::Literal {
+                        value: LiteralValue::String("error".to_string()),
                     },
                     expr_type: TypeId::from_raw(2),
                     usage: VariableUsage::Copy,
@@ -220,58 +270,99 @@ fn test_type_flow_guard_integration() -> bool {
     println!("Running TypeFlowGuard on complex function...");
     let mut flow_guard = TypeFlowGuard::new(&symbol_table, &type_table);
     let results = flow_guard.analyze_file(&file);
-    
+
     println!("\n=== TYPEFLOWGUARD RESULTS ===");
     println!("Functions analyzed: {}", results.metrics.functions_analyzed);
     println!("Errors found: {}", results.errors.len());
     println!("Warnings found: {}", results.warnings.len());
-    println!("CFG construction time: {} μs", results.metrics.cfg_construction_time_us);
-    println!("Variable analysis time: {} μs", results.metrics.variable_analysis_time_us);
-    println!("Null safety time: {} μs", results.metrics.null_safety_time_us);
+    println!(
+        "CFG construction time: {} μs",
+        results.metrics.cfg_construction_time_us
+    );
+    println!(
+        "Variable analysis time: {} μs",
+        results.metrics.variable_analysis_time_us
+    );
+    println!(
+        "Null safety time: {} μs",
+        results.metrics.null_safety_time_us
+    );
     println!("Dead code time: {} μs", results.metrics.dead_code_time_us);
-    
+
     // Print all errors with detailed information
     for (i, error) in results.errors.iter().enumerate() {
         match error {
-            compiler::tast::type_flow_guard::FlowSafetyError::UninitializedVariable { variable, location } => {
-                println!("Error {}: Uninitialized variable {:?} at {}:{}", 
-                    i + 1, variable, location.line, location.column);
+            compiler::tast::type_flow_guard::FlowSafetyError::UninitializedVariable {
+                variable,
+                location,
+            } => {
+                println!(
+                    "Error {}: Uninitialized variable {:?} at {}:{}",
+                    i + 1,
+                    variable,
+                    location.line,
+                    location.column
+                );
             }
-            compiler::tast::type_flow_guard::FlowSafetyError::NullDereference { variable, location } => {
-                println!("Error {}: Null dereference on {:?} at {}:{}", 
-                    i + 1, variable, location.line, location.column);
+            compiler::tast::type_flow_guard::FlowSafetyError::NullDereference {
+                variable,
+                location,
+            } => {
+                println!(
+                    "Error {}: Null dereference on {:?} at {}:{}",
+                    i + 1,
+                    variable,
+                    location.line,
+                    location.column
+                );
             }
             compiler::tast::type_flow_guard::FlowSafetyError::DeadCode { location } => {
-                println!("Error {}: Dead code detected at {}:{}", 
-                    i + 1, location.line, location.column);
+                println!(
+                    "Error {}: Dead code detected at {}:{}",
+                    i + 1,
+                    location.line,
+                    location.column
+                );
             }
-            compiler::tast::type_flow_guard::FlowSafetyError::ResourceLeak { resource, location } => {
-                println!("Error {}: Resource leak {:?} at {}:{}", 
-                    i + 1, resource, location.line, location.column);
+            compiler::tast::type_flow_guard::FlowSafetyError::ResourceLeak {
+                resource,
+                location,
+            } => {
+                println!(
+                    "Error {}: Resource leak {:?} at {}:{}",
+                    i + 1,
+                    resource,
+                    location.line,
+                    location.column
+                );
             }
-            _ =>{}
+            _ => {}
         }
     }
-    
+
     // Print all warnings
     for (i, warning) in results.warnings.iter().enumerate() {
         match warning {
             compiler::tast::type_flow_guard::FlowSafetyError::DeadCode { location } => {
-                println!("Warning {}: Dead code at {}:{}", 
-                    i + 1, location.line, location.column);
+                println!(
+                    "Warning {}: Dead code at {}:{}",
+                    i + 1,
+                    location.line,
+                    location.column
+                );
             }
             _ => {
                 println!("Warning {}: {:?}", i + 1, warning);
             }
         }
     }
-    
+
     // Validation: TypeFlowGuard should have run all analyses
-    let success = results.metrics.functions_analyzed > 0 &&
-                  results.metrics.cfg_construction_time_us >= 0 &&
-                  results.metrics.dead_code_time_us >= 0 &&
-                  results.metrics.null_safety_time_us >= 0;
-    
+    let success = results.metrics.functions_analyzed > 0
+        && results.metrics.cfg_construction_time_us >= 0
+        && results.metrics.dead_code_time_us >= 0
+        && results.metrics.null_safety_time_us >= 0;
+
     if success {
         println!("\n✅ SUCCESS: TypeFlowGuard performed comprehensive analysis!");
         println!("✅ All analysis phases executed successfully");
@@ -288,24 +379,24 @@ fn test_type_flow_guard_integration() -> bool {
 
 fn main() {
     println!("=== TypeFlowGuard Comprehensive Validation ===\n");
-    
+
     let null_safety_success = test_null_safety_detection();
     let integration_success = test_type_flow_guard_integration();
-    
+
     println!("\n=== FINAL RESULTS ===");
-    
+
     if null_safety_success {
         println!("✅ Null Safety Detection: WORKING");
     } else {
         println!("ℹ️  Null Safety Detection: Needs investigation (may be implementation-specific)");
     }
-    
+
     if integration_success {
         println!("✅ TypeFlowGuard Integration: WORKING");
     } else {
         println!("❌ TypeFlowGuard Integration: FAILED");
     }
-    
+
     if integration_success {
         println!("\n🎉 OVERALL SUCCESS: TypeFlowGuard safety analysis system is fully functional!");
         println!("🔧 All major analysis phases are working:");
@@ -319,6 +410,6 @@ fn main() {
     } else {
         println!("\n⚠️  Some components need further investigation");
     }
-    
+
     println!("\n=== TYPEFLOWGUARD VALIDATION COMPLETE ===");
 }

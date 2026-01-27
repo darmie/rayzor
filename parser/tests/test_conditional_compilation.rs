@@ -11,7 +11,7 @@ class DebugTools {
 }
 #end
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(ast) => println!("✓ Simple #if/#end works: {:?}", ast),
         Err(e) => println!("✗ Simple #if/#end failed: {}", e),
@@ -31,7 +31,7 @@ class ProductionTools {
 }
 #end
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(ast) => println!("✓ #if/#else/#end works: {:?}", ast),
         Err(e) => println!("✗ #if/#else/#end failed: {}", e),
@@ -49,7 +49,7 @@ class TestTools {}
 class ProductionTools {}
 #end
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(ast) => println!("✓ #if/#elseif/#else/#end works: {:?}", ast),
         Err(e) => println!("✗ #if/#elseif/#else/#end failed: {}", e),
@@ -73,7 +73,7 @@ class MyClass {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(ast) => println!("✓ Conditional in class works: {:?}", ast),
         Err(e) => println!("✗ Conditional in class failed: {}", e),
@@ -95,7 +95,7 @@ class JsPlatform {}
 class DynamicPlatform {}
 #end
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(ast) => println!("✓ Complex conditions work: {:?}", ast),
         Err(e) => println!("✗ Complex conditions failed: {}", e),
@@ -113,7 +113,7 @@ fn test_nested_conditionals() {
     #end
 #end
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(ast) => println!("✓ Nested conditionals work: {:?}", ast),
         Err(e) => println!("✗ Nested conditionals failed: {}", e),
@@ -135,7 +135,7 @@ class FileHandler {
     public function new() {}
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(ast) => println!("✓ Conditional imports work: {:?}", ast),
         Err(e) => println!("✗ Conditional imports failed: {}", e),

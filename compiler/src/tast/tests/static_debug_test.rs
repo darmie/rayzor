@@ -12,19 +12,19 @@ class TestClass {
 
 class Main {
     public function new() {}
-    
+
     public function test():Void {
         // This should work - static access
         var x = TestClass.staticVar;
-        
+
         // This should fail - instance member via static access
         var y = TestClass.instanceVar;
     }
 }
         "#;
-        
+
         let result = compile_haxe_source(haxe_code);
-        
+
         println!("\n=== Static Access Debug Test ===");
         println!("Total errors: {}", result.errors.len());
         for error in &result.errors {

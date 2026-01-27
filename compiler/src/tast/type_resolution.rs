@@ -14,8 +14,8 @@
 //! - Ensures no Dynamic types remain where concrete types are needed
 
 use crate::tast::{
-    core::*, node::*, InternedString, ScopeId, ScopeTree, SourceLocation, StringInterner, SymbolId,
-    SymbolTable, TypeId, TypeTable, scopes::NameResolver,
+    core::*, node::*, scopes::NameResolver, InternedString, ScopeId, ScopeTree, SourceLocation,
+    StringInterner, SymbolId, SymbolTable, TypeId, TypeTable,
 };
 use parser::{HaxeFile, Type as ParserType, TypeDeclaration};
 use std::cell::RefCell;
@@ -231,7 +231,7 @@ impl<'a> TypeResolver<'a> {
 
                     self.forward_references.insert(name, forward_ref);
 
-                    // Create symbol for the abstract  
+                    // Create symbol for the abstract
                     // Note: Abstract types are similar to type aliases in the symbol table
                     let symbol_id = self.symbol_table.create_class(name); // Using class for now, could add create_abstract
 
@@ -398,8 +398,7 @@ impl<'a> TypeResolver<'a> {
                                         .get(forward_ref.name)
                                         .unwrap_or("<unknown>")
                                         .to_string(),
-                                    message: "Implemented type must be an interface"
-                                        .to_string(),
+                                    message: "Implemented type must be an interface".to_string(),
                                     location: forward_ref.source_location,
                                 });
                             }
@@ -505,7 +504,7 @@ impl<'a> TypeResolver<'a> {
             }
         }
 
-        // Resolve to types  
+        // Resolve to types
         for to_type in &abstract_decl.to {
             if let Err(e) = self.resolve_type_reference(to_type) {
                 self.errors.push(e);
@@ -567,18 +566,23 @@ impl<'a> TypeResolver<'a> {
                         if let Some(symbol) = self.symbol_table.get_symbol(symbol.id) {
                             use crate::tast::SymbolKind;
                             let type_id = match symbol.kind {
-                                SymbolKind::Class => {
-                                    self.type_table.borrow_mut().create_class_type(symbol.id, type_args)
-                                }
-                                SymbolKind::Interface => {
-                                    self.type_table.borrow_mut().create_interface_type(symbol.id, type_args)
-                                }
-                                SymbolKind::Enum => {
-                                    self.type_table.borrow_mut().create_enum_type(symbol.id, type_args)
-                                }
+                                SymbolKind::Class => self
+                                    .type_table
+                                    .borrow_mut()
+                                    .create_class_type(symbol.id, type_args),
+                                SymbolKind::Interface => self
+                                    .type_table
+                                    .borrow_mut()
+                                    .create_interface_type(symbol.id, type_args),
+                                SymbolKind::Enum => self
+                                    .type_table
+                                    .borrow_mut()
+                                    .create_enum_type(symbol.id, type_args),
                                 _ => {
                                     // For other symbol kinds, create a class type for now
-                                    self.type_table.borrow_mut().create_class_type(symbol.id, type_args)
+                                    self.type_table
+                                        .borrow_mut()
+                                        .create_class_type(symbol.id, type_args)
                                 }
                             };
                             Ok(type_id)
@@ -606,25 +610,32 @@ impl<'a> TypeResolver<'a> {
                             "Dynamic" => Ok(self.type_table.borrow().dynamic_type()),
                             _ => {
                                 // Fallback: Try direct symbol lookup for BLADE-cached types
-                                if let Some((symbol, _scope_id)) = self.resolve_symbol(interned_name) {
+                                if let Some((symbol, _scope_id)) =
+                                    self.resolve_symbol(interned_name)
+                                {
                                     if let Some(symbol) = self.symbol_table.get_symbol(symbol.id) {
                                         use crate::tast::SymbolKind;
                                         let type_id = match symbol.kind {
-                                            SymbolKind::Class => {
-                                                self.type_table.borrow_mut().create_class_type(symbol.id, vec![])
-                                            }
-                                            SymbolKind::Interface => {
-                                                self.type_table.borrow_mut().create_interface_type(symbol.id, vec![])
-                                            }
-                                            SymbolKind::Enum => {
-                                                self.type_table.borrow_mut().create_enum_type(symbol.id, vec![])
-                                            }
-                                            SymbolKind::Abstract => {
-                                                self.type_table.borrow_mut().create_abstract_type(symbol.id, None, vec![])
-                                            }
-                                            _ => {
-                                                self.type_table.borrow_mut().create_class_type(symbol.id, vec![])
-                                            }
+                                            SymbolKind::Class => self
+                                                .type_table
+                                                .borrow_mut()
+                                                .create_class_type(symbol.id, vec![]),
+                                            SymbolKind::Interface => self
+                                                .type_table
+                                                .borrow_mut()
+                                                .create_interface_type(symbol.id, vec![]),
+                                            SymbolKind::Enum => self
+                                                .type_table
+                                                .borrow_mut()
+                                                .create_enum_type(symbol.id, vec![]),
+                                            SymbolKind::Abstract => self
+                                                .type_table
+                                                .borrow_mut()
+                                                .create_abstract_type(symbol.id, None, vec![]),
+                                            _ => self
+                                                .type_table
+                                                .borrow_mut()
+                                                .create_class_type(symbol.id, vec![]),
                                         };
                                         return Ok(type_id);
                                     }
@@ -633,7 +644,7 @@ impl<'a> TypeResolver<'a> {
                                     name: name.clone(),
                                     location: SourceLocation::unknown(),
                                 })
-                            },
+                            }
                         }
                     } else {
                         // Qualified name not in forward_references
@@ -653,21 +664,26 @@ impl<'a> TypeResolver<'a> {
                             if let Some(symbol) = self.symbol_table.get_symbol(symbol.id) {
                                 use crate::tast::SymbolKind;
                                 let type_id = match symbol.kind {
-                                    SymbolKind::Class => {
-                                        self.type_table.borrow_mut().create_class_type(symbol.id, type_args)
-                                    }
-                                    SymbolKind::Interface => {
-                                        self.type_table.borrow_mut().create_interface_type(symbol.id, type_args)
-                                    }
-                                    SymbolKind::Enum => {
-                                        self.type_table.borrow_mut().create_enum_type(symbol.id, type_args)
-                                    }
-                                    SymbolKind::Abstract => {
-                                        self.type_table.borrow_mut().create_abstract_type(symbol.id, None, type_args)
-                                    }
-                                    _ => {
-                                        self.type_table.borrow_mut().create_class_type(symbol.id, type_args)
-                                    }
+                                    SymbolKind::Class => self
+                                        .type_table
+                                        .borrow_mut()
+                                        .create_class_type(symbol.id, type_args),
+                                    SymbolKind::Interface => self
+                                        .type_table
+                                        .borrow_mut()
+                                        .create_interface_type(symbol.id, type_args),
+                                    SymbolKind::Enum => self
+                                        .type_table
+                                        .borrow_mut()
+                                        .create_enum_type(symbol.id, type_args),
+                                    SymbolKind::Abstract => self
+                                        .type_table
+                                        .borrow_mut()
+                                        .create_abstract_type(symbol.id, None, type_args),
+                                    _ => self
+                                        .type_table
+                                        .borrow_mut()
+                                        .create_class_type(symbol.id, type_args),
                                 };
                                 return Ok(type_id);
                             }
@@ -691,10 +707,10 @@ impl<'a> TypeResolver<'a> {
                 let ret_type = self.resolve_type_reference(ret)?;
 
                 // Create function type
-                let type_id = self.type_table.borrow_mut().create_function_type(
-                    param_types,
-                    ret_type,
-                );
+                let type_id = self
+                    .type_table
+                    .borrow_mut()
+                    .create_function_type(param_types, ret_type);
                 Ok(type_id)
             }
 
@@ -739,7 +755,7 @@ impl<'a> TypeResolver<'a> {
     pub fn take_errors(&mut self) -> Vec<TypeResolutionError> {
         std::mem::take(&mut self.errors)
     }
-    
+
     /// Helper method to resolve a symbol using NameResolver
     fn resolve_symbol(&mut self, name: InternedString) -> Option<(crate::tast::Symbol, ScopeId)> {
         let mut name_resolver = NameResolver::new(self.scope_tree, self.symbol_table);

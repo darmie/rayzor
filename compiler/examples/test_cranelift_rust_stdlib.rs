@@ -1,10 +1,40 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test Rust stdlib functions called from Cranelift JIT-compiled code
 
 extern crate rayzor_runtime;
 
-use compiler::ir::mir_builder::MirBuilder;
-use compiler::ir::{IrType, CallingConvention, StructField};
 use compiler::codegen::cranelift_backend::CraneliftBackend;
+use compiler::ir::mir_builder::MirBuilder;
+use compiler::ir::{CallingConvention, IrType, StructField};
 
 fn main() {
     println!("🚀 Testing Rust Stdlib via Cranelift JIT");
@@ -40,7 +70,8 @@ fn main() {
     };
 
     // Declare extern function: haxe_vec_new() -> HaxeVec
-    let vec_new_id = builder.begin_function("haxe_vec_new")
+    let vec_new_id = builder
+        .begin_function("haxe_vec_new")
         .returns(vec_ty.clone())
         .calling_convention(CallingConvention::C)
         .build();
@@ -49,7 +80,8 @@ fn main() {
     // Declare extern function: haxe_vec_push(vec: *HaxeVec, value: u8)
     let void_ty = builder.void_type();
     let ptr_vec_ty = builder.ptr_type(vec_ty.clone());
-    let vec_push_id = builder.begin_function("haxe_vec_push")
+    let vec_push_id = builder
+        .begin_function("haxe_vec_push")
         .param("vec", ptr_vec_ty.clone())
         .param("value", u8_ty.clone())
         .returns(void_ty.clone())
@@ -58,7 +90,8 @@ fn main() {
     builder.mark_as_extern(vec_push_id);
 
     // Declare extern function: haxe_vec_len(vec: *HaxeVec) -> u64
-    let vec_len_id = builder.begin_function("haxe_vec_len")
+    let vec_len_id = builder
+        .begin_function("haxe_vec_len")
         .param("vec", ptr_vec_ty.clone())
         .returns(u64_ty.clone())
         .calling_convention(CallingConvention::C)
@@ -66,7 +99,8 @@ fn main() {
     builder.mark_as_extern(vec_len_id);
 
     // Declare extern function: haxe_vec_get(vec: *HaxeVec, index: u64) -> u8
-    let vec_get_id = builder.begin_function("haxe_vec_get")
+    let vec_get_id = builder
+        .begin_function("haxe_vec_get")
         .param("vec", ptr_vec_ty.clone())
         .param("index", u64_ty.clone())
         .returns(u8_ty.clone())
@@ -76,7 +110,8 @@ fn main() {
 
     // Create a test function that uses the vec
     // fn test_vec() -> u64
-    let test_func_id = builder.begin_function("test_vec")
+    let test_func_id = builder
+        .begin_function("test_vec")
         .returns(u64_ty.clone())
         .calling_convention(CallingConvention::C)
         .build();
@@ -124,7 +159,7 @@ fn main() {
     match backend.compile_module(&mir_module) {
         Ok(_) => println!("  ✓ Compilation successful!"),
         Err(e) => {
-            eprintln!("  ✗ Compilation failed: {}", e);
+            eprintln!("  ✗ Compilation failed: {:?}", e);
             return;
         }
     }

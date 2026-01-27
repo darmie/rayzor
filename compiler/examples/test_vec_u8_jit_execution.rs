@@ -1,3 +1,34 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
+use compiler::codegen::cranelift_backend::CraneliftBackend;
 /// End-to-End JIT Test for Vec<u8>
 ///
 /// This test verifies the complete pipeline:
@@ -11,12 +42,9 @@
 /// - malloc/realloc/free calls work
 /// - Vec<u8> operations execute correctly
 /// - Memory management is functional
-
-use compiler::ir::mir_builder::MirBuilder;
-use compiler::ir::IrModule;
 use compiler::ir::optimizable::OptimizableModule;
+use compiler::ir::IrModule;
 use compiler::stdlib::build_stdlib;
-use compiler::codegen::cranelift_backend::CraneliftBackend;
 
 // Import runtime to ensure symbols are linked
 extern crate rayzor_runtime;
@@ -38,7 +66,7 @@ fn main() {
     println!();
 
     // Touch runtime symbols to ensure they're linked (prevent DCE)
-    unsafe {
+    {
         let _ = rayzor_malloc as *const ();
         let _ = rayzor_realloc as *const ();
         let _ = rayzor_free as *const ();
@@ -50,16 +78,23 @@ fn main() {
     println!("   ✅ Built {} functions", stdlib.functions.len());
 
     // Verify Vec<u8> functions exist
-    let vec_functions: Vec<_> = stdlib.functions.iter()
+    let vec_functions: Vec<_> = stdlib
+        .functions
+        .iter()
         .filter(|(_, f)| f.name.starts_with("vec_u8_"))
         .collect();
     println!("   ✅ Found {} Vec<u8> functions", vec_functions.len());
 
     // Verify memory functions exist
-    let mem_functions: Vec<_> = stdlib.functions.iter()
+    let mem_functions: Vec<_> = stdlib
+        .functions
+        .iter()
         .filter(|(_, f)| f.name == "malloc" || f.name == "realloc" || f.name == "free")
         .collect();
-    println!("   ✅ Found {} memory functions (malloc/realloc/free)", mem_functions.len());
+    println!(
+        "   ✅ Found {} memory functions (malloc/realloc/free)",
+        mem_functions.len()
+    );
     println!();
 
     // Step 2: Validate MIR
@@ -98,7 +133,7 @@ fn main() {
     match backend.compile_module(&stdlib) {
         Ok(_) => println!("   ✅ Compilation successful"),
         Err(e) => {
-            eprintln!("   ❌ Compilation failed: {}", e);
+            eprintln!("   ❌ Compilation failed: {:?}", e);
             eprintln!("\n💡 This may be due to:");
             eprintln!("   - Validation errors preventing codegen");
             eprintln!("   - Type mismatches in lowering");
@@ -122,34 +157,46 @@ fn main() {
     println!("🔗 Step 5: Verifying symbol resolution and executing...");
 
     // Get function IDs
-    let vec_new_id = stdlib.functions.iter()
+    let vec_new_id = stdlib
+        .functions
+        .iter()
         .find(|(_, f)| f.name == "vec_u8_new")
         .map(|(id, _)| *id)
         .expect("vec_u8_new not found");
 
-    let vec_push_id = stdlib.functions.iter()
+    let vec_push_id = stdlib
+        .functions
+        .iter()
         .find(|(_, f)| f.name == "vec_u8_push")
         .map(|(id, _)| *id)
         .expect("vec_u8_push not found");
 
-    let vec_len_id = stdlib.functions.iter()
+    let vec_len_id = stdlib
+        .functions
+        .iter()
         .find(|(_, f)| f.name == "vec_u8_len")
         .map(|(id, _)| *id)
         .expect("vec_u8_len not found");
 
-    let vec_get_id = stdlib.functions.iter()
+    let vec_get_id = stdlib
+        .functions
+        .iter()
         .find(|(_, f)| f.name == "vec_u8_get")
         .map(|(id, _)| *id)
         .expect("vec_u8_get not found");
 
     // Get function pointers
-    let vec_new_ptr = backend.get_function_ptr(vec_new_id)
+    let vec_new_ptr = backend
+        .get_function_ptr(vec_new_id)
         .expect("Failed to get vec_u8_new pointer");
-    let vec_push_ptr = backend.get_function_ptr(vec_push_id)
+    let vec_push_ptr = backend
+        .get_function_ptr(vec_push_id)
         .expect("Failed to get vec_u8_push pointer");
-    let vec_len_ptr = backend.get_function_ptr(vec_len_id)
+    let vec_len_ptr = backend
+        .get_function_ptr(vec_len_id)
         .expect("Failed to get vec_u8_len pointer");
-    let vec_get_ptr = backend.get_function_ptr(vec_get_id)
+    let vec_get_ptr = backend
+        .get_function_ptr(vec_get_id)
         .expect("Failed to get vec_u8_get pointer");
 
     println!("   ✅ All function symbols resolved");
@@ -158,15 +205,15 @@ fn main() {
     // Cast function pointers to correct types
     // Vec<u8> is represented as a pointer to struct { ptr: *u8, len: u64, cap: u64 }
     // vec_u8_new uses sret calling convention - caller allocates space and passes pointer
-    type VecNewFn = unsafe extern "C" fn(*mut u8);  // sret: takes pointer to return location
+    type VecNewFn = unsafe extern "C" fn(*mut u8); // sret: takes pointer to return location
     type VecPushFn = unsafe extern "C" fn(*mut u8, u8);
     type VecLenFn = unsafe extern "C" fn(*const u8) -> u64;
     type VecGetFn = unsafe extern "C" fn(*const u8, u64) -> *const u8; // Returns Option<u8>
 
     let vec_new = unsafe { std::mem::transmute::<*const u8, VecNewFn>(vec_new_ptr) };
-    let vec_push = unsafe { std::mem::transmute::<*const u8, VecPushFn>(vec_push_ptr) };
+    let _vec_push = unsafe { std::mem::transmute::<*const u8, VecPushFn>(vec_push_ptr) };
     let vec_len = unsafe { std::mem::transmute::<*const u8, VecLenFn>(vec_len_ptr) };
-    let vec_get = unsafe { std::mem::transmute::<*const u8, VecGetFn>(vec_get_ptr) };
+    let _vec_get = unsafe { std::mem::transmute::<*const u8, VecGetFn>(vec_get_ptr) };
 
     println!("🚀 Step 6: Executing Vec<u8> operations...");
 
@@ -187,7 +234,10 @@ fn main() {
         let ptr_field = *(vec_ptr as *const u64);
         let len_field = *(vec_ptr.offset(8) as *const u64);
         let cap_field = *(vec_ptr.offset(16) as *const u64);
-        println!("   🔍 Debug: ptr={:x}, len={}, cap={}", ptr_field, len_field, cap_field);
+        println!(
+            "   🔍 Debug: ptr={:x}, len={}, cap={}",
+            ptr_field, len_field, cap_field
+        );
 
         // Check initial length
         let len = vec_len(vec_ptr);
@@ -214,7 +264,6 @@ fn main() {
         println!("   ✅ Runtime linking");
         println!();
         println!("   The functions ARE callable - just need ABI fixes for struct returns.");
-
     }
 
     println!();
@@ -222,8 +271,14 @@ fn main() {
     // Summary
     println!("✨ FINAL Test Summary:");
     println!("   ✅ MIR stdlib built successfully (34 functions)");
-    println!("   ✅ Vec<u8> functions present ({} functions)", vec_functions.len());
-    println!("   ✅ Memory functions present ({} functions)", mem_functions.len());
+    println!(
+        "   ✅ Vec<u8> functions present ({} functions)",
+        vec_functions.len()
+    );
+    println!(
+        "   ✅ Memory functions present ({} functions)",
+        mem_functions.len()
+    );
     println!("   ✅ Cranelift compilation succeeded");
     println!("   ✅ Runtime symbols linked successfully");
     println!("   ✅ Functions are callable (symbol resolution works)");
@@ -268,6 +323,7 @@ fn main() {
 }
 
 /// Create a simple test program that uses Vec<u8>
+#[allow(dead_code)]
 fn create_vec_test_program(stdlib: &IrModule) -> IrModule {
     // For now, just return the stdlib itself
     // We'll create a proper test function after validation issues are resolved

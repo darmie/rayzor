@@ -1,5 +1,5 @@
-use parser::preprocessor::{preprocess, PreprocessorConfig};
 use parser::parse_haxe_file_with_diagnostics;
+use parser::preprocessor::{preprocess, PreprocessorConfig};
 
 fn main() {
     let source = std::fs::read_to_string("compiler/haxe-std/haxe/io/Bytes.hx")
@@ -30,7 +30,10 @@ fn main() {
     println!("\n--- Attempting to parse preprocessed Bytes.hx ---");
     match parse_haxe_file_with_diagnostics("Bytes.hx", &result) {
         Ok(file) => {
-            println!("SUCCESS: Parsed {} declarations", file.file.declarations.len());
+            println!(
+                "SUCCESS: Parsed {} declarations",
+                file.file.declarations.len()
+            );
         }
         Err(e) => {
             println!("FAILED to parse: {}", e);

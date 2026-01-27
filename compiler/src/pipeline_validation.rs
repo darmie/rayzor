@@ -3,7 +3,10 @@
 //! This module provides comprehensive validation functions to test the compilation pipeline
 //! and ensure that AST to TAST lowering preserves all critical information.
 
-use crate::{pipeline::{compile_haxe_file, CompilationResult}, tast::{node::*, StringInterner}};
+use crate::{
+    pipeline::{compile_haxe_file, CompilationResult},
+    tast::{node::*, StringInterner},
+};
 
 use std::{cell::RefCell, rc::Rc};
 
@@ -16,7 +19,7 @@ pub fn validate_simple_pipeline() -> CompilationResult {
             }
         }
     "#;
-    
+
     compile_haxe_file("test.hx", simple_haxe)
 }
 
@@ -24,14 +27,14 @@ pub fn validate_simple_pipeline() -> CompilationResult {
 pub fn validate_complex_pipeline() -> CompilationResult {
     let complex_haxe = r#"
         package examples;
-        
+
         enum Color {
             Red;
-            Green; 
+            Green;
             Blue;
             RGB(r:Int, g:Int, b:Int);
         }
-        
+
         class ColorProcessor {
             public static function toString(color:Color):String {
                 return switch (color) {
@@ -42,7 +45,7 @@ pub fn validate_complex_pipeline() -> CompilationResult {
                 }
             }
         }
-        
+
         class Main {
             static function main() {
                 var colors = [Red, Green, Blue, RGB(255, 128, 0)];
@@ -52,7 +55,7 @@ pub fn validate_complex_pipeline() -> CompilationResult {
             }
         }
     "#;
-    
+
     compile_haxe_file("ColorProcessor.hx", complex_haxe)
 }
 
@@ -116,53 +119,53 @@ pub enum ValidationSeverity {
 pub fn validate_comprehensive_pipeline() -> ValidationResult {
     let comprehensive_haxe = r#"
         package validation.test;
-        
+
         import sys.io.File;
         using StringTools;
-        
+
         // Test enum with complex constructors
         enum Result<T, E> {
             Ok(value: T);
             Err(error: E);
         }
-        
+
         // Test interface with generic type parameters
         interface Processor<T> {
             function process(input: T): Result<T, String>;
             function validate(input: T): Bool;
         }
-        
+
         // Test abstract type with from/to conversions
         abstract Money(Int) from Int to Int {
             public function new(amount: Int) {
                 this = amount;
             }
-            
+
             public function add(other: Money): Money {
                 return new Money(this + other);
             }
-            
+
             @:from
             public static function fromFloat(value: Float): Money {
                 return new Money(Math.floor(value));
             }
-            
+
             @:to
             public function toString(): String {
                 return '$this cents';
             }
         }
-        
+
         // Test class with complex inheritance and generics
         class DataProcessor<T> implements Processor<T> {
             private var cache: Map<String, T>;
             public static var instanceCount: Int = 0;
-            
+
             public function new() {
                 this.cache = new Map();
                 DataProcessor.instanceCount++;
             }
-            
+
             public function process(input: T): Result<T, String> {
                 if (validate(input)) {
                     return Ok(input);
@@ -170,38 +173,38 @@ pub fn validate_comprehensive_pipeline() -> ValidationResult {
                     return Err("Invalid input");
                 }
             }
-            
+
             public function validate(input: T): Bool {
                 return input != null;
             }
-            
+
             private function getCacheKey(input: T): String {
                 return Std.string(input);
             }
         }
-        
+
         // Test typedef with complex type
         typedef ProcessorConfig = {
             var maxRetries: Int;
             var timeout: Float;
             var ?debug: Bool;
         }
-        
+
         // Test class with complex methods and properties
         class ValidationTest {
             public var result(get, set): String;
             private var _result: String = "";
-            
+
             public function new() {}
-            
+
             function get_result(): String {
                 return _result;
             }
-            
+
             function set_result(value: String): String {
                 return _result = value;
             }
-            
+
             public static function main() {
                 var processor = new DataProcessor<Int>();
                 var money = new Money(100);
@@ -210,7 +213,7 @@ pub fn validate_comprehensive_pipeline() -> ValidationResult {
                     timeout: 5.0,
                     debug: true
                 };
-                
+
                 switch (processor.process(42)) {
                     case Ok(value): trace('Success: $value');
                     case Err(error): trace('Error: $error');
@@ -218,22 +221,32 @@ pub fn validate_comprehensive_pipeline() -> ValidationResult {
             }
         }
     "#;
-    
+
     let compilation_result = compile_haxe_file("comprehensive_validation.hx", comprehensive_haxe);
-    
+
     // Perform detailed validation
     let mut validation_errors = Vec::new();
     let mut validation_warnings = Vec::new();
     let mut info_score = 100u8;
-    
+
     // Validate the compilation result
-    validate_compilation_result(&compilation_result, &mut validation_errors, &mut validation_warnings, &mut info_score);
-    
+    validate_compilation_result(
+        &compilation_result,
+        &mut validation_errors,
+        &mut validation_warnings,
+        &mut info_score,
+    );
+
     // Validate TAST structure if compilation succeeded
     if !compilation_result.typed_files.is_empty() {
-        validate_tast_structure(&compilation_result.typed_files[0], &mut validation_errors, &mut validation_warnings, &mut info_score);
+        validate_tast_structure(
+            &compilation_result.typed_files[0],
+            &mut validation_errors,
+            &mut validation_warnings,
+            &mut info_score,
+        );
     }
-    
+
     ValidationResult {
         compilation_result,
         validation_errors,
@@ -258,7 +271,7 @@ fn validate_compilation_result(
         });
         *score = (*score).saturating_sub(50);
     }
-    
+
     // Check if any files were processed
     if result.stats.files_processed == 0 {
         errors.push(ValidationError {
@@ -268,7 +281,7 @@ fn validate_compilation_result(
         });
         *score = 0;
     }
-    
+
     // Check if TAST files were generated
     if result.typed_files.is_empty() && result.errors.is_empty() {
         errors.push(ValidationError {
@@ -278,11 +291,14 @@ fn validate_compilation_result(
         });
         *score = (*score).saturating_sub(30);
     }
-    
+
     // Check for high error rates
     if result.stats.error_count > result.stats.files_processed * 3 {
         warnings.push(ValidationWarning {
-            message: format!("High error rate: {} errors for {} files", result.stats.error_count, result.stats.files_processed),
+            message: format!(
+                "High error rate: {} errors for {} files",
+                result.stats.error_count, result.stats.files_processed
+            ),
             category: ValidationWarningCategory::Performance,
         });
         *score = (*score).saturating_sub(10);
@@ -297,19 +313,43 @@ fn validate_tast_structure(
     score: &mut u8,
 ) {
     let string_interner = tast_file.string_interner();
-    
+
     // Check if classes were properly lowered
-    validate_classes(&tast_file.classes, string_interner.clone(), errors, warnings, score);
-    
+    validate_classes(
+        &tast_file.classes,
+        string_interner.clone(),
+        errors,
+        warnings,
+        score,
+    );
+
     // Check if interfaces were properly lowered
-    validate_interfaces(&tast_file.interfaces, string_interner.clone(), errors, warnings, score);
-    
+    validate_interfaces(
+        &tast_file.interfaces,
+        string_interner.clone(),
+        errors,
+        warnings,
+        score,
+    );
+
     // Check if enums were properly lowered
-    validate_enums(&tast_file.enums, string_interner.clone(), errors, warnings, score);
-    
+    validate_enums(
+        &tast_file.enums,
+        string_interner.clone(),
+        errors,
+        warnings,
+        score,
+    );
+
     // Check if functions were properly lowered
-    validate_functions(&tast_file.functions, string_interner.clone(), errors, warnings, score);
-    
+    validate_functions(
+        &tast_file.functions,
+        string_interner.clone(),
+        errors,
+        warnings,
+        score,
+    );
+
     // Check metadata preservation
     validate_metadata(&tast_file.metadata, errors, warnings, score);
 }
@@ -325,7 +365,11 @@ fn validate_classes(
     for class in classes {
         // Check if class has proper source location
         if !class.source_location.is_valid() {
-            let class_name = string_interner.borrow().get(class.name).map(|s| s.to_string()).unwrap_or_else(|| "<unknown>".to_string());
+            let class_name = string_interner
+                .borrow()
+                .get(class.name)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "<unknown>".to_string());
             errors.push(ValidationError {
                 message: format!("Class '{}' has unknown source location", class_name),
                 category: ValidationErrorCategory::SourceLocation,
@@ -333,10 +377,14 @@ fn validate_classes(
             });
             *score = (*score).saturating_sub(5);
         }
-        
+
         // Check if class has proper symbol ID
         if !class.symbol_id.is_valid() {
-            let class_name = string_interner.borrow().get(class.name).map(|s| s.to_string()).unwrap_or_else(|| "<unknown>".to_string());
+            let class_name = string_interner
+                .borrow()
+                .get(class.name)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "<unknown>".to_string());
             errors.push(ValidationError {
                 message: format!("Class '{}' has invalid symbol ID", class_name),
                 category: ValidationErrorCategory::SymbolResolution,
@@ -344,20 +392,42 @@ fn validate_classes(
             });
             *score = (*score).saturating_sub(15);
         }
-        
+
         // Check if methods preserve information
         for method in &class.methods {
-            let class_name = string_interner.borrow().get(class.name).map(|s| s.to_string()).unwrap_or_else(|| "<unknown>".to_string());
-            validate_method_information(method, &format!("class '{}'", class_name), string_interner.clone(), errors, warnings, score);
+            let class_name = string_interner
+                .borrow()
+                .get(class.name)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            validate_method_information(
+                method,
+                &format!("class '{}'", class_name),
+                string_interner.clone(),
+                errors,
+                warnings,
+                score,
+            );
         }
-        
+
         // Check if fields preserve information
         for field in &class.fields {
             if !field.source_location.is_valid() {
-                let class_name = string_interner.borrow().get(class.name).map(|s| s.to_string()).unwrap_or_else(|| "<unknown>".to_string());
-                let field_name = string_interner.borrow().get(field.name).map(|s| s.to_string()).unwrap_or_else(|| "<unknown>".to_string());
+                let class_name = string_interner
+                    .borrow()
+                    .get(class.name)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                let field_name = string_interner
+                    .borrow()
+                    .get(field.name)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "<unknown>".to_string());
                 warnings.push(ValidationWarning {
-                    message: format!("Field '{}' in class '{}' has unknown source location", field_name, class_name),
+                    message: format!(
+                        "Field '{}' in class '{}' has unknown source location",
+                        field_name, class_name
+                    ),
                     category: ValidationWarningCategory::MetadataSimplification,
                 });
                 *score = (*score).saturating_sub(2);
@@ -376,7 +446,7 @@ fn validate_interfaces(
 ) {
     for interface in interfaces {
         let interface_name = &interface.name;
-        
+
         // Check if interface has proper source location
         if !interface.source_location.is_valid() {
             errors.push(ValidationError {
@@ -386,7 +456,7 @@ fn validate_interfaces(
             });
             *score = (*score).saturating_sub(5);
         }
-        
+
         // Check if interface has proper symbol ID
         if !interface.symbol_id.is_valid() {
             errors.push(ValidationError {
@@ -396,13 +466,16 @@ fn validate_interfaces(
             });
             *score = (*score).saturating_sub(15);
         }
-        
+
         // Check if method signatures preserve information
         for method in &interface.methods {
             if !method.source_location.is_valid() {
                 let method_name = &method.name;
                 warnings.push(ValidationWarning {
-                    message: format!("Method '{}' in interface '{}' has unknown source location", method_name, interface_name),
+                    message: format!(
+                        "Method '{}' in interface '{}' has unknown source location",
+                        method_name, interface_name
+                    ),
                     category: ValidationWarningCategory::MetadataSimplification,
                 });
                 *score = (*score).saturating_sub(2);
@@ -421,7 +494,7 @@ fn validate_enums(
 ) {
     for enum_def in enums {
         let enum_name = &enum_def.name;
-        
+
         // Check if enum has proper source location
         if !enum_def.source_location.is_valid() {
             errors.push(ValidationError {
@@ -431,7 +504,7 @@ fn validate_enums(
             });
             *score = (*score).saturating_sub(5);
         }
-        
+
         // Check if enum has proper symbol ID
         if !enum_def.symbol_id.is_valid() {
             errors.push(ValidationError {
@@ -441,12 +514,15 @@ fn validate_enums(
             });
             *score = (*score).saturating_sub(15);
         }
-        
+
         // Check if variants preserve information
         for variant in &enum_def.variants {
             if !variant.source_location.is_valid() {
                 warnings.push(ValidationWarning {
-                    message: format!("Variant '{}' in enum '{}' has unknown source location", variant.name, enum_name),
+                    message: format!(
+                        "Variant '{}' in enum '{}' has unknown source location",
+                        variant.name, enum_name
+                    ),
                     category: ValidationWarningCategory::MetadataSimplification,
                 });
                 *score = (*score).saturating_sub(2);
@@ -464,7 +540,14 @@ fn validate_functions(
     score: &mut u8,
 ) {
     for function in functions {
-        validate_method_information(function, "global", string_interner.clone(), errors, warnings, score);
+        validate_method_information(
+            function,
+            "global",
+            string_interner.clone(),
+            errors,
+            warnings,
+            score,
+        );
     }
 }
 
@@ -477,54 +560,77 @@ fn validate_method_information(
     warnings: &mut Vec<ValidationWarning>,
     score: &mut u8,
 ) {
-    let method_name = string_interner.borrow().get(method.name).map(|s| s.to_string()).unwrap_or_else(|| "<unknown>".to_string());
-    
+    let method_name = string_interner
+        .borrow()
+        .get(method.name)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "<unknown>".to_string());
+
     // Check if method has proper source location
     if !method.source_location.is_valid() {
         errors.push(ValidationError {
-            message: format!("Method '{}' in '{}' has unknown source location", method_name, context),
+            message: format!(
+                "Method '{}' in '{}' has unknown source location",
+                method_name, context
+            ),
             category: ValidationErrorCategory::SourceLocation,
             severity: ValidationSeverity::Medium,
         });
         *score = (*score).saturating_sub(3);
     }
-    
+
     // Check if method has proper symbol ID
     if !method.symbol_id.is_valid() {
         errors.push(ValidationError {
-            message: format!("Method '{}' in '{}' has invalid symbol ID", method_name, context),
+            message: format!(
+                "Method '{}' in '{}' has invalid symbol ID",
+                method_name, context
+            ),
             category: ValidationErrorCategory::SymbolResolution,
             severity: ValidationSeverity::High,
         });
         *score = (*score).saturating_sub(10);
     }
-    
+
     // Check if return type is properly resolved
     if !method.return_type.is_valid() {
         errors.push(ValidationError {
-            message: format!("Method '{}' in '{}' has invalid return type", method_name, context),
+            message: format!(
+                "Method '{}' in '{}' has invalid return type",
+                method_name, context
+            ),
             category: ValidationErrorCategory::TypeInformation,
             severity: ValidationSeverity::High,
         });
         *score = (*score).saturating_sub(10);
     }
-    
+
     // Check if parameters preserve information
     for param in &method.parameters {
-        let param_name = string_interner.borrow().get(param.name).map(|s| s.to_string()).unwrap_or_else(|| "<unknown>".to_string());
-        
+        let param_name = string_interner
+            .borrow()
+            .get(param.name)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "<unknown>".to_string());
+
         if !param.param_type.is_valid() {
             errors.push(ValidationError {
-                message: format!("Parameter '{}' in method '{}' has invalid type", param_name, method_name),
+                message: format!(
+                    "Parameter '{}' in method '{}' has invalid type",
+                    param_name, method_name
+                ),
                 category: ValidationErrorCategory::TypeInformation,
                 severity: ValidationSeverity::High,
             });
             *score = (*score).saturating_sub(5);
         }
-        
+
         if !param.source_location.is_valid() {
             warnings.push(ValidationWarning {
-                message: format!("Parameter '{}' in method '{}' has unknown source location", param_name, method_name),
+                message: format!(
+                    "Parameter '{}' in method '{}' has unknown source location",
+                    param_name, method_name
+                ),
                 category: ValidationWarningCategory::MetadataSimplification,
             });
             *score = (*score).saturating_sub(1);
@@ -547,7 +653,7 @@ fn validate_metadata(
         });
         *score = (*score).saturating_sub(5);
     }
-    
+
     // Check if file path is preserved
     if metadata.file_path.is_empty() {
         errors.push(ValidationError {
@@ -557,7 +663,7 @@ fn validate_metadata(
         });
         *score = (*score).saturating_sub(8);
     }
-    
+
     // Check if timestamp is reasonable
     if metadata.timestamp == 0 {
         warnings.push(ValidationWarning {
@@ -571,41 +677,69 @@ fn validate_metadata(
 /// Print a comprehensive summary of validation results
 pub fn print_validation_summary(name: &str, result: &ValidationResult) {
     println!("=== {} ===", name);
-    println!("Information Preservation Score: {}/100", result.info_preservation_score);
-    println!("Files processed: {}", result.compilation_result.stats.files_processed);
-    println!("Parse time: {}μs", result.compilation_result.stats.parse_time_us);
-    println!("Lowering time: {}μs", result.compilation_result.stats.lowering_time_us);
-    println!("Total time: {}μs", result.compilation_result.stats.total_time_us);
-    println!("TAST files: {}", result.compilation_result.typed_files.len());
-    println!("Compilation errors: {}", result.compilation_result.errors.len());
-    println!("Compilation warnings: {}", result.compilation_result.warnings.len());
+    println!(
+        "Information Preservation Score: {}/100",
+        result.info_preservation_score
+    );
+    println!(
+        "Files processed: {}",
+        result.compilation_result.stats.files_processed
+    );
+    println!(
+        "Parse time: {}μs",
+        result.compilation_result.stats.parse_time_us
+    );
+    println!(
+        "Lowering time: {}μs",
+        result.compilation_result.stats.lowering_time_us
+    );
+    println!(
+        "Total time: {}μs",
+        result.compilation_result.stats.total_time_us
+    );
+    println!(
+        "TAST files: {}",
+        result.compilation_result.typed_files.len()
+    );
+    println!(
+        "Compilation errors: {}",
+        result.compilation_result.errors.len()
+    );
+    println!(
+        "Compilation warnings: {}",
+        result.compilation_result.warnings.len()
+    );
     println!("Validation errors: {}", result.validation_errors.len());
     println!("Validation warnings: {}", result.validation_warnings.len());
-    
+
     // Print critical validation errors
-    let critical_errors: Vec<_> = result.validation_errors.iter()
+    let critical_errors: Vec<_> = result
+        .validation_errors
+        .iter()
         .filter(|e| e.severity == ValidationSeverity::Critical)
         .collect();
-    
+
     if !critical_errors.is_empty() {
         println!("\nCRITICAL VALIDATION ERRORS:");
         for error in critical_errors {
             println!("  - {}", error.message);
         }
     }
-    
+
     // Print high priority validation errors
-    let high_errors: Vec<_> = result.validation_errors.iter()
+    let high_errors: Vec<_> = result
+        .validation_errors
+        .iter()
         .filter(|e| e.severity == ValidationSeverity::High)
         .collect();
-    
+
     if !high_errors.is_empty() {
         println!("\nHIGH PRIORITY VALIDATION ERRORS:");
         for error in high_errors {
             println!("  - {}", error.message);
         }
     }
-    
+
     // Print validation warnings
     if !result.validation_warnings.is_empty() {
         println!("\nVALIDATION WARNINGS:");
@@ -613,7 +747,7 @@ pub fn print_validation_summary(name: &str, result: &ValidationResult) {
             println!("  - {}", warning.message);
         }
     }
-    
+
     // Print TAST structure summary
     if !result.compilation_result.typed_files.is_empty() {
         let file = &result.compilation_result.typed_files[0];
@@ -628,7 +762,7 @@ pub fn print_validation_summary(name: &str, result: &ValidationResult) {
             println!("  - Package: {}", pkg);
         }
     }
-    
+
     // Print overall assessment
     println!("\nOVERALL ASSESSMENT:");
     if result.info_preservation_score >= 90 {
@@ -642,7 +776,7 @@ pub fn print_validation_summary(name: &str, result: &ValidationResult) {
     } else {
         println!("  CRITICAL - Major information loss or structural issues");
     }
-    
+
     println!();
 }
 
@@ -655,11 +789,11 @@ pub fn print_result_summary(name: &str, result: &CompilationResult) {
     println!("TAST files: {}", result.typed_files.len());
     println!("Errors: {}", result.errors.len());
     println!("Warnings: {}", result.warnings.len());
-    
+
     if !result.errors.is_empty() {
         println!("First error: {}", result.errors[0].message);
     }
-    
+
     if !result.typed_files.is_empty() {
         let file = &result.typed_files[0];
         println!("TAST summary:");
@@ -670,7 +804,7 @@ pub fn print_result_summary(name: &str, result: &CompilationResult) {
             println!("  - Package: {}", pkg);
         }
     }
-    
+
     println!();
 }
 
@@ -684,33 +818,43 @@ pub fn validate_type_parameters() -> ValidationResult {
                 return null;
             }
         }
-        
+
         interface GenericInterface<T> {
             function work<U>(input: T): U;
         }
-        
+
         enum GenericEnum<T> {
             Some(value: T);
             None;
         }
-        
+
         abstract GenericAbstract<T>(Array<T>) {
             public function new(arr: Array<T>) {
                 this = arr;
             }
         }
     "#;
-    
+
     let compilation_result = compile_haxe_file("type_param_test.hx", type_param_haxe);
     let mut validation_errors = Vec::new();
     let mut validation_warnings = Vec::new();
     let mut info_score = 100u8;
-    
-    validate_compilation_result(&compilation_result, &mut validation_errors, &mut validation_warnings, &mut info_score);
-    
+
+    validate_compilation_result(
+        &compilation_result,
+        &mut validation_errors,
+        &mut validation_warnings,
+        &mut info_score,
+    );
+
     if !compilation_result.typed_files.is_empty() {
-        validate_tast_structure(&compilation_result.typed_files[0], &mut validation_errors, &mut validation_warnings, &mut info_score);
-        
+        validate_tast_structure(
+            &compilation_result.typed_files[0],
+            &mut validation_errors,
+            &mut validation_warnings,
+            &mut info_score,
+        );
+
         // Additional type parameter specific validations
         let file = &compilation_result.typed_files[0];
         for class in &file.classes {
@@ -728,7 +872,7 @@ pub fn validate_type_parameters() -> ValidationResult {
             }
         }
     }
-    
+
     ValidationResult {
         compilation_result,
         validation_errors,
@@ -746,34 +890,44 @@ pub fn validate_properties() -> ValidationResult {
             public var readWrite(default, default): String;
             public var computed(get, set): String;
             private var _computed: String = "";
-            
+
             public function new() {
                 readOnly = "read only";
                 writeOnly = "write only";
                 readWrite = "read write";
             }
-            
+
             function get_computed(): String {
                 return _computed;
             }
-            
+
             function set_computed(value: String): String {
                 return _computed = value;
             }
         }
     "#;
-    
+
     let compilation_result = compile_haxe_file("property_test.hx", property_haxe);
     let mut validation_errors = Vec::new();
     let mut validation_warnings = Vec::new();
     let mut info_score = 100u8;
-    
-    validate_compilation_result(&compilation_result, &mut validation_errors, &mut validation_warnings, &mut info_score);
-    
+
+    validate_compilation_result(
+        &compilation_result,
+        &mut validation_errors,
+        &mut validation_warnings,
+        &mut info_score,
+    );
+
     if !compilation_result.typed_files.is_empty() {
-        validate_tast_structure(&compilation_result.typed_files[0], &mut validation_errors, &mut validation_warnings, &mut info_score);
+        validate_tast_structure(
+            &compilation_result.typed_files[0],
+            &mut validation_errors,
+            &mut validation_warnings,
+            &mut info_score,
+        );
     }
-    
+
     ValidationResult {
         compilation_result,
         validation_errors,
@@ -790,29 +944,39 @@ pub fn validate_metadata_preservation() -> ValidationResult {
         class MetadataTest {
             @:isVar
             public var field: String;
-            
+
             @:overload(function(x: Int): Void {})
             @:overload(function(x: String): Void {})
             public function method(x: Dynamic): Void {}
-            
+
             @:getter(field)
             public function getField(): String {
                 return field;
             }
         }
     "#;
-    
+
     let compilation_result = compile_haxe_file("metadata_test.hx", metadata_haxe);
     let mut validation_errors = Vec::new();
     let mut validation_warnings = Vec::new();
     let mut info_score = 100u8;
-    
-    validate_compilation_result(&compilation_result, &mut validation_errors, &mut validation_warnings, &mut info_score);
-    
+
+    validate_compilation_result(
+        &compilation_result,
+        &mut validation_errors,
+        &mut validation_warnings,
+        &mut info_score,
+    );
+
     if !compilation_result.typed_files.is_empty() {
-        validate_tast_structure(&compilation_result.typed_files[0], &mut validation_errors, &mut validation_warnings, &mut info_score);
+        validate_tast_structure(
+            &compilation_result.typed_files[0],
+            &mut validation_errors,
+            &mut validation_warnings,
+            &mut info_score,
+        );
     }
-    
+
     ValidationResult {
         compilation_result,
         validation_errors,
@@ -824,21 +988,33 @@ pub fn validate_metadata_preservation() -> ValidationResult {
 /// Run all validation tests and return overall assessment
 pub fn run_comprehensive_validation() -> ValidationResult {
     let mut overall_result = validate_comprehensive_pipeline();
-    
+
     // Run additional specific tests
     let type_param_result = validate_type_parameters();
     let property_result = validate_properties();
     let metadata_result = validate_metadata_preservation();
-    
+
     // Combine results
-    overall_result.validation_errors.extend(type_param_result.validation_errors);
-    overall_result.validation_errors.extend(property_result.validation_errors);
-    overall_result.validation_errors.extend(metadata_result.validation_errors);
-    
-    overall_result.validation_warnings.extend(type_param_result.validation_warnings);
-    overall_result.validation_warnings.extend(property_result.validation_warnings);
-    overall_result.validation_warnings.extend(metadata_result.validation_warnings);
-    
+    overall_result
+        .validation_errors
+        .extend(type_param_result.validation_errors);
+    overall_result
+        .validation_errors
+        .extend(property_result.validation_errors);
+    overall_result
+        .validation_errors
+        .extend(metadata_result.validation_errors);
+
+    overall_result
+        .validation_warnings
+        .extend(type_param_result.validation_warnings);
+    overall_result
+        .validation_warnings
+        .extend(property_result.validation_warnings);
+    overall_result
+        .validation_warnings
+        .extend(metadata_result.validation_warnings);
+
     // Calculate combined score
     let scores = [
         overall_result.info_preservation_score,
@@ -846,124 +1022,144 @@ pub fn run_comprehensive_validation() -> ValidationResult {
         property_result.info_preservation_score,
         metadata_result.info_preservation_score,
     ];
-    
-    overall_result.info_preservation_score = (scores.iter().map(|&s| s as u32).sum::<u32>() / scores.len() as u32).min(100) as u8;
-    
+
+    overall_result.info_preservation_score =
+        (scores.iter().map(|&s| s as u32).sum::<u32>() / scores.len() as u32).min(100) as u8;
+
     overall_result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_simple_validation() {
         let result = validate_simple_pipeline();
         assert!(result.stats.files_processed > 0);
         assert!(result.stats.parse_time_us > 0);
     }
-    
+
     #[test]
     fn test_complex_validation() {
         let result = validate_complex_pipeline();
         assert!(result.stats.files_processed > 0);
         assert!(result.stats.parse_time_us > 0);
     }
-    
+
     #[test]
     fn test_comprehensive_validation() {
         let result = validate_comprehensive_pipeline();
-        
+
         // Should have processed at least one file
         assert!(result.compilation_result.stats.files_processed > 0);
         assert!(result.compilation_result.stats.parse_time_us > 0);
-        
+
         // Should have validation results
         assert!(result.info_preservation_score <= 100);
-        
+
         // Print results for debugging
         print_validation_summary("Comprehensive Test", &result);
     }
-    
+
     #[test]
     fn test_type_parameter_validation() {
         let result = validate_type_parameters();
-        
+
         // Should have processed the type parameter test
         assert!(result.compilation_result.stats.files_processed > 0);
-        
+
         // Print results for debugging
         print_validation_summary("Type Parameter Test", &result);
     }
-    
+
     #[test]
     fn test_property_validation() {
         let result = validate_properties();
-        
+
         // Should have processed the property test
         assert!(result.compilation_result.stats.files_processed > 0);
-        
+
         // Print results for debugging
         print_validation_summary("Property Test", &result);
     }
-    
+
     #[test]
     fn test_metadata_validation() {
         let result = validate_metadata_preservation();
-        
+
         // Should have processed the metadata test
         assert!(result.compilation_result.stats.files_processed > 0);
-        
+
         // Print results for debugging
         print_validation_summary("Metadata Test", &result);
     }
-    
+
     #[test]
     fn test_validation_error_categories() {
         let result = validate_comprehensive_pipeline();
-        
+
         // Test that different error categories are properly detected
-        let _has_critical = result.validation_errors.iter().any(|e| e.severity == ValidationSeverity::Critical);
-        let _has_high = result.validation_errors.iter().any(|e| e.severity == ValidationSeverity::High);
-        
+        let _has_critical = result
+            .validation_errors
+            .iter()
+            .any(|e| e.severity == ValidationSeverity::Critical);
+        let _has_high = result
+            .validation_errors
+            .iter()
+            .any(|e| e.severity == ValidationSeverity::High);
+
         // Should have some form of validation feedback
-        assert!(result.validation_errors.len() > 0 || result.validation_warnings.len() > 0 || result.info_preservation_score < 100);
+        assert!(
+            result.validation_errors.len() > 0
+                || result.validation_warnings.len() > 0
+                || result.info_preservation_score < 100
+        );
     }
-    
+
     #[test]
     fn test_information_preservation_scoring() {
         let result = validate_comprehensive_pipeline();
-        
+
         // Score should be between 0 and 100
         assert!(result.info_preservation_score <= 100);
-        
+
         // If there are critical errors, score should be low
-        let has_critical = result.validation_errors.iter().any(|e| e.severity == ValidationSeverity::Critical);
+        let has_critical = result
+            .validation_errors
+            .iter()
+            .any(|e| e.severity == ValidationSeverity::Critical);
         if has_critical {
             assert!(result.info_preservation_score < 90);
         }
-        
+
         // If there are high priority errors, score should be affected
-        let has_high = result.validation_errors.iter().any(|e| e.severity == ValidationSeverity::High);
+        let has_high = result
+            .validation_errors
+            .iter()
+            .any(|e| e.severity == ValidationSeverity::High);
         if has_high {
             assert!(result.info_preservation_score < 95);
         }
     }
-    
+
     #[test]
     fn test_overall_validation_suite() {
         let result = run_comprehensive_validation();
-        
+
         // Should have processed multiple tests
         assert!(result.compilation_result.stats.files_processed > 0);
-        
+
         // Should have combined validation results
         assert!(result.info_preservation_score <= 100);
-        
+
         // Print comprehensive results
         print_validation_summary("Overall Validation Suite", &result);
-        
+
         // Assert that the pipeline is working at some level
-        assert!(result.info_preservation_score > 0, "Pipeline should preserve at least some information");
+        assert!(
+            result.info_preservation_score > 0,
+            "Pipeline should preserve at least some information"
+        );
     }
 }

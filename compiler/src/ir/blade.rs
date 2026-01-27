@@ -36,10 +36,10 @@
 //! let (mir_module, metadata) = load_blade("output.blade")?;
 //! ```
 
-use serde::{Serialize, Deserialize};
-use std::path::Path;
-use std::fs;
 use crate::ir::IrModule;
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::Path;
 
 /// BLADE file magic number (first 4 bytes)
 const BLADE_MAGIC: &[u8; 4] = b"BLAD";
@@ -580,7 +580,8 @@ impl RayzorBundle {
             .unwrap_or(0);
 
         // Build module table
-        let module_table: Vec<ModuleTableEntry> = modules.iter()
+        let module_table: Vec<ModuleTableEntry> = modules
+            .iter()
             .enumerate()
             .map(|(i, m)| ModuleTableEntry {
                 name: m.name.clone(),
@@ -589,17 +590,16 @@ impl RayzorBundle {
             })
             .collect();
 
-        let source_files: Vec<String> = modules.iter()
-            .map(|m| m.source_file.clone())
-            .collect();
+        let source_files: Vec<String> = modules.iter().map(|m| m.source_file.clone()).collect();
 
         // Pre-compute entry module index and function ID at bundle creation time
         // This eliminates runtime iteration when loading the bundle
-        let entry_module_index = modules.iter()
-            .position(|m| m.name == entry_module);
+        let entry_module_index = modules.iter().position(|m| m.name == entry_module);
 
         let entry_function_id = entry_module_index.and_then(|idx| {
-            modules[idx].functions.iter()
+            modules[idx]
+                .functions
+                .iter()
                 .find(|(_, f)| f.name == entry_function)
                 .map(|(id, _)| *id)
         });

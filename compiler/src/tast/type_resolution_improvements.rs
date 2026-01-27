@@ -3,10 +3,7 @@
 //! This module provides specific improvements to replace dynamic_type placeholders
 //! with proper type resolution in the AST lowering phase.
 
-use super::{
-    TypeId, TypeTable, TypeKind, SymbolTable, SymbolId, InternedString,
-    StringInterner,
-};
+use super::{InternedString, StringInterner, SymbolId, SymbolTable, TypeId, TypeKind, TypeTable};
 use std::cell::RefCell;
 
 /// Helper functions to improve type resolution in AST lowering
@@ -29,12 +26,12 @@ impl TypeResolutionImprovements {
                 }
             }
         }
-        
+
         // Fallback to dynamic
         type_table.borrow().dynamic_type()
     }
 
-    /// Resolve abstract type to its underlying type  
+    /// Resolve abstract type to its underlying type
     pub fn resolve_abstract_type(
         type_table: &RefCell<TypeTable>,
         symbol_table: &SymbolTable,
@@ -50,7 +47,7 @@ impl TypeResolutionImprovements {
                 }
             }
         }
-        
+
         // Fallback to dynamic
         type_table.borrow().dynamic_type()
     }
@@ -66,7 +63,7 @@ impl TypeResolutionImprovements {
                 return symbol.type_id;
             }
         }
-        
+
         // Fallback to dynamic
         type_table.borrow().dynamic_type()
     }
@@ -90,7 +87,7 @@ impl TypeResolutionImprovements {
                 }
             }
         }
-        
+
         // Fallback to dynamic
         type_table.borrow().dynamic_type()
     }
@@ -128,7 +125,8 @@ impl TypeResolutionImprovements {
         type_table: &RefCell<TypeTable>,
         fields: Vec<(InternedString, TypeId)>,
     ) -> TypeId {
-        let anonymous_fields: Vec<_> = fields.into_iter()
+        let anonymous_fields: Vec<_> = fields
+            .into_iter()
             .map(|(name, type_id)| super::core::AnonymousField {
                 name,
                 type_id,
@@ -136,10 +134,12 @@ impl TypeResolutionImprovements {
                 optional: false,
             })
             .collect();
-        
-        type_table.borrow_mut().create_type(super::core::TypeKind::Anonymous { 
-            fields: anonymous_fields 
-        })
+
+        type_table
+            .borrow_mut()
+            .create_type(super::core::TypeKind::Anonymous {
+                fields: anonymous_fields,
+            })
     }
 
     /// Infer object literal type from fields
@@ -157,18 +157,15 @@ impl TypeResolutionImprovements {
     }
 
     /// Create union type for conditional/switch expressions
-    pub fn create_union_type(
-        type_table: &RefCell<TypeTable>,
-        branch_types: Vec<TypeId>,
-    ) -> TypeId {
+    pub fn create_union_type(type_table: &RefCell<TypeTable>, branch_types: Vec<TypeId>) -> TypeId {
         if branch_types.is_empty() {
             return type_table.borrow().void_type();
         }
-        
+
         if branch_types.len() == 1 {
             return branch_types[0];
         }
-        
+
         // Remove duplicates
         let mut unique_types = Vec::new();
         for t in branch_types {
@@ -176,7 +173,7 @@ impl TypeResolutionImprovements {
                 unique_types.push(t);
             }
         }
-        
+
         // Create union type
         type_table.borrow_mut().create_union_type(unique_types)
     }
@@ -196,7 +193,7 @@ impl TypeResolutionImprovements {
                 }
             }
         }
-        
+
         // Not found, return dynamic
         type_table.borrow().dynamic_type()
     }

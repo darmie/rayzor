@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Debug test for Mandelbrot benchmark with Cranelift
 //!
 //! Test to reproduce the "illegal hardware instruction" crash
@@ -71,7 +101,8 @@ class Mandelbrot {
 
     // Get runtime symbols
     let plugin = rayzor_runtime::plugin_impl::get_plugin();
-    let symbols: Vec<(&str, *const u8)> = plugin.runtime_symbols()
+    let symbols: Vec<(&str, *const u8)> = plugin
+        .runtime_symbols()
         .iter()
         .map(|(n, p)| (*n, *p))
         .collect();
@@ -94,7 +125,10 @@ class Mandelbrot {
             println!("\n   Module '{}' functions:", module.name);
             for (id, func) in &module.functions {
                 if !func.cfg.blocks.is_empty() {
-                    println!("     {:?}: {} (qualified: {:?})", id, func.name, func.qualified_name);
+                    println!(
+                        "     {:?}: {} (qualified: {:?})",
+                        id, func.name, func.qualified_name
+                    );
                 }
             }
         }
@@ -102,8 +136,7 @@ class Mandelbrot {
 
     // Create Cranelift backend
     println!("\n2. Creating Cranelift backend...");
-    let mut backend = CraneliftBackend::with_symbols(&symbols)
-        .expect("backend");
+    let mut backend = CraneliftBackend::with_symbols(&symbols).expect("backend");
 
     // Compile all modules
     println!("\n3. Compiling modules to Cranelift...");

@@ -128,7 +128,7 @@ impl GenericOperationCache {
         Self {
             bounds_cache: HashMap::with_capacity(128), // Typical bounds checks
             subtype_cache: HashMap::with_capacity(256), // Common subtype queries
-            method_cache: HashMap::with_capacity(64), // Method lookups
+            method_cache: HashMap::with_capacity(64),  // Method lookups
             resolution_cache: HashMap::with_capacity(128), // Type resolutions
             hits: 0,
             misses: 0,

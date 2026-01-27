@@ -5,22 +5,21 @@ use parser::parse_haxe_file;
 #[test]
 fn test_syntax_errors() {
     let invalid_inputs = vec![
-        "class", // Incomplete class declaration
-        "class Test {", // Unclosed brace
-        "class Test { var field }", // Missing semicolon/type
-        "function", // Standalone function keyword
-        "var x = ;", // Missing expression
-        "if (", // Incomplete if statement
-        "switch {", // Missing switch expression
-        "for (i in", // Incomplete for loop
-        "}", // Unmatched closing brace
+        "class",                              // Incomplete class declaration
+        "class Test {",                       // Unclosed brace
+        "class Test { var field }",           // Missing semicolon/type
+        "function",                           // Standalone function keyword
+        "var x = ;",                          // Missing expression
+        "if (",                               // Incomplete if statement
+        "switch {",                           // Missing switch expression
+        "for (i in",                          // Incomplete for loop
+        "}",                                  // Unmatched closing brace
         "class Test { function method( {} }", // Invalid parameter syntax
     ];
-    
+
     for input in invalid_inputs {
-        match parse_haxe_file("test.hx", input, false) {
-            Ok(_) => panic!("Should fail to parse invalid input: '{}'", input),
-            Err(_) => {}, // Expected to fail
+        if parse_haxe_file("test.hx", input, false).is_ok() {
+            panic!("Should fail to parse invalid input: '{}'", input);
         }
     }
 }
@@ -37,7 +36,7 @@ interface EmptyInterface {
 enum EmptyEnum {
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(haxe_file) => {
             assert_eq!(haxe_file.declarations.len(), 3);
@@ -57,9 +56,9 @@ class _UnderscoreStart {
     var FIELD_ALL_CAPS: String;
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Edge case identifiers should parse, got: {}", e),
     }
 }
@@ -88,9 +87,9 @@ class Outer {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Complex nesting should parse, got: {}", e),
     }
 }
@@ -106,9 +105,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Unicode in strings should parse, got: {}", e),
     }
 }
@@ -126,9 +125,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Large numbers should parse, got: {}", e),
     }
 }
@@ -145,9 +144,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Escaped strings should parse, got: {}", e),
     }
 }
@@ -165,9 +164,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Operator precedence edge cases should parse, got: {}", e),
     }
 }
@@ -183,9 +182,9 @@ class VeryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryVeryLongClassName {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Very long identifiers should parse, got: {}", e),
     }
 }
@@ -202,9 +201,9 @@ interface I1 {}
 interface I2 extends I1 {}
 interface I3 extends I1, I2 {}
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Multiple inheritance levels should parse, got: {}", e),
     }
 }
@@ -222,9 +221,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Complex generics should parse, got: {}", e),
     }
 }
@@ -244,9 +243,9 @@ class Test {
     function method(x: Dynamic): Void {}
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Metadata edge cases should parse, got: {}", e),
     }
 }
@@ -265,9 +264,9 @@ class Test {
     function method(a: Int, b: String, c: Bool,): Void {}
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Trailing commas should parse, got: {}", e),
     }
 }
@@ -281,10 +280,10 @@ fn test_minimal_constructs() {
         "typedef T=Int;",
         "abstract A(Int){}",
     ];
-    
+
     for input in inputs {
         match parse_haxe_file("test.hx", input, false) {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(e) => panic!("Minimal construct '{}' should parse, got: {}", input, e),
         }
     }

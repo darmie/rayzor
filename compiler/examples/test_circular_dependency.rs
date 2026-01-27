@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test circular dependency detection
 //!
 //! This demonstrates:
@@ -6,7 +36,7 @@
 //! 3. Best-effort compilation order even with cycles
 //! 4. Topological sorting for non-circular dependencies
 
-use compiler::compilation::{CompilationUnit, CompilationConfig};
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 
 fn main() {
     println!("=== Testing Circular Dependency Detection ===\n");
@@ -50,8 +80,10 @@ fn test_simple_circular() {
         }
     "#;
 
-    unit.add_file(file_a, "com/example/A.hx").expect("Failed to add A.hx");
-    unit.add_file(file_b, "com/example/B.hx").expect("Failed to add B.hx");
+    unit.add_file(file_a, "com/example/A.hx")
+        .expect("Failed to add A.hx");
+    unit.add_file(file_b, "com/example/B.hx")
+        .expect("Failed to add B.hx");
 
     println!("Added files with circular dependency: A → B → A");
 
@@ -61,16 +93,22 @@ fn test_simple_circular() {
             if analysis.circular_dependencies.is_empty() {
                 println!("❌ FAILED: No circular dependency detected!\n");
             } else {
-                println!("✓ Detected {} circular dependency(ies)", analysis.circular_dependencies.len());
+                println!(
+                    "✓ Detected {} circular dependency(ies)",
+                    analysis.circular_dependencies.len()
+                );
                 for cycle in &analysis.circular_dependencies {
                     println!("  Cycle: {}", cycle.cycle.join(" → "));
                 }
-                println!("✓ Compilation order provided: {:?}", analysis.compilation_order);
+                println!(
+                    "✓ Compilation order provided: {:?}",
+                    analysis.compilation_order
+                );
                 println!("✓ TEST PASSED\n");
             }
         }
         Err(e) => {
-            println!("❌ FAILED: Error during analysis: {}\n", e);
+            println!("❌ FAILED: Error during analysis: {:?}\n", e);
         }
     }
 }
@@ -119,9 +157,12 @@ fn test_complex_circular() {
         }
     "#;
 
-    unit.add_file(file_a, "com/example/A.hx").expect("Failed to add A.hx");
-    unit.add_file(file_b, "com/example/B.hx").expect("Failed to add B.hx");
-    unit.add_file(file_c, "com/example/C.hx").expect("Failed to add C.hx");
+    unit.add_file(file_a, "com/example/A.hx")
+        .expect("Failed to add A.hx");
+    unit.add_file(file_b, "com/example/B.hx")
+        .expect("Failed to add B.hx");
+    unit.add_file(file_c, "com/example/C.hx")
+        .expect("Failed to add C.hx");
 
     println!("Added files with 3-way circular dependency");
 
@@ -130,16 +171,22 @@ fn test_complex_circular() {
             if analysis.circular_dependencies.is_empty() {
                 println!("❌ FAILED: No circular dependency detected!\n");
             } else {
-                println!("✓ Detected {} circular dependency(ies)", analysis.circular_dependencies.len());
+                println!(
+                    "✓ Detected {} circular dependency(ies)",
+                    analysis.circular_dependencies.len()
+                );
                 for (i, cycle) in analysis.circular_dependencies.iter().enumerate() {
                     println!("  Cycle {}: {}", i + 1, cycle.cycle.join(" → "));
                 }
-                println!("✓ Compilation still possible with order: {:?}", analysis.compilation_order);
+                println!(
+                    "✓ Compilation still possible with order: {:?}",
+                    analysis.compilation_order
+                );
                 println!("✓ TEST PASSED\n");
             }
         }
         Err(e) => {
-            println!("❌ FAILED: Error during analysis: {}\n", e);
+            println!("❌ FAILED: Error during analysis: {:?}\n", e);
         }
     }
 }
@@ -209,10 +256,14 @@ fn test_valid_ordering() {
         }
     "#;
 
-    unit.add_file(file_d, "com/example/D.hx").expect("Failed to add D.hx");
-    unit.add_file(file_c, "com/example/C.hx").expect("Failed to add C.hx");
-    unit.add_file(file_b, "com/example/B.hx").expect("Failed to add B.hx");
-    unit.add_file(file_a, "com/example/A.hx").expect("Failed to add A.hx");
+    unit.add_file(file_d, "com/example/D.hx")
+        .expect("Failed to add D.hx");
+    unit.add_file(file_c, "com/example/C.hx")
+        .expect("Failed to add C.hx");
+    unit.add_file(file_b, "com/example/B.hx")
+        .expect("Failed to add B.hx");
+    unit.add_file(file_a, "com/example/A.hx")
+        .expect("Failed to add A.hx");
 
     println!("Added files in reverse dependency order (D, C, B, A)");
 
@@ -241,12 +292,15 @@ fn test_valid_ordering() {
                 } else {
                     println!("❌ FAILED: Incorrect topological order!");
                     println!("  Expected: A before B before C before D");
-                    println!("  Got: positions A={}, B={}, C={}, D={}\n", a_idx, b_idx, c_idx, d_idx);
+                    println!(
+                        "  Got: positions A={}, B={}, C={}, D={}\n",
+                        a_idx, b_idx, c_idx, d_idx
+                    );
                 }
             }
         }
         Err(e) => {
-            println!("❌ FAILED: Error during analysis: {}\n", e);
+            println!("❌ FAILED: Error during analysis: {:?}\n", e);
         }
     }
 }

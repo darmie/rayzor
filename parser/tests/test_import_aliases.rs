@@ -1,5 +1,5 @@
+use parser::haxe_ast::ImportMode;
 use parser::haxe_parser::parse_haxe_file;
-use parser::haxe_ast::{ImportMode, HaxeFile};
 
 #[test]
 fn test_import_alias_parsing() {
@@ -21,26 +21,29 @@ class Main {
 
     let result = parse_haxe_file("test.hx", input, false);
     assert!(result.is_ok(), "Failed to parse: {:?}", result);
-    
+
     let file = result.unwrap();
-    
+
     // Check that we have 3 imports
     assert_eq!(file.imports.len(), 3);
-    
+
     // Check first import alias
-    assert_eq!(file.imports[0].path, vec!["com", "example", "VeryLongClassName"]);
+    assert_eq!(
+        file.imports[0].path,
+        vec!["com", "example", "VeryLongClassName"]
+    );
     match &file.imports[0].mode {
         ImportMode::Alias(alias) => assert_eq!(alias, "Short"),
         _ => panic!("Expected alias import mode"),
     }
-    
+
     // Check second import alias
     assert_eq!(file.imports[1].path, vec!["haxe", "macro", "Context"]);
     match &file.imports[1].mode {
         ImportMode::Alias(alias) => assert_eq!(alias, "Ctx"),
         _ => panic!("Expected alias import mode"),
     }
-    
+
     // Check third import alias
     assert_eq!(file.imports[2].path, vec!["sys", "io", "File"]);
     match &file.imports[2].mode {
@@ -63,34 +66,37 @@ class Test {}
 
     let result = parse_haxe_file("test.hx", input, false);
     assert!(result.is_ok(), "Failed to parse: {:?}", result);
-    
+
     let file = result.unwrap();
     assert_eq!(file.imports.len(), 5);
-    
+
     // Check normal import
     assert_eq!(file.imports[0].path, vec!["com", "example", "Normal"]);
     assert_eq!(file.imports[0].mode, ImportMode::Normal);
-    
+
     // Check alias import
     assert_eq!(file.imports[1].path, vec!["com", "example", "WithAlias"]);
     match &file.imports[1].mode {
         ImportMode::Alias(alias) => assert_eq!(alias, "Alias"),
         _ => panic!("Expected alias import mode"),
     }
-    
+
     // Check wildcard import
     assert_eq!(file.imports[2].path, vec!["com", "example", "Module"]);
     assert_eq!(file.imports[2].mode, ImportMode::Wildcard);
-    
+
     // Check field import
     assert_eq!(file.imports[3].path, vec!["com", "example", "Type"]);
     match &file.imports[3].mode {
         ImportMode::Field(field) => assert_eq!(field, "staticField"),
         _ => panic!("Expected field import mode"),
     }
-    
+
     // Check another alias import
-    assert_eq!(file.imports[4].path, vec!["another", "package", "LongTypeName"]);
+    assert_eq!(
+        file.imports[4].path,
+        vec!["another", "package", "LongTypeName"]
+    );
     match &file.imports[4].mode {
         ImportMode::Alias(alias) => assert_eq!(alias, "Short"),
         _ => panic!("Expected alias import mode"),
@@ -113,10 +119,10 @@ class Main {
 
     let result = parse_haxe_file("test.hx", input, false);
     assert!(result.is_ok(), "Failed to parse: {:?}", result);
-    
+
     let file = result.unwrap();
     assert_eq!(file.imports.len(), 1);
-    
+
     assert_eq!(file.imports[0].path, vec!["com", "example", "MyClass"]);
     match &file.imports[0].mode {
         ImportMode::Alias(alias) => assert_eq!(alias, "MC"),
@@ -133,8 +139,11 @@ import my.package.class as Class;  // 'class' in path is ok
 "#;
 
     let result = parse_haxe_file("test.hx", input1, false);
-    assert!(result.is_ok(), "Failed to parse import with keyword in path");
-    
+    assert!(
+        result.is_ok(),
+        "Failed to parse import with keyword in path"
+    );
+
     // Test multiple aliases in sequence
     let input2 = r#"
 import a.b.C as D;

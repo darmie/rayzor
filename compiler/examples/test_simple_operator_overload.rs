@@ -1,6 +1,36 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Simplified test for operator overloading - just test the detection and rewriting
 
-use compiler::compilation::{CompilationUnit, CompilationConfig};
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 use compiler::ir::tast_to_hir::lower_tast_to_hir;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -41,7 +71,7 @@ fn main() -> Result<(), String> {
     unit.add_file(source, "test.hx")?;
 
     // Step 2: Lower to TAST
-    let typed_files = unit.lower_to_tast()?;
+    let typed_files = unit.lower_to_tast().map_err(|e| format!("{:?}", e))?;
     println!("✓ TAST generated ({} files)\n", typed_files.len());
 
     // Step 3: Lower to HIR (where operator overloading should be detected)
@@ -54,8 +84,14 @@ fn main() -> Result<(), String> {
 
     for typed_file in &typed_files {
         let mut interner = string_interner_rc.borrow_mut();
-        let _hir = lower_tast_to_hir(typed_file, &unit.symbol_table, &unit.type_table, &mut *interner, None)
-            .map_err(|e| format!("HIR error: {:?}", e))?;
+        let _hir = lower_tast_to_hir(
+            typed_file,
+            &unit.symbol_table,
+            &unit.type_table,
+            &mut *interner,
+            None,
+        )
+        .map_err(|e| format!("HIR error: {:?}", e))?;
     }
 
     println!("\n✓ HIR generation complete");

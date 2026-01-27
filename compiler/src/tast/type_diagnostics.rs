@@ -1008,7 +1008,11 @@ impl<'a> TypeDiagnosticEmitter<'a> {
     }
 
     /// Helper: Convert SourceLocation to SourceSpan with optional token name for proper underlining
-    fn location_to_span_with_length(&self, location: SourceLocation, token_name: Option<&str>) -> SourceSpan {
+    fn location_to_span_with_length(
+        &self,
+        location: SourceLocation,
+        token_name: Option<&str>,
+    ) -> SourceSpan {
         let file_id = FileId::new(location.file_id as usize);
         let start_pos = SourcePosition::new(
             location.line as usize,

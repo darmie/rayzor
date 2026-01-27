@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Quick test to verify drop semantics reduces memory for mandelbrot pattern
 
 use compiler::codegen::CraneliftBackend;
@@ -7,7 +37,8 @@ fn main() {
     println!("=== Testing Drop Semantics for Mandelbrot Pattern ===\n");
 
     let plugin = rayzor_runtime::plugin_impl::get_plugin();
-    let symbols: Vec<(&str, *const u8)> = plugin.runtime_symbols()
+    let symbols: Vec<(&str, *const u8)> = plugin
+        .runtime_symbols()
         .iter()
         .map(|(n, p)| (*n, *p))
         .collect();
@@ -75,16 +106,19 @@ class Main {
     let result: Result<(), String> = (|| {
         let mut unit = CompilationUnit::new(CompilationConfig::fast());
         unit.load_stdlib().map_err(|e| format!("stdlib: {}", e))?;
-        unit.add_file(source, "mandelbrot_pattern.hx").map_err(|e| format!("parse: {}", e))?;
+        unit.add_file(source, "mandelbrot_pattern.hx")
+            .map_err(|e| format!("parse: {}", e))?;
         unit.lower_to_tast().map_err(|e| format!("tast: {:?}", e))?;
 
         let mir_modules = unit.get_mir_modules();
 
-        let mut backend = CraneliftBackend::with_symbols(&symbols)
-            .map_err(|e| format!("backend: {}", e))?;
+        let mut backend =
+            CraneliftBackend::with_symbols(&symbols).map_err(|e| format!("backend: {}", e))?;
 
         for module in &mir_modules {
-            backend.compile_module(module).map_err(|e| format!("compile: {}", e))?;
+            backend
+                .compile_module(module)
+                .map_err(|e| format!("compile: {}", e))?;
         }
 
         let start = std::time::Instant::now();

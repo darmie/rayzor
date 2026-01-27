@@ -51,19 +51,26 @@ typedef GenericTypedef<T> = {
     process: T -> T
 }
 "#;
-    
+
     println!("Parsing comprehensive @:generic metadata test...");
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(ast) => {
             println!("Success: {:?}", ast);
-            
+
             // Check we have 6 declarations
             assert_eq!(ast.declarations.len(), 6);
-            
+
             // Check each declaration has @:generic metadata
-            let type_names = ["GenericClass", "GenericInterface", "GenericAbstract", "FinalGenericClass", "GenericEnum", "GenericTypedef"];
-            
+            let type_names = [
+                "GenericClass",
+                "GenericInterface",
+                "GenericAbstract",
+                "FinalGenericClass",
+                "GenericEnum",
+                "GenericTypedef",
+            ];
+
             for (i, decl) in ast.declarations.iter().enumerate() {
                 let has_generic = match decl {
                     parser::haxe_ast::TypeDeclaration::Class(class) => {
@@ -83,11 +90,18 @@ typedef GenericTypedef<T> = {
                     }
                     _ => false,
                 };
-                
-                println!("Declaration {}: {} has @:generic metadata: {}", i, type_names[i], has_generic);
-                assert!(has_generic, "Declaration {} should have @:generic metadata", type_names[i]);
+
+                println!(
+                    "Declaration {}: {} has @:generic metadata: {}",
+                    i, type_names[i], has_generic
+                );
+                assert!(
+                    has_generic,
+                    "Declaration {} should have @:generic metadata",
+                    type_names[i]
+                );
             }
-            
+
             // Check that FinalGenericClass also has @:final metadata
             if let parser::haxe_ast::TypeDeclaration::Class(class) = &ast.declarations[3] {
                 let has_final = class.meta.iter().any(|meta| meta.name == "final");
@@ -122,13 +136,13 @@ interface D<T> extends E<T> {}
 @:generic
 abstract F<T>(T) from T to T {}
 "#;
-    
+
     println!("Parsing @:generic metadata edge cases...");
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(ast) => {
             println!("Success: {:?}", ast);
-            
+
             // Check all declarations have @:generic metadata
             for (i, decl) in ast.declarations.iter().enumerate() {
                 let has_generic = match decl {
@@ -143,9 +157,13 @@ abstract F<T>(T) from T to T {}
                     }
                     _ => false,
                 };
-                
+
                 println!("Declaration {}: has @:generic metadata: {}", i, has_generic);
-                assert!(has_generic, "Declaration {} should have @:generic metadata", i);
+                assert!(
+                    has_generic,
+                    "Declaration {} should have @:generic metadata",
+                    i
+                );
             }
         }
         Err(e) => {
@@ -170,13 +188,13 @@ interface GenericWithConstraints<T:{name:String, age:Int}> {
     function validate(item: T): Bool;
 }
 "#;
-    
+
     println!("Parsing @:generic metadata with complex type parameters...");
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(ast) => {
             println!("Success: {:?}", ast);
-            
+
             // Check both declarations have @:generic metadata
             for (i, decl) in ast.declarations.iter().enumerate() {
                 let has_generic = match decl {
@@ -188,9 +206,13 @@ interface GenericWithConstraints<T:{name:String, age:Int}> {
                     }
                     _ => false,
                 };
-                
+
                 println!("Declaration {}: has @:generic metadata: {}", i, has_generic);
-                assert!(has_generic, "Declaration {} should have @:generic metadata", i);
+                assert!(
+                    has_generic,
+                    "Declaration {} should have @:generic metadata",
+                    i
+                );
             }
         }
         Err(e) => {

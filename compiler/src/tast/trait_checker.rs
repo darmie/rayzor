@@ -5,9 +5,9 @@
 //! extern call lowering to validate thread safety and other constraints.
 
 use crate::tast::{
-    TypeId, SymbolId, TypeTable, SymbolTable,
+    core::{Mutability, TypeKind},
     node::{DerivedTrait, TypedClass},
-    core::{TypeKind, Mutability},
+    SymbolId, SymbolTable, TypeId, TypeTable,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -88,20 +88,20 @@ impl<'a> TraitChecker<'a> {
             TypeKind::Void => true,
 
             // Check class for derived traits
-            TypeKind::Class { symbol_id, .. } => {
-                self.class_implements_trait(*symbol_id, trait_)
-            }
+            TypeKind::Class { symbol_id, .. } => self.class_implements_trait(*symbol_id, trait_),
 
             // Function types: NOT Send/Sync by default (captures unknown)
             TypeKind::Function { .. } => false,
 
             // Arrays: Send/Sync if element is Send/Sync
-            TypeKind::Array { element_type } => {
-                self.implements_trait(*element_type, trait_)
-            }
+            TypeKind::Array { element_type } => self.implements_trait(*element_type, trait_),
 
             // References: &T is Send if T is Sync, &mut T is Send if T is Send
-            TypeKind::Reference { target_type, mutability, .. } => {
+            TypeKind::Reference {
+                target_type,
+                mutability,
+                ..
+            } => {
                 if *mutability == Mutability::Mutable {
                     // &mut T is Send if T is Send, Sync if T is Sync
                     self.implements_trait(*target_type, trait_)
@@ -244,7 +244,9 @@ mod tests {
         let checker = TraitChecker::new(&type_table, &symbol_table, &classes);
 
         let void_type = type_table.borrow().void_type();
-        let func_type = type_table.borrow_mut().create_function_type(vec![], void_type);
+        let func_type = type_table
+            .borrow_mut()
+            .create_function_type(vec![], void_type);
 
         // Function types are NOT Send/Sync by default (captures unknown)
         assert!(!checker.is_send(func_type));

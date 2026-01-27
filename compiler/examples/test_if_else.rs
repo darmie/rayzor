@@ -1,3 +1,34 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
+use compiler::codegen::CraneliftBackend;
 /// Test: If/Else statements
 ///
 /// Tests:
@@ -5,9 +36,7 @@
 /// - If/else branches
 /// - Nested conditionals
 /// - Comparison operators
-
-use compiler::compilation::{CompilationUnit, CompilationConfig};
-use compiler::codegen::CraneliftBackend;
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 use compiler::ir::hir_to_mir::lower_hir_to_mir;
 use compiler::ir::tast_to_hir::lower_tast_to_hir;
 use std::cell::RefCell;
@@ -55,7 +84,7 @@ fn main() -> Result<(), String> {
     // Compile
     unit.load_stdlib()?;
     unit.add_file(source, "IfElseTest.hx")?;
-    let typed_files = unit.lower_to_tast()?;
+    let typed_files = unit.lower_to_tast().map_err(|e| format!("{:?}", e))?;
     println!("✓ TAST generated");
 
     // Lower to HIR → MIR
@@ -68,21 +97,36 @@ fn main() -> Result<(), String> {
     for typed_file in &typed_files {
         let hir = {
             let mut interner = string_interner_rc.borrow_mut();
-            lower_tast_to_hir(typed_file, &unit.symbol_table, &unit.type_table, &mut *interner, None)
-                .map_err(|e| format!("HIR error: {:?}", e))?
+            lower_tast_to_hir(
+                typed_file,
+                &unit.symbol_table,
+                &unit.type_table,
+                &mut *interner,
+                None,
+            )
+            .map_err(|e| format!("HIR error: {:?}", e))?
         };
 
-        let mir = lower_hir_to_mir(&hir, &*string_interner_rc.borrow(), &unit.type_table)
-            .map_err(|e| format!("MIR error: {:?}", e))?;
+        let mir = lower_hir_to_mir(
+            &hir,
+            &*string_interner_rc.borrow(),
+            &unit.type_table,
+            &unit.symbol_table,
+        )
+        .map_err(|e| format!("MIR error: {:?}", e))?;
         if !mir.functions.is_empty() {
             // Debug: Print MIR structure
             for (func_id, func) in &mir.functions {
                 println!("\nMIR Function {:?}: {}", func_id, func.name);
                 println!("  Blocks: {}", func.cfg.blocks.len());
                 for (block_id, block) in &func.cfg.blocks {
-                    println!("    Block {:?}: {} phis, {} instrs, terminator: {:?}",
-                           block_id, block.phi_nodes.len(), block.instructions.len(),
-                           std::mem::discriminant(&block.terminator));
+                    println!(
+                        "    Block {:?}: {} phis, {} instrs, terminator: {:?}",
+                        block_id,
+                        block.phi_nodes.len(),
+                        block.instructions.len(),
+                        std::mem::discriminant(&block.terminator)
+                    );
                     for phi in &block.phi_nodes {
                         println!("      Phi {:?}: {} incoming", phi.dest, phi.incoming.len());
                         for (from, val) in &phi.incoming {
@@ -97,7 +141,8 @@ fn main() -> Result<(), String> {
     println!("✓ HIR and MIR generated");
 
     // Find main function
-    let test_module = mir_modules.into_iter()
+    let test_module = mir_modules
+        .into_iter()
         .find(|m| m.functions.iter().any(|(_, f)| f.name.contains("main")))
         .ok_or("No module with main function found")?;
 

@@ -1,16 +1,41 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 /// Test Cranelift backend with comparison operations
 ///
 /// Tests: eq, ne, lt, le, gt, ge (signed comparisons)
-
 use compiler::codegen::CraneliftBackend;
 use compiler::ir::*;
 use compiler::tast::SymbolId;
 
-fn create_cmp_function(
-    name: &str,
-    op: CompareOp,
-    func_id: u32,
-) -> (IrFunction, IrFunctionId) {
+fn create_cmp_function(name: &str, op: CompareOp, func_id: u32) -> (IrFunction, IrFunctionId) {
     let fid = IrFunctionId(func_id);
     let symbol_id = SymbolId::from_raw(func_id + 1);
 
@@ -37,6 +62,7 @@ fn create_cmp_function(
         calling_convention: CallingConvention::Haxe,
         can_throw: false,
         type_params: vec![],
+        uses_sret: false,
     };
 
     let mut function = IrFunction::new(fid, symbol_id, name.to_string(), signature);
@@ -107,7 +133,10 @@ fn main() -> Result<(), String> {
         ("ge", CompareOp::Ge),
     ];
 
-    println!("Creating MIR functions for {} comparisons...", operations.len());
+    println!(
+        "Creating MIR functions for {} comparisons...",
+        operations.len()
+    );
     for (idx, (name, op)) in operations.iter().enumerate() {
         let (func, fid) = create_cmp_function(name, *op, idx as u32);
         func_ids.push((name.to_string(), fid));
@@ -219,7 +248,10 @@ fn main() -> Result<(), String> {
     println!();
 
     if all_passed {
-        println!("🎉 SUCCESS: All {} comparison operations passed!", operations.len());
+        println!(
+            "🎉 SUCCESS: All {} comparison operations passed!",
+            operations.len()
+        );
         Ok(())
     } else {
         Err("FAILED: Some comparisons produced incorrect results".to_string())

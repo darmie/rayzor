@@ -1,8 +1,6 @@
 //! Haxe AST with full span tracking
-//! 
+//!
 //! This AST covers 100% of Haxe language features as specified in https://haxe.org/manual
-
-use std::fmt;
 
 /// Source location information
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -17,7 +15,7 @@ impl Span {
     pub fn new(start: usize, end: usize) -> Self {
         Self { start, end }
     }
-    
+
     pub fn merge(self, other: Span) -> Span {
         Span::new(self.start.min(other.start), self.end.max(other.end))
     }
@@ -252,10 +250,14 @@ impl ClassDecl {
 
     /// Get all variables and properties
     pub fn get_vars_and_properties(&self) -> impl Iterator<Item = &ClassField> {
-        self.fields.iter().filter(|field| matches!(
-            &field.kind,
-            ClassFieldKind::Var { .. } | ClassFieldKind::Final { .. } | ClassFieldKind::Property { .. }
-        ))
+        self.fields.iter().filter(|field| {
+            matches!(
+                &field.kind,
+                ClassFieldKind::Var { .. }
+                    | ClassFieldKind::Final { .. }
+                    | ClassFieldKind::Property { .. }
+            )
+        })
     }
 
     /// Check if class has @:derive metadata with a specific trait
@@ -271,24 +273,28 @@ impl ClassDecl {
             .iter()
             .filter(|m| m.name == "derive")
             .flat_map(|m| {
-                m.params.iter().filter_map(|param| {
-                    // Extract trait names from array expression
-                    match &param.kind {
-                        ExprKind::Array(items) => {
-                            Some(items.iter().filter_map(|item| {
-                                match &item.kind {
-                                    ExprKind::Ident(name) => Some(name.clone()),
-                                    _ => None,
-                                }
-                            }).collect::<Vec<_>>())
-                        },
-                        ExprKind::Ident(name) => {
-                            // Also support @:derive(Clone) without array
-                            Some(vec![name.clone()])
-                        },
-                        _ => None,
-                    }
-                }).flatten()
+                m.params
+                    .iter()
+                    .filter_map(|param| {
+                        // Extract trait names from array expression
+                        match &param.kind {
+                            ExprKind::Array(items) => Some(
+                                items
+                                    .iter()
+                                    .filter_map(|item| match &item.kind {
+                                        ExprKind::Ident(name) => Some(name.clone()),
+                                        _ => None,
+                                    })
+                                    .collect::<Vec<_>>(),
+                            ),
+                            ExprKind::Ident(name) => {
+                                // Also support @:derive(Clone) without array
+                                Some(vec![name.clone()])
+                            }
+                            _ => None,
+                        }
+                    })
+                    .flatten()
             })
             .collect()
     }
@@ -371,7 +377,7 @@ impl AbstractDecl {
             _ => false,
         })
     }
-    
+
     /// Get all constructors
     pub fn get_constructors(&self) -> impl Iterator<Item = &ClassField> {
         self.fields.iter().filter(|field| match &field.kind {
@@ -379,7 +385,7 @@ impl AbstractDecl {
             _ => false,
         })
     }
-    
+
     /// Get the primary constructor
     pub fn get_primary_constructor(&self) -> Option<&Function> {
         self.fields.iter().find_map(|field| match &field.kind {
@@ -498,20 +504,11 @@ pub enum Type {
         span: Span,
     },
     /// Anonymous structure: `{ x:Int, y:String }`
-    Anonymous {
-        fields: Vec<AnonField>,
-        span: Span,
-    },
+    Anonymous { fields: Vec<AnonField>, span: Span },
     /// Optional type: `?Int`
-    Optional {
-        inner: Box<Type>,
-        span: Span,
-    },
+    Optional { inner: Box<Type>, span: Span },
     /// Parenthesized type: `(Int)`
-    Parenthesis {
-        inner: Box<Type>,
-        span: Span,
-    },
+    Parenthesis { inner: Box<Type>, span: Span },
     /// Intersection type: `Type & { extraField: Int }`
     Intersection {
         left: Box<Type>,
@@ -519,9 +516,7 @@ pub enum Type {
         span: Span,
     },
     /// Wildcard type: `?` (used in type parameters)
-    Wildcard {
-        span: Span,
-    },
+    Wildcard { span: Span },
 }
 
 /// Type path
@@ -558,130 +553,130 @@ pub enum ExprKind {
     Null,
     This,
     Super,
-    
+
     /// Regex literal: ~/pattern/flags
     Regex {
         pattern: String,
         flags: String,
     },
-    
+
     /// Identifiers and member access
     Ident(String),
     Field {
         expr: Box<Expr>,
         field: String,
     },
-    
+
     /// Array/Map access: `arr[0]`, `map["key"]`
     Index {
         expr: Box<Expr>,
         index: Box<Expr>,
     },
-    
+
     /// Function call: `foo(1, 2)`
     Call {
         expr: Box<Expr>,
         args: Vec<Expr>,
     },
-    
+
     /// Constructor call: `new MyClass()`
     New {
         type_path: TypePath,
         params: Vec<Type>,
         args: Vec<Expr>,
     },
-    
+
     /// Unary operators
     Unary {
         op: UnaryOp,
         expr: Box<Expr>,
     },
-    
+
     /// Binary operators
     Binary {
         left: Box<Expr>,
         op: BinaryOp,
         right: Box<Expr>,
     },
-    
+
     /// Assignment
     Assign {
         left: Box<Expr>,
         op: AssignOp,
         right: Box<Expr>,
     },
-    
+
     /// Ternary: `cond ? then : else`
     Ternary {
         cond: Box<Expr>,
         then_expr: Box<Expr>,
         else_expr: Box<Expr>,
     },
-    
+
     /// Array literal: `[1, 2, 3]`
     Array(Vec<Expr>),
-    
+
     /// Map literal: `["a" => 1, "b" => 2]`
     Map(Vec<(Expr, Expr)>),
-    
+
     /// Object literal: `{x: 1, y: 2}`
     Object(Vec<ObjectField>),
-    
+
     /// String interpolation: `'Hello $name'`
     StringInterpolation(Vec<StringPart>),
-    
+
     /// Block expression: `{ statements; }`
     Block(Vec<BlockElement>),
-    
+
     /// Variable declaration: `var x = 10`
     Var {
         name: String,
         type_hint: Option<Type>,
         expr: Option<Box<Expr>>,
     },
-    
+
     /// Final declaration: `final x = 10`
     Final {
         name: String,
         type_hint: Option<Type>,
         expr: Option<Box<Expr>>,
     },
-    
+
     /// Function expression: `function(x) return x * 2`
     Function(Function),
-    
+
     /// Arrow function: `x -> x * 2`
     Arrow {
         params: Vec<String>,
         expr: Box<Expr>,
     },
-    
+
     /// Return: `return expr`
     Return(Option<Box<Expr>>),
-    
+
     /// Break
     Break,
-    
+
     /// Continue
     Continue,
-    
+
     /// Throw: `throw expr`
     Throw(Box<Expr>),
-    
+
     /// If: `if (cond) then else else`
     If {
         cond: Box<Expr>,
         then_branch: Box<Expr>,
         else_branch: Option<Box<Expr>>,
     },
-    
+
     /// Switch
     Switch {
         expr: Box<Expr>,
         cases: Vec<Case>,
         default: Option<Box<Expr>>,
     },
-    
+
     /// For loop: `for (i in 0...10)` or `for (key => value in map)`
     For {
         var: String,
@@ -689,50 +684,50 @@ pub enum ExprKind {
         iter: Box<Expr>,
         body: Box<Expr>,
     },
-    
+
     /// While loop: `while (cond) body`
     While {
         cond: Box<Expr>,
         body: Box<Expr>,
     },
-    
+
     /// Do-while: `do body while (cond)`
     DoWhile {
         body: Box<Expr>,
         cond: Box<Expr>,
     },
-    
+
     /// Try-catch-finally
     Try {
         expr: Box<Expr>,
         catches: Vec<Catch>,
         finally_block: Option<Box<Expr>>,
     },
-    
+
     /// Cast: `cast expr` or `cast(expr, Type)`
     Cast {
         expr: Box<Expr>,
         type_hint: Option<Type>,
     },
-    
+
     /// Type check: `(expr : Type)`
     TypeCheck {
         expr: Box<Expr>,
         type_hint: Type,
     },
-    
+
     /// Untyped expression: `untyped expr`
     Untyped(Box<Expr>),
-    
+
     /// Metadata: `@:meta expr`
     Meta {
         meta: Metadata,
         expr: Box<Expr>,
     },
-    
+
     /// Parentheses: `(expr)`
     Paren(Box<Expr>),
-    
+
     /// Macro expression: `macro expr`
     Macro(Box<Expr>),
 
@@ -741,26 +736,26 @@ pub enum ExprKind {
 
     /// Macro reification: `$expr`
     Reify(Box<Expr>),
-    
+
     /// Dollar identifier: `$type`, `$v{...}`, `$i{...}`, etc.
     DollarIdent {
         name: String,
         arg: Option<Box<Expr>>,
     },
-    
+
     /// Array comprehension: `[for (i in 0...10) i * 2]`
     ArrayComprehension {
         for_parts: Vec<ComprehensionFor>,
         expr: Box<Expr>,
     },
-    
+
     /// Map comprehension: `[for (i in 0...10) i => i * 2]`
     MapComprehension {
         for_parts: Vec<ComprehensionFor>,
         key: Box<Expr>,
         value: Box<Expr>,
     },
-    
+
     /// Compiler-specific code block: `__js__("console.log('hello')")`
     CompilerSpecific {
         target: String,
@@ -823,14 +818,9 @@ pub enum Pattern {
         rest: Option<String>,
     },
     /// Object pattern: `{x: 0, y: 0}`
-    Object {
-        fields: Vec<(String, Pattern)>,
-    },
+    Object { fields: Vec<(String, Pattern)> },
     /// Type pattern: `(s:String)`
-    Type {
-        var: String,
-        type_hint: Type,
-    },
+    Type { var: String, type_hint: Type },
     /// Null pattern
     Null,
     /// Or pattern: `1 | 2 | 3`
@@ -838,10 +828,7 @@ pub enum Pattern {
     /// Underscore pattern: `_`
     Underscore,
     /// Extractor pattern: `_.method() => value` or `~/regex/.match(_) => true`
-    Extractor {
-        expr: Expr,
-        value: Expr,
-    },
+    Extractor { expr: Box<Expr>, value: Box<Expr> },
 }
 
 /// Catch clause
@@ -891,7 +878,7 @@ pub enum BinaryOp {
     Mul,
     Div,
     Mod,
-    
+
     // Comparison
     Eq,
     NotEq,
@@ -899,11 +886,11 @@ pub enum BinaryOp {
     Le,
     Gt,
     Ge,
-    
+
     // Logical
     And,
     Or,
-    
+
     // Bitwise
     BitAnd,
     BitOr,
@@ -911,12 +898,12 @@ pub enum BinaryOp {
     Shl,
     Shr,
     Ushr,
-    
+
     // Special
-    Range,      // `...`
-    Arrow,      // `=>`
-    Is,         // `is` type check operator
-    NullCoal,   // `??`
+    Range,    // `...`
+    Arrow,    // `=>`
+    Is,       // `is` type check operator
+    NullCoal, // `??`
 }
 
 /// Assignment operators

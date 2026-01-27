@@ -3,38 +3,35 @@
 //! This module defines the top-level compilation unit representation in HIR,
 //! including modules, global variables, type definitions, and function declarations.
 
-use super::{
-    IrFunction, IrFunctionId, IrType, IrSourceLocation, Linkage,
-    IrId, IrValue,
-};
+use super::{IrFunction, IrFunctionId, IrId, IrSourceLocation, IrType, IrValue, Linkage};
 use crate::tast::{SymbolId, TypeId};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
 
 /// HIR module - represents a compilation unit
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrModule {
     /// Module name
     pub name: String,
-    
+
     /// Source file path
     pub source_file: String,
-    
+
     /// Functions defined in this module
     pub functions: HashMap<IrFunctionId, IrFunction>,
-    
+
     /// Global variables
     pub globals: HashMap<IrGlobalId, IrGlobal>,
-    
+
     /// Type definitions
     pub types: HashMap<IrTypeDefId, IrTypeDef>,
-    
+
     /// String constants pool
     pub string_pool: StringPool,
-    
+
     /// External function declarations
     pub extern_functions: HashMap<IrFunctionId, IrExternFunction>,
-    
+
     /// Module metadata
     pub metadata: ModuleMetadata,
 
@@ -76,28 +73,28 @@ impl std::fmt::Display for IrTypeDefId {
 pub struct IrGlobal {
     /// Global identifier
     pub id: IrGlobalId,
-    
+
     /// Variable name
     pub name: String,
-    
+
     /// Original TAST symbol
     pub symbol_id: SymbolId,
-    
+
     /// Variable type
     pub ty: IrType,
-    
+
     /// Initial value (if any)
     pub initializer: Option<IrValue>,
-    
+
     /// Whether this is mutable
     pub mutable: bool,
-    
+
     /// Linkage type
     pub linkage: Linkage,
-    
+
     /// Alignment requirement
     pub alignment: Option<u32>,
-    
+
     /// Source location
     pub source_location: IrSourceLocation,
 }
@@ -107,16 +104,16 @@ pub struct IrGlobal {
 pub struct IrTypeDef {
     /// Type identifier
     pub id: IrTypeDefId,
-    
+
     /// Type name
     pub name: String,
-    
+
     /// Original TAST type
     pub type_id: TypeId,
-    
+
     /// Type definition
     pub definition: IrTypeDefinition,
-    
+
     /// Source location
     pub source_location: IrSourceLocation,
 }
@@ -125,22 +122,17 @@ pub struct IrTypeDef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum IrTypeDefinition {
     /// Struct type
-    Struct {
-        fields: Vec<IrField>,
-        packed: bool,
-    },
-    
+    Struct { fields: Vec<IrField>, packed: bool },
+
     /// Enum type
     Enum {
         variants: Vec<IrEnumVariant>,
         discriminant_type: IrType,
     },
-    
+
     /// Type alias
-    Alias {
-        aliased_type: IrType,
-    },
-    
+    Alias { aliased_type: IrType },
+
     /// Opaque type (forward declaration)
     Opaque,
 }
@@ -150,10 +142,10 @@ pub enum IrTypeDefinition {
 pub struct IrField {
     /// Field name
     pub name: String,
-    
+
     /// Field type
     pub ty: IrType,
-    
+
     /// Field offset (computed during layout)
     pub offset: Option<u32>,
 }
@@ -163,10 +155,10 @@ pub struct IrField {
 pub struct IrEnumVariant {
     /// Variant name
     pub name: String,
-    
+
     /// Discriminant value
     pub discriminant: i64,
-    
+
     /// Associated data (if any)
     pub fields: Vec<IrField>,
 }
@@ -176,16 +168,16 @@ pub struct IrEnumVariant {
 pub struct IrExternFunction {
     /// Function ID
     pub id: IrFunctionId,
-    
+
     /// Function name (may be mangled)
     pub name: String,
-    
+
     /// Original symbol
     pub symbol_id: SymbolId,
-    
+
     /// Function signature
     pub signature: super::IrFunctionSignature,
-    
+
     /// Which library/module this comes from
     pub source: String,
 }
@@ -195,10 +187,10 @@ pub struct IrExternFunction {
 pub struct StringPool {
     /// String constants indexed by ID
     strings: HashMap<u32, String>,
-    
+
     /// Reverse mapping for deduplication
     string_to_id: HashMap<String, u32>,
-    
+
     /// Next available ID
     next_id: u32,
 }
@@ -211,7 +203,7 @@ impl StringPool {
             next_id: 0,
         }
     }
-    
+
     /// Add a string to the pool, returning its ID
     pub fn add(&mut self, s: String) -> u32 {
         if let Some(&id) = self.string_to_id.get(&s) {
@@ -224,7 +216,7 @@ impl StringPool {
             id
         }
     }
-    
+
     /// Get a string by ID
     pub fn get(&self, id: u32) -> Option<&str> {
         self.strings.get(&id).map(|s| s.as_str())
@@ -236,16 +228,16 @@ impl StringPool {
 pub struct ModuleMetadata {
     /// Target triple (e.g., "x86_64-unknown-linux-gnu")
     pub target_triple: Option<String>,
-    
+
     /// Source language version
     pub language_version: String,
-    
+
     /// Optimization level
     pub optimization_level: OptimizationLevel,
-    
+
     /// Debug info level
     pub debug_info: DebugInfoLevel,
-    
+
     /// Custom attributes
     pub attributes: HashMap<String, String>,
 }
@@ -307,7 +299,7 @@ impl IrModule {
             register_to_symbol: HashMap::new(),
         }
     }
-    
+
     /// Add a function to the module
     pub fn add_function(&mut self, function: IrFunction) -> IrFunctionId {
         let id = function.id;
@@ -315,14 +307,14 @@ impl IrModule {
         self.next_function_id = self.next_function_id.max(id.0 + 1);
         id
     }
-    
+
     /// Allocate a new function ID
     pub fn alloc_function_id(&mut self) -> IrFunctionId {
         let id = IrFunctionId(self.next_function_id);
         self.next_function_id += 1;
         id
     }
-    
+
     /// Add a global variable
     pub fn add_global(&mut self, global: IrGlobal) -> IrGlobalId {
         let id = global.id;
@@ -330,14 +322,14 @@ impl IrModule {
         self.next_global_id = self.next_global_id.max(id.0 + 1);
         id
     }
-    
+
     /// Allocate a new global ID
     pub fn alloc_global_id(&mut self) -> IrGlobalId {
         let id = IrGlobalId(self.next_global_id);
         self.next_global_id += 1;
         id
     }
-    
+
     /// Add a type definition
     pub fn add_type(&mut self, typedef: IrTypeDef) -> IrTypeDefId {
         let id = typedef.id;
@@ -345,42 +337,45 @@ impl IrModule {
         self.next_typedef_id = self.next_typedef_id.max(id.0 + 1);
         id
     }
-    
+
     /// Allocate a new type definition ID
     pub fn alloc_typedef_id(&mut self) -> IrTypeDefId {
         let id = IrTypeDefId(self.next_typedef_id);
         self.next_typedef_id += 1;
         id
     }
-    
+
     /// Add an external function declaration
     pub fn add_extern_function(&mut self, extern_fn: IrExternFunction) {
         self.extern_functions.insert(extern_fn.id, extern_fn);
     }
-    
+
     /// Get all functions (internal and external)
     pub fn all_functions(&self) -> impl Iterator<Item = (IrFunctionId, &str)> {
-        self.functions.iter()
+        self.functions
+            .iter()
             .map(|(id, f)| (*id, f.name.as_str()))
             .chain(
-                self.extern_functions.iter()
-                    .map(|(id, f)| (*id, f.name.as_str()))
+                self.extern_functions
+                    .iter()
+                    .map(|(id, f)| (*id, f.name.as_str())),
             )
     }
-    
+
     /// Verify module integrity
     pub fn verify(&self) -> Result<(), String> {
         // Verify all functions
         for (id, function) in &self.functions {
-            function.verify()
+            function
+                .verify()
                 .map_err(|e| format!("Function {} error: {}", id, e))?;
         }
-        
+
         // TODO: Verify globals, types, etc.
-        
+
         Ok(())
     }
-    
+
     /// Get module statistics
     pub fn stats(&self) -> ModuleStats {
         ModuleStats {
@@ -406,7 +401,7 @@ pub struct ModuleStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_module_creation() {
         let module = IrModule::new("test".to_string(), "test.hx".to_string());
@@ -414,14 +409,14 @@ mod tests {
         assert_eq!(module.source_file, "test.hx");
         assert!(module.functions.is_empty());
     }
-    
+
     #[test]
     fn test_string_pool() {
         let mut pool = StringPool::new();
         let id1 = pool.add("hello".to_string());
         let id2 = pool.add("world".to_string());
         let id3 = pool.add("hello".to_string()); // Duplicate
-        
+
         assert_eq!(id1, id3); // Deduplication
         assert_ne!(id1, id2);
         assert_eq!(pool.get(id1), Some("hello"));

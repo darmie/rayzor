@@ -18,9 +18,13 @@ class Test {
     }
 }
         "#;
-        
+
         let result = compile_haxe_source(haxe_code);
-        assert!(result.errors.is_empty(), "Expected no errors, but got: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors, but got: {:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -36,9 +40,13 @@ class Test {
     }
 }
         "#;
-        
+
         let result = compile_haxe_source(haxe_code);
-        assert!(result.errors.is_empty(), "Expected no errors, but got: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors, but got: {:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -58,9 +66,13 @@ class Test {
     }
 }
         "#;
-        
+
         let result = compile_haxe_source(haxe_code);
-        assert!(result.errors.is_empty(), "Expected no errors, but got: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors, but got: {:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -78,9 +90,13 @@ class Test {
     }
 }
         "#;
-        
+
         let result = compile_haxe_source(haxe_code);
-        assert!(result.errors.is_empty(), "Expected no errors, but got: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors, but got: {:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -99,9 +115,13 @@ class Test {
     }
 }
         "#;
-        
+
         let result = compile_haxe_source(haxe_code);
-        assert!(result.errors.is_empty(), "Expected no errors, but got: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors, but got: {:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -118,9 +138,13 @@ class Test {
     }
 }
         "#;
-        
+
         let result = compile_haxe_source(haxe_code);
-        assert!(result.errors.is_empty(), "Expected no errors, but got: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors, but got: {:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -137,9 +161,13 @@ class Test {
     }
 }
         "#;
-        
+
         let result = compile_haxe_source(haxe_code);
-        assert!(result.errors.is_empty(), "Expected no errors, but got: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors, but got: {:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -157,9 +185,13 @@ class Test {
     }
 }
         "#;
-        
+
         let result = compile_haxe_source(haxe_code);
-        assert!(result.errors.is_empty(), "Expected no errors, but got: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors, but got: {:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -178,9 +210,13 @@ class Test {
     }
 }
         "#;
-        
+
         let result = compile_haxe_source(haxe_code);
-        assert!(result.errors.is_empty(), "Expected no errors, but got: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors, but got: {:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -198,9 +234,13 @@ class Test {
     }
 }
         "#;
-        
+
         let result = compile_haxe_source(haxe_code);
-        assert!(result.errors.is_empty(), "Expected no errors, but got: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors, but got: {:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -222,9 +262,13 @@ class Test {
     }
 }
         "#;
-        
+
         let result = compile_haxe_source(haxe_code);
-        assert!(result.errors.is_empty(), "Expected no errors, but got: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors, but got: {:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -249,9 +293,13 @@ class Test {
     }
 }
         "#;
-        
+
         let result = compile_haxe_source(haxe_code);
-        assert!(result.errors.is_empty(), "Expected no errors, but got: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors, but got: {:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -276,8 +324,12 @@ class Test {
     }
 }
         "#;
-        
+
         let result = compile_haxe_source(haxe_code);
-        assert!(result.errors.is_empty(), "Expected no errors, but got: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "Expected no errors, but got: {:?}",
+            result.errors
+        );
     }
 }

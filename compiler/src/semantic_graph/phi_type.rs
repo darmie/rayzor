@@ -45,7 +45,7 @@ impl<'a> PhiTypeUnifier<'a> {
             return Ok(*operand_types.iter().next().unwrap());
         }
 
-        // Find the least upper bound of all types 
+        // Find the least upper bound of all types
         self.find_least_upper_bound(&operand_types)
     }
 

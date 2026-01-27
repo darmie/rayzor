@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
+    use parser::haxe_ast::{ClassFieldKind, ExprKind, TypeDeclaration};
     use parser::parse_haxe_file;
-    use parser::haxe_ast::{TypeDeclaration, ExprKind, ClassFieldKind};
 
     #[test]
     fn test_native_with_dotted_paths() {
@@ -75,76 +75,107 @@ extern class PhpClass {
 }
 "#;
 
-        let ast = parse_haxe_file("test_native_paths.hx", input, false)
-            .expect("Parsing should succeed");
-        
+        let ast =
+            parse_haxe_file("test_native_paths.hx", input, false).expect("Parsing should succeed");
+
         // Verify all classes were parsed
         assert_eq!(ast.declarations.len(), 6);
-        
+
         // Check ArrayList
         if let TypeDeclaration::Class(ref c) = &ast.declarations[0] {
             assert_eq!(c.name, "ArrayList");
-            let native_meta = c.meta.iter().find(|m| m.name == "native").expect("Expected @:native");
+            let native_meta = c
+                .meta
+                .iter()
+                .find(|m| m.name == "native")
+                .expect("Expected @:native");
             if let ExprKind::String(s) = &native_meta.params[0].kind {
                 assert_eq!(s, "java.util.ArrayList");
             } else {
                 panic!("Expected string parameter");
             }
         }
-        
+
         // Check Dictionary with C# namespace
         if let TypeDeclaration::Class(ref c) = &ast.declarations[1] {
             assert_eq!(c.name, "Dictionary");
-            let native_meta = c.meta.iter().find(|m| m.name == "native").expect("Expected @:native");
+            let native_meta = c
+                .meta
+                .iter()
+                .find(|m| m.name == "native")
+                .expect("Expected @:native");
             if let ExprKind::String(s) = &native_meta.params[0].kind {
                 assert_eq!(s, "System.Collections.Generic.Dictionary");
             } else {
                 panic!("Expected string parameter");
             }
         }
-        
+
         // Check Console with window.console.log
         if let TypeDeclaration::Class(ref c) = &ast.declarations[2] {
             assert_eq!(c.name, "Console");
-            let native_meta = c.meta.iter().find(|m| m.name == "native").expect("Expected @:native");
+            let native_meta = c
+                .meta
+                .iter()
+                .find(|m| m.name == "native")
+                .expect("Expected @:native");
             if let ExprKind::String(s) = &native_meta.params[0].kind {
                 assert_eq!(s, "window.console.log");
             } else {
                 panic!("Expected string parameter");
             }
         }
-        
+
         // Check ComponentFactory with very long path
         if let TypeDeclaration::Class(ref c) = &ast.declarations[3] {
             assert_eq!(c.name, "ComponentFactory");
-            let native_meta = c.meta.iter().find(|m| m.name == "native").expect("Expected @:native");
+            let native_meta = c
+                .meta
+                .iter()
+                .find(|m| m.name == "native")
+                .expect("Expected @:native");
             if let ExprKind::String(s) = &native_meta.params[0].kind {
                 assert_eq!(s, "com.company.product.module.subsystem.ComponentFactory");
             } else {
                 panic!("Expected string parameter");
             }
-            
+
             // Check static method with dotted native path
-            let method = c.fields.iter().find(|f| {
-                if let ClassFieldKind::Function(func) = &f.kind {
-                    func.name == "getInstance"
-                } else {
-                    false
-                }
-            }).expect("Expected getInstance method");
-            
-            let method_native = method.meta.iter().find(|m| m.name == "native").expect("Expected @:native on method");
+            let method = c
+                .fields
+                .iter()
+                .find(|f| {
+                    if let ClassFieldKind::Function(func) = &f.kind {
+                        func.name == "getInstance"
+                    } else {
+                        false
+                    }
+                })
+                .expect("Expected getInstance method");
+
+            let method_native = method
+                .meta
+                .iter()
+                .find(|m| m.name == "native")
+                .expect("Expected @:native on method");
             if let ExprKind::String(s) = &method_native.params[0].kind {
-                assert_eq!(s, "com.company.product.module.subsystem.ComponentFactory.getInstance");
+                assert_eq!(
+                    s,
+                    "com.company.product.module.subsystem.ComponentFactory.getInstance"
+                );
             } else {
                 panic!("Expected string parameter");
             }
         }
-        
+
         // Check PHP class with backslashes
         if let TypeDeclaration::Class(ref c) = &ast.declarations[5] {
             assert_eq!(c.name, "PhpClass");
-            let native_meta = c.meta.iter().find(|m| m.name == "native").expect("Expected @:native");
+            let native_meta = c
+                .meta
+                .iter()
+                .find(|m| m.name == "native")
+                .expect("Expected @:native");
             if let ExprKind::String(s) = &native_meta.params[0].kind {
                 // Parser preserves raw escape sequences from Haxe string literals
                 assert_eq!(s, "\\\\Vendor\\\\Package\\\\ClassName");
@@ -153,27 +184,50 @@ extern class PhpClass {
             }
         }
     }
-    
+
     #[test]
     fn test_native_edge_cases() {
         let edge_cases = vec![
             (r#"@:native("") class Empty {}"#, ""),
             (r#"@:native(".") class Dot {}"#, "."),
             (r#"@:native("..") class DoubleDot {}"#, ".."),
-            (r#"@:native("a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p") class VeryLong {}"#, "a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p"),
-            (r#"@:native("_internal.package.Class") class Internal {}"#, "_internal.package.Class"),
-            (r#"@:native("$special.chars.Class") class Special {}"#, "$special.chars.Class"),
-            (r#"@:native("数字.汉字.Class") class Unicode {}"#, "数字.汉字.Class"),
-            (r#"@:native("mixed.CASE.paTTern") class MixedCase {}"#, "mixed.CASE.paTTern"),
+            (
+                r#"@:native("a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p") class VeryLong {}"#,
+                "a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p",
+            ),
+            (
+                r#"@:native("_internal.package.Class") class Internal {}"#,
+                "_internal.package.Class",
+            ),
+            (
+                r#"@:native("$special.chars.Class") class Special {}"#,
+                "$special.chars.Class",
+            ),
+            (
+                r#"@:native("数字.汉字.Class") class Unicode {}"#,
+                "数字.汉字.Class",
+            ),
+            (
+                r#"@:native("mixed.CASE.paTTern") class MixedCase {}"#,
+                "mixed.CASE.paTTern",
+            ),
         ];
-        
+
         for (input, expected_native) in edge_cases {
             let ast = parse_haxe_file("edge_case.hx", input, false)
-                .expect(&format!("Failed to parse: {}", input));
+                .unwrap_or_else(|_| panic!("Failed to parse: {}", input));
             if let Some(TypeDeclaration::Class(ref c)) = ast.declarations.first() {
-                let native_meta = c.meta.iter().find(|m| m.name == "native").expect("Expected @:native");
+                let native_meta = c
+                    .meta
+                    .iter()
+                    .find(|m| m.name == "native")
+                    .expect("Expected @:native");
                 if let ExprKind::String(s) = &native_meta.params[0].kind {
-                    assert_eq!(s, expected_native, "Native path mismatch for input: {}", input);
+                    assert_eq!(
+                        s, expected_native,
+                        "Native path mismatch for input: {}",
+                        input
+                    );
                 } else {
                     panic!("Expected string parameter for: {}", input);
                 }
@@ -182,7 +236,7 @@ extern class PhpClass {
             }
         }
     }
-    
+
     #[test]
     fn test_native_invalid_syntax() {
         // These should still parse - the string content is not validated by the parser
@@ -194,10 +248,14 @@ extern class PhpClass {
             r#"@:native("package .Class") class SpaceInPath {}"#,
             r#"@:native("package\n.Class") class NewlineInPath {}"#,
         ];
-        
+
         for input in invalid_cases {
             let result = parse_haxe_file("invalid.hx", input, false);
-            assert!(result.is_ok(), "Parser should accept any string content: {}", input);
+            assert!(
+                result.is_ok(),
+                "Parser should accept any string content: {}",
+                input
+            );
         }
     }
 }

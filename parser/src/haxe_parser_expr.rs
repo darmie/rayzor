@@ -4,19 +4,26 @@
 
 use nom::{
     branch::alt,
-    bytes::complete::{tag, escaped},
-    character::complete::{char, digit1, hex_digit1, oct_digit1, one_of, none_of},
-    combinator::{map, opt, value, recognize},
+    bytes::complete::{escaped, tag},
+    character::complete::{char, digit1, hex_digit1, none_of, oct_digit1, one_of},
+    combinator::{map, opt, recognize, value},
     multi::{many0, separated_list0},
-    sequence::{pair, preceded, delimited},
+    sequence::{delimited, pair, preceded},
     Parser,
 };
 
 use crate::haxe_ast::*;
-use crate::haxe_parser::{ws, symbol, keyword, identifier, PResult, position};
-use crate::custom_error::ContextualError;
-use crate::haxe_parser_expr2::{identifier_expr, this_expr, super_expr, null_expr, new_expr, cast_expr, untyped_expr, inline_expr, inline_preprocessor_expr, array_expr, object_expr, block_expr, if_expr, switch_expr, for_expr, while_expr, do_while_expr, macro_expr, reify_expr, compiler_specific_expr};
-use crate::haxe_parser_expr3::{try_expr, function_expr, return_expr, break_expr, continue_expr, throw_expr, var_expr, paren_expr, metadata_expr, arrow_params};
+use crate::haxe_parser::{identifier, keyword, position, symbol, ws, PResult};
+use crate::haxe_parser_expr2::{
+    array_expr, block_expr, cast_expr, compiler_specific_expr, do_while_expr, for_expr,
+    identifier_expr, if_expr, inline_expr, inline_preprocessor_expr, macro_expr, new_expr,
+    null_expr, object_expr, reify_expr, super_expr, switch_expr, this_expr, untyped_expr,
+    while_expr,
+};
+use crate::haxe_parser_expr3::{
+    arrow_params, break_expr, continue_expr, function_expr, metadata_expr, paren_expr, return_expr,
+    throw_expr, try_expr, var_expr,
+};
 
 /// Parse any expression
 pub fn expression<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
@@ -28,22 +35,25 @@ fn ternary_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     use nom::error::context;
     let start = position(full, input);
     let (input, cond) = assignment_expr(full, input)?;
-    
+
     // Check for ternary
     if let Ok((input, _)) = symbol("?")(input) {
         let (input, then_expr) = context("[E0050] expected expression after '?' in ternary operator | help: provide the expression to return when condition is true", |i| ternary_expr(full, i)).parse(input)?;
         let (input, _) = context("[E0051] expected ':' after then expression in ternary operator | help: ternary operator requires ':' to separate then and else branches", symbol(":")).parse(input)?;
         let (input, else_expr) = context("[E0052] expected expression after ':' in ternary operator | help: provide the expression to return when condition is false", |i| ternary_expr(full, i)).parse(input)?;
         let end = position(full, input);
-        
-        Ok((input, Expr {
-            kind: ExprKind::Ternary {
-                cond: Box::new(cond),
-                then_expr: Box::new(then_expr),
-                else_expr: Box::new(else_expr),
+
+        Ok((
+            input,
+            Expr {
+                kind: ExprKind::Ternary {
+                    cond: Box::new(cond),
+                    then_expr: Box::new(then_expr),
+                    else_expr: Box::new(else_expr),
+                },
+                span: Span::new(start, end),
             },
-            span: Span::new(start, end),
-        }))
+        ))
     } else {
         Ok((input, cond))
     }
@@ -52,38 +62,39 @@ fn ternary_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
 /// Parse assignment expression: `a = b`, `a += b`, etc.
 pub fn assignment_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let start = position(full, input);
-    
+
     // Try arrow function first (higher precedence than assignment)
     if let Ok((rest, params)) = arrow_params(input) {
         let (rest, _) = ws(rest)?; // Skip whitespace before arrow
         if let Ok((rest, _)) = symbol("->")(rest) {
             let (rest, _) = ws(rest)?; // Skip whitespace after arrow
-     
+
             // Try block expression first, then fall back to assignment expression
-            let (rest, body) = alt((
-                |i| block_expr(full, i),
-                |i| assignment_expr(full, i),
-            )).parse(rest)?;
-           
+            let (rest, body) =
+                alt((|i| block_expr(full, i), |i| assignment_expr(full, i))).parse(rest)?;
+
             let end = position(full, rest);
 
-            return Ok((rest, Expr {
-                kind: ExprKind::Arrow {
-                    params,
-                    expr: Box::new(body),
+            return Ok((
+                rest,
+                Expr {
+                    kind: ExprKind::Arrow {
+                        params,
+                        expr: Box::new(body),
+                    },
+                    span: Span::new(start, end),
                 },
-                span: Span::new(start, end),
-            }));
+            ));
         }
     }
-    
+
     let (input, left) = null_coalescing_expr(full, input)?;
-    
+
     // Check for assignment operators
     let assign_ops = [
         ("=", AssignOp::Assign),
         // Longer operators must come first to avoid partial matches
-        (">>>=", AssignOp::UshrAssign),  // Must come before >>=
+        (">>>=", AssignOp::UshrAssign), // Must come before >>=
         (">>=", AssignOp::ShrAssign),
         ("<<=", AssignOp::ShlAssign),
         ("+=", AssignOp::AddAssign),
@@ -95,7 +106,7 @@ pub fn assignment_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
         ("|=", AssignOp::OrAssign),
         ("^=", AssignOp::XorAssign),
     ];
-    
+
     // Try to parse assignment operator
     for (op_str, assign_op) in &assign_ops {
         if let Ok((rest, _)) = symbol(op_str).parse(input) {
@@ -105,18 +116,21 @@ pub fn assignment_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
             }
             let (rest, right) = assignment_expr(full, rest)?; // Right-associative
             let end = position(full, rest);
-            
-            return Ok((rest, Expr {
-                kind: ExprKind::Assign {
-                    left: Box::new(left),
-                    op: *assign_op,
-                    right: Box::new(right),
+
+            return Ok((
+                rest,
+                Expr {
+                    kind: ExprKind::Assign {
+                        left: Box::new(left),
+                        op: *assign_op,
+                        right: Box::new(right),
+                    },
+                    span: Span::new(start, end),
                 },
-                span: Span::new(start, end),
-            }));
+            ));
         }
     }
-    
+
     // No assignment, return the null coalescing expression
     Ok((input, left))
 }
@@ -153,10 +167,12 @@ fn bitwise_and_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
 
 /// Parse equality expression: `a == b`, `a != b`
 fn equality_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
-    binary_expr(full, input, relational_expr, &[
-        ("==", BinaryOp::Eq),
-        ("!=", BinaryOp::NotEq),
-    ])
+    binary_expr(
+        full,
+        input,
+        relational_expr,
+        &[("==", BinaryOp::Eq), ("!=", BinaryOp::NotEq)],
+    )
 }
 
 /// Parse relational expression: `a < b`, `a <= b`, etc.
@@ -164,12 +180,12 @@ fn relational_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     // First parse the left side
     let (input, mut left) = shift_expr(full, input)?;
     let mut current_input = input;
-    
+
     loop {
         // Skip whitespace
         let (input, _) = ws(current_input)?;
         current_input = input;
-        
+
         // Check for `is` operator
         if let Ok((rest, _)) = keyword("is")(current_input) {
             let (rest, right) = shift_expr(full, rest)?;
@@ -185,7 +201,7 @@ fn relational_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
             current_input = rest;
             continue;
         }
-        
+
         // Check for comparison operators
         // Note: Must check longer operators first and avoid matching when part of >>>, >>=, >>>=
         let op = if let Ok((rest, _)) = symbol("<=").parse(current_input) {
@@ -215,7 +231,7 @@ fn relational_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
         } else {
             None
         };
-        
+
         if let Some(op) = op {
             let (rest, right) = shift_expr(full, current_input)?;
             let span = left.span.merge(right.span);
@@ -232,17 +248,22 @@ fn relational_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
             break;
         }
     }
-    
+
     Ok((current_input, left))
 }
 
 /// Parse shift expression: `a << b`, `a >> b`, `a >>> b`
 fn shift_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
-    binary_expr(full, input, range_expr, &[
-        (">>>", BinaryOp::Ushr),
-        ("<<", BinaryOp::Shl),
-        (">>", BinaryOp::Shr),
-    ])
+    binary_expr(
+        full,
+        input,
+        range_expr,
+        &[
+            (">>>", BinaryOp::Ushr),
+            ("<<", BinaryOp::Shl),
+            (">>", BinaryOp::Shr),
+        ],
+    )
 }
 
 /// Parse range expression: `a...b`
@@ -252,19 +273,26 @@ fn range_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
 
 /// Parse additive expression: `a + b`, `a - b`
 fn additive_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
-    binary_expr(full, input, multiplicative_expr, &[
-        ("+", BinaryOp::Add),
-        ("-", BinaryOp::Sub),
-    ])
+    binary_expr(
+        full,
+        input,
+        multiplicative_expr,
+        &[("+", BinaryOp::Add), ("-", BinaryOp::Sub)],
+    )
 }
 
 /// Parse multiplicative expression: `a * b`, `a / b`, `a % b`
 fn multiplicative_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
-    binary_expr(full, input, unary_expr, &[
-        ("*", BinaryOp::Mul),
-        ("/", BinaryOp::Div),
-        ("%", BinaryOp::Mod),
-    ])
+    binary_expr(
+        full,
+        input,
+        unary_expr,
+        &[
+            ("*", BinaryOp::Mul),
+            ("/", BinaryOp::Div),
+            ("%", BinaryOp::Mod),
+        ],
+    )
 }
 
 /// Generic binary expression parser
@@ -276,17 +304,15 @@ fn binary_expr<'a>(
 ) -> PResult<'a, Expr> {
     let start = position(full, input);
     let (input, mut left) = sub_expr(full, input)?;
-    
-    let (input, rest) = many0(pair(
-        ws_before_one_of_ops(ops),
-        |i| sub_expr(full, i)
-    )).parse(input)?;
-    
+
+    let (input, rest) =
+        many0(pair(ws_before_one_of_ops(ops), |i| sub_expr(full, i))).parse(input)?;
+
     // Build left-associative tree
     for (op_str, right) in rest {
         let op = ops.iter().find(|(s, _)| *s == op_str).unwrap().1;
         let end = position(full, input);
-        
+
         left = Expr {
             kind: ExprKind::Binary {
                 left: Box::new(left),
@@ -296,12 +322,14 @@ fn binary_expr<'a>(
             span: Span::new(start, end),
         };
     }
-    
+
     Ok((input, left))
 }
 
 /// Parse operator from a list
-fn ws_before_one_of_ops<'a>(ops: &'a [(&'a str, BinaryOp)]) -> impl FnMut(&'a str) -> PResult<'a, &'a str> + 'a {
+fn ws_before_one_of_ops<'a>(
+    ops: &'a [(&'a str, BinaryOp)],
+) -> impl FnMut(&'a str) -> PResult<'a, &'a str> + 'a {
     move |input| {
         let (input, _) = ws.parse(input)?;
         for (op_str, _) in ops {
@@ -314,59 +342,63 @@ fn ws_before_one_of_ops<'a>(ops: &'a [(&'a str, BinaryOp)]) -> impl FnMut(&'a st
                 return Ok((rest, *op_str));
             }
         }
-        Err(nom::Err::Error(crate::custom_error::ContextualError::new(input, nom::error::ErrorKind::Tag)))
+        Err(nom::Err::Error(crate::custom_error::ContextualError::new(
+            input,
+            nom::error::ErrorKind::Tag,
+        )))
     }
 }
 
 /// Parse unary expression
 pub fn unary_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
-    alt((
-        |i| prefix_unary_expr(full, i),
-        |i| postfix_expr(full, i),
-    )).parse(input)
+    alt((|i| prefix_unary_expr(full, i), |i| postfix_expr(full, i))).parse(input)
 }
 
 /// Parse prefix unary expression
 fn prefix_unary_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let start = position(full, input);
-    
+
     let (input, op) = alt((
         value(UnaryOp::Not, symbol("!")),
         value(UnaryOp::Neg, symbol("-")),
         value(UnaryOp::BitNot, symbol("~")),
         value(UnaryOp::PreIncr, symbol("++")),
         value(UnaryOp::PreDecr, symbol("--")),
-    )).parse(input)?;
-    
+    ))
+    .parse(input)?;
+
     let (input, expr) = unary_expr(full, input)?;
     let end = position(full, input);
-    
-    Ok((input, Expr {
-        kind: ExprKind::Unary {
-            op,
-            expr: Box::new(expr),
+
+    Ok((
+        input,
+        Expr {
+            kind: ExprKind::Unary {
+                op,
+                expr: Box::new(expr),
+            },
+            span: Span::new(start, end),
         },
-        span: Span::new(start, end),
-    }))
+    ))
 }
 
 /// Parse postfix expression
 pub fn postfix_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let start = position(full, input);
     let (input, mut expr) = primary_expr(full, input)?;
-    
+
     // Parse postfix operations
     let mut input = input;
     let mut loop_counter = 0;
     const MAX_POSTFIX_ITERATIONS: usize = 100; // Safety limit
-    
+
     loop {
         loop_counter += 1;
         if loop_counter > MAX_POSTFIX_ITERATIONS {
             // Emergency brake - break the loop if we're stuck
             break;
         }
-        
+
         let input_before = input;
         // Try each postfix operation
         // Check for field access but ensure we don't consume ... operator
@@ -417,7 +449,9 @@ pub fn postfix_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
         } else if let Ok((rest, op)) = alt((
             value(UnaryOp::PostIncr, symbol("++")),
             value(UnaryOp::PostDecr, symbol("--")),
-        )).parse(input) {
+        ))
+        .parse(input)
+        {
             // Postfix increment/decrement
             let end = position(full, rest);
             expr = Expr {
@@ -432,57 +466,67 @@ pub fn postfix_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
             // No more postfix operations
             break;
         }
-        
+
         // Safety check: ensure we consumed some input to prevent infinite loops
         if input == input_before {
             // If we didn't advance the input, break to prevent infinite loop
             break;
         }
     }
-    
+
     Ok((input, expr))
 }
 
 /// Parse primary expression
 fn primary_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     alt((
-        |i| alt((
-            |i| literal_expr(full, i),
-            |i| macro_expr(full, i),
-            |i| reify_expr(full, i),
-            |i| compiler_specific_expr(full, i),
-            |i| identifier_expr(full, i),
-            |i| this_expr(full, i),
-            |i| super_expr(full, i),
-            |i| null_expr(full, i),
-            |i| new_expr(full, i),
-            |i| cast_expr(full, i),
-            |i| untyped_expr(full, i),
-            |i| inline_expr(full, i),
-            |i| inline_preprocessor_expr(full, i),
-            |i| array_expr(full, i),
-        )).parse(i),
-        |i| alt((
-            |i| object_expr(full, i),
-            |i| block_expr(full, i),
-            |i| if_expr(full, i),
-            |i| switch_expr(full, i),
-            |i| for_expr(full, i),
-            |i| while_expr(full, i),
-            |i| do_while_expr(full, i),
-            |i| try_expr(full, i),
-        )).parse(i),
-        |i| alt((
-            |i| metadata_expr(full, i),
-            |i| function_expr(full, i),
-            |i| return_expr(full, i),
-            |i| break_expr(full, i),
-            |i| continue_expr(full, i),
-            |i| throw_expr(full, i),
-            |i| var_expr(full, i),
-            |i| paren_expr(full, i),
-        )).parse(i),
-    )).parse(input)
+        |i| {
+            alt((
+                |i| literal_expr(full, i),
+                |i| macro_expr(full, i),
+                |i| reify_expr(full, i),
+                |i| compiler_specific_expr(full, i),
+                |i| identifier_expr(full, i),
+                |i| this_expr(full, i),
+                |i| super_expr(full, i),
+                |i| null_expr(full, i),
+                |i| new_expr(full, i),
+                |i| cast_expr(full, i),
+                |i| untyped_expr(full, i),
+                |i| inline_expr(full, i),
+                |i| inline_preprocessor_expr(full, i),
+                |i| array_expr(full, i),
+            ))
+            .parse(i)
+        },
+        |i| {
+            alt((
+                |i| object_expr(full, i),
+                |i| block_expr(full, i),
+                |i| if_expr(full, i),
+                |i| switch_expr(full, i),
+                |i| for_expr(full, i),
+                |i| while_expr(full, i),
+                |i| do_while_expr(full, i),
+                |i| try_expr(full, i),
+            ))
+            .parse(i)
+        },
+        |i| {
+            alt((
+                |i| metadata_expr(full, i),
+                |i| function_expr(full, i),
+                |i| return_expr(full, i),
+                |i| break_expr(full, i),
+                |i| continue_expr(full, i),
+                |i| throw_expr(full, i),
+                |i| var_expr(full, i),
+                |i| paren_expr(full, i),
+            ))
+            .parse(i)
+        },
+    ))
+    .parse(input)
 }
 
 // Literal expressions
@@ -494,71 +538,74 @@ pub fn literal_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
         |i| string_literal(full, i),
         |i| bool_literal(full, i),
         |i| regex_literal(full, i),
-    )).parse(input)
+    ))
+    .parse(input)
 }
 
 fn int_literal<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let start = position(full, input);
     let (input, _) = ws(input)?;
-    
+
     let (input, value) = alt((
         // Hex literal
-        map(
-            preceded(tag("0x"), hex_digit1),
-            |s: &str| i64::from_str_radix(s, 16).unwrap_or(0)
-        ),
+        map(preceded(tag("0x"), hex_digit1), |s: &str| {
+            i64::from_str_radix(s, 16).unwrap_or(0)
+        }),
         // Octal literal
-        map(
-            preceded(tag("0"), oct_digit1),
-            |s: &str| i64::from_str_radix(s, 8).unwrap_or(0)
-        ),
+        map(preceded(tag("0"), oct_digit1), |s: &str| {
+            i64::from_str_radix(s, 8).unwrap_or(0)
+        }),
         // Decimal literal
         map(digit1, |s: &str| s.parse().unwrap_or(0)),
-    )).parse(input)?;
-    
+    ))
+    .parse(input)?;
+
     let end = position(full, input);
-    
-    Ok((input, Expr {
-        kind: ExprKind::Int(value),
-        span: Span::new(start, end),
-    }))
+
+    Ok((
+        input,
+        Expr {
+            kind: ExprKind::Int(value),
+            span: Span::new(start, end),
+        },
+    ))
 }
 
 fn float_literal<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let start = position(full, input);
     let (input, _) = ws(input)?;
-    
+
     let (input, value) = map(
         recognize((
             digit1,
             char('.'),
             digit1,
-            opt((
-                one_of("eE"),
-                opt(one_of("+-")),
-                digit1
-            ))
+            opt((one_of("eE"), opt(one_of("+-")), digit1)),
         )),
         |s: &str| {
             s.parse::<f64>().unwrap_or_else(|_| {
                 eprintln!("Failed to parse float: '{}'", s);
                 0.0
             })
-        }
-    ).parse(input)?;
-    
+        },
+    )
+    .parse(input)?;
+
     let end = position(full, input);
-    
-    Ok((input, Expr {
-        kind: ExprKind::Float(value),
-        span: Span::new(start, end),
-    }))
+
+    Ok((
+        input,
+        Expr {
+            kind: ExprKind::Float(value),
+            span: Span::new(start, end),
+        },
+    ))
 }
 
 fn string_literal<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
-    let start = position(full, input);
+    let _start = position(full, input);
     let (input, _) = ws(input)?;
-    
+
     alt((
         // Single-quoted string with interpolation
         |i| interpolated_string(full, i, '\''),
@@ -568,7 +615,11 @@ fn string_literal<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
         |i| {
             let (i, s) = simple_string(full, i, '\'')?;
             // Check if it contains $ for interpolation
-            if let Expr { kind: ExprKind::String(ref str_val), .. } = s {
+            if let Expr {
+                kind: ExprKind::String(ref str_val),
+                ..
+            } = s
+            {
                 if str_val.contains('$') {
                     // Re-parse as interpolated
                     interpolated_string(full, input, '\'')
@@ -578,47 +629,55 @@ fn string_literal<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
             } else {
                 Ok((i, s))
             }
-        }
-    )).parse(input)
+        },
+    ))
+    .parse(input)
 }
 
 fn simple_string<'a>(full: &'a str, input: &'a str, quote: char) -> PResult<'a, Expr> {
     let start = position(full, input);
     let (input, _) = char(quote).parse(input)?;
-    
+
     // Check if this is an empty string (next char is the closing quote)
     if input.starts_with(quote) {
         let (input, _) = char(quote).parse(input)?;
         let end = position(full, input);
-        return Ok((input, Expr {
-            kind: ExprKind::String(String::new()),
-            span: Span::new(start, end),
-        }));
+        return Ok((
+            input,
+            Expr {
+                kind: ExprKind::String(String::new()),
+                span: Span::new(start, end),
+            },
+        ));
     }
-    
+
     // Non-empty string
     let (input, content) = escaped(
         none_of(&format!("\\{}", quote)[..]),
         '\\',
-        one_of(&format!("\\{}nrtbfv", quote)[..])
-    ).parse(input)?;
+        one_of(&format!("\\{}nrtbfv", quote)[..]),
+    )
+    .parse(input)?;
     let (input, _) = char(quote).parse(input)?;
     let end = position(full, input);
-    
-    Ok((input, Expr {
-        kind: ExprKind::String(content.to_string()),
-        span: Span::new(start, end),
-    }))
+
+    Ok((
+        input,
+        Expr {
+            kind: ExprKind::String(content.to_string()),
+            span: Span::new(start, end),
+        },
+    ))
 }
 
 fn interpolated_string<'a>(full: &'a str, input: &'a str, quote: char) -> PResult<'a, Expr> {
     let start = position(full, input);
     let (input, _) = char(quote).parse(input)?;
-    
+
     let mut parts = Vec::new();
     let mut current = String::new();
     let mut remaining = input;
-    
+
     while !remaining.starts_with(quote) {
         if remaining.starts_with("$$") {
             // Escaped dollar
@@ -630,13 +689,10 @@ fn interpolated_string<'a>(full: &'a str, input: &'a str, quote: char) -> PResul
                 parts.push(StringPart::Literal(current.clone()));
                 current.clear();
             }
-            
-            let (rest, expr) = delimited(
-                tag("${"),
-                |i| expression(full, i),
-                char('}')
-            ).parse(remaining)?;
-            
+
+            let (rest, expr) =
+                delimited(tag("${"), |i| expression(full, i), char('}')).parse(remaining)?;
+
             parts.push(StringPart::Interpolation(expr));
             remaining = rest;
         } else if remaining.starts_with('$') && remaining.len() > 1 {
@@ -645,7 +701,7 @@ fn interpolated_string<'a>(full: &'a str, input: &'a str, quote: char) -> PResul
                 parts.push(StringPart::Literal(current.clone()));
                 current.clear();
             }
-            
+
             let (rest, id) = preceded(char('$'), identifier).parse(remaining)?;
             parts.push(StringPart::Interpolation(Expr {
                 kind: ExprKind::Ident(id),
@@ -662,7 +718,7 @@ fn interpolated_string<'a>(full: &'a str, input: &'a str, quote: char) -> PResul
                 let mut char_indices = remaining.char_indices();
                 char_indices.next(); // Position 0: backslash
                 char_indices.next(); // Position 1: escaped char
-                // Now get position after the escaped char
+                                     // Now get position after the escaped char
                 if let Some((next_idx, _)) = char_indices.next() {
                     remaining = &remaining[next_idx..];
                 } else {
@@ -688,60 +744,64 @@ fn interpolated_string<'a>(full: &'a str, input: &'a str, quote: char) -> PResul
             }
         }
     }
-    
+
     if !current.is_empty() {
         parts.push(StringPart::Literal(current));
     }
-    
+
     let (input, _) = char(quote)(remaining)?;
     let end = position(full, input);
-    
-    Ok((input, Expr {
-        kind: if parts.len() == 1 && matches!(parts[0], StringPart::Literal(_)) {
-            // Simple string
-            if let StringPart::Literal(s) = &parts[0] {
-                ExprKind::String(s.clone())
+
+    Ok((
+        input,
+        Expr {
+            kind: if parts.len() == 1 && matches!(parts[0], StringPart::Literal(_)) {
+                // Simple string
+                if let StringPart::Literal(s) = &parts[0] {
+                    ExprKind::String(s.clone())
+                } else {
+                    unreachable!()
+                }
             } else {
-                unreachable!()
-            }
-        } else {
-            // Interpolated string
-            ExprKind::StringInterpolation(parts)
+                // Interpolated string
+                ExprKind::StringInterpolation(parts)
+            },
+            span: Span::new(start, end),
         },
-        span: Span::new(start, end),
-    }))
+    ))
 }
 
 fn bool_literal<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let start = position(full, input);
-    
-    let (input, value) = alt((
-        value(true, keyword("true")),
-        value(false, keyword("false")),
-    )).parse(input)?;
-    
+
+    let (input, value) =
+        alt((value(true, keyword("true")), value(false, keyword("false")))).parse(input)?;
+
     let end = position(full, input);
-    
-    Ok((input, Expr {
-        kind: ExprKind::Bool(value),
-        span: Span::new(start, end),
-    }))
+
+    Ok((
+        input,
+        Expr {
+            kind: ExprKind::Bool(value),
+            span: Span::new(start, end),
+        },
+    ))
 }
 
 fn regex_literal<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let start = position(full, input);
     let (input, _) = ws(input)?;
-    
+
     // Parse ~/pattern/flags
     let (input, _) = tag("~/")(input)?;
-    
+
     // Parse the pattern - anything until we hit an unescaped /
     let mut pattern = String::new();
-    let mut chars = input.char_indices();
+    let chars = input.char_indices();
     let mut escaped = false;
-    let mut end_idx = input.len();  // Default to end if no closing / found
-    
-    while let Some((idx, ch)) = chars.next() {
+    let mut end_idx = input.len(); // Default to end if no closing / found
+
+    for (idx, ch) in chars {
         if escaped {
             pattern.push('\\');
             pattern.push(ch);
@@ -755,25 +815,28 @@ fn regex_literal<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
             pattern.push(ch);
         }
     }
-    
+
     // Get the substring after the pattern
     let pattern_end_input = &input[end_idx..];
-    
+
     // Expect the closing /
     let (after_slash, _) = char('/')(pattern_end_input)?;
-    
+
     // Parse optional flags (igmsux)
     let (remaining, flags) = recognize(many0(one_of("igmsux"))).parse(after_slash)?;
-    
+
     let end = position(full, remaining);
-    
-    Ok((remaining, Expr {
-        kind: ExprKind::Regex {
-            pattern,
-            flags: flags.to_string(),
+
+    Ok((
+        remaining,
+        Expr {
+            kind: ExprKind::Regex {
+                pattern,
+                flags: flags.to_string(),
+            },
+            span: Span::new(start, end),
         },
-        span: Span::new(start, end),
-    }))
+    ))
 }
 
 // Continue with other expression parsers...

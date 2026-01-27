@@ -8,20 +8,23 @@ abstract A<T>(T) {
     public function new();
 }
 "#;
-    
+
     println!("Parsing: {}", input);
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(ast) => {
             println!("Success: {:?}", ast);
-            
+
             // Check if the abstract has @:multiType metadata
-            if let Some(decl) = ast.declarations.first() {
-                if let parser::haxe_ast::TypeDeclaration::Abstract(abstract_decl) = decl {
-                    let has_multitype = abstract_decl.meta.iter().any(|meta| meta.name == "multiType");
-                    println!("Has @:multiType metadata: {}", has_multitype);
-                    assert!(has_multitype, "Should have @:multiType metadata");
-                }
+            if let Some(parser::haxe_ast::TypeDeclaration::Abstract(abstract_decl)) =
+                ast.declarations.first()
+            {
+                let has_multitype = abstract_decl
+                    .meta
+                    .iter()
+                    .any(|meta| meta.name == "multiType");
+                println!("Has @:multiType metadata: {}", has_multitype);
+                assert!(has_multitype, "Should have @:multiType metadata");
             }
         }
         Err(e) => {
@@ -43,25 +46,27 @@ abstract MyMap<K, V>(Map<K, V>) {
     }
 }
 "#;
-    
+
     println!("Parsing: {}", input);
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(ast) => {
             println!("Success: {:?}", ast);
-            
+
             // Check if the abstract has @:multiType metadata with parameter
-            if let Some(decl) = ast.declarations.first() {
-                if let parser::haxe_ast::TypeDeclaration::Abstract(abstract_decl) = decl {
-                    let multitype_meta = abstract_decl.meta.iter()
-                        .find(|meta| meta.name == "multiType");
-                    
-                    assert!(multitype_meta.is_some(), "Should have @:multiType metadata");
-                    let multitype_meta = multitype_meta.unwrap();
-                    
-                    println!("@:multiType params: {:?}", multitype_meta.params);
-                    assert!(!multitype_meta.params.is_empty(), "Should have parameter K");
-                }
+            if let Some(parser::haxe_ast::TypeDeclaration::Abstract(abstract_decl)) =
+                ast.declarations.first()
+            {
+                let multitype_meta = abstract_decl
+                    .meta
+                    .iter()
+                    .find(|meta| meta.name == "multiType");
+
+                assert!(multitype_meta.is_some(), "Should have @:multiType metadata");
+                let multitype_meta = multitype_meta.unwrap();
+
+                println!("@:multiType params: {:?}", multitype_meta.params);
+                assert!(!multitype_meta.params.is_empty(), "Should have parameter K");
             }
         }
         Err(e) => {
@@ -89,33 +94,37 @@ abstract A<T>(IA<T>) {
     }
 }
 "#;
-    
+
     println!("Parsing: {}", input);
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(ast) => {
             println!("Success: parsed {} declarations", ast.declarations.len());
-            
+
             // Find the abstract declaration
-            let abstract_decl = ast.declarations.iter()
-                .find_map(|decl| {
-                    if let parser::haxe_ast::TypeDeclaration::Abstract(abstract_decl) = decl {
-                        Some(abstract_decl)
-                    } else {
-                        None
-                    }
-                });
-            
+            let abstract_decl = ast.declarations.iter().find_map(|decl| {
+                if let parser::haxe_ast::TypeDeclaration::Abstract(abstract_decl) = decl {
+                    Some(abstract_decl)
+                } else {
+                    None
+                }
+            });
+
             if let Some(abstract_decl) = abstract_decl {
-                let has_multitype = abstract_decl.meta.iter()
+                let has_multitype = abstract_decl
+                    .meta
+                    .iter()
                     .any(|meta| meta.name == "multiType");
-                
+
                 println!("Has @:multiType metadata: {}", has_multitype);
                 assert!(has_multitype, "Should have @:multiType metadata");
-                
+
                 // Check that it has the expected fields
                 println!("Fields count: {}", abstract_decl.fields.len());
-                assert!(abstract_decl.fields.len() >= 2, "Should have at least 2 fields (new, @:to function)");
+                assert!(
+                    abstract_decl.fields.len() >= 2,
+                    "Should have at least 2 fields (new, @:to function)"
+                );
             } else {
                 panic!("Should have found abstract declaration");
             }

@@ -10,14 +10,14 @@ class TestClass {
     }
 }
 "#;
-    
+
     println!("Testing enhanced error reporting for missing semicolon");
     match parse_haxe_file("test.hx", input, false) {
         Ok(_) => panic!("Expected parse error but got success"),
         Err(e) => {
             println!("Enhanced error message:");
             println!("{}", e);
-            
+
             // Check that the error message is helpful
             assert!(e.contains("semicolon") || e.contains("';'"));
             assert!(e.contains("line") || e.contains("column"));
@@ -35,14 +35,14 @@ class TestClass {
     // Missing closing brace
 }
 "#;
-    
+
     println!("Testing enhanced error reporting for missing brace");
     match parse_haxe_file("test.hx", input, false) {
         Ok(_) => panic!("Expected parse error but got success"),
         Err(e) => {
             println!("Enhanced error message:");
             println!("{}", e);
-            
+
             // Check that the error message is helpful
             assert!(e.contains("brace") || e.contains("'}'"));
         }
@@ -62,14 +62,14 @@ class TestClass {
     invalid_keyword here;
 }
 "#;
-    
+
     println!("Testing enhanced error reporting for unexpected token");
     match parse_haxe_file("test.hx", input, false) {
         Ok(_) => panic!("Expected parse error but got success"),
         Err(e) => {
             println!("Enhanced error message:");
             println!("{}", e);
-            
+
             // Check that the error message provides context
             assert!(e.len() > 50); // Should be a detailed error message
         }
@@ -83,14 +83,14 @@ class TestClass {
     public function test() {
         var x = 42;
 "#;
-    
+
     println!("Testing enhanced error reporting for unexpected EOF");
     match parse_haxe_file("test.hx", input, false) {
         Ok(_) => panic!("Expected parse error but got success"),
         Err(e) => {
             println!("Enhanced error message:");
             println!("{}", e);
-            
+
             // Check that the error message mentions EOF or end of input
             assert!(e.contains("end of input") || e.contains("EOF") || e.contains("expected"));
         }

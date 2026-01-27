@@ -16,15 +16,15 @@
 //! - Uses SymbolFlags::GENERIC to identify monomorphizable types
 //! - Rewrites CallDirect instructions that target generic functions
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
 
-use super::{
-    IrFunction, IrFunctionId, IrType, IrInstruction, IrTerminator,
-    IrControlFlowGraph, IrBasicBlock, IrBlockId,
-};
 use super::functions::{IrFunctionSignature, IrParameter};
 use super::modules::IrModule;
+use super::{
+    IrBasicBlock, IrBlockId, IrControlFlowGraph, IrFunction, IrFunctionId, IrInstruction,
+    IrTerminator, IrType,
+};
 
 /// Key for caching monomorphized function instances
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -37,7 +37,10 @@ pub struct MonoKey {
 
 impl MonoKey {
     pub fn new(generic_func: IrFunctionId, type_args: Vec<IrType>) -> Self {
-        Self { generic_func, type_args }
+        Self {
+            generic_func,
+            type_args,
+        }
     }
 
     /// Generate a mangled name for this instantiation
@@ -46,7 +49,9 @@ impl MonoKey {
             return base_name.to_string();
         }
 
-        let type_suffix: Vec<String> = self.type_args.iter()
+        let type_suffix: Vec<String> = self
+            .type_args
+            .iter()
             .map(|ty| Self::mangle_type(ty))
             .collect();
 
@@ -144,7 +149,9 @@ impl Monomorphizer {
     /// 3. Generate specialized versions and rewrite call sites
     pub fn monomorphize_module(&mut self, module: &mut IrModule) {
         // Phase 1: Identify generic functions
-        let generic_funcs: Vec<IrFunctionId> = module.functions.iter()
+        let generic_funcs: Vec<IrFunctionId> = module
+            .functions
+            .iter()
             .filter(|(_, func)| !func.signature.type_params.is_empty())
             .map(|(id, _)| *id)
             .collect();
@@ -187,7 +194,9 @@ impl Monomorphizer {
         for (func_id, function) in &module.functions {
             for (block_id, block) in &function.cfg.blocks {
                 for (inst_idx, inst) in block.instructions.iter().enumerate() {
-                    if let Some((target_func, type_args)) = self.extract_generic_call(inst, generic_funcs, function) {
+                    if let Some((target_func, type_args)) =
+                        self.extract_generic_call(inst, generic_funcs, function)
+                    {
                         let key = MonoKey::new(target_func, type_args);
                         let location = CallSiteLocation {
                             function_id: *func_id,
@@ -211,7 +220,9 @@ impl Monomorphizer {
         _context_func: &IrFunction,
     ) -> Option<(IrFunctionId, Vec<IrType>)> {
         match inst {
-            IrInstruction::CallDirect { func_id, type_args, .. } => {
+            IrInstruction::CallDirect {
+                func_id, type_args, ..
+            } => {
                 if generic_funcs.contains(func_id) && !type_args.is_empty() {
                     Some((*func_id, type_args.clone()))
                 } else {
@@ -239,7 +250,8 @@ impl Monomorphizer {
         // Build substitution map: type_param_name -> concrete_type
         self.substitution_map.clear();
         for (param, arg) in generic_func.signature.type_params.iter().zip(type_args) {
-            self.substitution_map.insert(param.name.clone(), arg.clone());
+            self.substitution_map
+                .insert(param.name.clone(), arg.clone());
         }
 
         // Clone and specialize the function
@@ -274,7 +286,9 @@ impl Monomorphizer {
         // Cache the result
         self.instances.insert(key.clone(), new_id);
         self.stats.instantiations_created += 1;
-        self.stats.monomorphized_types.push(specialized.name.clone());
+        self.stats
+            .monomorphized_types
+            .push(specialized.name.clone());
 
         specialized
     }
@@ -282,7 +296,9 @@ impl Monomorphizer {
     /// Substitute types in a function signature
     fn substitute_signature(&self, sig: &IrFunctionSignature) -> IrFunctionSignature {
         IrFunctionSignature {
-            parameters: sig.parameters.iter()
+            parameters: sig
+                .parameters
+                .iter()
                 .map(|p| IrParameter {
                     name: p.name.clone(),
                     ty: self.substitute_type(&p.ty),
@@ -301,23 +317,28 @@ impl Monomorphizer {
     /// Recursively substitute type variables with concrete types
     fn substitute_type(&self, ty: &IrType) -> IrType {
         match ty {
-            IrType::TypeVar(name) => {
-                self.substitution_map.get(name)
-                    .cloned()
-                    .unwrap_or_else(|| ty.clone())
-            }
+            IrType::TypeVar(name) => self
+                .substitution_map
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| ty.clone()),
             IrType::Ptr(inner) => IrType::Ptr(Box::new(self.substitute_type(inner))),
             IrType::Ref(inner) => IrType::Ref(Box::new(self.substitute_type(inner))),
             IrType::Array(elem, size) => IrType::Array(Box::new(self.substitute_type(elem)), *size),
             IrType::Slice(elem) => IrType::Slice(Box::new(self.substitute_type(elem))),
-            IrType::Function { params, return_type, varargs } => IrType::Function {
+            IrType::Function {
+                params,
+                return_type,
+                varargs,
+            } => IrType::Function {
                 params: params.iter().map(|p| self.substitute_type(p)).collect(),
                 return_type: Box::new(self.substitute_type(return_type)),
                 varargs: *varargs,
             },
             IrType::Struct { name, fields } => IrType::Struct {
                 name: name.clone(),
-                fields: fields.iter()
+                fields: fields
+                    .iter()
                     .map(|f| super::types::StructField {
                         name: f.name.clone(),
                         ty: self.substitute_type(&f.ty),
@@ -327,7 +348,8 @@ impl Monomorphizer {
             },
             IrType::Union { name, variants } => IrType::Union {
                 name: name.clone(),
-                variants: variants.iter()
+                variants: variants
+                    .iter()
                     .map(|v| super::types::UnionVariant {
                         name: v.name.clone(),
                         tag: v.tag,
@@ -337,9 +359,8 @@ impl Monomorphizer {
             },
             IrType::Generic { base, type_args } => {
                 let new_base = self.substitute_type(base);
-                let new_args: Vec<IrType> = type_args.iter()
-                    .map(|a| self.substitute_type(a))
-                    .collect();
+                let new_args: Vec<IrType> =
+                    type_args.iter().map(|a| self.substitute_type(a)).collect();
 
                 // If all type args are now concrete, we could potentially
                 // resolve this to a concrete type, but for now keep as Generic
@@ -411,7 +432,10 @@ impl Monomorphizer {
                     if let Some(func) = module.functions.get_mut(&loc.function_id) {
                         if let Some(block) = func.cfg.blocks.get_mut(&loc.block_id) {
                             if let Some(inst) = block.instructions.get_mut(loc.instruction_index) {
-                                if let IrInstruction::CallDirect { func_id, type_args, .. } = inst {
+                                if let IrInstruction::CallDirect {
+                                    func_id, type_args, ..
+                                } = inst
+                                {
                                     *func_id = specialized_id;
                                     type_args.clear(); // No longer generic
                                     self.stats.call_sites_rewritten += 1;
@@ -445,19 +469,13 @@ mod tests {
 
     #[test]
     fn test_mono_key_mangling() {
-        let key = MonoKey::new(
-            IrFunctionId(1),
-            vec![IrType::I32, IrType::String],
-        );
+        let key = MonoKey::new(IrFunctionId(1), vec![IrType::I32, IrType::String]);
         assert_eq!(key.mangled_name("Container"), "Container__i32_String");
     }
 
     #[test]
     fn test_mono_key_nested_types() {
-        let key = MonoKey::new(
-            IrFunctionId(1),
-            vec![IrType::Ptr(Box::new(IrType::I32))],
-        );
+        let key = MonoKey::new(IrFunctionId(1), vec![IrType::Ptr(Box::new(IrType::I32))]);
         assert_eq!(key.mangled_name("Process"), "Process__Ptri32");
     }
 
@@ -474,7 +492,8 @@ mod tests {
     #[test]
     fn test_nested_type_substitution() {
         let mut mono = Monomorphizer::new();
-        mono.substitution_map.insert("T".to_string(), IrType::String);
+        mono.substitution_map
+            .insert("T".to_string(), IrType::String);
 
         let original = IrType::Ptr(Box::new(IrType::TypeVar("T".to_string())));
         let substituted = mono.substitute_type(&original);

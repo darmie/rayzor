@@ -73,7 +73,8 @@ impl PluginRegistry {
 
     /// Get a specific plugin by name
     pub fn get_plugin(&self, name: &str) -> Option<&dyn RuntimePlugin> {
-        self.plugins.iter()
+        self.plugins
+            .iter()
             .find(|p| p.name() == name)
             .map(|p| &**p as &dyn RuntimePlugin)
     }

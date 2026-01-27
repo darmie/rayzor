@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test multi-file compilation with proper dependency resolution
 //!
 //! This test demonstrates:
@@ -6,7 +36,7 @@
 //! 3. Proper dependency ordering
 //! 4. Package visibility checking
 
-use compiler::compilation::{CompilationUnit, CompilationConfig};
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 
 fn main() {
     println!("=== Testing Multi-File Compilation ===\n");
@@ -113,7 +143,9 @@ fn main() {
             // Verify symbols
             println!("6. Verifying symbols and packages...");
 
-            let model_symbols = unit.symbol_table.all_symbols()
+            let model_symbols = unit
+                .symbol_table
+                .all_symbols()
                 .filter(|s| {
                     if let Some(qname) = s.qualified_name {
                         let name = unit.string_interner.get(qname).unwrap_or("");
@@ -124,7 +156,9 @@ fn main() {
                 })
                 .count();
 
-            let service_symbols = unit.symbol_table.all_symbols()
+            let service_symbols = unit
+                .symbol_table
+                .all_symbols()
                 .filter(|s| {
                     if let Some(qname) = s.qualified_name {
                         let name = unit.string_interner.get(qname).unwrap_or("");
@@ -135,13 +169,15 @@ fn main() {
                 })
                 .count();
 
-            let main_symbols = unit.symbol_table.all_symbols()
+            let main_symbols = unit
+                .symbol_table
+                .all_symbols()
                 .filter(|s| {
                     if let Some(qname) = s.qualified_name {
                         let name = unit.string_interner.get(qname).unwrap_or("");
-                        name.starts_with("com.example.") &&
-                        !name.starts_with("com.example.model.") &&
-                        !name.starts_with("com.example.service.")
+                        name.starts_with("com.example.")
+                            && !name.starts_with("com.example.model.")
+                            && !name.starts_with("com.example.service.")
                     } else {
                         false
                     }
@@ -159,12 +195,14 @@ fn main() {
                 println!("   - Dependency resolution functional");
             } else {
                 println!("\n⚠️  Some packages may not have resolved correctly:");
-                println!("   Model: {}, Service: {}, Main: {}",
-                         model_symbols, service_symbols, main_symbols);
+                println!(
+                    "   Model: {}, Service: {}, Main: {}",
+                    model_symbols, service_symbols, main_symbols
+                );
             }
         }
         Err(e) => {
-            eprintln!("   ✗ TAST lowering failed: {}", e);
+            eprintln!("   ✗ TAST lowering failed: {:?}", e);
             eprintln!("\nThis indicates an issue with:");
             eprintln!("   - Import resolution");
             eprintln!("   - Cross-file type resolution");

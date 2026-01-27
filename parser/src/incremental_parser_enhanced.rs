@@ -14,14 +14,6 @@ use diagnostics::{
     Diagnostic, DiagnosticBuilder, Diagnostics, ErrorFormatter, FileId, SourceMap, SourcePosition,
     SourceSpan,
 };
-use nom::{
-    branch::alt,
-    bytes::complete::tag,
-    combinator::{opt, peek},
-    multi::many0,
-    sequence::preceded,
-    IResult, Parser,
-};
 
 /// Result of incremental parsing
 #[derive(Debug)]
@@ -130,6 +122,7 @@ fn extract_context_diagnostic(
 }
 
 /// Create a span for an error at the current position
+#[allow(dead_code)]
 fn create_error_span(
     full_input: &str,
     remaining: &str,
@@ -142,6 +135,7 @@ fn create_error_span(
 }
 
 /// Analyze syntax error and create appropriate diagnostic
+#[allow(dead_code)]
 fn create_syntax_diagnostic(
     full_input: &str,
     remaining: &str,
@@ -184,10 +178,10 @@ fn create_syntax_diagnostic(
         }
         "using" => {
             if !trimmed.contains('.')
-                && !trimmed
+                && trimmed
                     .split_whitespace()
                     .nth(1)
-                    .map_or(false, |s| s.chars().next().unwrap_or(' ').is_uppercase())
+                    .is_none_or(|s| !s.chars().next().unwrap_or(' ').is_uppercase())
             {
                 DiagnosticBuilder::error("missing package path in using statement", span.clone())
                     .code("E0032")
@@ -314,6 +308,7 @@ fn create_syntax_diagnostic(
 }
 
 /// Create diagnostic for class-specific syntax errors
+#[allow(dead_code)]
 fn create_class_diagnostic(full_input: &str, remaining: &str, file_id: FileId) -> Diagnostic {
     let trimmed = remaining.trim();
     let span = create_error_span(full_input, remaining, 5, file_id); // "class" length
@@ -405,6 +400,7 @@ fn create_class_diagnostic(full_input: &str, remaining: &str, file_id: FileId) -
 }
 
 /// Find if a statement ends with semicolon
+#[allow(dead_code)]
 fn find_statement_end(input: &str) -> (usize, bool) {
     let mut in_string = false;
     let mut escape = false;
@@ -428,18 +424,17 @@ fn find_statement_end(input: &str) -> (usize, bool) {
 }
 
 /// Find the matching closing brace for an opening brace
+#[allow(dead_code)]
 fn find_matching_brace(input: &str) -> Option<usize> {
-    let mut depth = 0;
     let mut in_string = false;
     let mut escape = false;
     let mut chars = input.char_indices();
 
     // Skip the opening brace
-    if let Some((_, '{')) = chars.next() {
-        depth = 1;
-    } else {
+    if !matches!(chars.next(), Some((_, '{'))) {
         return None;
     }
+    let mut depth = 1;
 
     for (i, ch) in chars {
         if escape {
@@ -490,9 +485,9 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> Incremental
     }
 
     // Parse remaining elements
-    let mut loop_iteration = 0;
+    let mut _loop_iteration = 0;
     while !current_input.trim().is_empty() {
-        loop_iteration += 1;
+        _loop_iteration += 1;
         let _input_before = current_input;
 
         // Skip whitespace

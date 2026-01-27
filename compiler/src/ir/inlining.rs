@@ -5,12 +5,12 @@
 //! - Inlining cost model and heuristics
 //! - Function body cloning and integration
 
-use super::{
-    IrFunction, IrFunctionId, IrModule, IrInstruction, IrId, IrBlockId,
-    IrType, IrBasicBlock, IrTerminator, IrPhiNode,
-};
 use super::loop_analysis::{DominatorTree, LoopNestInfo};
 use super::optimization::{OptimizationPass, OptimizationResult};
+use super::{
+    IrBasicBlock, IrBlockId, IrFunction, IrFunctionId, IrId, IrInstruction, IrModule, IrPhiNode,
+    IrTerminator, IrType,
+};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// A call site in the program.
@@ -61,7 +61,13 @@ impl CallGraph {
                 let loop_depth = loop_info.loop_depth(block_id);
 
                 for (idx, inst) in block.instructions.iter().enumerate() {
-                    if let IrInstruction::CallDirect { dest, func_id: callee_id, args, .. } = inst {
+                    if let IrInstruction::CallDirect {
+                        dest,
+                        func_id: callee_id,
+                        args,
+                        ..
+                    } = inst
+                    {
                         let call_site = CallSite {
                             caller: func_id,
                             callee: *callee_id,
@@ -134,7 +140,10 @@ impl CallGraph {
 
     /// Get all call sites for a function.
     pub fn get_call_sites(&self, func_id: IrFunctionId) -> &[usize] {
-        self.callees.get(&func_id).map(|v| v.as_slice()).unwrap_or(&[])
+        self.callees
+            .get(&func_id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Check if a function is recursive.
@@ -161,11 +170,11 @@ pub struct InliningCostModel {
 impl Default for InliningCostModel {
     fn default() -> Self {
         Self {
-            max_inline_size: 50,        // Inline functions up to 50 instructions
-            loop_depth_bonus: 2.0,      // Double threshold for each loop level
-            block_count_penalty: 0.9,   // Reduce threshold by 10% per extra block
-            small_function_bonus: 20,   // Extra budget for tiny functions
-            max_growth_percent: 200,    // Allow up to 2x code growth
+            max_inline_size: 50,      // Inline functions up to 50 instructions
+            loop_depth_bonus: 2.0,    // Double threshold for each loop level
+            block_count_penalty: 0.9, // Reduce threshold by 10% per extra block
+            small_function_bonus: 20, // Extra budget for tiny functions
+            max_growth_percent: 200,  // Allow up to 2x code growth
         }
     }
 }
@@ -240,12 +249,16 @@ impl InliningPass {
         next_reg_id: &mut u32,
     ) -> Result<(), String> {
         // Get callee function (clone to avoid borrow issues)
-        let callee = module.functions.get(&call_site.callee)
+        let callee = module
+            .functions
+            .get(&call_site.callee)
             .ok_or_else(|| format!("Callee function {:?} not found", call_site.callee))?
             .clone();
 
         // Get caller function
-        let caller = module.functions.get_mut(&call_site.caller)
+        let caller = module
+            .functions
+            .get_mut(&call_site.caller)
             .ok_or_else(|| format!("Caller function {:?} not found", call_site.caller))?;
 
         // Create register mapping: callee registers -> new registers in caller
@@ -288,19 +301,22 @@ impl InliningPass {
 
         // Clone callee blocks into caller with remapped registers and blocks
         for (&old_block_id, old_block) in &callee.cfg.blocks {
-            let new_block_id = *block_map.get(&old_block_id)
+            let new_block_id = *block_map
+                .get(&old_block_id)
                 .ok_or_else(|| format!("Block {:?} not found in block_map", old_block_id))?;
 
             // Clone and remap phi nodes
             let mut new_phis: Vec<IrPhiNode> = Vec::new();
             for phi in &old_block.phi_nodes {
-                let dest = *reg_map.get(&phi.dest)
+                let dest = *reg_map
+                    .get(&phi.dest)
                     .ok_or_else(|| format!("Phi dest {:?} not found in reg_map", phi.dest))?;
 
                 let mut incoming = Vec::new();
                 for (block, val) in &phi.incoming {
-                    let new_block = *block_map.get(block)
-                        .ok_or_else(|| format!("Phi incoming block {:?} not found in block_map", block))?;
+                    let new_block = *block_map.get(block).ok_or_else(|| {
+                        format!("Phi incoming block {:?} not found in block_map", block)
+                    })?;
                     let new_val = *reg_map.get(val).unwrap_or(val);
                     incoming.push((new_block, new_val));
                 }
@@ -313,9 +329,11 @@ impl InliningPass {
             }
 
             // Clone and remap instructions
-            let new_instructions: Vec<IrInstruction> = old_block.instructions.iter().map(|inst| {
-                Self::remap_instruction(inst, &reg_map, &block_map)
-            }).collect();
+            let new_instructions: Vec<IrInstruction> = old_block
+                .instructions
+                .iter()
+                .map(|inst| Self::remap_instruction(inst, &reg_map, &block_map))
+                .collect();
 
             // Handle terminator
             let new_terminator = match &old_block.terminator {
@@ -331,32 +349,47 @@ impl InliningPass {
                             });
                         }
                     }
-                    IrTerminator::Branch { target: continuation_block }
+                    IrTerminator::Branch {
+                        target: continuation_block,
+                    }
                 }
                 IrTerminator::Branch { target } => {
-                    let new_target = *block_map.get(target)
-                        .ok_or_else(|| format!("Branch target {:?} not found in block_map", target))?;
+                    let new_target = *block_map.get(target).ok_or_else(|| {
+                        format!("Branch target {:?} not found in block_map", target)
+                    })?;
                     IrTerminator::Branch { target: new_target }
                 }
-                IrTerminator::CondBranch { condition, true_target, false_target } => {
-                    let new_true = *block_map.get(true_target)
-                        .ok_or_else(|| format!("CondBranch true_target {:?} not found", true_target))?;
-                    let new_false = *block_map.get(false_target)
-                        .ok_or_else(|| format!("CondBranch false_target {:?} not found", false_target))?;
+                IrTerminator::CondBranch {
+                    condition,
+                    true_target,
+                    false_target,
+                } => {
+                    let new_true = *block_map.get(true_target).ok_or_else(|| {
+                        format!("CondBranch true_target {:?} not found", true_target)
+                    })?;
+                    let new_false = *block_map.get(false_target).ok_or_else(|| {
+                        format!("CondBranch false_target {:?} not found", false_target)
+                    })?;
                     IrTerminator::CondBranch {
                         condition: *reg_map.get(condition).unwrap_or(condition),
                         true_target: new_true,
                         false_target: new_false,
                     }
                 }
-                IrTerminator::Switch { value, cases, default } => {
+                IrTerminator::Switch {
+                    value,
+                    cases,
+                    default,
+                } => {
                     let mut new_cases = Vec::new();
                     for (v, t) in cases {
-                        let new_t = *block_map.get(t)
+                        let new_t = *block_map
+                            .get(t)
                             .ok_or_else(|| format!("Switch case target {:?} not found", t))?;
                         new_cases.push((*v, new_t));
                     }
-                    let new_default = *block_map.get(default)
+                    let new_default = *block_map
+                        .get(default)
                         .ok_or_else(|| format!("Switch default {:?} not found", default))?;
                     IrTerminator::Switch {
                         value: *reg_map.get(value).unwrap_or(value),
@@ -377,12 +410,17 @@ impl InliningPass {
 
         // Split the original block at the call site
         let call_block_id = call_site.block;
-        let inlined_entry = *block_map.get(&callee.cfg.entry_block)
-            .ok_or_else(|| format!("Callee entry block {:?} not found in block_map", callee.cfg.entry_block))?;
+        let inlined_entry = *block_map.get(&callee.cfg.entry_block).ok_or_else(|| {
+            format!(
+                "Callee entry block {:?} not found in block_map",
+                callee.cfg.entry_block
+            )
+        })?;
 
         if let Some(call_block) = caller.cfg.get_block_mut(call_block_id) {
             // Move instructions after the call to the continuation block
-            let after_call: Vec<IrInstruction> = call_block.instructions
+            let after_call: Vec<IrInstruction> = call_block
+                .instructions
                 .drain((call_site.instruction_index + 1)..)
                 .collect();
 
@@ -393,7 +431,9 @@ impl InliningPass {
             let original_terminator = call_block.terminator.clone();
 
             // Redirect call block to inlined entry
-            call_block.terminator = IrTerminator::Branch { target: inlined_entry };
+            call_block.terminator = IrTerminator::Branch {
+                target: inlined_entry,
+            };
 
             // Set up continuation block
             if let Some(cont_block) = caller.cfg.get_block_mut(continuation_block) {
@@ -414,67 +454,64 @@ impl InliningPass {
         reg_map: &HashMap<IrId, IrId>,
         _block_map: &HashMap<IrBlockId, IrBlockId>,
     ) -> IrInstruction {
-        let remap = |id: &IrId| -> IrId {
-            *reg_map.get(id).unwrap_or(id)
-        };
+        let remap = |id: &IrId| -> IrId { *reg_map.get(id).unwrap_or(id) };
 
         match inst {
-            IrInstruction::BinOp { dest, op, left, right } => {
-                IrInstruction::BinOp {
-                    dest: remap(dest),
-                    op: *op,
-                    left: remap(left),
-                    right: remap(right),
-                }
-            }
-            IrInstruction::UnOp { dest, op, operand } => {
-                IrInstruction::UnOp {
-                    dest: remap(dest),
-                    op: *op,
-                    operand: remap(operand),
-                }
-            }
-            IrInstruction::Copy { dest, src } => {
-                IrInstruction::Copy {
-                    dest: remap(dest),
-                    src: remap(src),
-                }
-            }
-            IrInstruction::Const { dest, value } => {
-                IrInstruction::Const {
-                    dest: remap(dest),
-                    value: value.clone(),
-                }
-            }
-            IrInstruction::Cmp { dest, op, left, right } => {
-                IrInstruction::Cmp {
-                    dest: remap(dest),
-                    op: *op,
-                    left: remap(left),
-                    right: remap(right),
-                }
-            }
-            IrInstruction::Load { dest, ptr, ty } => {
-                IrInstruction::Load {
-                    dest: remap(dest),
-                    ptr: remap(ptr),
-                    ty: ty.clone(),
-                }
-            }
-            IrInstruction::Store { ptr, value } => {
-                IrInstruction::Store {
-                    ptr: remap(ptr),
-                    value: remap(value),
-                }
-            }
-            IrInstruction::Cast { dest, src, from_ty, to_ty } => {
-                IrInstruction::Cast {
-                    dest: remap(dest),
-                    src: remap(src),
-                    from_ty: from_ty.clone(),
-                    to_ty: to_ty.clone(),
-                }
-            }
+            IrInstruction::BinOp {
+                dest,
+                op,
+                left,
+                right,
+            } => IrInstruction::BinOp {
+                dest: remap(dest),
+                op: *op,
+                left: remap(left),
+                right: remap(right),
+            },
+            IrInstruction::UnOp { dest, op, operand } => IrInstruction::UnOp {
+                dest: remap(dest),
+                op: *op,
+                operand: remap(operand),
+            },
+            IrInstruction::Copy { dest, src } => IrInstruction::Copy {
+                dest: remap(dest),
+                src: remap(src),
+            },
+            IrInstruction::Const { dest, value } => IrInstruction::Const {
+                dest: remap(dest),
+                value: value.clone(),
+            },
+            IrInstruction::Cmp {
+                dest,
+                op,
+                left,
+                right,
+            } => IrInstruction::Cmp {
+                dest: remap(dest),
+                op: *op,
+                left: remap(left),
+                right: remap(right),
+            },
+            IrInstruction::Load { dest, ptr, ty } => IrInstruction::Load {
+                dest: remap(dest),
+                ptr: remap(ptr),
+                ty: ty.clone(),
+            },
+            IrInstruction::Store { ptr, value } => IrInstruction::Store {
+                ptr: remap(ptr),
+                value: remap(value),
+            },
+            IrInstruction::Cast {
+                dest,
+                src,
+                from_ty,
+                to_ty,
+            } => IrInstruction::Cast {
+                dest: remap(dest),
+                src: remap(src),
+                from_ty: from_ty.clone(),
+                to_ty: to_ty.clone(),
+            },
             // For other instructions, just clone (may need extension for full support)
             other => other.clone(),
         }
@@ -533,7 +570,10 @@ impl OptimizationPass for InliningPass {
                 match Self::inline_call_site(module, &candidate, &mut next_reg_id) {
                     Ok(()) => {
                         result.modified = true;
-                        *result.stats.entry("functions_inlined".to_string()).or_insert(0) += 1;
+                        *result
+                            .stats
+                            .entry("functions_inlined".to_string())
+                            .or_insert(0) += 1;
                     }
                     Err(e) => {
                         // Log error but continue

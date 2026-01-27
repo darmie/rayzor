@@ -16,9 +16,8 @@
 /// - Initial capacity: 16 bytes
 /// - Growth factor: 2x (16 → 32 → 64 → 128...)
 /// - Uses C realloc() for resizing
-
 use crate::ir::mir_builder::MirBuilder;
-use crate::ir::{IrType, BinaryOp, CompareOp};
+use crate::ir::{BinaryOp, CompareOp, IrType};
 
 /// Build all Vec<u8> functions
 pub fn build_vec_u8_type(builder: &mut MirBuilder) {
@@ -39,10 +38,7 @@ fn get_vec_u8_type(builder: &MirBuilder) -> IrType {
     let ptr_u8_ty = builder.ptr_type(u8_ty);
     let usize_ty = builder.u64_type();
 
-    builder.struct_type(
-        Some("vec_u8"),
-        vec![ptr_u8_ty, usize_ty.clone(), usize_ty],
-    )
+    builder.struct_type(Some("vec_u8"), vec![ptr_u8_ty, usize_ty.clone(), usize_ty])
 }
 
 /// Build: fn vec_u8_new() -> Vec<u8>
@@ -53,7 +49,8 @@ fn build_vec_u8_new(builder: &mut MirBuilder) {
     let usize_ty = builder.u64_type();
     let vec_u8_ty = get_vec_u8_type(builder);
 
-    let func_id = builder.begin_function("vec_u8_new")
+    let func_id = builder
+        .begin_function("vec_u8_new")
         .returns(vec_u8_ty.clone())
         .build();
 
@@ -68,7 +65,9 @@ fn build_vec_u8_new(builder: &mut MirBuilder) {
     let alloc_size = builder.mul(initial_cap, u8_size, usize_ty.clone());
 
     // Call malloc to allocate memory
-    let malloc_id = builder.get_function_by_name("malloc").expect("malloc not found");
+    let malloc_id = builder
+        .get_function_by_name("malloc")
+        .expect("malloc not found");
     let malloc_ref = builder.function_ref(malloc_id);
     let ptr_u8 = builder.call(malloc_id, vec![alloc_size]).unwrap();
 
@@ -90,7 +89,8 @@ fn build_vec_u8_push(builder: &mut MirBuilder) {
     let vec_u8_ty = get_vec_u8_type(builder);
     let ptr_vec_ty = builder.ptr_type(vec_u8_ty.clone());
 
-    let func_id = builder.begin_function("vec_u8_push")
+    let func_id = builder
+        .begin_function("vec_u8_push")
         .param("vec", ptr_vec_ty.clone())
         .param("value", u8_ty.clone())
         .returns(void_ty)
@@ -131,14 +131,13 @@ fn build_vec_u8_push(builder: &mut MirBuilder) {
     let new_size = builder.mul(new_cap, u8_size, usize_ty.clone());
 
     // Call realloc (libc signature: ptr, new_size only)
-    let realloc_id = builder.get_function_by_name("realloc").expect("realloc not found");
+    let realloc_id = builder
+        .get_function_by_name("realloc")
+        .expect("realloc not found");
     let new_ptr_u8 = builder.call(realloc_id, vec![ptr_field, new_size]).unwrap();
 
     // Create updated vec with new pointer and capacity
-    let grown_vec = builder.create_struct(
-        vec_u8_ty.clone(),
-        vec![new_ptr_u8, len_field, new_cap],
-    );
+    let grown_vec = builder.create_struct(vec_u8_ty.clone(), vec![new_ptr_u8, len_field, new_cap]);
     builder.store(vec_ptr, grown_vec);
     builder.br(insert_element);
 
@@ -164,10 +163,7 @@ fn build_vec_u8_push(builder: &mut MirBuilder) {
     let new_len = builder.add(len_field2, one, usize_ty.clone());
 
     // Store updated vec
-    let final_vec = builder.create_struct(
-        vec_u8_ty,
-        vec![ptr_field2, new_len, cap_field2],
-    );
+    let final_vec = builder.create_struct(vec_u8_ty, vec![ptr_field2, new_len, cap_field2]);
     builder.store(vec_ptr, final_vec);
 
     // Void function - return nothing
@@ -200,7 +196,8 @@ fn build_vec_u8_pop(builder: &mut MirBuilder) {
     ];
     let option_ty = builder.union_type(Some("Option"), option_variants);
 
-    let func_id = builder.begin_function("vec_u8_pop")
+    let func_id = builder
+        .begin_function("vec_u8_pop")
         .param("vec", ptr_vec_ty)
         .returns(option_ty.clone())
         .build();
@@ -248,10 +245,7 @@ fn build_vec_u8_pop(builder: &mut MirBuilder) {
     let elem_val = builder.load(elem_ptr, u8_ty);
 
     // Update vec with new length
-    let updated_vec = builder.create_struct(
-        vec_u8_ty,
-        vec![ptr_field, new_len, cap_field],
-    );
+    let updated_vec = builder.create_struct(vec_u8_ty, vec![ptr_field, new_len, cap_field]);
     builder.store(vec_ptr, updated_vec);
 
     // Return Some(elem_val)
@@ -285,7 +279,8 @@ fn build_vec_u8_get(builder: &mut MirBuilder) {
     ];
     let option_ty = builder.union_type(Some("Option"), option_variants);
 
-    let func_id = builder.begin_function("vec_u8_get")
+    let func_id = builder
+        .begin_function("vec_u8_get")
         .param("vec", ptr_vec_ty)
         .param("index", usize_ty.clone())
         .returns(option_ty.clone())
@@ -339,7 +334,8 @@ fn build_vec_u8_set(builder: &mut MirBuilder) {
     let vec_u8_ty = get_vec_u8_type(builder);
     let ptr_vec_ty = builder.ptr_type(vec_u8_ty.clone());
 
-    let func_id = builder.begin_function("vec_u8_set")
+    let func_id = builder
+        .begin_function("vec_u8_set")
         .param("vec", ptr_vec_ty)
         .param("index", usize_ty.clone())
         .param("value", u8_ty)
@@ -393,7 +389,8 @@ fn build_vec_u8_len(builder: &mut MirBuilder) {
     let vec_u8_ty = get_vec_u8_type(builder);
     let ptr_vec_ty = builder.ptr_type(vec_u8_ty.clone());
 
-    let func_id = builder.begin_function("vec_u8_len")
+    let func_id = builder
+        .begin_function("vec_u8_len")
         .param("vec", ptr_vec_ty)
         .returns(usize_ty.clone())
         .build();
@@ -418,7 +415,8 @@ fn build_vec_u8_capacity(builder: &mut MirBuilder) {
     let vec_u8_ty = get_vec_u8_type(builder);
     let ptr_vec_ty = builder.ptr_type(vec_u8_ty.clone());
 
-    let func_id = builder.begin_function("vec_u8_capacity")
+    let func_id = builder
+        .begin_function("vec_u8_capacity")
         .param("vec", ptr_vec_ty)
         .returns(usize_ty.clone())
         .build();
@@ -444,7 +442,8 @@ fn build_vec_u8_clear(builder: &mut MirBuilder) {
     let vec_u8_ty = get_vec_u8_type(builder);
     let ptr_vec_ty = builder.ptr_type(vec_u8_ty.clone());
 
-    let func_id = builder.begin_function("vec_u8_clear")
+    let func_id = builder
+        .begin_function("vec_u8_clear")
         .param("vec", ptr_vec_ty)
         .returns(void_ty)
         .build();
@@ -477,7 +476,8 @@ fn build_vec_u8_free(builder: &mut MirBuilder) {
     let void_ty = builder.void_type();
     let vec_u8_ty = get_vec_u8_type(builder);
 
-    let func_id = builder.begin_function("vec_u8_free")
+    let func_id = builder
+        .begin_function("vec_u8_free")
         .param("vec", vec_u8_ty.clone())
         .returns(void_ty)
         .build();
@@ -496,7 +496,9 @@ fn build_vec_u8_free(builder: &mut MirBuilder) {
     let total_size = builder.mul(cap_field, u8_size, usize_ty);
 
     // Call free (libc signature: ptr only)
-    let free_id = builder.get_function_by_name("free").expect("free not found");
+    let free_id = builder
+        .get_function_by_name("free")
+        .expect("free not found");
     let _result = builder.call(free_id, vec![ptr_field]);
 
     // Void function - return nothing

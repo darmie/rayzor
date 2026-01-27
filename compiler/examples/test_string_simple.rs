@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 /// Simple test for String.charAt
 use compiler::codegen::CraneliftBackend;
 use compiler::compilation::{CompilationConfig, CompilationUnit};
@@ -43,7 +73,12 @@ class Main {
         println!("\n=== MIR Module Functions ===");
         for (id, func) in &module.functions {
             if func.name.contains("char_at") || func.name.contains("charAt") {
-                println!("  Function {:?}: {} (blocks: {})", id, func.name, func.cfg.blocks.len());
+                println!(
+                    "  Function {:?}: {} (blocks: {})",
+                    id,
+                    func.name,
+                    func.cfg.blocks.len()
+                );
                 for param in &func.signature.parameters {
                     println!("    param {}: {:?}", param.name, param.ty);
                 }

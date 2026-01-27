@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Full Pipeline Test: Haxe → Parser → TAST → HIR → MIR → Tiered JIT
 //!
 //! This test demonstrates the complete Rayzor compilation pipeline with tiered JIT:
@@ -11,17 +41,15 @@
 //! Run with: cargo run --example test_full_pipeline_tiered
 //! Run with LLVM: cargo run --example test_full_pipeline_tiered --features llvm-backend
 
-use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig};
 use compiler::codegen::profiling::ProfileConfig;
+use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig};
+use compiler::ir::{hir_to_mir::lower_hir_to_mir, tast_to_hir::lower_tast_to_hir};
 use compiler::tast::{
-    TypeTable, StringInterner, SymbolTable,
-    ast_lowering::AstLowering,
-    scopes::ScopeTree,
+    ast_lowering::AstLowering, scopes::ScopeTree, StringInterner, SymbolTable, TypeTable,
 };
-use compiler::ir::{tast_to_hir::lower_tast_to_hir, hir_to_mir::lower_hir_to_mir};
 use parser::haxe_parser::parse_haxe_file;
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 fn main() -> Result<(), String> {
     println!("=== Rayzor Tiered JIT Full Pipeline Test ===\n");
@@ -55,11 +83,15 @@ class Math {
     }
 
     // Get the first function (should be 'add')
-    let add_func_id = *mir_module.functions.keys()
+    let add_func_id = *mir_module
+        .functions
+        .keys()
         .next()
         .ok_or("No functions in MIR module")?;
 
-    let add_func_info = mir_module.functions.get(&add_func_id)
+    let add_func_info = mir_module
+        .functions
+        .get(&add_func_id)
         .ok_or("Function not found")?;
 
     println!("\nMIR Function Details:");
@@ -75,12 +107,15 @@ class Math {
         optimization_check_interval_ms: 50,
         max_parallel_optimizations: 2,
         profile_config: ProfileConfig {
-            warm_threshold: 100,      // T0 → T1 at 100 calls
-            hot_threshold: 1000,      // T1 → T2 at 1,000 calls
-            blazing_threshold: 5000,  // T2 → T3 at 5,000 calls
-            sample_rate: 1,           // Profile every call for demo
+            interpreter_threshold: 5,
+            warm_threshold: 100,     // T0 → T1 at 100 calls
+            hot_threshold: 1000,     // T1 → T2 at 1,000 calls
+            blazing_threshold: 5000, // T2 → T3 at 5,000 calls
+            sample_rate: 1,          // Profile every call for demo
         },
         verbosity: 2, // Verbose output to see tier promotions
+        start_interpreted: false,
+        bailout_strategy: compiler::codegen::BailoutStrategy::Quick,
     };
 
     let mut backend = TieredBackend::new(config)?;
@@ -96,17 +131,13 @@ class Math {
 
     // Step 4: Get function pointer and execute
     println!("Step 4: Executing JIT-compiled function...");
-    let func_ptr = backend.get_function_pointer(add_func_id)
+    let func_ptr = backend
+        .get_function_pointer(add_func_id)
         .ok_or("Failed to get function pointer")?;
     let add_fn: fn(i64, i64) -> i64 = unsafe { std::mem::transmute(func_ptr) };
 
     // Test execution
-    let test_cases = vec![
-        (10, 20, 30),
-        (100, 200, 300),
-        (-5, 15, 10),
-        (0, 0, 0),
-    ];
+    let test_cases = vec![(10, 20, 30), (100, 200, 300), (-5, 15, 10), (0, 0, 0)];
 
     println!("Running test cases:");
     let mut all_passed = true;
@@ -114,7 +145,10 @@ class Math {
         let result = add_fn(*a, *b);
         let passed = result == *expected;
         let symbol = if passed { "✓" } else { "✗" };
-        println!("  {} add({}, {}) = {} (expected {})", symbol, a, b, result, expected);
+        println!(
+            "  {} add({}, {}) = {} (expected {})",
+            symbol, a, b, result, expected
+        );
         all_passed &= passed;
     }
 
@@ -151,7 +185,8 @@ class Math {
         let ptr_changed = new_ptr.map(|p| p as usize) != Some(func_ptr as usize);
         let indicator = if ptr_changed { "↑ (promoted)" } else { "" };
 
-        println!("  After {:>5} calls: sum={:>8} ptr={:?} {}",
+        println!(
+            "  After {:>5} calls: sum={:>8} ptr={:?} {}",
             milestone,
             sum,
             new_ptr.map(|p| format!("{:p}", p as *const ())),
@@ -161,7 +196,8 @@ class Math {
 
     // Verify we got the expected sum: 0+1 + 1+1 + 2+1 + ... + 6999+1
     let expected_sum: i64 = (0..7000).sum::<i64>() + 7000;
-    println!("\n  Final sum: {} (expected: {}) {}",
+    println!(
+        "\n  Final sum: {} (expected: {}) {}",
         sum,
         expected_sum,
         if sum == expected_sum { "✓" } else { "✗" }
@@ -176,9 +212,18 @@ class Math {
     let stats = backend.get_statistics();
 
     println!("\nTier Distribution:");
-    println!("  Tier 0 (Baseline):  {} functions", stats.baseline_functions);
-    println!("  Tier 1 (Standard):  {} functions", stats.standard_functions);
-    println!("  Tier 2 (Optimized): {} functions", stats.optimized_functions);
+    println!(
+        "  Tier 0 (Baseline):  {} functions",
+        stats.baseline_functions
+    );
+    println!(
+        "  Tier 1 (Standard):  {} functions",
+        stats.standard_functions
+    );
+    println!(
+        "  Tier 2 (Optimized): {} functions",
+        stats.optimized_functions
+    );
     println!("  Tier 3 (Maximum):   {} functions", stats.llvm_functions);
 
     println!("\nOptimization Queue:");
@@ -217,19 +262,23 @@ class Math {
 /// Compile Haxe source through the full pipeline to MIR
 fn compile_haxe_to_mir(source: &str) -> Result<compiler::ir::IrModule, String> {
     // Step 1: Parse
-    let ast = parse_haxe_file("test.hx", source, false)
-        .map_err(|e| format!("Parse error: {}", e))?;
+    let ast =
+        parse_haxe_file("test.hx", source, false).map_err(|e| format!("Parse error: {}", e))?;
 
     // Step 2: Lower AST to TAST
     let mut string_interner = StringInterner::new();
     let mut symbol_table = SymbolTable::new();
     let type_table = Rc::new(RefCell::new(TypeTable::new()));
     let mut scope_tree = ScopeTree::new(compiler::tast::ScopeId::from_raw(0));
-    let mut namespace_resolver = compiler::tast::namespace::NamespaceResolver::new(&string_interner);
+    let mut namespace_resolver =
+        compiler::tast::namespace::NamespaceResolver::new(&string_interner);
     let mut import_resolver = compiler::tast::namespace::ImportResolver::new(&namespace_resolver);
 
     let mut ast_lowering = AstLowering::new(
         &mut string_interner,
+        std::rc::Rc::new(std::cell::RefCell::new(
+            compiler::tast::StringInterner::new(),
+        )),
         &mut symbol_table,
         &type_table,
         &mut scope_tree,
@@ -237,7 +286,8 @@ fn compile_haxe_to_mir(source: &str) -> Result<compiler::ir::IrModule, String> {
         &mut import_resolver,
     );
 
-    let mut typed_file = ast_lowering.lower_file(&ast)
+    let mut typed_file = ast_lowering
+        .lower_file(&ast)
         .map_err(|e| format!("TAST lowering error: {:?}", e))?;
 
     // Step 3: Lower TAST to HIR
@@ -250,17 +300,23 @@ fn compile_haxe_to_mir(source: &str) -> Result<compiler::ir::IrModule, String> {
         &type_table,
         &mut *string_interner_rc.borrow_mut(),
         None, // No semantic graphs for now
-    ).map_err(|errors| {
+    )
+    .map_err(|errors| {
         let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
         format!("HIR lowering errors: {}", messages.join(", "))
     })?;
 
     // Step 4: Lower HIR to MIR (this produces proper SSA!)
-    let mir_module = lower_hir_to_mir(&hir_module, &*string_interner_rc.borrow(), &type_table)
-        .map_err(|errors| {
-            let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
-            format!("MIR lowering errors: {}", messages.join(", "))
-        })?;
+    let mir_module = lower_hir_to_mir(
+        &hir_module,
+        &*string_interner_rc.borrow(),
+        &type_table,
+        &symbol_table,
+    )
+    .map_err(|errors| {
+        let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
+        format!("MIR lowering errors: {}", messages.join(", "))
+    })?;
 
     Ok(mir_module)
 }

@@ -1,12 +1,44 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Demo of the Haxe compilation pipeline
-//! 
+//!
 //! This example demonstrates the complete Haxe -> AST -> TAST pipeline.
 
-use compiler::pipeline::{compile_haxe_file, HaxeCompilationPipeline, PipelineConfig, TargetPlatform};
+use compiler::pipeline::{
+    compile_haxe_file, HaxeCompilationPipeline, PipelineConfig, TargetPlatform,
+};
 
 fn main() {
     println!("=== Haxe Compilation Pipeline Demo ===\n");
-    
+
     // Example 1: Simple class
     let simple_haxe = r#"
         class Hello {
@@ -15,13 +47,13 @@ fn main() {
             }
         }
     "#;
-    
+
     println!("1. Compiling simple Haxe class:");
     println!("{}", simple_haxe);
-    
+
     let result1 = compile_haxe_file("Hello.hx", simple_haxe);
     print_compilation_result(&result1);
-    
+
     // Example 2: More complex Haxe with modern features
     let complex_haxe = r#"
         package examples;
@@ -79,16 +111,16 @@ fn main() {
             }
         }
     "#;
-    
+
     println!("\n2. Compiling complex Haxe with modern features:");
     println!("{}", complex_haxe);
-    
+
     let result2 = compile_haxe_file("Calculator.hx", complex_haxe);
     print_compilation_result(&result2);
-    
+
     // Example 3: Custom pipeline configuration
     println!("\n3. Using custom pipeline configuration:");
-    
+
     let config = PipelineConfig {
         strict_type_checking: true,
         enable_lifetime_analysis: true,
@@ -110,17 +142,17 @@ fn main() {
         enable_enhanced_flow_analysis: false,
         enable_memory_safety_analysis: false,
     };
-    
+
     let mut pipeline = HaxeCompilationPipeline::with_config(config);
     let result3 = pipeline.compile_file("Custom.hx", simple_haxe);
-    
+
     // println!("Pipeline configuration:");
     // println!("  Target: {:?}", pipeline.config.target_platform);
     // println!("  Strict type checking: {}", pipeline.config.strict_type_checking);
     // println!("  Lifetime analysis: {}", pipeline.config.enable_lifetime_analysis);
-    
+
     print_compilation_result(&result3);
-    
+
     println!("\n=== Pipeline Demo Complete ===");
 }
 
@@ -132,27 +164,41 @@ fn print_compilation_result(result: &compiler::pipeline::CompilationResult) {
     println!("  ✓ Lowering time: {}μs", result.stats.lowering_time_us);
     println!("  ✓ Total time: {}μs", result.stats.total_time_us);
     println!("  ✓ TAST files generated: {}", result.typed_files.len());
-    
+
     if result.errors.is_empty() {
         println!("  ✅ No errors!");
     } else {
         println!("  ❌ Errors: {}", result.errors.len());
         for (i, error) in result.errors.iter().enumerate() {
-            println!("    {}. {} ({}:{}) - {:?}", 
-                i + 1, error.message, error.location.line, error.location.column, error.category);
+            println!(
+                "    {}. {} ({}:{}) - {:?}",
+                i + 1,
+                error.message,
+                error.location.line,
+                error.location.column,
+                error.category
+            );
         }
     }
-    
+
     if !result.warnings.is_empty() {
         println!("  ⚠️  Warnings: {}", result.warnings.len());
         for (i, warning) in result.warnings.iter().enumerate() {
-            println!("    {}. {} - {:?}", i + 1, warning.message, warning.category);
+            println!(
+                "    {}. {} - {:?}",
+                i + 1,
+                warning.message,
+                warning.category
+            );
         }
     }
-    
+
     // Show TAST details if available
     for typed_file in &result.typed_files {
-        println!("  📄 TAST Analysis for '{}':", typed_file.metadata.file_path);
+        println!(
+            "  📄 TAST Analysis for '{}':",
+            typed_file.metadata.file_path
+        );
         println!("     Functions: {}", typed_file.functions.len());
         println!("     Classes: {}", typed_file.classes.len());
         println!("     Interfaces: {}", typed_file.interfaces.len());
@@ -160,7 +206,7 @@ fn print_compilation_result(result: &compiler::pipeline::CompilationResult) {
         println!("     Abstracts: {}", typed_file.abstracts.len());
         println!("     Module fields: {}", typed_file.module_fields.len());
         println!("     Imports: {}", typed_file.imports.len());
-        
+
         if let Some(package) = &typed_file.metadata.package_name {
             println!("     Package: {}", package);
         }

@@ -1,13 +1,46 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test current function effect analysis system
 //!
 //! This test validates the existing effect analysis system and demonstrates
 //! that the foundation is solid for building enhanced effect analysis.
 
 use compiler::tast::{
-    effect_analysis::EffectAnalyzer, node::{
+    effect_analysis::EffectAnalyzer,
+    node::{
         ExpressionMetadata, FunctionEffects, FunctionMetadata, LiteralValue, TypedExpression,
         TypedExpressionKind, TypedFunction, TypedStatement, VariableUsage,
-    }, symbols::{Mutability, Visibility}, AsyncKind, SourceLocation, StringInterner, SymbolId, SymbolTable, TypeId, TypeTable
+    },
+    symbols::{Mutability, Visibility},
+    AsyncKind, SourceLocation, StringInterner, SymbolId, SymbolTable, TypeId, TypeTable,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -61,7 +94,8 @@ fn test_throwing_function(
                         kind: TypedExpressionKind::New {
                             class_type: TypeId::from_raw(4),
                             type_arguments: vec![],
-                            arguments:vec![],
+                            arguments: vec![],
+                            class_name: None,
                         },
                         expr_type: TypeId::from_raw(4),
                         usage: VariableUsage::Copy,
@@ -94,7 +128,10 @@ fn test_throwing_function(
     println!("✅ Exception detection: PASSED");
     println!("  → Can throw: {}", effects.can_throw);
     println!("  → Is pure: {}", effects.is_pure);
-    println!("  → Is async: {}", matches!(effects.async_kind, AsyncKind::Sync));
+    println!(
+        "  → Is async: {}",
+        matches!(effects.async_kind, AsyncKind::Sync)
+    );
     println!("");
 }
 
@@ -115,36 +152,36 @@ fn test_pure_function(
         parameters: vec![],
         return_type: TypeId::from_raw(1),
         body: vec![TypedStatement::Return {
-                value: Some(TypedExpression {
-                    kind: TypedExpressionKind::BinaryOp {
-                        left: Box::new(TypedExpression {
-                            kind: TypedExpressionKind::Variable {
-                                symbol_id: x_symbol,
-                            },
-                            expr_type: TypeId::from_raw(1),
-                            usage: VariableUsage::Copy,
-                            lifetime_id: compiler::tast::LifetimeId::from_raw(0),
-                            source_location: SourceLocation::new(0, 2, 12, 13),
-                            metadata: ExpressionMetadata::default(),
-                        }),
-                        right: Box::new(TypedExpression {
-                            kind: TypedExpressionKind::Variable {
-                                symbol_id: y_symbol,
-                            },
-                            expr_type: TypeId::from_raw(1),
-                            usage: VariableUsage::Copy,
-                            lifetime_id: compiler::tast::LifetimeId::from_raw(0),
-                            source_location: SourceLocation::new(0, 2, 16, 17),
-                            metadata: ExpressionMetadata::default(),
-                        }),
-                        operator: compiler::tast::node::BinaryOperator::Add,
-                    },
-                    expr_type: TypeId::from_raw(1),
-                    usage: VariableUsage::Copy,
-                    lifetime_id: compiler::tast::LifetimeId::from_raw(0),
-                    source_location: SourceLocation::new(0, 2, 12, 17),
-                    metadata: ExpressionMetadata::default(),
-                }),
+            value: Some(TypedExpression {
+                kind: TypedExpressionKind::BinaryOp {
+                    left: Box::new(TypedExpression {
+                        kind: TypedExpressionKind::Variable {
+                            symbol_id: x_symbol,
+                        },
+                        expr_type: TypeId::from_raw(1),
+                        usage: VariableUsage::Copy,
+                        lifetime_id: compiler::tast::LifetimeId::from_raw(0),
+                        source_location: SourceLocation::new(0, 2, 12, 13),
+                        metadata: ExpressionMetadata::default(),
+                    }),
+                    right: Box::new(TypedExpression {
+                        kind: TypedExpressionKind::Variable {
+                            symbol_id: y_symbol,
+                        },
+                        expr_type: TypeId::from_raw(1),
+                        usage: VariableUsage::Copy,
+                        lifetime_id: compiler::tast::LifetimeId::from_raw(0),
+                        source_location: SourceLocation::new(0, 2, 16, 17),
+                        metadata: ExpressionMetadata::default(),
+                    }),
+                    operator: compiler::tast::node::BinaryOperator::Add,
+                },
+                expr_type: TypeId::from_raw(1),
+                usage: VariableUsage::Copy,
+                lifetime_id: compiler::tast::LifetimeId::from_raw(0),
+                source_location: SourceLocation::new(0, 2, 12, 17),
+                metadata: ExpressionMetadata::default(),
+            }),
             source_location: SourceLocation::new(0, 2, 5, 18),
         }],
         type_parameters: vec![],
@@ -159,7 +196,10 @@ fn test_pure_function(
 
     assert!(effects.is_pure, "Function should be detected as pure");
     assert!(!effects.can_throw, "Pure function should not throw");
-    assert!(matches!(effects.async_kind, AsyncKind::Sync), "Pure function should be synchronous");
+    assert!(
+        matches!(effects.async_kind, AsyncKind::Sync),
+        "Pure function should be synchronous"
+    );
 
     println!("✅ Pure function detection: PASSED");
     println!("  → Is pure: {}", effects.is_pure);
@@ -241,7 +281,10 @@ fn test_side_effect_function(
         "Function with assignments should not be pure"
     );
     assert!(!effects.can_throw, "Simple assignment should not throw");
-    assert!(matches!(effects.async_kind, AsyncKind::Sync), "Simple assignment should be synchronous");
+    assert!(
+        matches!(effects.async_kind, AsyncKind::Sync),
+        "Simple assignment should be synchronous"
+    );
 
     println!("✅ Side effect detection: PASSED");
     println!("  → Is pure: {}", effects.is_pure);

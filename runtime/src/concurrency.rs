@@ -16,33 +16,39 @@
 //! executing JIT-compiled code don't outlive the JIT module. Call
 //! `rayzor_wait_all_threads()` before dropping the JIT module.
 
+use log::debug;
 use std::collections::HashMap;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use log::debug;
 
 // Native pthread support for Apple Silicon
 #[cfg(target_os = "macos")]
-use libc::{pthread_create, pthread_join, pthread_t};
+use libc::pthread_t;
 
 // ============================================================================
 // Memory Safety Infrastructure
 // ============================================================================
 
 /// Magic numbers for validating handle types
+#[allow(dead_code)]
 const MAGIC_THREAD: u64 = 0xDEADBEEF_00000001;
+#[allow(dead_code)]
 const MAGIC_ARC: u64 = 0xDEADBEEF_00000002;
+#[allow(dead_code)]
 const MAGIC_MUTEX: u64 = 0xDEADBEEF_00000003;
+#[allow(dead_code)]
 const MAGIC_MUTEX_GUARD: u64 = 0xDEADBEEF_00000004;
 
 /// Panic guard that ensures cleanup runs even on panic
+#[allow(dead_code)]
 struct PanicGuard<F: FnOnce()> {
     cleanup: Option<F>,
 }
 
+#[allow(dead_code)]
 impl<F: FnOnce()> PanicGuard<F> {
     fn new(cleanup: F) -> Self {
         Self {
@@ -68,6 +74,7 @@ impl<F: FnOnce()> Drop for PanicGuard<F> {
 // ============================================================================
 
 /// Global counter for thread IDs
+#[allow(dead_code)]
 static THREAD_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Global count of active threads (spawned but not yet joined)
@@ -113,6 +120,7 @@ pub extern "C" fn rayzor_active_thread_count() -> u64 {
 
 /// Opaque thread handle with memory safety validation
 /// Wraps JoinHandle<i32> to support returning results
+#[allow(dead_code)]
 struct ThreadHandle {
     /// Magic number for validation
     magic: u64,
@@ -126,6 +134,7 @@ struct ThreadHandle {
     joined: bool,
 }
 
+#[allow(dead_code)]
 impl ThreadHandle {
     /// Validate that this is a legitimate ThreadHandle
     fn validate(&self) -> Result<(), &'static str> {
@@ -142,6 +151,7 @@ impl ThreadHandle {
 /// Context passed to pthread thread function
 #[cfg(target_os = "macos")]
 #[repr(C)]
+#[allow(dead_code)]
 struct PthreadContext {
     closure: *const u8,
     env: *const u8,
@@ -150,6 +160,7 @@ struct PthreadContext {
 
 /// pthread thread entry point
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 extern "C" fn pthread_entry(arg: *mut libc::c_void) -> *mut libc::c_void {
     unsafe {
         let ctx = &mut *(arg as *mut PthreadContext);
@@ -169,6 +180,7 @@ extern "C" fn pthread_entry(arg: *mut libc::c_void) -> *mut libc::c_void {
 /// Native pthread handle - stores only the pthread_t
 /// The context is owned by the pthread entry function
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 struct NativePthreadHandle {
     thread: pthread_t,
     ctx_ptr: *mut PthreadContext, // Raw pointer, not owned - thread owns it
@@ -313,6 +325,7 @@ pub extern "C" fn rayzor_thread_current_id() -> u64 {
 /// # Safety
 /// - value must be a valid pointer (will be owned by Arc)
 #[no_mangle]
+#[allow(clippy::arc_with_non_send_sync)]
 pub unsafe extern "C" fn rayzor_arc_init(value: *mut u8) -> *mut u8 {
     if value.is_null() {
         return ptr::null_mut();
@@ -1041,6 +1054,7 @@ struct DequeHandle {
 
 /// Create a new sys.thread.Deque
 #[no_mangle]
+#[allow(clippy::arc_with_non_send_sync)]
 pub unsafe extern "C" fn sys_deque_alloc() -> *mut u8 {
     let handle = DequeHandle {
         deque: Arc::new(Mutex::new(VecDeque::new())),

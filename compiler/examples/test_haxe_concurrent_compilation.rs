@@ -1,11 +1,41 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
+#![allow(clippy::unnecessary_to_owned)]
 /// Test that Haxe concurrent code compiles to correct MIR calls
 ///
 /// This verifies that:
 /// 1. Haxe code using Thread, Channel, Arc, Mutex compiles successfully
 /// 2. The compiler generates calls to the correct runtime functions
 /// 3. StdlibMapping correctly maps extern calls
-
-use compiler::compilation::{CompilationUnit, CompilationConfig};
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 use compiler::ir::IrModule;
 use parser::SourceMap;
 use std::fs;
@@ -13,15 +43,21 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Helper function to compile Haxe code with stdlib loaded (full pipeline: TAST -> HIR -> MIR)
-fn compile_with_stdlib(haxe_code: &str, _temp_dir: &PathBuf, filename: &str) -> Result<Arc<IrModule>, String> {
+fn compile_with_stdlib(
+    haxe_code: &str,
+    _temp_dir: &PathBuf,
+    filename: &str,
+) -> Result<Arc<IrModule>, String> {
     // Step 1: Create compilation unit with stdlib
     let mut unit = CompilationUnit::new(CompilationConfig::default());
 
     // Step 2: Load stdlib
-    unit.load_stdlib().map_err(|e| format!("Failed to load stdlib: {}", e))?;
+    unit.load_stdlib()
+        .map_err(|e| format!("Failed to load stdlib: {}", e))?;
 
     // Step 3: Add user file
-    unit.add_file(haxe_code, filename).map_err(|e| format!("Failed to add file: {}", e))?;
+    unit.add_file(haxe_code, filename)
+        .map_err(|e| format!("Failed to add file: {}", e))?;
 
     let mut source_map = SourceMap::new();
     source_map.add_file(filename.to_string(), haxe_code.to_string());
@@ -29,7 +65,14 @@ fn compile_with_stdlib(haxe_code: &str, _temp_dir: &PathBuf, filename: &str) -> 
     // Step 4: Lower to TAST (this also lowers to HIR and MIR automatically via the pipeline)
     // IMPORTANT: The pipeline will lower to MIR automatically because enable_mir_lowering is true by default
     let _typed_files = unit.lower_to_tast().map_err(|errors| {
-        format!("TAST lowering failed with {} errors: {:?}", errors.len(), errors.iter().map(|e| e.to_diagnostic(&source_map).clone()).collect::<Vec<_>>())
+        format!(
+            "TAST lowering failed with {} errors: {:?}",
+            errors.len(),
+            errors
+                .iter()
+                .map(|e| e.to_diagnostic(&source_map).clone())
+                .collect::<Vec<_>>()
+        )
     })?;
 
     // Step 5: Get the MIR module that was created by the pipeline
@@ -52,27 +95,37 @@ fn compile_with_stdlib(haxe_code: &str, _temp_dir: &PathBuf, filename: &str) -> 
     // to check ALL modules for extern function calls
 
     // First, try to find the module with main (user code)
-    if let Some(main_module) = mir_modules.iter()
+    if let Some(main_module) = mir_modules
+        .iter()
         .find(|m| m.functions.values().any(|f| f.name == "main"))
     {
-        eprintln!("Found main module with {} functions, {} extern_functions",
-                 main_module.functions.len(), main_module.extern_functions.len());
+        eprintln!(
+            "Found main module with {} functions, {} extern_functions",
+            main_module.functions.len(),
+            main_module.extern_functions.len()
+        );
         return Ok(main_module.clone());
     }
 
     // If no main module, collect ALL extern functions from ALL modules
     // This handles the case where extern functions are registered in different modules
-    eprintln!("No main module found, collecting extern functions from all {} modules", mir_modules.len());
+    eprintln!(
+        "No main module found, collecting extern functions from all {} modules",
+        mir_modules.len()
+    );
 
     // Find the module with the most extern functions
-    let mir_module = mir_modules.iter()
+    let mir_module = mir_modules
+        .iter()
         .max_by_key(|m| m.extern_functions.len() * 100 + m.functions.len())
         .ok_or("No MIR module generated")?
         .clone();
 
-    eprintln!("Selected module with {} functions, {} extern_functions",
-             mir_module.functions.len(),
-             mir_module.extern_functions.len());
+    eprintln!(
+        "Selected module with {} functions, {} extern_functions",
+        mir_module.functions.len(),
+        mir_module.extern_functions.len()
+    );
 
     Ok(mir_module)
 }
@@ -140,15 +193,26 @@ class Main {
     println!("  ✅ Compilation succeeded");
 
     println!("  ℹ️  {:?}", mir_module.stats());
-    println!("  ℹ️  Extern functions map has {} entries:", mir_module.extern_functions.len());
+    println!(
+        "  ℹ️  Extern functions map has {} entries:",
+        mir_module.extern_functions.len()
+    );
     for (func_id, extern_func) in &mir_module.extern_functions {
         println!("      - {} (ID: {:?})", extern_func.name, func_id);
     }
 
     // First, let's see what functions are in the MIR module
-    println!("  ℹ️  All functions in MIR module ({} total):", mir_module.functions.len());
+    println!(
+        "  ℹ️  All functions in MIR module ({} total):",
+        mir_module.functions.len()
+    );
     for (func_id, func) in &mir_module.functions {
-        println!("      - {} (ID: {:?}, extern: {})", func.name, func_id, func.cfg.blocks.is_empty());
+        println!(
+            "      - {} (ID: {:?}, extern: {})",
+            func.name,
+            func_id,
+            func.cfg.blocks.is_empty()
+        );
     }
 
     // Look for function calls in the MIR
@@ -187,7 +251,10 @@ class Main {
         println!("  ✅ PASSED\n");
         Ok(())
     } else {
-        Err(format!("Missing runtime calls: spawn={}, join={}", found_spawn, found_join))
+        Err(format!(
+            "Missing runtime calls: spawn={}, join={}",
+            found_spawn, found_join
+        ))
     }
 }
 
@@ -226,15 +293,26 @@ class Main {
     println!("  ✅ Compilation succeeded");
 
     println!("  ℹ️  {:?}", mir_module.stats());
-    println!("  ℹ️  Extern functions map has {} entries:", mir_module.extern_functions.len());
+    println!(
+        "  ℹ️  Extern functions map has {} entries:",
+        mir_module.extern_functions.len()
+    );
     for (func_id, extern_func) in &mir_module.extern_functions {
         println!("      - {} (ID: {:?})", extern_func.name, func_id);
     }
 
     // First, let's see what functions are in the MIR module
-    println!("  ℹ️  All functions in MIR module ({} total):", mir_module.functions.len());
+    println!(
+        "  ℹ️  All functions in MIR module ({} total):",
+        mir_module.functions.len()
+    );
     for (func_id, func) in &mir_module.functions {
-        println!("      - {} (ID: {:?}, extern: {})", func.name, func_id, func.cfg.blocks.is_empty());
+        println!(
+            "      - {} (ID: {:?}, extern: {})",
+            func.name,
+            func_id,
+            func.cfg.blocks.is_empty()
+        );
     }
 
     // Look for function calls in the MIR
@@ -271,7 +349,10 @@ class Main {
         println!("  ✅ PASSED\n");
         Ok(())
     } else {
-        Err(format!("Missing runtime calls: spawn={}, join={}", found_spawn, found_join))
+        Err(format!(
+            "Missing runtime calls: spawn={}, join={}",
+            found_spawn, found_join
+        ))
     }
 }
 
@@ -339,8 +420,10 @@ class Main {
         println!("  ✅ PASSED\n");
         Ok(())
     } else {
-        Err(format!("Missing channel calls: new={}, send={}, receive={}",
-            found_init, found_send, found_receive))
+        Err(format!(
+            "Missing channel calls: new={}, send={}, receive={}",
+            found_init, found_send, found_receive
+        ))
     }
 }
 
@@ -408,8 +491,10 @@ class Main {
         println!("  ✅ PASSED\n");
         Ok(())
     } else {
-        Err(format!("Missing Arc calls: new={}, clone={}, get={}",
-            found_init, found_clone, found_get))
+        Err(format!(
+            "Missing Arc calls: new={}, clone={}, get={}",
+            found_init, found_clone, found_get
+        ))
     }
 }
 
@@ -474,8 +559,10 @@ class Main {
         println!("  ✅ PASSED\n");
         Ok(())
     } else {
-        Err(format!("Missing Mutex calls: new={}, lock={}, unlock={}",
-            found_init, found_lock, found_unlock))
+        Err(format!(
+            "Missing Mutex calls: new={}, lock={}, unlock={}",
+            found_init, found_lock, found_unlock
+        ))
     }
 }
 
@@ -529,7 +616,7 @@ class Main {
     let expected_calls = vec![
         "rayzor_thread_spawn",
         "rayzor_thread_join",
-        "rayzor_channel_init",  // NOTE: This includes Arc.init and Mutex.init calls
+        "rayzor_channel_init", // NOTE: This includes Arc.init and Mutex.init calls
         "rayzor_channel_send",
         "rayzor_channel_receive",
         // "rayzor_arc_init",  // TODO: Fix qualified names for extern generic class methods
@@ -556,7 +643,8 @@ class Main {
         }
     }
 
-    let missing: Vec<_> = expected_calls.iter()
+    let missing: Vec<_> = expected_calls
+        .iter()
         .filter(|name| !found_calls.contains(&name.to_string()))
         .collect();
 

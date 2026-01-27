@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Simplified CompilationUnit test without generics
 //!
 //! This test verifies the core functionality:
@@ -5,7 +35,7 @@
 //! 2. User files load AFTER stdlib with package prefix
 //! 3. Symbol resolution works correctly
 
-use compiler::compilation::{CompilationUnit, CompilationConfig};
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 
 fn main() {
     println!("=== Testing CompilationUnit (Simplified) ===\n");
@@ -14,10 +44,7 @@ fn main() {
     println!("1. Creating compilation unit with minimal stdlib...");
     let mut config = CompilationConfig::default();
     // Use only non-generic stdlib files
-    config.default_stdlib_imports = vec![
-        "StdTypes.hx".to_string(),
-        "String.hx".to_string(),
-    ];
+    config.default_stdlib_imports = vec!["StdTypes.hx".to_string(), "String.hx".to_string()];
 
     let mut unit = CompilationUnit::new(config);
     println!("   ✓ Created\n");
@@ -57,9 +84,11 @@ fn main() {
     match unit.add_file(source, "MyClass.hx") {
         Ok(()) => {
             println!("   ✓ Added user file");
-            println!("   Total: {} stdlib + {} user files\n",
-                     unit.stdlib_files.len(),
-                     unit.user_files.len());
+            println!(
+                "   Total: {} stdlib + {} user files\n",
+                unit.stdlib_files.len(),
+                unit.user_files.len()
+            );
         }
         Err(e) => {
             eprintln!("   ✗ Failed to add file: {}", e);
@@ -110,14 +139,19 @@ fn main() {
             // Check for stdlib symbols that might have incorrect package prefixes
             // Note: Qualified names like "String.substring" are correct - they're class.method
             // We're looking for symbols with unexpected packages like "test.String.substring"
-            let bad_stdlib: Vec<_> = stdlib_symbols.iter()
+            let bad_stdlib: Vec<_> = stdlib_symbols
+                .iter()
                 .filter(|s| {
                     // Split by dots and check if first segment looks like a package
                     let parts: Vec<_> = s.split('.').collect();
                     if parts.len() >= 3 {
                         // This could be either "test.Class.method" (bad) or just deeply nested (check if starts with lowercase)
                         let first = parts[0];
-                        first.chars().next().map(|c| c.is_lowercase()).unwrap_or(false)
+                        first
+                            .chars()
+                            .next()
+                            .map(|c| c.is_lowercase())
+                            .unwrap_or(false)
                             && first != "test" // We already filtered test.* out
                     } else {
                         false
@@ -126,20 +160,31 @@ fn main() {
                 .collect();
 
             if !bad_stdlib.is_empty() {
-                println!("\n   ⚠️  WARNING: {} stdlib symbols may have package prefixes:", bad_stdlib.len());
+                println!(
+                    "\n   ⚠️  WARNING: {} stdlib symbols may have package prefixes:",
+                    bad_stdlib.len()
+                );
                 for sym in bad_stdlib.iter().take(5) {
                     println!("      - {}", sym);
                 }
             }
 
             // Verify user symbols have package prefix
-            let good_user = user_symbols.iter()
+            let good_user = user_symbols
+                .iter()
                 .filter(|s| s.starts_with("test."))
                 .count();
 
             println!("\n6. Results:");
-            println!("   - Stdlib symbols with haxe.* package: {}", stdlib_symbols.len());
-            println!("   - User symbols with test.* package: {}/{}", good_user, user_symbols.len());
+            println!(
+                "   - Stdlib symbols with haxe.* package: {}",
+                stdlib_symbols.len()
+            );
+            println!(
+                "   - User symbols with test.* package: {}/{}",
+                good_user,
+                user_symbols.len()
+            );
 
             if stdlib_symbols.len() > 0 && good_user == user_symbols.len() {
                 println!("\n🎉 SUCCESS: All stdlib symbols prefixed with 'haxe.*', user symbols with 'test.*'!");
@@ -148,7 +193,7 @@ fn main() {
             }
         }
         Err(e) => {
-            eprintln!("   ✗ TAST lowering failed: {}", e);
+            eprintln!("   ✗ TAST lowering failed: {:?}", e);
         }
     }
 }

@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test that implicit drop reduces memory usage
 //!
 //! This test creates many objects in a loop and verifies that memory
@@ -10,14 +40,17 @@ fn main() {
     println!("=== Testing Implicit Drop Memory Management ===\n");
 
     let plugin = rayzor_runtime::plugin_impl::get_plugin();
-    let symbols: Vec<(&str, *const u8)> = plugin.runtime_symbols()
+    let symbols: Vec<(&str, *const u8)> = plugin
+        .runtime_symbols()
         .iter()
         .map(|(n, p)| (*n, *p))
         .collect();
 
     // Test 1: Simple loop with reassignment
     println!("Test 1: Simple loop with variable reassignment");
-    test_case("loop_reassign", r#"
+    test_case(
+        "loop_reassign",
+        r#"
 package test;
 
 class Point {
@@ -41,11 +74,15 @@ class Main {
         trace(p.x);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 2: Nested reassignment
     println!("\nTest 2: Nested reassignment in inner loop");
-    test_case("nested_loop", r#"
+    test_case(
+        "nested_loop",
+        r#"
 package test;
 
 class Value {
@@ -69,11 +106,15 @@ class Main {
         trace(sum);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 3: Mandelbrot-like pattern (simplified)
     println!("\nTest 3: Mandelbrot-like iteration pattern");
-    test_case("mandelbrot_pattern", r#"
+    test_case(
+        "mandelbrot_pattern",
+        r#"
 package test;
 
 class Complex {
@@ -109,7 +150,9 @@ class Main {
         trace(1);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     println!("\n=== All tests completed ===");
 }
@@ -120,16 +163,19 @@ fn test_case(name: &str, source: &str, symbols: &[(&str, *const u8)]) {
     let result: Result<(), String> = (|| {
         let mut unit = CompilationUnit::new(CompilationConfig::fast());
         unit.load_stdlib().map_err(|e| format!("stdlib: {}", e))?;
-        unit.add_file(source, &format!("{}.hx", name)).map_err(|e| format!("parse: {}", e))?;
+        unit.add_file(source, &format!("{}.hx", name))
+            .map_err(|e| format!("parse: {}", e))?;
         unit.lower_to_tast().map_err(|e| format!("tast: {:?}", e))?;
 
         let mir_modules = unit.get_mir_modules();
 
-        let mut backend = CraneliftBackend::with_symbols(symbols)
-            .map_err(|e| format!("backend: {}", e))?;
+        let mut backend =
+            CraneliftBackend::with_symbols(symbols).map_err(|e| format!("backend: {}", e))?;
 
         for module in &mir_modules {
-            backend.compile_module(module).map_err(|e| format!("compile: {}", e))?;
+            backend
+                .compile_module(module)
+                .map_err(|e| format!("compile: {}", e))?;
         }
 
         for module in mir_modules.iter().rev() {

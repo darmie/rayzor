@@ -167,7 +167,7 @@ pub fn create_test_function(
     interner: &Rc<RefCell<crate::tast::StringInterner>>,
 ) -> TypedFunction {
     let name_interned = interner.borrow_mut().intern(name);
-    
+
     TypedFunction {
         symbol_id,
         name: name_interned,
@@ -191,7 +191,7 @@ pub fn create_param(
     interner: &Rc<RefCell<crate::tast::StringInterner>>,
 ) -> TypedParameter {
     let name_interned = interner.borrow_mut().intern(name);
-    
+
     TypedParameter {
         symbol_id,
         name: name_interned,

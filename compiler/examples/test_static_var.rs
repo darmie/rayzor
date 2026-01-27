@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test static var access
 
 use compiler::codegen::CraneliftBackend;
@@ -9,16 +39,19 @@ fn test_case(name: &str, source: &str, symbols: &[(&str, *const u8)]) {
     let result: Result<(), String> = (|| {
         let mut unit = CompilationUnit::new(CompilationConfig::fast());
         unit.load_stdlib().map_err(|e| format!("stdlib: {}", e))?;
-        unit.add_file(source, &format!("{}.hx", name)).map_err(|e| format!("parse: {}", e))?;
+        unit.add_file(source, &format!("{}.hx", name))
+            .map_err(|e| format!("parse: {}", e))?;
         unit.lower_to_tast().map_err(|e| format!("tast: {:?}", e))?;
 
         let mir_modules = unit.get_mir_modules();
 
-        let mut backend = CraneliftBackend::with_symbols(symbols)
-            .map_err(|e| format!("backend: {}", e))?;
+        let mut backend =
+            CraneliftBackend::with_symbols(symbols).map_err(|e| format!("backend: {}", e))?;
 
         for module in &mir_modules {
-            backend.compile_module(module).map_err(|e| format!("compile: {}", e))?;
+            backend
+                .compile_module(module)
+                .map_err(|e| format!("compile: {}", e))?;
         }
 
         for module in mir_modules.iter().rev() {
@@ -31,19 +64,22 @@ fn test_case(name: &str, source: &str, symbols: &[(&str, *const u8)]) {
     })();
 
     if let Err(e) = result {
-        println!("  FAILED: {}", e);
+        println!("  FAILED: {:?}", e);
     }
 }
 
 fn main() {
     let plugin = rayzor_runtime::plugin_impl::get_plugin();
-    let symbols: Vec<(&str, *const u8)> = plugin.runtime_symbols()
+    let symbols: Vec<(&str, *const u8)> = plugin
+        .runtime_symbols()
         .iter()
         .map(|(n, p)| (*n, *p))
         .collect();
 
     // Test 1: Literal numbers (baseline)
-    test_case("literal_numbers", r#"
+    test_case(
+        "literal_numbers",
+        r#"
 package test;
 class Main {
     public static function main() {
@@ -52,10 +88,14 @@ class Main {
         trace(b);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 2: Static var read
-    test_case("static_var_read", r#"
+    test_case(
+        "static_var_read",
+        r#"
 package test;
 class Main {
     static var SIZE = 5;
@@ -65,10 +105,14 @@ class Main {
         trace(s);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 3: Static var in calculation
-    test_case("static_var_calc", r#"
+    test_case(
+        "static_var_calc",
+        r#"
 package test;
 class Main {
     static var SIZE = 5;
@@ -79,10 +123,14 @@ class Main {
         trace(r);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 4: Multiple static vars
-    test_case("multi_static_var", r#"
+    test_case(
+        "multi_static_var",
+        r#"
 package test;
 class Main {
     static var WIDTH = 5;
@@ -94,10 +142,14 @@ class Main {
         trace(w + h);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 5: Static var in another class
-    test_case("static_var_other_class", r#"
+    test_case(
+        "static_var_other_class",
+        r#"
 package test;
 class Config {
     public static var SIZE = 5;
@@ -108,10 +160,14 @@ class Main {
         trace(s);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 6: For loop with literal bound (baseline)
-    test_case("loop_literal_bound", r#"
+    test_case(
+        "loop_literal_bound",
+        r#"
 package test;
 class Main {
     public static function main() {
@@ -122,10 +178,14 @@ class Main {
         trace(sum);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 7: For loop with local var bound
-    test_case("loop_local_var_bound", r#"
+    test_case(
+        "loop_local_var_bound",
+        r#"
 package test;
 class Main {
     public static function main() {
@@ -137,10 +197,14 @@ class Main {
         trace(sum);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 8: Static var assigned to local, used in loop
-    test_case("static_to_local_loop", r#"
+    test_case(
+        "static_to_local_loop",
+        r#"
 package test;
 class Main {
     static var SIZE = 5;
@@ -154,10 +218,14 @@ class Main {
         trace(sum);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 9: Static var directly in loop bound
-    test_case("static_direct_loop", r#"
+    test_case(
+        "static_direct_loop",
+        r#"
 package test;
 class Main {
     static var SIZE = 5;
@@ -170,7 +238,9 @@ class Main {
         trace(sum);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     println!("\n=== All tests completed ===");
 }

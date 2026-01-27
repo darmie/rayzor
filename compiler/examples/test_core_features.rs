@@ -1,7 +1,36 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 /// Test core Rayzor features: async, exceptions, effect analysis
 /// Uses CompilationUnit for simple and correct API usage
-
-use compiler::compilation::{CompilationUnit, CompilationConfig};
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 use compiler::tast::effect_analysis::EffectAnalyzer;
 use compiler::tast::node::AsyncKind;
 
@@ -35,7 +64,7 @@ class Test {
 
     let mut unit = CompilationUnit::new(CompilationConfig::default());
     unit.add_file(source, "test.hx")?;
-    let typed_files = unit.lower_to_tast()?;
+    let typed_files = unit.lower_to_tast().map_err(|e| format!("{:?}", e))?;
 
     let mut analyzer = EffectAnalyzer::new(&unit.symbol_table, &unit.type_table);
 
@@ -44,8 +73,10 @@ class Test {
         for class in &file.classes {
             for method in &class.methods {
                 let effects = analyzer.analyze_function(method);
-                println!("    - {}: throw={}, pure={}", 
-                         method.name, effects.can_throw, effects.is_pure);
+                println!(
+                    "    - {}: throw={}, pure={}",
+                    method.name, effects.can_throw, effects.is_pure
+                );
             }
         }
     }
@@ -73,7 +104,7 @@ class Test {
 
     let mut unit = CompilationUnit::new(CompilationConfig::default());
     unit.add_file(source, "test.hx")?;
-    let typed_files = unit.lower_to_tast()?;
+    let typed_files = unit.lower_to_tast().map_err(|e| format!("{:?}", e))?;
 
     let mut analyzer = EffectAnalyzer::new(&unit.symbol_table, &unit.type_table);
 
@@ -118,14 +149,14 @@ class Test {
 
     let mut unit = CompilationUnit::new(CompilationConfig::default());
     unit.add_file(source, "test.hx")?;
-    let typed_files = unit.lower_to_tast()?;
+    let typed_files = unit.lower_to_tast().map_err(|e| format!("{:?}", e))?;
 
     let mut analyzer = EffectAnalyzer::new(&unit.symbol_table, &unit.type_table);
 
     println!("  Exception effects:");
     let mut can_throw = 0;
     let mut safe = 0;
-    
+
     for file in &typed_files {
         for class in &file.classes {
             for method in &class.methods {

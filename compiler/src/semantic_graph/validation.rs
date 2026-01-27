@@ -77,7 +77,11 @@ pub enum StructuralIssue {
     /// Unreachable blocks
     UnreachableBlocks { blocks: Vec<BlockId> },
     /// Inconsistent predecessor/successor relationships
-    InconsistentEdges { from: BlockId, to: BlockId, issue: String },
+    InconsistentEdges {
+        from: BlockId,
+        to: BlockId,
+        issue: String,
+    },
     /// Invalid terminator
     InvalidTerminator { block: BlockId, issue: String },
     /// Missing entry or exit blocks
@@ -96,7 +100,10 @@ pub enum PerformanceWarning {
     /// Large basic blocks
     LargeBlocks { blocks: Vec<(BlockId, usize)> },
     /// Inefficient control flow patterns
-    InefficiientPatterns { pattern: String, blocks: Vec<BlockId> },
+    InefficiientPatterns {
+        pattern: String,
+        blocks: Vec<BlockId>,
+    },
 }
 
 /// Semantic issues specific to Haxe
@@ -144,7 +151,7 @@ impl<'a> CfgValidator<'a> {
             loop_info: LoopAnalysisInfo::default(),
         }
     }
-    
+
     /// Perform comprehensive validation
     pub fn validate(&mut self) -> ValidationResults {
         let mut results = ValidationResults {
@@ -154,101 +161,129 @@ impl<'a> CfgValidator<'a> {
             semantic_issues: Vec::new(),
             statistics: ValidationStatistics::default(),
         };
-        
+
         // Basic structural validation
         self.validate_structure(&mut results);
-        
+
         // Reachability analysis
         self.analyze_reachability(&mut results);
-        
+
         // Dominance analysis
         self.compute_dominance(&mut results);
-        
+
         // Loop analysis
         self.analyze_loops(&mut results);
-        
+
         // Exception handler validation
         self.validate_exception_handlers(&mut results);
-        
+
         // Performance analysis
         self.analyze_performance(&mut results);
-        
+
         // Semantic validation
         self.validate_semantics(&mut results);
-        
+
         // Compute final statistics
         self.compute_statistics(&mut results);
-        
+
         // Overall validity
-        results.is_valid = results.structural_issues.is_empty() && 
-                          results.semantic_issues.is_empty();
-        
+        results.is_valid =
+            results.structural_issues.is_empty() && results.semantic_issues.is_empty();
+
         results
     }
-    
+
     /// Validate basic CFG structure
     fn validate_structure(&mut self, results: &mut ValidationResults) {
         // Check entry block exists
         if !self.cfg.blocks.contains_key(&self.cfg.entry_block) {
-            results.structural_issues.push(StructuralIssue::MissingCriticalBlocks {
-                issue: "Entry block missing from CFG".to_string(),
-            });
+            results
+                .structural_issues
+                .push(StructuralIssue::MissingCriticalBlocks {
+                    issue: "Entry block missing from CFG".to_string(),
+                });
             return;
         }
-        
+
         // Check predecessor/successor consistency
         for (&block_id, block) in &self.cfg.blocks {
             for &successor_id in &block.successors {
                 if let Some(successor) = self.cfg.blocks.get(&successor_id) {
                     if !successor.predecessors.contains(&block_id) {
-                        results.structural_issues.push(StructuralIssue::InconsistentEdges {
-                            from: block_id,
-                            to: successor_id,
-                            issue: "Successor doesn't list block as predecessor".to_string(),
-                        });
+                        results
+                            .structural_issues
+                            .push(StructuralIssue::InconsistentEdges {
+                                from: block_id,
+                                to: successor_id,
+                                issue: "Successor doesn't list block as predecessor".to_string(),
+                            });
                     }
                 } else {
-                    results.structural_issues.push(StructuralIssue::InconsistentEdges {
-                        from: block_id,
-                        to: successor_id,
-                        issue: "Successor block doesn't exist".to_string(),
-                    });
+                    results
+                        .structural_issues
+                        .push(StructuralIssue::InconsistentEdges {
+                            from: block_id,
+                            to: successor_id,
+                            issue: "Successor block doesn't exist".to_string(),
+                        });
                 }
             }
-            
+
             // Validate terminator consistency with successors
             self.validate_terminator_consistency(block_id, block, results);
         }
-        
+
         // Check for exit blocks
         if self.cfg.exit_blocks.is_empty() {
             // Look for blocks that actually exit
-            let actual_exits: Vec<_> = self.cfg.blocks.iter()
+            let actual_exits: Vec<_> = self
+                .cfg
+                .blocks
+                .iter()
                 .filter(|(_, block)| block.is_exit_block())
                 .map(|(id, _)| *id)
                 .collect();
-                
+
             if actual_exits.is_empty() {
-                results.structural_issues.push(StructuralIssue::MissingCriticalBlocks {
-                    issue: "No exit blocks found".to_string(),
-                });
+                results
+                    .structural_issues
+                    .push(StructuralIssue::MissingCriticalBlocks {
+                        issue: "No exit blocks found".to_string(),
+                    });
             }
         }
     }
-    
+
     /// Validate terminator consistency
-    fn validate_terminator_consistency(&self, block_id: BlockId, block: &BasicBlock, results: &mut ValidationResults) {
+    fn validate_terminator_consistency(
+        &self,
+        block_id: BlockId,
+        block: &BasicBlock,
+        results: &mut ValidationResults,
+    ) {
         let expected_successors = match &block.terminator {
             Terminator::Jump { target } => vec![*target],
-            Terminator::Branch { true_target, false_target, .. } => vec![*true_target, *false_target],
-            Terminator::Switch { targets, default_target, .. } => {
+            Terminator::Branch {
+                true_target,
+                false_target,
+                ..
+            } => vec![*true_target, *false_target],
+            Terminator::Switch {
+                targets,
+                default_target,
+                ..
+            } => {
                 let mut successors: Vec<_> = targets.iter().map(|t| t.target).collect();
                 if let Some(default) = default_target {
                     successors.push(*default);
                 }
                 successors
             }
-            Terminator::PatternMatch { patterns, default_target, .. } => {
+            Terminator::PatternMatch {
+                patterns,
+                default_target,
+                ..
+            } => {
                 let mut successors: Vec<_> = patterns.iter().map(|p| p.target).collect();
                 if let Some(default) = default_target {
                     successors.push(*default);
@@ -256,34 +291,41 @@ impl<'a> CfgValidator<'a> {
                 successors
             }
             Terminator::MacroExpansion { target, .. } => vec![*target],
-            Terminator::Return { .. } | Terminator::Throw { .. } | Terminator::Unreachable => vec![],
+            Terminator::Return { .. } | Terminator::Throw { .. } | Terminator::Unreachable => {
+                vec![]
+            }
         };
-        
+
         // Check that successors match terminator
         let mut actual_successors = block.successors.clone();
         actual_successors.sort();
         let mut expected_sorted = expected_successors;
         expected_sorted.sort();
         expected_sorted.dedup();
-        
+
         if actual_successors != expected_sorted {
-            results.structural_issues.push(StructuralIssue::InvalidTerminator {
-                block: block_id,
-                issue: format!("Successors {:?} don't match terminator {:?}", actual_successors, expected_sorted),
-            });
+            results
+                .structural_issues
+                .push(StructuralIssue::InvalidTerminator {
+                    block: block_id,
+                    issue: format!(
+                        "Successors {:?} don't match terminator {:?}",
+                        actual_successors, expected_sorted
+                    ),
+                });
         }
     }
-    
+
     /// Analyze reachability from entry block
     fn analyze_reachability(&mut self, results: &mut ValidationResults) {
         self.reachable.clear();
         let mut queue = VecDeque::new();
-        
+
         // Only start reachability analysis if entry block exists
         if self.cfg.blocks.contains_key(&self.cfg.entry_block) {
             queue.push_back(self.cfg.entry_block);
             self.reachable.insert(self.cfg.entry_block);
-            
+
             while let Some(block_id) = queue.pop_front() {
                 if let Some(block) = self.cfg.blocks.get(&block_id) {
                     for &successor in &block.successors {
@@ -294,25 +336,30 @@ impl<'a> CfgValidator<'a> {
                 }
             }
         }
-        
+
         // Find unreachable blocks
-        let unreachable: Vec<_> = self.cfg.blocks.keys()
+        let unreachable: Vec<_> = self
+            .cfg
+            .blocks
+            .keys()
             .filter(|&id| !self.reachable.contains(id))
             .copied()
             .collect();
-            
+
         if !unreachable.is_empty() {
-            results.structural_issues.push(StructuralIssue::UnreachableBlocks {
-                blocks: unreachable,
-            });
+            results
+                .structural_issues
+                .push(StructuralIssue::UnreachableBlocks {
+                    blocks: unreachable,
+                });
         }
     }
-    
+
     /// Compute dominance information
     fn compute_dominance(&mut self, _results: &mut ValidationResults) {
         // Simplified dominance computation for validation
         // In a full implementation, this would use the standard dominance algorithm
-        
+
         for &block_id in &self.reachable {
             let dominance = DominanceInfo {
                 immediate_dominator: if block_id == self.cfg.entry_block {
@@ -326,7 +373,7 @@ impl<'a> CfgValidator<'a> {
             self.dominance_info.insert(block_id, dominance);
         }
     }
-    
+
     /// Analyze loop structure
     fn analyze_loops(&mut self, results: &mut ValidationResults) {
         // Find back edges (edges that go to a dominator)
@@ -338,36 +385,36 @@ impl<'a> CfgValidator<'a> {
                 }
             }
         }
-        
+
         // Build natural loops for each back edge
         for &(tail, header) in &self.loop_info.back_edges {
             let loop_body = self.compute_natural_loop(header, tail);
             let natural_loop = NaturalLoop {
                 header,
                 body: loop_body,
-                depth: 1, // Simplified
+                depth: 1,      // Simplified
                 exits: vec![], // Would compute actual exits
             };
             self.loop_info.natural_loops.push(natural_loop);
         }
     }
-    
+
     /// Check if block1 dominates block2
     fn dominates(&self, block1: BlockId, block2: BlockId) -> bool {
         // Simplified dominance check
         // In practice, would use proper dominance computation
         block1 == self.cfg.entry_block || block1 == block2
     }
-    
+
     /// Compute natural loop body
     fn compute_natural_loop(&self, header: BlockId, tail: BlockId) -> HashSet<BlockId> {
         let mut loop_body = HashSet::new();
         let mut worklist = VecDeque::new();
-        
+
         loop_body.insert(header);
         loop_body.insert(tail);
         worklist.push_back(tail);
-        
+
         while let Some(block_id) = worklist.pop_front() {
             if let Some(block) = self.cfg.blocks.get(&block_id) {
                 for &pred in &block.predecessors {
@@ -377,145 +424,173 @@ impl<'a> CfgValidator<'a> {
                 }
             }
         }
-        
+
         loop_body
     }
-    
+
     /// Validate exception handlers
     fn validate_exception_handlers(&self, results: &mut ValidationResults) {
         for (&handler_block, handler_info) in &self.cfg.exception_handlers {
             // Check handler block exists
             if !self.cfg.blocks.contains_key(&handler_block) {
-                results.semantic_issues.push(SemanticIssue::InvalidExceptionHandler {
-                    handler: handler_block,
-                    issue: "Handler block doesn't exist".to_string(),
-                });
+                results
+                    .semantic_issues
+                    .push(SemanticIssue::InvalidExceptionHandler {
+                        handler: handler_block,
+                        issue: "Handler block doesn't exist".to_string(),
+                    });
                 continue;
             }
-            
+
             // Check covered blocks exist
             for &covered_block in &handler_info.covered_blocks {
                 if !self.cfg.blocks.contains_key(&covered_block) {
-                    results.semantic_issues.push(SemanticIssue::InvalidExceptionHandler {
-                        handler: handler_block,
-                        issue: format!("Covered block {:?} doesn't exist", covered_block),
-                    });
+                    results
+                        .semantic_issues
+                        .push(SemanticIssue::InvalidExceptionHandler {
+                            handler: handler_block,
+                            issue: format!("Covered block {:?} doesn't exist", covered_block),
+                        });
                 }
             }
-            
+
             // Check exception types are valid
             if handler_info.exception_types.is_empty() {
-                results.semantic_issues.push(SemanticIssue::InvalidExceptionHandler {
-                    handler: handler_block,
-                    issue: "No exception types specified".to_string(),
-                });
+                results
+                    .semantic_issues
+                    .push(SemanticIssue::InvalidExceptionHandler {
+                        handler: handler_block,
+                        issue: "No exception types specified".to_string(),
+                    });
             }
         }
     }
-    
+
     /// Analyze performance characteristics
     fn analyze_performance(&self, results: &mut ValidationResults) {
         const MAX_BLOCKS_WARNING: usize = 1000;
         const MAX_STATEMENTS_PER_BLOCK: usize = 100;
         const MAX_NESTING_WARNING: u32 = 10;
-        
+
         // Check for excessive block count
         if self.cfg.blocks.len() > MAX_BLOCKS_WARNING {
-            results.performance_warnings.push(PerformanceWarning::ExcessiveBlocks {
-                count: self.cfg.blocks.len(),
-                threshold: MAX_BLOCKS_WARNING,
-            });
+            results
+                .performance_warnings
+                .push(PerformanceWarning::ExcessiveBlocks {
+                    count: self.cfg.blocks.len(),
+                    threshold: MAX_BLOCKS_WARNING,
+                });
         }
-        
+
         // Check for large blocks
-        let large_blocks: Vec<_> = self.cfg.blocks.iter()
+        let large_blocks: Vec<_> = self
+            .cfg
+            .blocks
+            .iter()
             .filter(|(_, block)| block.statement_count() > MAX_STATEMENTS_PER_BLOCK)
             .map(|(id, block)| (*id, block.statement_count()))
             .collect();
-            
+
         if !large_blocks.is_empty() {
-            results.performance_warnings.push(PerformanceWarning::LargeBlocks {
-                blocks: large_blocks,
-            });
+            results
+                .performance_warnings
+                .push(PerformanceWarning::LargeBlocks {
+                    blocks: large_blocks,
+                });
         }
-        
+
         // Check for deep nesting
-        let max_depth = self.cfg.blocks.values()
+        let max_depth = self
+            .cfg
+            .blocks
+            .values()
             .map(|block| block.metadata.loop_depth)
             .max()
             .unwrap_or(0);
-            
+
         if max_depth > MAX_NESTING_WARNING {
-            results.performance_warnings.push(PerformanceWarning::DeepNesting {
-                depth: max_depth,
-                threshold: MAX_NESTING_WARNING,
-            });
+            results
+                .performance_warnings
+                .push(PerformanceWarning::DeepNesting {
+                    depth: max_depth,
+                    threshold: MAX_NESTING_WARNING,
+                });
         }
     }
-    
+
     /// Validate Haxe-specific semantics
     fn validate_semantics(&self, results: &mut ValidationResults) {
         for (&block_id, block) in &self.cfg.blocks {
             match &block.terminator {
                 Terminator::PatternMatch { patterns, .. } => {
                     if patterns.is_empty() {
-                        results.semantic_issues.push(SemanticIssue::PatternMatchingIssues {
-                            block: block_id,
-                            issue: "Pattern match with no patterns".to_string(),
-                        });
+                        results
+                            .semantic_issues
+                            .push(SemanticIssue::PatternMatchingIssues {
+                                block: block_id,
+                                issue: "Pattern match with no patterns".to_string(),
+                            });
                     }
                 }
-                
+
                 Terminator::Switch { targets, .. } => {
                     // Check for duplicate case values (simplified)
                     if targets.len() > 1 {
                         // In practice, would check for duplicate case values
                     }
                 }
-                
+
                 Terminator::MacroExpansion { macro_info, .. } => {
                     // Validate macro expansion context
                     if macro_info.expansion_context.is_empty() {
-                        results.semantic_issues.push(SemanticIssue::MacroExpansionIssues {
-                            block: block_id,
-                            issue: "Empty macro expansion context".to_string(),
-                        });
+                        results
+                            .semantic_issues
+                            .push(SemanticIssue::MacroExpansionIssues {
+                                block: block_id,
+                                issue: "Empty macro expansion context".to_string(),
+                            });
                     }
                 }
-                
+
                 _ => {}
             }
         }
     }
-    
+
     /// Compute final validation statistics
     fn compute_statistics(&self, results: &mut ValidationResults) {
         results.statistics.total_blocks = self.cfg.blocks.len();
         results.statistics.reachable_blocks = self.reachable.len();
         results.statistics.unreachable_blocks = self.cfg.blocks.len() - self.reachable.len();
-        
-        results.statistics.total_edges = self.cfg.blocks.values()
+
+        results.statistics.total_edges = self
+            .cfg
+            .blocks
+            .values()
             .map(|block| block.successors.len())
             .sum();
-            
-        results.statistics.max_loop_depth = self.cfg.blocks.values()
+
+        results.statistics.max_loop_depth = self
+            .cfg
+            .blocks
+            .values()
             .map(|block| block.metadata.loop_depth)
             .max()
             .unwrap_or(0);
-            
+
         results.statistics.exception_handlers = self.cfg.exception_handlers.len();
-        
+
         // Compute critical edges
         results.statistics.critical_edges = self.compute_critical_edges();
-        
+
         // Compute maximum path length
         results.statistics.max_path_length = self.compute_max_path_length();
     }
-    
+
     /// Compute number of critical edges
     fn compute_critical_edges(&self) -> usize {
         let mut critical_count = 0;
-        
+
         for block in self.cfg.blocks.values() {
             if block.successors.len() > 1 {
                 for &successor_id in &block.successors {
@@ -527,39 +602,45 @@ impl<'a> CfgValidator<'a> {
                 }
             }
         }
-        
+
         critical_count
     }
-    
+
     /// Compute maximum path length from entry
     fn compute_max_path_length(&self) -> u32 {
         let mut max_length = 0;
         let mut visited = HashSet::new();
-        
+
         fn dfs(
-            cfg: &ControlFlowGraph, 
-            block_id: BlockId, 
-            current_length: u32, 
-            visited: &mut HashSet<BlockId>, 
-            max_length: &mut u32
+            cfg: &ControlFlowGraph,
+            block_id: BlockId,
+            current_length: u32,
+            visited: &mut HashSet<BlockId>,
+            max_length: &mut u32,
         ) {
             if visited.contains(&block_id) {
                 return; // Avoid cycles
             }
-            
+
             visited.insert(block_id);
             *max_length = (*max_length).max(current_length);
-            
+
             if let Some(block) = cfg.blocks.get(&block_id) {
                 for &successor in &block.successors {
                     dfs(cfg, successor, current_length + 1, visited, max_length);
                 }
             }
-            
+
             visited.remove(&block_id);
         }
-        
-        dfs(self.cfg, self.cfg.entry_block, 0, &mut visited, &mut max_length);
+
+        dfs(
+            self.cfg,
+            self.cfg.entry_block,
+            0,
+            &mut visited,
+            &mut max_length,
+        );
         max_length
     }
 }
@@ -570,44 +651,50 @@ impl ValidationResults {
     pub fn print_report(&self) {
         println!("🔍 CFG Validation Report");
         println!("========================");
-        
+
         if self.is_valid {
             println!("✅ CFG is structurally valid");
         } else {
             println!("❌ CFG has validation issues");
         }
-        
+
         println!("\n📊 Statistics:");
         println!("   Total blocks: {}", self.statistics.total_blocks);
         println!("   Reachable blocks: {}", self.statistics.reachable_blocks);
-        println!("   Unreachable blocks: {}", self.statistics.unreachable_blocks);
+        println!(
+            "   Unreachable blocks: {}",
+            self.statistics.unreachable_blocks
+        );
         println!("   Total edges: {}", self.statistics.total_edges);
         println!("   Critical edges: {}", self.statistics.critical_edges);
         println!("   Max path length: {}", self.statistics.max_path_length);
         println!("   Max loop depth: {}", self.statistics.max_loop_depth);
-        println!("   Exception handlers: {}", self.statistics.exception_handlers);
-        
+        println!(
+            "   Exception handlers: {}",
+            self.statistics.exception_handlers
+        );
+
         if !self.structural_issues.is_empty() {
             println!("\n🔧 Structural Issues:");
             for issue in &self.structural_issues {
                 println!("   • {:?}", issue);
             }
         }
-        
+
         if !self.semantic_issues.is_empty() {
             println!("\n🎯 Semantic Issues:");
             for issue in &self.semantic_issues {
                 println!("   • {:?}", issue);
             }
         }
-        
+
         if !self.performance_warnings.is_empty() {
             println!("\n⚡ Performance Warnings:");
             for warning in &self.performance_warnings {
                 println!("   • {:?}", warning);
             }
         }
-        
+
         println!();
     }
 }
@@ -622,11 +709,11 @@ mod validation_tests {
         let function_id = SymbolId::from_raw(1);
         let entry_block = BlockId::from_raw(1);
         let mut cfg = ControlFlowGraph::new(function_id, entry_block);
-        
+
         let mut block = BasicBlock::new(entry_block, SourceLocation::unknown());
         block.set_terminator(Terminator::Return { value: None });
         cfg.add_block(block);
-        
+
         cfg
     }
 
@@ -635,7 +722,7 @@ mod validation_tests {
         let cfg = create_simple_cfg();
         let mut validator = CfgValidator::new(&cfg);
         let results = validator.validate();
-        
+
         assert!(results.is_valid);
         assert!(results.structural_issues.is_empty());
         assert!(results.semantic_issues.is_empty());
@@ -649,17 +736,18 @@ mod validation_tests {
         let function_id = SymbolId::from_raw(1);
         let entry_block = BlockId::from_raw(999); // Non-existent
         let cfg = ControlFlowGraph::new(function_id, entry_block);
-        
+
         let mut validator = CfgValidator::new(&cfg);
         let results = validator.validate();
-        
+
         assert!(!results.is_valid);
         assert!(!results.structural_issues.is_empty());
-        
+
         // Should detect missing entry block
-        assert!(results.structural_issues.iter().any(|issue| {
-            matches!(issue, StructuralIssue::MissingCriticalBlocks { .. })
-        }));
+        assert!(results
+            .structural_issues
+            .iter()
+            .any(|issue| { matches!(issue, StructuralIssue::MissingCriticalBlocks { .. }) }));
     }
 
     #[test]
@@ -667,24 +755,24 @@ mod validation_tests {
         let function_id = SymbolId::from_raw(1);
         let entry_block = BlockId::from_raw(1);
         let mut cfg = ControlFlowGraph::new(function_id, entry_block);
-        
+
         // Add entry block
         let mut entry = BasicBlock::new(entry_block, SourceLocation::unknown());
         entry.set_terminator(Terminator::Return { value: None });
         cfg.add_block(entry);
-        
+
         // Add unreachable block
         let unreachable_block = BlockId::from_raw(2);
         let mut unreachable = BasicBlock::new(unreachable_block, SourceLocation::unknown());
         unreachable.set_terminator(Terminator::Return { value: None });
         cfg.add_block(unreachable);
-        
+
         let mut validator = CfgValidator::new(&cfg);
         let results = validator.validate();
-        
+
         assert!(!results.is_valid);
         assert_eq!(results.statistics.unreachable_blocks, 1);
-        
+
         // Should detect unreachable block
         assert!(results.structural_issues.iter().any(|issue| {
             matches!(issue, StructuralIssue::UnreachableBlocks { blocks } if blocks.contains(&unreachable_block))
@@ -696,24 +784,25 @@ mod validation_tests {
         let function_id = SymbolId::from_raw(1);
         let entry_block = BlockId::from_raw(1);
         let mut cfg = ControlFlowGraph::new(function_id, entry_block);
-        
+
         let mut block = BasicBlock::new(entry_block, SourceLocation::unknown());
-        
+
         // Add many statements to trigger large block warning
         for i in 0..150 {
             block.add_statement(crate::tast::id_types::StatementId::from_raw(i));
         }
-        
+
         block.set_terminator(Terminator::Return { value: None });
         cfg.add_block(block);
-        
+
         let mut validator = CfgValidator::new(&cfg);
         let results = validator.validate();
-        
+
         // Should have performance warning for large block
         assert!(!results.performance_warnings.is_empty());
-        assert!(results.performance_warnings.iter().any(|warning| {
-            matches!(warning, PerformanceWarning::LargeBlocks { .. })
-        }));
+        assert!(results
+            .performance_warnings
+            .iter()
+            .any(|warning| { matches!(warning, PerformanceWarning::LargeBlocks { .. }) }));
     }
 }

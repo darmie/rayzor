@@ -10,7 +10,10 @@
 
 use crate::tast::type_checker::{ClassHierarchyInfo, ClassHierarchyRegistry};
 
-use super::{InternedString, LifetimeId, ScopeId, StringInterner, SymbolId, TypeId, TypedArena, symbol_cache::SymbolResolutionCache};
+use super::{
+    symbol_cache::SymbolResolutionCache, InternedString, LifetimeId, ScopeId, StringInterner,
+    SymbolId, TypeId, TypedArena,
+};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::rc::Rc;
@@ -377,8 +380,6 @@ impl Symbol {
         }
     }
 
-   
-
     /// Create a variable symbol
     pub fn variable(
         id: SymbolId,
@@ -483,7 +484,7 @@ pub struct SymbolTable {
     /// Statistics
     total_symbols: usize,
     /// Class hierarchy information indexed by symbol ID
-    pub (crate) class_hierarchies: HashMap<SymbolId, ClassHierarchyInfo>,
+    pub(crate) class_hierarchies: HashMap<SymbolId, ClassHierarchyInfo>,
     /// Type ID to Symbol ID mapping for hierarchy lookups
     type_to_symbol: HashMap<TypeId, SymbolId>,
     /// Symbol ID to Type ID reverse mapping for fast lookups
@@ -535,7 +536,6 @@ impl SymbolTable {
         }
     }
 
-   
     /// Add a new symbol to the table
     pub fn add_symbol(&mut self, symbol: Symbol) -> &Symbol {
         let id = symbol.id;
@@ -568,12 +568,12 @@ impl SymbolTable {
         // Invalidate relevant cache entries
         self.symbol_cache.invalidate_scope(scope_id);
         self.symbol_cache.invalidate_name(name);
-        
+
         // Invalidate cache entries for this symbol kind
         use super::symbol_cache::SymbolCacheKey;
         let kind_key = SymbolCacheKey::SymbolsByKind(kind);
         // Note: We could implement specific invalidation for single keys, but clearing is simpler for now
-        
+
         static_ref
     }
 
@@ -592,20 +592,19 @@ impl SymbolTable {
     pub fn get_symbol(&self, id: SymbolId) -> Option<&Symbol> {
         self.symbols_by_id.get(&id).copied()
     }
-    
+
     /// Get a mutable symbol by its ID
     pub fn get_symbol_mut(&mut self, id: SymbolId) -> Option<&mut Symbol> {
         self.symbols_by_id.get(&id).and_then(|&symbol_ptr| {
             // SAFETY: We maintain exclusive ownership of symbols in the arena
             // and this method has &mut self, ensuring exclusive access
-            unsafe { 
+            unsafe {
                 let mutable_ptr = symbol_ptr as *const Symbol as *mut Symbol;
                 mutable_ptr.as_mut()
             }
         })
     }
-    
-    
+
     pub fn update_symbol_type(&mut self, id: SymbolId, type_id: TypeId) -> bool {
         // We need to find the symbol and update it
         // Since we use an arena, we can't directly mutate, but we can use unsafe code
@@ -643,60 +642,72 @@ impl SymbolTable {
         if let Some(cached_result) = self.symbol_cache.get(scope_id, name) {
             return cached_result.and_then(|id| self.get_symbol(id));
         }
-        
+
         // Cache miss, perform lookup
         let symbol_id = self.symbols_by_name.get(&(scope_id, name)).copied();
-        
+
         // Store result in cache (including None results to avoid repeated misses)
         self.symbol_cache.insert(scope_id, name, symbol_id);
-        
+
         symbol_id.and_then(|id| self.get_symbol(id))
     }
 
     /// Get all symbols in a scope (with caching)
     pub fn symbols_in_scope(&self, scope_id: ScopeId) -> Vec<&Symbol> {
         use super::symbol_cache::SymbolCacheKey;
-        
+
         let cache_key = SymbolCacheKey::SymbolsInScope(scope_id);
-        
+
         // Check cache first
         if let Some(cached_ids) = self.symbol_cache.get_symbols(&cache_key) {
-            return cached_ids.iter().filter_map(|&id| self.get_symbol(id)).collect();
+            return cached_ids
+                .iter()
+                .filter_map(|&id| self.get_symbol(id))
+                .collect();
         }
-        
+
         // Cache miss, perform lookup
-        let symbol_ids = self.symbols_by_scope
+        let symbol_ids = self
+            .symbols_by_scope
             .get(&scope_id)
             .cloned()
             .unwrap_or_default();
-        
+
         // Store result in cache
-        self.symbol_cache.insert_symbols(cache_key, symbol_ids.clone());
-        
-        symbol_ids.iter().filter_map(|&id| self.get_symbol(id)).collect()
+        self.symbol_cache
+            .insert_symbols(cache_key, symbol_ids.clone());
+
+        symbol_ids
+            .iter()
+            .filter_map(|&id| self.get_symbol(id))
+            .collect()
     }
 
     /// Get all symbols of a specific kind (with caching)
     pub fn symbols_of_kind(&self, kind: SymbolKind) -> Vec<&Symbol> {
         use super::symbol_cache::SymbolCacheKey;
-        
+
         let cache_key = SymbolCacheKey::SymbolsByKind(kind);
-        
+
         // Check cache first
         if let Some(cached_ids) = self.symbol_cache.get_symbols(&cache_key) {
-            return cached_ids.iter().filter_map(|&id| self.get_symbol(id)).collect();
+            return cached_ids
+                .iter()
+                .filter_map(|&id| self.get_symbol(id))
+                .collect();
         }
-        
+
         // Cache miss, perform lookup
-        let symbol_ids = self.symbols_by_kind
-            .get(&kind)
-            .cloned()
-            .unwrap_or_default();
-        
+        let symbol_ids = self.symbols_by_kind.get(&kind).cloned().unwrap_or_default();
+
         // Store result in cache
-        self.symbol_cache.insert_symbols(cache_key, symbol_ids.clone());
-        
-        symbol_ids.iter().filter_map(|&id| self.get_symbol(id)).collect()
+        self.symbol_cache
+            .insert_symbols(cache_key, symbol_ids.clone());
+
+        symbol_ids
+            .iter()
+            .filter_map(|&id| self.get_symbol(id))
+            .collect()
     }
 
     /// Check if a name is already used in a scope
@@ -706,10 +717,16 @@ impl SymbolTable {
 
     /// Add an alias name for an existing symbol in the same scope.
     /// This allows a symbol to be looked up by multiple names (e.g., both short and qualified names).
-    pub fn add_symbol_alias(&mut self, symbol_id: SymbolId, scope_id: ScopeId, alias_name: InternedString) {
+    pub fn add_symbol_alias(
+        &mut self,
+        symbol_id: SymbolId,
+        scope_id: ScopeId,
+        alias_name: InternedString,
+    ) {
         // Only add if not already present
         if !self.symbols_by_name.contains_key(&(scope_id, alias_name)) {
-            self.symbols_by_name.insert((scope_id, alias_name), symbol_id);
+            self.symbols_by_name
+                .insert((scope_id, alias_name), symbol_id);
             // Invalidate cache for this name
             self.symbol_cache.clear();
         }
@@ -828,7 +845,7 @@ impl SymbolTable {
             name,
             kind: SymbolKind::Class,
             type_id: TypeId::invalid(), // Will be set when type is created
-            scope_id: scope_id, // Set to the correct scope
+            scope_id: scope_id,         // Set to the correct scope
             lifetime_id: LifetimeId::invalid(),
             visibility: Visibility::Public, // Classes are typically public by default
             mutability: Mutability::Immutable, // Class definitions are immutable
@@ -852,7 +869,11 @@ impl SymbolTable {
         self.create_interface_in_scope(name, ScopeId::invalid())
     }
 
-    pub fn create_interface_in_scope(&mut self, name: InternedString, scope_id: ScopeId) -> SymbolId {
+    pub fn create_interface_in_scope(
+        &mut self,
+        name: InternedString,
+        scope_id: ScopeId,
+    ) -> SymbolId {
         // Generate a new symbol ID
         let symbol_id = SymbolId::from_raw(self.total_symbols as u32);
 
@@ -862,9 +883,9 @@ impl SymbolTable {
             name,
             kind: SymbolKind::Interface,
             type_id: TypeId::invalid(), // Will be set when type is created
-            scope_id: scope_id, // Set to the correct scope
+            scope_id: scope_id,         // Set to the correct scope
             lifetime_id: LifetimeId::invalid(),
-            visibility: Visibility::Public, 
+            visibility: Visibility::Public,
             mutability: Mutability::Immutable,
             definition_location: SourceLocation::unknown(), // Would be set by caller in full implementation
             is_used: false,
@@ -887,7 +908,11 @@ impl SymbolTable {
     }
 
     /// Create a type alias (typedef) symbol in a specific scope
-    pub fn create_type_alias_in_scope(&mut self, name: InternedString, scope_id: ScopeId) -> SymbolId {
+    pub fn create_type_alias_in_scope(
+        &mut self,
+        name: InternedString,
+        scope_id: ScopeId,
+    ) -> SymbolId {
         let symbol_id = SymbolId::from_raw(self.total_symbols as u32);
 
         let symbol = Symbol {
@@ -916,11 +941,15 @@ impl SymbolTable {
     pub fn create_function(&mut self, name: InternedString) -> SymbolId {
         self.create_function_in_scope(name, ScopeId::invalid())
     }
-    
+
     /// Create a function symbol in a specific scope
-    pub fn create_function_in_scope(&mut self, name: InternedString, scope_id: ScopeId) -> SymbolId {
+    pub fn create_function_in_scope(
+        &mut self,
+        name: InternedString,
+        scope_id: ScopeId,
+    ) -> SymbolId {
         let symbol_id = SymbolId::from_raw(self.total_symbols as u32);
-        
+
         let symbol = Symbol {
             id: symbol_id,
             name,
@@ -938,7 +967,7 @@ impl SymbolTable {
             package_id: None,
             qualified_name: None,
         };
-        
+
         self.add_symbol(symbol);
         symbol_id
     }
@@ -947,16 +976,25 @@ impl SymbolTable {
     pub fn create_variable(&mut self, name: InternedString) -> SymbolId {
         self.create_variable_in_scope(name, ScopeId::invalid())
     }
-    
+
     /// Create a variable symbol in a specific scope
-    pub fn create_variable_in_scope(&mut self, name: InternedString, scope_id: ScopeId) -> SymbolId {
+    pub fn create_variable_in_scope(
+        &mut self,
+        name: InternedString,
+        scope_id: ScopeId,
+    ) -> SymbolId {
         self.create_variable_with_type(name, scope_id, TypeId::invalid())
     }
-    
+
     /// Create a variable symbol with a specific type
-    pub fn create_variable_with_type(&mut self, name: InternedString, scope_id: ScopeId, type_id: TypeId) -> SymbolId {
+    pub fn create_variable_with_type(
+        &mut self,
+        name: InternedString,
+        scope_id: ScopeId,
+        type_id: TypeId,
+    ) -> SymbolId {
         let symbol_id = SymbolId::from_raw(self.total_symbols as u32);
-        
+
         let symbol = Symbol {
             id: symbol_id,
             name,
@@ -974,7 +1012,7 @@ impl SymbolTable {
             package_id: None,
             qualified_name: None,
         };
-        
+
         self.add_symbol(symbol);
         symbol_id
     }
@@ -982,7 +1020,7 @@ impl SymbolTable {
     /// Create a field symbol
     pub fn create_field(&mut self, name: InternedString) -> SymbolId {
         let symbol_id = SymbolId::from_raw(self.total_symbols as u32);
-        
+
         let symbol = Symbol {
             id: symbol_id,
             name,
@@ -1000,11 +1038,11 @@ impl SymbolTable {
             package_id: None,
             qualified_name: None,
         };
-        
+
         self.add_symbol(symbol);
         symbol_id
     }
-    
+
     /// Create an enum symbol
     pub fn create_enum(&mut self, name: InternedString) -> SymbolId {
         self.create_enum_in_scope(name, ScopeId::invalid())
@@ -1036,7 +1074,11 @@ impl SymbolTable {
     }
 
     /// Create an abstract type symbol in a specific scope
-    pub fn create_abstract_in_scope(&mut self, name: InternedString, scope_id: ScopeId) -> SymbolId {
+    pub fn create_abstract_in_scope(
+        &mut self,
+        name: InternedString,
+        scope_id: ScopeId,
+    ) -> SymbolId {
         let symbol_id = SymbolId::from_raw(self.total_symbols as u32);
 
         let symbol = Symbol {
@@ -1062,9 +1104,14 @@ impl SymbolTable {
     }
 
     /// Create an enum variant symbol linked to its parent enum
-    pub fn create_enum_variant_in_scope(&mut self, name: InternedString, scope_id: ScopeId, parent_enum: SymbolId) -> SymbolId {
+    pub fn create_enum_variant_in_scope(
+        &mut self,
+        name: InternedString,
+        scope_id: ScopeId,
+        parent_enum: SymbolId,
+    ) -> SymbolId {
         let symbol_id = SymbolId::from_raw(self.total_symbols as u32);
-        
+
         let symbol = Symbol {
             id: symbol_id,
             name,
@@ -1082,19 +1129,23 @@ impl SymbolTable {
             package_id: None,
             qualified_name: None,
         };
-        
+
         self.add_symbol(symbol);
-        
+
         // Store the relationship between variant and parent enum
-        self.enum_variants.entry(parent_enum)
+        self.enum_variants
+            .entry(parent_enum)
             .or_insert_with(Vec::new)
             .push(symbol_id);
-        
+
         symbol_id
     }
-    
+
     /// Find the parent enum symbol for a given enum constructor
-    pub fn find_parent_enum_for_constructor(&self, constructor_symbol: SymbolId) -> Option<SymbolId> {
+    pub fn find_parent_enum_for_constructor(
+        &self,
+        constructor_symbol: SymbolId,
+    ) -> Option<SymbolId> {
         for (enum_symbol, variants) in &self.enum_variants {
             if variants.contains(&constructor_symbol) {
                 return Some(*enum_symbol);
@@ -1151,10 +1202,10 @@ impl SymbolTable {
     /// Get all direct subclasses of a class
     pub fn get_direct_subclasses(&self, class_id: SymbolId) -> Vec<SymbolId> {
         let mut subclasses = Vec::with_capacity(4); // Most classes have few direct subclasses
-        
+
         // Get the type ID for this class
         let class_type = self.find_type_for_symbol(class_id);
-        
+
         // Iterate through all class hierarchies to find subclasses
         for (&symbol_id, hierarchy) in &self.class_hierarchies {
             if let Some(superclass) = hierarchy.superclass {
@@ -1163,28 +1214,28 @@ impl SymbolTable {
                 }
             }
         }
-        
+
         subclasses
     }
-    
+
     /// Find type ID for a symbol (helper method)
     fn find_type_for_symbol(&self, symbol_id: SymbolId) -> Option<TypeId> {
         // Use O(1) reverse lookup
         self.symbol_to_type.get(&symbol_id).copied()
     }
-    
+
     /// Get all interfaces implemented by a class (including inherited)
     pub fn get_all_interfaces(&self, class_id: SymbolId) -> Vec<SymbolId> {
         let mut interfaces = Vec::with_capacity(8); // Estimate for interface collection
         let mut seen = HashSet::new();
         let mut queue = VecDeque::new();
         queue.push_back(class_id);
-        
+
         while let Some(current) = queue.pop_front() {
             if !seen.insert(current) {
                 continue;
             }
-            
+
             if let Some(hierarchy) = self.get_class_hierarchy(current) {
                 // Add direct interfaces
                 for &interface_type in &hierarchy.interfaces {
@@ -1194,7 +1245,7 @@ impl SymbolTable {
                         }
                     }
                 }
-                
+
                 // Process superclass
                 if let Some(superclass) = hierarchy.superclass {
                     if let Some(super_sym) = self.get_symbol_from_type(superclass) {
@@ -1203,39 +1254,39 @@ impl SymbolTable {
                 }
             }
         }
-        
+
         interfaces
     }
-    
+
     /// Check if source class is subtype of target class
     pub fn is_class_subtype_of(&self, source: SymbolId, target: SymbolId) -> bool {
         if source == target {
             return true;
         }
-        
+
         // Get target's type ID
         if let Some(target_type) = self.find_type_for_symbol(target) {
             let supertypes = self.compute_all_supertypes(source);
             return supertypes.contains(&target_type);
         }
-        
+
         false
     }
-    
+
     /// Check if a class implements an interface
     pub fn implements_interface(&self, class_id: SymbolId, interface_id: SymbolId) -> bool {
         if let Some(interface_type) = self.find_type_for_symbol(interface_id) {
             let supertypes = self.compute_all_supertypes(class_id);
             return supertypes.contains(&interface_type);
         }
-        
+
         false
     }
-    
+
     /// Validate that there are no cycles in the class hierarchy
     pub fn validate_no_inheritance_cycles(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::with_capacity(4); // Most checks produce few errors
-        
+
         for &class_id in self.class_hierarchies.keys() {
             if self.has_inheritance_cycle(class_id) {
                 if let Some(symbol) = self.get_symbol(class_id) {
@@ -1246,25 +1297,25 @@ impl SymbolTable {
                 }
             }
         }
-        
+
         if errors.is_empty() {
             Ok(())
         } else {
             Err(errors)
         }
     }
-    
+
     /// Check if there's an inheritance cycle starting from the given class
     fn has_inheritance_cycle(&self, start: SymbolId) -> bool {
         let mut visited = HashSet::new();
         let mut current = start;
-        
+
         loop {
             if !visited.insert(current) {
                 // We've seen this before - cycle detected
                 return true;
             }
-            
+
             // Get superclass
             if let Some(hierarchy) = self.get_class_hierarchy(current) {
                 if let Some(superclass) = hierarchy.superclass {
@@ -1279,13 +1330,13 @@ impl SymbolTable {
             } else {
                 break;
             }
-            
+
             // Safety check
             if visited.len() > 1000 {
                 return true;
             }
         }
-        
+
         false
     }
 
@@ -1293,12 +1344,12 @@ impl SymbolTable {
     pub(crate) fn get_class_hierarchy(&self, class_id: SymbolId) -> Option<&ClassHierarchyInfo> {
         self.class_hierarchies.get(&class_id)
     }
-    
+
     /// Get class hierarchy info for TypeChecker
     pub fn get_class_info_for_type_checking(&self, class_id: SymbolId) -> Option<ClassTypeInfo> {
         let hierarchy = self.get_class_hierarchy(class_id)?;
         let symbol = self.get_symbol(class_id)?;
-        
+
         Some(ClassTypeInfo {
             symbol_id: class_id,
             name: symbol.name,
@@ -1309,29 +1360,29 @@ impl SymbolTable {
             depth: hierarchy.depth,
         })
     }
-    
+
     // === Cache Management Methods ===
-    
+
     /// Get symbol cache statistics
     pub fn cache_stats(&self) -> super::symbol_cache::CacheStats {
         self.symbol_cache.stats()
     }
-    
+
     /// Get current cache sizes (symbol cache, multi-symbol cache)
     pub fn cache_sizes(&self) -> (usize, usize) {
         self.symbol_cache.sizes()
     }
-    
+
     /// Clear the symbol cache (useful for testing or memory management)
     pub fn clear_cache(&self) {
         self.symbol_cache.clear();
     }
-    
+
     /// Invalidate cache entries for a specific scope
     pub fn invalidate_scope_cache(&self, scope_id: ScopeId) {
         self.symbol_cache.invalidate_scope(scope_id);
     }
-    
+
     /// Invalidate cache entries for a specific symbol name
     pub fn invalidate_name_cache(&self, name: InternedString) {
         self.symbol_cache.invalidate_name(name);
@@ -1438,7 +1489,11 @@ impl SymbolTable {
     }
 
     /// Get all symbols in a given package (by package name prefix)
-    pub fn symbols_in_package(&self, package_prefix: InternedString, interner: &super::StringInterner) -> Vec<SymbolId> {
+    pub fn symbols_in_package(
+        &self,
+        package_prefix: InternedString,
+        interner: &super::StringInterner,
+    ) -> Vec<SymbolId> {
         let Some(package_str) = interner.get(package_prefix) else {
             return Vec::new();
         };
@@ -1448,7 +1503,8 @@ impl SymbolTable {
             .filter(|symbol| {
                 if let Some(qname) = symbol.qualified_name {
                     if let Some(qname_str) = interner.get(qname) {
-                        return qname_str.starts_with(&package_prefix_with_dot) || qname_str == package_str;
+                        return qname_str.starts_with(&package_prefix_with_dot)
+                            || qname_str == package_str;
                     }
                 }
                 false
@@ -1457,7 +1513,6 @@ impl SymbolTable {
             .collect()
     }
 }
-
 
 #[derive(Debug, Clone)]
 pub struct ClassTypeInfo {
@@ -1470,7 +1525,6 @@ pub struct ClassTypeInfo {
     pub depth: usize,
 }
 
-
 impl Default for SymbolTable {
     fn default() -> Self {
         Self::new()
@@ -1481,48 +1535,48 @@ impl ClassHierarchyRegistry for SymbolTable {
     fn register_class_hierarchy(&mut self, class_id: SymbolId, info: ClassHierarchyInfo) {
         // Clear any cached data for this class
         self.supertype_cache.remove(&class_id);
-        
+
         // Store the hierarchy information
         self.class_hierarchies.insert(class_id, info);
-        
+
         // Note: Since symbols are immutable in the arena, we can't update is_type
         // This should be set when the symbol is created
     }
-    
+
     fn get_class_hierarchy(&self, class_id: SymbolId) -> Option<&ClassHierarchyInfo> {
         self.class_hierarchies.get(&class_id)
     }
-    
+
     fn compute_all_supertypes(&self, class_id: SymbolId) -> HashSet<TypeId> {
         // Check cache first
         if let Some(cached) = self.supertype_cache.get(&class_id) {
             return cached.clone();
         }
-        
+
         // Compute supertypes using BFS
         let mut supertypes = HashSet::new();
         let mut queue = VecDeque::new();
         let mut visited = HashSet::new();
-        
+
         // Start with direct superclass and interfaces
         if let Some(hierarchy) = self.get_class_hierarchy(class_id) {
             if let Some(superclass) = hierarchy.superclass {
                 queue.push_back(superclass);
                 supertypes.insert(superclass);
             }
-            
+
             for &interface in &hierarchy.interfaces {
                 queue.push_back(interface);
                 supertypes.insert(interface);
             }
         }
-        
+
         // Process queue to find transitive supertypes
         while let Some(current_type) = queue.pop_front() {
             if !visited.insert(current_type) {
                 continue; // Already processed
             }
-            
+
             // Get symbol ID from type
             if let Some(symbol_id) = self.get_symbol_from_type(current_type) {
                 if let Some(hierarchy) = self.get_class_hierarchy(symbol_id) {
@@ -1532,7 +1586,7 @@ impl ClassHierarchyRegistry for SymbolTable {
                             queue.push_back(superclass);
                         }
                     }
-                    
+
                     // Add interfaces
                     for &interface in &hierarchy.interfaces {
                         if supertypes.insert(interface) {
@@ -1542,7 +1596,7 @@ impl ClassHierarchyRegistry for SymbolTable {
                 }
             }
         }
-        
+
         // Note: Can't cache due to immutability, but could use interior mutability if needed
         supertypes
     }
@@ -2009,82 +2063,96 @@ mod tests {
     #[test]
     fn test_symbol_table_with_hierarchy() {
         let scope_id = ScopeId::from_raw(1);
-        let mut scope = Scope::new(scope_id, ScopeKind::Global, None, ScopeLocation::unknown(), 0);
+        let mut scope = Scope::new(
+            scope_id,
+            ScopeKind::Global,
+            None,
+            ScopeLocation::unknown(),
+            0,
+        );
         let mut symbol_table = SymbolTable::new();
         let interner = StringInterner::new();
-        
-        
+
         // Create class symbols
         let object_name = interner.intern("Object");
         let animal_name = interner.intern("Animal");
         let dog_name = interner.intern("Dog");
-        
+
         let object_sym = symbol_table.create_class(object_name);
         scope.add_symbol(object_sym, object_name);
-        
+
         let animal_sym = symbol_table.create_class(animal_name);
         scope.add_symbol(animal_sym, object_name);
         let dog_sym = symbol_table.create_class(dog_name);
         scope.add_symbol(dog_sym, object_name);
-        
+
         // Create type IDs (in real usage, these would come from TypeTable)
         let object_type = TypeId::from_raw(1);
         let animal_type = TypeId::from_raw(2);
         let dog_type = TypeId::from_raw(3);
-        
+
         // Register type mappings
         symbol_table.register_type_symbol_mapping(object_type, object_sym);
         symbol_table.register_type_symbol_mapping(animal_type, animal_sym);
         symbol_table.register_type_symbol_mapping(dog_type, dog_sym);
-        
+
         // Register hierarchies
-        symbol_table.register_class_hierarchy(object_sym, ClassHierarchyInfo {
-            superclass: None,
-            interfaces: vec![],
-            all_supertypes: HashSet::new(),
-            depth: 0,
-            is_final: false,
-            is_abstract: false,
-            is_extern: false,
-            is_interface: false,
-            sealed_to: None,
-        });
-        
-        symbol_table.register_class_hierarchy(animal_sym, ClassHierarchyInfo {
-            superclass: Some(object_type),
-            interfaces: vec![],
-            all_supertypes: [object_type].into_iter().collect(),
-            depth: 1,
-            is_final: false,
-            is_abstract: false,
-            is_extern: false,
-            is_interface: false,
-            sealed_to: None,
-        });
-        
-        symbol_table.register_class_hierarchy(dog_sym, ClassHierarchyInfo {
-            superclass: Some(animal_type),
-            interfaces: vec![],
-            all_supertypes: [object_type, animal_type].into_iter().collect(),
-            depth: 2,
-            is_final: false,
-            is_abstract: false,
-            is_extern: false,
-            is_interface: false,
-            sealed_to: None,
-        });
-        
+        symbol_table.register_class_hierarchy(
+            object_sym,
+            ClassHierarchyInfo {
+                superclass: None,
+                interfaces: vec![],
+                all_supertypes: HashSet::new(),
+                depth: 0,
+                is_final: false,
+                is_abstract: false,
+                is_extern: false,
+                is_interface: false,
+                sealed_to: None,
+            },
+        );
+
+        symbol_table.register_class_hierarchy(
+            animal_sym,
+            ClassHierarchyInfo {
+                superclass: Some(object_type),
+                interfaces: vec![],
+                all_supertypes: [object_type].into_iter().collect(),
+                depth: 1,
+                is_final: false,
+                is_abstract: false,
+                is_extern: false,
+                is_interface: false,
+                sealed_to: None,
+            },
+        );
+
+        symbol_table.register_class_hierarchy(
+            dog_sym,
+            ClassHierarchyInfo {
+                superclass: Some(animal_type),
+                interfaces: vec![],
+                all_supertypes: [object_type, animal_type].into_iter().collect(),
+                depth: 2,
+                is_final: false,
+                is_abstract: false,
+                is_extern: false,
+                is_interface: false,
+                sealed_to: None,
+            },
+        );
+
         // Test hierarchy queries
         assert!(symbol_table.is_class(dog_sym));
         assert!(!symbol_table.is_interface(dog_sym));
-        
+
         let dog_supertypes = symbol_table.compute_all_supertypes(dog_sym);
         assert!(dog_supertypes.contains(&animal_type));
         assert!(dog_supertypes.contains(&object_type));
-        
+
         let animal_subclasses = symbol_table.get_direct_subclasses(animal_sym);
         assert_eq!(animal_subclasses, vec![dog_sym]);
-        
+
         // Test cycle detection
         assert!(symbol_table.validate_no_inheritance_cycles().is_ok());
     }

@@ -1,5 +1,4 @@
 /// Test metadata parameter parsing
-
 use parser::*;
 
 #[test]
@@ -48,7 +47,7 @@ fn test_metadata_with_params() {
                     }
 
                     if let ExprKind::Bool(value) = &right.kind {
-                        assert_eq!(*value, true);
+                        assert!(*value);
                         println!("✅ Right side is 'true'");
                     } else {
                         panic!("Right side should be a bool literal, got: {:?}", right.kind);

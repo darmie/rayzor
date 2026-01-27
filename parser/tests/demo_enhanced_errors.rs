@@ -11,7 +11,7 @@ class TestClass {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input1, false) {
         Ok(_) => println!("✓ Unexpected success"),
         Err(e) => {
@@ -19,14 +19,14 @@ class TestClass {
             println!("{}", e);
         }
     }
-    
+
     println!("\n=== Test 2: Unexpected EOF ===");
     let input2 = r#"
 class TestClass {
     public function test() {
         var x = 42;
 "#;
-    
+
     match parse_haxe_file("test.hx", input2, false) {
         Ok(_) => println!("✓ Unexpected success"),
         Err(e) => {
@@ -34,7 +34,7 @@ class TestClass {
             println!("{}", e);
         }
     }
-    
+
     println!("\n=== Test 3: Valid code (should work) ===");
     let input3 = r#"
 class TestClass {
@@ -44,7 +44,7 @@ class TestClass {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input3, false) {
         Ok(_) => println!("✓ Parse succeeded as expected"),
         Err(e) => {

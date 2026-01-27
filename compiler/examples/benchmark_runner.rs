@@ -1,3 +1,38 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
+#![allow(
+    clippy::enum_variant_names,
+    clippy::manual_is_variant_and,
+    clippy::unnecessary_map_or
+)]
 //! Rayzor Benchmark Suite Runner
 //!
 //! Compares Rayzor execution modes against each other and external targets.
@@ -7,17 +42,17 @@
 //!   cargo run --release --package compiler --example benchmark_runner -- mandelbrot
 //!   cargo run --release --package compiler --example benchmark_runner -- --json
 
-use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig, TierPreset};
+use compiler::codegen::tiered_backend::{TierPreset, TieredBackend, TieredConfig};
 use compiler::codegen::CraneliftBackend;
 use compiler::codegen::InterpValue;
 use compiler::compilation::{CompilationConfig, CompilationUnit};
-use compiler::ir::{IrFunctionId, IrModule, RayzorBundle, load_bundle};
-use compiler::ir::optimization::{PassManager, OptimizationLevel};
+use compiler::ir::optimization::{OptimizationLevel, PassManager};
+use compiler::ir::{load_bundle, IrFunctionId, IrModule, RayzorBundle};
 
 #[cfg(feature = "llvm-backend")]
-use compiler::codegen::LLVMJitBackend;
-#[cfg(feature = "llvm-backend")]
 use compiler::codegen::init_llvm_once;
+#[cfg(feature = "llvm-backend")]
+use compiler::codegen::LLVMJitBackend;
 #[cfg(feature = "llvm-backend")]
 use inkwell::context::Context;
 use serde::{Deserialize, Serialize};
@@ -28,7 +63,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-const WARMUP_RUNS: usize = 15;  // Increased to ensure LLVM promotion during warmup
+const WARMUP_RUNS: usize = 15; // Increased to ensure LLVM promotion during warmup
 const BENCH_RUNS: usize = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,31 +166,35 @@ fn get_precompiled_path(name: &str) -> std::path::PathBuf {
 /// Run benchmark using precompiled .rzb bundle
 /// This measures the performance benefit of skipping source parsing/lowering
 /// The .rzb bundle contains pre-compiled MIR that still needs JIT compilation
-fn run_benchmark_precompiled(name: &str, symbols: &[(&str, *const u8)]) -> Result<(Duration, Duration), String> {
+fn run_benchmark_precompiled(
+    name: &str,
+    symbols: &[(&str, *const u8)],
+) -> Result<(Duration, Duration), String> {
     let bundle_path = get_precompiled_path(name);
 
     // Load time = "compile time" for precompiled (should be ~500µs)
     let load_start = Instant::now();
 
-    let bundle = load_bundle(&bundle_path)
-        .map_err(|e| format!("load bundle: {:?}", e))?;
+    let bundle = load_bundle(&bundle_path).map_err(|e| format!("load bundle: {:?}", e))?;
 
     // Get entry function ID (pre-computed in bundle for O(1) lookup)
-    let entry_func_id = bundle.entry_function_id()
+    let entry_func_id = bundle
+        .entry_function_id()
         .ok_or("No entry function ID in bundle")?;
 
     // Use Script preset for single-run execution - starts with Cranelift JIT
     // (Benchmark preset starts interpreted, which would be slower for single run)
     let mut config = TierPreset::Script.to_config();
-    config.start_interpreted = false;  // Start with Cranelift (Baseline tier)
+    config.start_interpreted = false; // Start with Cranelift (Baseline tier)
     config.verbosity = 0;
 
-    let mut backend = TieredBackend::with_symbols(config, symbols)
-        .map_err(|e| format!("backend: {}", e))?;
+    let mut backend =
+        TieredBackend::with_symbols(config, symbols).map_err(|e| format!("backend: {}", e))?;
 
     // Load ALL modules from bundle (not just entry)
     for module in bundle.modules() {
-        backend.compile_module(module.clone())
+        backend
+            .compile_module(module.clone())
             .map_err(|e| format!("load module: {}", e))?;
     }
 
@@ -163,7 +202,8 @@ fn run_benchmark_precompiled(name: &str, symbols: &[(&str, *const u8)]) -> Resul
 
     // Execute
     let exec_start = Instant::now();
-    backend.execute_function(entry_func_id, vec![])
+    backend
+        .execute_function(entry_func_id, vec![])
         .map_err(|e| format!("exec: {}", e))?;
     let exec_time = exec_start.elapsed();
 
@@ -178,37 +218,49 @@ struct PrecompiledTieredState {
 }
 
 /// Setup precompiled-tiered benchmark: load .rzb bundle then warm up with tier promotion
-fn setup_precompiled_tiered_benchmark(name: &str, symbols: &[(&str, *const u8)]) -> Result<PrecompiledTieredState, String> {
+fn setup_precompiled_tiered_benchmark(
+    name: &str,
+    symbols: &[(&str, *const u8)],
+) -> Result<PrecompiledTieredState, String> {
     let bundle_path = get_precompiled_path(name);
     let load_start = Instant::now();
 
-    let bundle = load_bundle(&bundle_path)
-        .map_err(|e| format!("load bundle: {:?}", e))?;
+    let bundle = load_bundle(&bundle_path).map_err(|e| format!("load bundle: {:?}", e))?;
 
     // Get entry function ID
-    let main_id = bundle.entry_function_id()
+    let main_id = bundle
+        .entry_function_id()
         .ok_or("No entry function ID in bundle")?;
 
     // Use Benchmark preset - fast tier promotion, immediate bailout
     let config = TierPreset::Benchmark.to_config();
 
-    let mut backend = TieredBackend::with_symbols(config, symbols)
-        .map_err(|e| format!("backend: {}", e))?;
+    let mut backend =
+        TieredBackend::with_symbols(config, symbols).map_err(|e| format!("backend: {}", e))?;
 
     // Load ALL modules from bundle
     for module in bundle.modules() {
-        backend.compile_module(module.clone())
+        backend
+            .compile_module(module.clone())
             .map_err(|e| format!("load module: {}", e))?;
     }
 
     let load_time = load_start.elapsed();
 
-    Ok(PrecompiledTieredState { backend, main_id, load_time })
+    Ok(PrecompiledTieredState {
+        backend,
+        main_id,
+        load_time,
+    })
 }
 
-fn run_precompiled_tiered_iteration(state: &mut PrecompiledTieredState) -> Result<Duration, String> {
+fn run_precompiled_tiered_iteration(
+    state: &mut PrecompiledTieredState,
+) -> Result<Duration, String> {
     let exec_start = Instant::now();
-    state.backend.execute_function(state.main_id, vec![])
+    state
+        .backend
+        .execute_function(state.main_id, vec![])
         .map_err(|e| format!("exec: {}", e))?;
     Ok(exec_start.elapsed())
 }
@@ -231,7 +283,10 @@ fn list_benchmarks() -> Vec<String> {
     benchmarks
 }
 
-fn run_benchmark_cranelift(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> Result<(Duration, Duration), String> {
+fn run_benchmark_cranelift(
+    bench: &Benchmark,
+    symbols: &[(&str, *const u8)],
+) -> Result<(Duration, Duration), String> {
     // Compile
     let compile_start = Instant::now();
 
@@ -253,11 +308,13 @@ fn run_benchmark_cranelift(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> 
         let _ = pass_manager.run(module_mut);
     }
 
-    let mut backend = CraneliftBackend::with_symbols(symbols)
-        .map_err(|e| format!("backend: {}", e))?;
+    let mut backend =
+        CraneliftBackend::with_symbols(symbols).map_err(|e| format!("backend: {}", e))?;
 
     for module in &mir_modules {
-        backend.compile_module(module).map_err(|e| format!("compile: {}", e))?;
+        backend
+            .compile_module(module)
+            .map_err(|e| format!("compile: {}", e))?;
     }
 
     let compile_time = compile_start.elapsed();
@@ -274,7 +331,10 @@ fn run_benchmark_cranelift(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> 
     Ok((compile_time, exec_time))
 }
 
-fn run_benchmark_interpreter(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> Result<(Duration, Duration), String> {
+fn run_benchmark_interpreter(
+    bench: &Benchmark,
+    symbols: &[(&str, *const u8)],
+) -> Result<(Duration, Duration), String> {
     // Compile (to MIR only)
     let compile_start = Instant::now();
 
@@ -290,27 +350,37 @@ fn run_benchmark_interpreter(bench: &Benchmark, symbols: &[(&str, *const u8)]) -
     // This measures pure MIR interpreter performance
     let config = TierPreset::Embedded.to_config();
 
-    let mut backend = TieredBackend::with_symbols(config, symbols)
-        .map_err(|e| format!("backend: {}", e))?;
+    let mut backend =
+        TieredBackend::with_symbols(config, symbols).map_err(|e| format!("backend: {}", e))?;
 
     // Find main module
-    let main_module = mir_modules.iter().rev()
-        .find(|m| m.functions.values().any(|f| f.name.ends_with("_main") || f.name == "main"))
+    let main_module = mir_modules
+        .iter()
+        .rev()
+        .find(|m| {
+            m.functions
+                .values()
+                .any(|f| f.name.ends_with("_main") || f.name == "main")
+        })
         .ok_or("No main module")?;
 
-    let main_id = main_module.functions.iter()
+    let main_id = main_module
+        .functions
+        .iter()
         .find(|(_, f)| f.name.ends_with("_main") || f.name == "main")
         .map(|(id, _)| *id)
         .ok_or("No main function")?;
 
-    backend.compile_module((**main_module).clone())
+    backend
+        .compile_module((**main_module).clone())
         .map_err(|e| format!("load: {}", e))?;
 
     let compile_time = compile_start.elapsed();
 
     // Execute
     let exec_start = Instant::now();
-    backend.execute_function(main_id, vec![])
+    backend
+        .execute_function(main_id, vec![])
         .map_err(|e| format!("exec: {}", e))?;
     let exec_time = exec_start.elapsed();
 
@@ -329,7 +399,10 @@ fn is_heavy_benchmark(name: &str) -> bool {
     matches!(name, "mandelbrot" | "mandelbrot_simple" | "nbody")
 }
 
-fn setup_tiered_benchmark(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> Result<TieredBenchmarkState, String> {
+fn setup_tiered_benchmark(
+    bench: &Benchmark,
+    symbols: &[(&str, *const u8)],
+) -> Result<TieredBenchmarkState, String> {
     let compile_start = Instant::now();
 
     // Use fast() for lazy stdlib - avoids trace resolution issues
@@ -348,19 +421,23 @@ fn setup_tiered_benchmark(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> R
     // - Manual LLVM upgrade after warmup (blazing_threshold = MAX)
     let config = TierPreset::Benchmark.to_config();
 
-    let mut backend = TieredBackend::with_symbols(config, symbols)
-        .map_err(|e| format!("backend: {}", e))?;
+    let mut backend =
+        TieredBackend::with_symbols(config, symbols).map_err(|e| format!("backend: {}", e))?;
 
     // Compile ALL modules (like the direct LLVM benchmark does)
     for module in &mir_modules {
-        backend.compile_module((**module).clone())
+        backend
+            .compile_module((**module).clone())
             .map_err(|e| format!("load: {}", e))?;
     }
 
     // Find the main function ID
-    let main_id = mir_modules.iter().rev()
+    let main_id = mir_modules
+        .iter()
+        .rev()
         .find_map(|m| {
-            m.functions.iter()
+            m.functions
+                .iter()
                 .find(|(_, f)| f.name.ends_with("_main") || f.name == "main")
                 .map(|(id, _)| *id)
         })
@@ -368,17 +445,26 @@ fn setup_tiered_benchmark(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> R
 
     let compile_time = compile_start.elapsed();
 
-    Ok(TieredBenchmarkState { backend, main_id, compile_time })
+    Ok(TieredBenchmarkState {
+        backend,
+        main_id,
+        compile_time,
+    })
 }
 
 fn run_tiered_iteration(state: &mut TieredBenchmarkState) -> Result<Duration, String> {
     let exec_start = Instant::now();
-    state.backend.execute_function(state.main_id, vec![])
+    state
+        .backend
+        .execute_function(state.main_id, vec![])
         .map_err(|e| format!("exec: {}", e))?;
     Ok(exec_start.elapsed())
 }
 
-fn run_benchmark_tiered(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> Result<(Duration, Duration), String> {
+fn run_benchmark_tiered(
+    bench: &Benchmark,
+    symbols: &[(&str, *const u8)],
+) -> Result<(Duration, Duration), String> {
     // For single-iteration compatibility, create fresh backend
     let compile_start = Instant::now();
 
@@ -394,29 +480,39 @@ fn run_benchmark_tiered(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> Res
     // Use Application preset for single-iteration tiered benchmark
     // This is a legacy function - main benchmark uses setup_tiered_benchmark() with Benchmark preset
     let mut config = TierPreset::Application.to_config();
-    config.start_interpreted = false;  // Start at Baseline (Cranelift) for benchmarks
+    config.start_interpreted = false; // Start at Baseline (Cranelift) for benchmarks
     config.verbosity = 0;
 
-    let mut backend = TieredBackend::with_symbols(config, symbols)
-        .map_err(|e| format!("backend: {}", e))?;
+    let mut backend =
+        TieredBackend::with_symbols(config, symbols).map_err(|e| format!("backend: {}", e))?;
 
-    let main_module = mir_modules.iter().rev()
-        .find(|m| m.functions.values().any(|f| f.name.ends_with("_main") || f.name == "main"))
+    let main_module = mir_modules
+        .iter()
+        .rev()
+        .find(|m| {
+            m.functions
+                .values()
+                .any(|f| f.name.ends_with("_main") || f.name == "main")
+        })
         .ok_or("No main module")?;
 
-    let main_id = main_module.functions.iter()
+    let main_id = main_module
+        .functions
+        .iter()
         .find(|(_, f)| f.name.ends_with("_main") || f.name == "main")
         .map(|(id, _)| *id)
         .ok_or("No main function")?;
 
-    backend.compile_module((**main_module).clone())
+    backend
+        .compile_module((**main_module).clone())
         .map_err(|e| format!("load: {}", e))?;
 
     let compile_time = compile_start.elapsed();
 
     // Execute
     let exec_start = Instant::now();
-    backend.execute_function(main_id, vec![])
+    backend
+        .execute_function(main_id, vec![])
         .map_err(|e| format!("exec: {}", e))?;
     let exec_time = exec_start.elapsed();
 
@@ -457,17 +553,21 @@ fn setup_llvm_benchmark<'ctx>(
     let _llvm_guard = compiler::codegen::llvm_lock();
 
     // Create LLVM backend (context is passed in and must outlive this)
-    let mut backend = LLVMJitBackend::with_symbols(context, symbols)
-        .map_err(|e| format!("backend: {}", e))?;
+    let mut backend =
+        LLVMJitBackend::with_symbols(context, symbols).map_err(|e| format!("backend: {}", e))?;
 
     // Two-pass compilation for cross-module function references:
     // 1. First declare ALL functions from ALL modules
     for module in &mir_modules {
-        backend.declare_module(module).map_err(|e| format!("declare: {}", e))?;
+        backend
+            .declare_module(module)
+            .map_err(|e| format!("declare: {}", e))?;
     }
     // 2. Then compile all function bodies
     for module in &mir_modules {
-        backend.compile_module_bodies(module).map_err(|e| format!("compile: {}", e))?;
+        backend
+            .compile_module_bodies(module)
+            .map_err(|e| format!("compile: {}", e))?;
     }
 
     // IMPORTANT: Call finalize() ONCE to run LLVM optimization passes and create execution engine.
@@ -477,7 +577,11 @@ fn setup_llvm_benchmark<'ctx>(
 
     let compile_time = compile_start.elapsed();
 
-    Ok(LLVMBenchmarkState { backend, mir_modules, compile_time })
+    Ok(LLVMBenchmarkState {
+        backend,
+        mir_modules,
+        compile_time,
+    })
 }
 
 #[cfg(feature = "llvm-backend")]
@@ -493,7 +597,10 @@ fn run_llvm_iteration(state: &mut LLVMBenchmarkState) -> Result<Duration, String
 
 // Legacy function kept for compatibility - redirects to stateful approach
 #[cfg(feature = "llvm-backend")]
-fn run_benchmark_llvm(bench: &Benchmark, symbols: &[(&str, *const u8)]) -> Result<(Duration, Duration), String> {
+fn run_benchmark_llvm(
+    bench: &Benchmark,
+    symbols: &[(&str, *const u8)],
+) -> Result<(Duration, Duration), String> {
     let context = Context::create();
     let mut state = setup_llvm_benchmark(bench, symbols, &context)?;
     let exec_time = run_llvm_iteration(&mut state)?;
@@ -576,7 +683,7 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
             for _ in 0..BENCH_RUNS {
                 match run_benchmark_precompiled(&bench.name, &symbols) {
                     Ok((load, exec)) => {
-                        compile_times.push(load);  // Load time = "compile time"
+                        compile_times.push(load); // Load time = "compile time"
                         exec_times.push(exec);
                     }
                     Err(e) => return Err(e),
@@ -614,7 +721,7 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
             for _ in 0..BENCH_RUNS {
                 match run_precompiled_tiered_iteration(&mut state) {
                     Ok(exec) => {
-                        compile_times.push(load_time);  // Load time = "compile time"
+                        compile_times.push(load_time); // Load time = "compile time"
                         exec_times.push(exec);
                     }
                     Err(e) => return Err(e),
@@ -681,12 +788,16 @@ fn print_results(results: &[BenchmarkResult]) {
     println!("{}", "=".repeat(70));
 
     // Find baseline (cranelift) for speedup calculation
-    let baseline = results.iter()
+    let baseline = results
+        .iter()
         .find(|r| r.target == "rayzor-cranelift")
         .map(|r| r.total_time_ms)
         .unwrap_or(results[0].total_time_ms);
 
-    println!("\n{:24} {:>12} {:>12} {:>12} {:>8}", "Target", "Compile", "Execute", "Total", "vs JIT");
+    println!(
+        "\n{:24} {:>12} {:>12} {:>12} {:>8}",
+        "Target", "Compile", "Execute", "Total", "vs JIT"
+    );
     println!("{}", "-".repeat(70));
 
     for result in results {
@@ -696,11 +807,7 @@ fn print_results(results: &[BenchmarkResult]) {
 
         println!(
             "{:24} {:>10.2}ms {:>10.2}ms {:>10.2}ms {:>7.2}x",
-            result.target,
-            result.compile_time_ms,
-            result.runtime_ms,
-            result.total_time_ms,
-            speedup
+            result.target, result.compile_time_ms, result.runtime_ms, result.total_time_ms, speedup
         );
         println!("                         {}", bar);
     }
@@ -715,8 +822,7 @@ fn save_results(suite: &BenchmarkSuite) -> Result<(), String> {
     let filename = format!("results_{}.json", suite.date);
     let path = results_dir.join(&filename);
 
-    let json = serde_json::to_string_pretty(suite)
-        .map_err(|e| format!("serialize: {}", e))?;
+    let json = serde_json::to_string_pretty(suite).map_err(|e| format!("serialize: {}", e))?;
 
     fs::write(&path, json).map_err(|e| format!("write: {}", e))?;
     println!("Results saved to: {}", path.display());
@@ -728,7 +834,8 @@ fn generate_chart_html(suite: &BenchmarkSuite) -> Result<(), String> {
     let charts_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/charts");
     fs::create_dir_all(&charts_dir).map_err(|e| format!("mkdir: {}", e))?;
 
-    let mut html = String::from(r#"<!DOCTYPE html>
+    let mut html = String::from(
+        r#"<!DOCTYPE html>
 <html>
 <head>
     <title>Rayzor Benchmark Results</title>
@@ -743,28 +850,37 @@ fn generate_chart_html(suite: &BenchmarkSuite) -> Result<(), String> {
 </head>
 <body>
     <h1>Rayzor Benchmark Results</h1>
-    <p style="text-align: center">Generated: "#);
+    <p style="text-align: center">Generated: "#,
+    );
 
     html.push_str(&suite.date);
-    html.push_str(r#"</p>
+    html.push_str(
+        r#"</p>
     <div class="summary">
         <h3>Summary</h3>
         <ul>
-"#);
+"#,
+    );
 
     for bench in &suite.benchmarks {
-        html.push_str(&format!("            <li><strong>{}</strong>: {} targets measured</li>\n",
-            bench.name, bench.results.len()));
+        html.push_str(&format!(
+            "            <li><strong>{}</strong>: {} targets measured</li>\n",
+            bench.name,
+            bench.results.len()
+        ));
     }
 
-    html.push_str(r#"        </ul>
+    html.push_str(
+        r#"        </ul>
     </div>
-"#);
+"#,
+    );
 
     for (i, bench) in suite.benchmarks.iter().enumerate() {
         let canvas_id = format!("chart_{}", i);
 
-        html.push_str(&format!(r#"
+        html.push_str(&format!(
+            r#"
     <h2>{}</h2>
     <div class="chart-container">
         <canvas id="{}"></canvas>
@@ -803,17 +919,34 @@ fn generate_chart_html(suite: &BenchmarkSuite) -> Result<(), String> {
             bench.name,
             canvas_id,
             canvas_id,
-            bench.results.iter().map(|r| format!("'{}'", r.target)).collect::<Vec<_>>().join(", "),
-            bench.results.iter().map(|r| format!("{:.2}", r.compile_time_ms)).collect::<Vec<_>>().join(", "),
-            bench.results.iter().map(|r| format!("{:.2}", r.runtime_ms)).collect::<Vec<_>>().join(", "),
+            bench
+                .results
+                .iter()
+                .map(|r| format!("'{}'", r.target))
+                .collect::<Vec<_>>()
+                .join(", "),
+            bench
+                .results
+                .iter()
+                .map(|r| format!("{:.2}", r.compile_time_ms))
+                .collect::<Vec<_>>()
+                .join(", "),
+            bench
+                .results
+                .iter()
+                .map(|r| format!("{:.2}", r.runtime_ms))
+                .collect::<Vec<_>>()
+                .join(", "),
             bench.name
         ));
     }
 
-    html.push_str(r#"
+    html.push_str(
+        r#"
 </body>
 </html>
-"#);
+"#,
+    );
 
     let path = charts_dir.join("index.html");
     fs::write(&path, html).map_err(|e| format!("write: {}", e))?;
@@ -837,7 +970,8 @@ fn main() {
 
     // Parse arguments
     let json_output = args.iter().any(|a| a == "--json");
-    let specific_bench = args.iter()
+    let specific_bench = args
+        .iter()
         .find(|a| !a.starts_with("-") && *a != &args[0])
         .cloned();
 
@@ -851,7 +985,11 @@ fn main() {
         if available.contains(&name) {
             vec![name]
         } else {
-            eprintln!("Unknown benchmark: {}. Available: {}", name, available.join(", "));
+            eprintln!(
+                "Unknown benchmark: {}. Available: {}",
+                name,
+                available.join(", ")
+            );
             return;
         }
     } else {
@@ -867,8 +1005,15 @@ fn main() {
         // Use --llvm flag or test_llvm_* examples for LLVM benchmarks
     ];
 
-    println!("Running {} benchmarks x up to {} targets", benchmarks_to_run.len(), all_targets.len());
-    println!("Warmup: {} runs, Benchmark: {} runs", WARMUP_RUNS, BENCH_RUNS);
+    println!(
+        "Running {} benchmarks x up to {} targets",
+        benchmarks_to_run.len(),
+        all_targets.len()
+    );
+    println!(
+        "Warmup: {} runs, Benchmark: {} runs",
+        WARMUP_RUNS, BENCH_RUNS
+    );
     println!();
 
     let mut suite = BenchmarkSuite {
@@ -895,7 +1040,8 @@ fn main() {
         let is_heavy = is_heavy_benchmark(bench_name);
         let has_precompiled = has_precompiled_bundle(bench_name);
 
-        let mut targets: Vec<Target> = all_targets.iter()
+        let mut targets: Vec<Target> = all_targets
+            .iter()
             .filter(|t| !is_heavy || !matches!(t, Target::RayzorInterpreter))
             .copied()
             .collect();
@@ -917,7 +1063,10 @@ fn main() {
         let mut results = Vec::new();
 
         #[cfg(feature = "llvm-backend")]
-        let llvm_target = targets.iter().find(|t| matches!(t, Target::RayzorLLVM)).cloned();
+        let llvm_target = targets
+            .iter()
+            .find(|t| matches!(t, Target::RayzorLLVM))
+            .cloned();
         #[cfg(not(feature = "llvm-backend"))]
         let llvm_target: Option<Target> = None;
 
@@ -929,8 +1078,12 @@ fn main() {
             match result {
                 Ok(bench_result) => {
                     println!("  [DONE] {} ({})", llvm.name(), llvm.description());
-                    println!("         Compile: {:.2}ms, Execute: {:.2}ms, Total: {:.2}ms\n",
-                        bench_result.compile_time_ms, bench_result.runtime_ms, bench_result.total_time_ms);
+                    println!(
+                        "         Compile: {:.2}ms, Execute: {:.2}ms, Total: {:.2}ms\n",
+                        bench_result.compile_time_ms,
+                        bench_result.runtime_ms,
+                        bench_result.total_time_ms
+                    );
                     results.push(bench_result);
                 }
                 Err(e) => {
@@ -941,15 +1094,22 @@ fn main() {
 
         // Run tiered NEXT (before other parallel targets) to ensure consistent timing
         // Tiered mode uses interpreter for startup, then promotes to Cranelift JIT
-        let tiered_target = targets.iter().find(|t| matches!(t, Target::RayzorTiered)).cloned();
+        let tiered_target = targets
+            .iter()
+            .find(|t| matches!(t, Target::RayzorTiered))
+            .cloned();
         if let Some(tiered) = tiered_target {
             println!("  Running tiered (interpreter -> Cranelift)...\n");
             let result = run_benchmark(&bench, tiered);
             match result {
                 Ok(bench_result) => {
                     println!("  [DONE] {} ({})", tiered.name(), tiered.description());
-                    println!("         Compile: {:.2}ms, Execute: {:.2}ms, Total: {:.2}ms\n",
-                        bench_result.compile_time_ms, bench_result.runtime_ms, bench_result.total_time_ms);
+                    println!(
+                        "         Compile: {:.2}ms, Execute: {:.2}ms, Total: {:.2}ms\n",
+                        bench_result.compile_time_ms,
+                        bench_result.runtime_ms,
+                        bench_result.total_time_ms
+                    );
                     results.push(bench_result);
                 }
                 Err(e) => {
@@ -962,17 +1122,23 @@ fn main() {
         let (tx, rx) = mpsc::channel::<(Target, Result<BenchmarkResult, String>)>();
         let mut handles = Vec::new();
 
-        let parallel_targets: Vec<Target> = targets.iter()
+        let parallel_targets: Vec<Target> = targets
+            .iter()
             .filter(|t| {
                 #[cfg(feature = "llvm-backend")]
-                if matches!(t, Target::RayzorLLVM) { return false; }
+                if matches!(t, Target::RayzorLLVM) {
+                    return false;
+                }
                 !matches!(t, Target::RayzorTiered)
             })
             .copied()
             .collect();
 
         if !parallel_targets.is_empty() {
-            println!("  Running {} other targets in parallel...\n", parallel_targets.len());
+            println!(
+                "  Running {} other targets in parallel...\n",
+                parallel_targets.len()
+            );
         }
 
         for target in parallel_targets {
@@ -996,8 +1162,12 @@ fn main() {
             match result {
                 Ok(bench_result) => {
                     println!("  [DONE] {} ({})", target.name(), target.description());
-                    println!("         Compile: {:.2}ms, Execute: {:.2}ms, Total: {:.2}ms\n",
-                        bench_result.compile_time_ms, bench_result.runtime_ms, bench_result.total_time_ms);
+                    println!(
+                        "         Compile: {:.2}ms, Execute: {:.2}ms, Total: {:.2}ms\n",
+                        bench_result.compile_time_ms,
+                        bench_result.runtime_ms,
+                        bench_result.total_time_ms
+                    );
                     results.push(bench_result);
                 }
                 Err(e) => {
@@ -1036,6 +1206,9 @@ fn main() {
 
     if json_output {
         println!("\nJSON Output:");
-        println!("{}", serde_json::to_string_pretty(&suite).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&suite).unwrap_or_default()
+        );
     }
 }

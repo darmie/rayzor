@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test indirect function calls with qualified names
 //!
 //! This test verifies:
@@ -5,7 +35,7 @@
 //! 2. CallIndirect instructions in MIR
 //! 3. Cranelift codegen for indirect calls
 
-use compiler::compilation::{CompilationUnit, CompilationConfig};
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 
 fn main() {
     println!("=== Indirect Function Calls Test ===\n");
@@ -73,7 +103,9 @@ fn main() {
             println!("   ✓ Lowered {} files to TAST", files.len());
 
             // Check for function symbols
-            let test_symbols: Vec<_> = unit.symbol_table.all_symbols()
+            let test_symbols: Vec<_> = unit
+                .symbol_table
+                .all_symbols()
                 .filter_map(|s| {
                     s.qualified_name.and_then(|qname| {
                         let name = unit.string_interner.get(qname)?;
@@ -94,7 +126,7 @@ fn main() {
             files
         }
         Err(e) => {
-            eprintln!("   ✗ TAST failed: {}", e);
+            eprintln!("   ✗ TAST failed: {:?}", e);
             return;
         }
     };
@@ -117,18 +149,21 @@ fn main() {
     });
 
     println!("   ✓ test.IndirectCallTest.add: {}", has_add);
-    println!("   ✓ test.IndirectCallTest.applyOperation: {}", has_apply_op);
+    println!(
+        "   ✓ test.IndirectCallTest.applyOperation: {}",
+        has_apply_op
+    );
 
     // Lower to HIR
     println!("\n5. Lowering TAST to HIR...");
     use compiler::ir::tast_to_hir::lower_tast_to_hir;
-    use std::rc::Rc;
     use std::cell::RefCell;
+    use std::rc::Rc;
 
     // StringInterner doesn't implement Clone, so wrap the original
     let string_interner_rc = Rc::new(RefCell::new(std::mem::replace(
         &mut unit.string_interner,
-        compiler::tast::StringInterner::new()
+        compiler::tast::StringInterner::new(),
     )));
 
     let mut all_hir_modules = Vec::new();
@@ -143,9 +178,11 @@ fn main() {
                 None,
             ) {
                 Ok(hir) => {
-                    println!("   ✓ Lowered {} to HIR ({} types)",
+                    println!(
+                        "   ✓ Lowered {} to HIR ({} types)",
                         &typed_file.metadata.file_path,
-                        hir.types.len());
+                        hir.types.len()
+                    );
                     Some(hir)
                 }
                 Err(errors) => {
@@ -174,7 +211,12 @@ fn main() {
 
     let mut all_mir_modules = Vec::new();
     for hir_module in &all_hir_modules {
-        let mir_module = match lower_hir_to_mir(hir_module, &*string_interner_rc.borrow(), &unit.type_table) {
+        let mir_module = match lower_hir_to_mir(
+            hir_module,
+            &*string_interner_rc.borrow(),
+            &unit.type_table,
+            &unit.symbol_table,
+        ) {
             Ok(mir) => {
                 println!("   ✓ Lowered to MIR ({} functions)", mir.functions.len());
                 mir
@@ -213,14 +255,18 @@ fn main() {
                         IrInstruction::CallDirect { func_id, args, .. } => {
                             // Look up the function name being called
                             if let Some(target_fn) = mir_module.functions.get(func_id) {
-                                println!("   • Found CallDirect to '{}' (fn{}) in '{}' with {} args",
+                                println!(
+                                    "   • Found CallDirect to '{}' (fn{}) in '{}' with {} args",
                                     target_fn.qualified_name.as_ref().unwrap_or(&target_fn.name),
                                     func_id.0,
                                     func_name,
                                     args.len()
                                 );
                             } else {
-                                println!("   • Found CallDirect to 'fn{}' in '{}'", func_id.0, func_name);
+                                println!(
+                                    "   • Found CallDirect to 'fn{}' in '{}'",
+                                    func_id.0, func_name
+                                );
                             }
                             found_call_direct = true;
                         }

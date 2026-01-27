@@ -24,11 +24,11 @@ use serde::Deserialize;
 use std::ffi::CStr;
 use std::path::Path;
 
+use super::hl_types::{self, HlTypeKind};
+use super::{FunctionSource, IrTypeDescriptor, MethodSignature, RuntimeFunctionCall};
 use crate::compiler_plugin::CompilerPlugin;
 use crate::ir::mir_builder::MirBuilder;
 use crate::ir::{CallingConvention, IrType};
-use super::{FunctionSource, IrTypeDescriptor, MethodSignature, RuntimeFunctionCall};
-use super::hl_types::{self, HlTypeKind};
 
 // ============================================================================
 // Manifest Structures (JSON format)
@@ -177,11 +177,17 @@ impl HdllPlugin {
     /// - The library cannot be loaded
     /// - A function symbol cannot be found
     pub fn load_from_manifest(manifest_path: &Path) -> Result<Self, HdllError> {
-        let manifest_content = std::fs::read_to_string(manifest_path)
-            .map_err(|e| HdllError::IoError(format!("Failed to read {}: {}", manifest_path.display(), e)))?;
+        let manifest_content = std::fs::read_to_string(manifest_path).map_err(|e| {
+            HdllError::IoError(format!("Failed to read {}: {}", manifest_path.display(), e))
+        })?;
 
-        let manifest: HdllManifest = serde_json::from_str(&manifest_content)
-            .map_err(|e| HdllError::ManifestError(format!("Invalid JSON in {}: {}", manifest_path.display(), e)))?;
+        let manifest: HdllManifest = serde_json::from_str(&manifest_content).map_err(|e| {
+            HdllError::ManifestError(format!(
+                "Invalid JSON in {}: {}",
+                manifest_path.display(),
+                e
+            ))
+        })?;
 
         let lib_path = manifest_path
             .parent()
@@ -198,39 +204,47 @@ impl HdllPlugin {
     pub fn load_with_manifest(lib_path: &Path, manifest: HdllManifest) -> Result<Self, HdllError> {
         // Load the dynamic library
         let library = unsafe {
-            Library::new(lib_path)
-                .map_err(|e| HdllError::LoadError(format!("Failed to load {}: {}", lib_path.display(), e)))?
+            Library::new(lib_path).map_err(|e| {
+                HdllError::LoadError(format!("Failed to load {}: {}", lib_path.display(), e))
+            })?
         };
 
         let mut functions = Vec::new();
 
         for func_def in &manifest.functions {
             // Parse "Class.method" format
-            let (class_name, method_name) = func_def.haxe_name
-                .split_once('.')
-                .ok_or_else(|| HdllError::ManifestError(
-                    format!("Invalid haxe_name format '{}': expected 'Class.method'", func_def.haxe_name)
-                ))?;
+            let (class_name, method_name) =
+                func_def.haxe_name.split_once('.').ok_or_else(|| {
+                    HdllError::ManifestError(format!(
+                        "Invalid haxe_name format '{}': expected 'Class.method'",
+                        func_def.haxe_name
+                    ))
+                })?;
 
             // Look up function pointer in the library
             let fn_ptr: *const () = unsafe {
-                let symbol: libloading::Symbol<*const ()> = library
-                    .get(func_def.name.as_bytes())
-                    .map_err(|e| HdllError::SymbolError(
-                        func_def.name.clone(),
-                        format!("Symbol not found: {}", e)
-                    ))?;
+                let symbol: libloading::Symbol<*const ()> =
+                    library.get(func_def.name.as_bytes()).map_err(|e| {
+                        HdllError::SymbolError(
+                            func_def.name.clone(),
+                            format!("Symbol not found: {}", e),
+                        )
+                    })?;
                 *symbol
             };
 
             // Convert parameter types
-            let param_types: Vec<IrTypeDescriptor> = func_def.params
+            let param_types: Vec<IrTypeDescriptor> = func_def
+                .params
                 .iter()
                 .map(|p| {
                     HlTypeKind::from_manifest_str(&p.param_type)
                         .map(|t| t.to_ir_type_descriptor())
                         .unwrap_or_else(|| {
-                            log::warn!("Unknown type '{}' in HDLL manifest, defaulting to PtrVoid", p.param_type);
+                            log::warn!(
+                                "Unknown type '{}' in HDLL manifest, defaulting to PtrVoid",
+                                p.param_type
+                            );
                             IrTypeDescriptor::PtrVoid
                         })
                 })
@@ -241,7 +255,10 @@ impl HdllPlugin {
                 .map(|t| t.to_ir_type_descriptor())
                 .unwrap_or_else(|| {
                     if func_def.returns.to_lowercase() != "void" {
-                        log::warn!("Unknown return type '{}' in HDLL manifest, defaulting to Void", func_def.returns);
+                        log::warn!(
+                            "Unknown return type '{}' in HDLL manifest, defaulting to Void",
+                            func_def.returns
+                        );
                     }
                     IrTypeDescriptor::Void
                 });
@@ -257,7 +274,11 @@ impl HdllPlugin {
             });
         }
 
-        log::info!("Loaded HDLL plugin '{}' with {} functions", manifest.name, functions.len());
+        log::info!(
+            "Loaded HDLL plugin '{}' with {} functions",
+            manifest.name,
+            functions.len()
+        );
 
         Ok(HdllPlugin {
             name: manifest.name,
@@ -296,8 +317,9 @@ impl HdllPlugin {
         methods: &[(&str, bool)],
     ) -> Result<Self, HdllError> {
         let library = unsafe {
-            Library::new(lib_path)
-                .map_err(|e| HdllError::LoadError(format!("Failed to load {}: {}", lib_path.display(), e)))?
+            Library::new(lib_path).map_err(|e| {
+                HdllError::LoadError(format!("Failed to load {}: {}", lib_path.display(), e))
+            })?
         };
 
         let mut functions = Vec::new();
@@ -313,12 +335,13 @@ impl HdllPlugin {
             let signature: String;
 
             unsafe {
-                let hlp_fn: libloading::Symbol<HlpFn> = library
-                    .get(hlp_symbol.as_bytes())
-                    .map_err(|e| HdllError::SymbolError(
-                        hlp_symbol.clone(),
-                        format!("hlp_ symbol not found (is DEFINE_PRIM used?): {}", e),
-                    ))?;
+                let hlp_fn: libloading::Symbol<HlpFn> =
+                    library.get(hlp_symbol.as_bytes()).map_err(|e| {
+                        HdllError::SymbolError(
+                            hlp_symbol.clone(),
+                            format!("hlp_ symbol not found (is DEFINE_PRIM used?): {}", e),
+                        )
+                    })?;
 
                 let mut sign_ptr: *const std::os::raw::c_char = std::ptr::null();
                 fn_ptr = hlp_fn(&mut sign_ptr);
@@ -332,10 +355,12 @@ impl HdllPlugin {
 
                 signature = CStr::from_ptr(sign_ptr)
                     .to_str()
-                    .map_err(|e| HdllError::SymbolError(
-                        hlp_symbol.clone(),
-                        format!("Invalid UTF-8 in signature: {}", e),
-                    ))?
+                    .map_err(|e| {
+                        HdllError::SymbolError(
+                            hlp_symbol.clone(),
+                            format!("Invalid UTF-8 in signature: {}", e),
+                        )
+                    })?
                     .to_string();
             }
 
@@ -347,11 +372,13 @@ impl HdllPlugin {
             }
 
             // Parse the HL signature string (e.g., "ii_i" -> params=[I32,I32], ret=I32)
-            let (param_kinds, return_kind) = hl_types::parse_hl_signature(&signature)
-                .ok_or_else(|| HdllError::SymbolError(
-                    hlp_symbol.clone(),
-                    format!("Failed to parse HL signature '{}'", signature),
-                ))?;
+            let (param_kinds, return_kind) =
+                hl_types::parse_hl_signature(&signature).ok_or_else(|| {
+                    HdllError::SymbolError(
+                        hlp_symbol.clone(),
+                        format!("Failed to parse HL signature '{}'", signature),
+                    )
+                })?;
 
             let param_types: Vec<IrTypeDescriptor> = param_kinds
                 .iter()
@@ -364,7 +391,10 @@ impl HdllPlugin {
 
             log::debug!(
                 "HDLL introspection: {} -> sig='{}', params={:?}, ret={:?}",
-                symbol_name, signature, param_types, return_type
+                symbol_name,
+                signature,
+                param_types,
+                return_type
             );
 
             functions.push(HdllFunction {
@@ -380,7 +410,9 @@ impl HdllPlugin {
 
         log::info!(
             "Loaded HDLL plugin '{}' via introspection with {} functions from {}",
-            lib_name, functions.len(), lib_path.display()
+            lib_name,
+            functions.len(),
+            lib_path.display()
         );
 
         Ok(HdllPlugin {
@@ -418,37 +450,40 @@ impl CompilerPlugin for HdllPlugin {
     }
 
     fn method_mappings(&self) -> Vec<(MethodSignature, RuntimeFunctionCall)> {
-        self.functions.iter().map(|f| {
-            // Create method signature
-            // Note: We leak these strings because MethodSignature requires 'static lifetime.
-            // This is acceptable for long-lived plugins.
-            let sig = MethodSignature {
-                class: Box::leak(f.class_name.clone().into_boxed_str()),
-                method: Box::leak(f.method_name.clone().into_boxed_str()),
-                is_static: f.is_static,
-                is_constructor: f.method_name == "new",
-                param_count: f.param_types.len(),
-            };
+        self.functions
+            .iter()
+            .map(|f| {
+                // Create method signature
+                // Note: We leak these strings because MethodSignature requires 'static lifetime.
+                // This is acceptable for long-lived plugins.
+                let sig = MethodSignature {
+                    class: Box::leak(f.class_name.clone().into_boxed_str()),
+                    method: Box::leak(f.method_name.clone().into_boxed_str()),
+                    is_static: f.is_static,
+                    is_constructor: f.method_name == "new",
+                    param_count: f.param_types.len(),
+                };
 
-            // Create runtime function call descriptor
-            let call = RuntimeFunctionCall {
-                runtime_name: Box::leak(f.symbol_name.clone().into_boxed_str()),
-                needs_out_param: false,
-                has_self_param: !f.is_static,
-                param_count: f.param_types.len(),
-                has_return: f.return_type != IrTypeDescriptor::Void,
-                params_need_ptr_conversion: 0,
-                raw_value_params: 0,
-                returns_raw_value: false,
-                extend_to_i64_params: 0,
-                param_types: Some(Box::leak(f.param_types.clone().into_boxed_slice())),
-                return_type: Some(f.return_type),
-                is_mir_wrapper: false,
-                source: FunctionSource::Hdll,
-            };
+                // Create runtime function call descriptor
+                let call = RuntimeFunctionCall {
+                    runtime_name: Box::leak(f.symbol_name.clone().into_boxed_str()),
+                    needs_out_param: false,
+                    has_self_param: !f.is_static,
+                    param_count: f.param_types.len(),
+                    has_return: f.return_type != IrTypeDescriptor::Void,
+                    params_need_ptr_conversion: 0,
+                    raw_value_params: 0,
+                    returns_raw_value: false,
+                    extend_to_i64_params: 0,
+                    param_types: Some(Box::leak(f.param_types.clone().into_boxed_slice())),
+                    return_type: Some(f.return_type),
+                    is_mir_wrapper: false,
+                    source: FunctionSource::Hdll,
+                };
 
-            (sig, call)
-        }).collect()
+                (sig, call)
+            })
+            .collect()
     }
 
     fn declare_externs(&self, builder: &mut MirBuilder) {
@@ -579,7 +614,8 @@ mod tests {
             "functions": []
         }"#;
 
-        let manifest: HdllManifest = serde_json::from_str(json).expect("Failed to parse minimal manifest");
+        let manifest: HdllManifest =
+            serde_json::from_str(json).expect("Failed to parse minimal manifest");
 
         assert_eq!(manifest.name, "Minimal");
         assert_eq!(manifest.version, None);
@@ -600,12 +636,22 @@ mod tests {
     #[test]
     fn test_param_type_conversion() {
         let params = vec![
-            HdllParam { name: "a".to_string(), param_type: "i32".to_string() },
-            HdllParam { name: "b".to_string(), param_type: "f64".to_string() },
-            HdllParam { name: "c".to_string(), param_type: "dyn".to_string() },
+            HdllParam {
+                name: "a".to_string(),
+                param_type: "i32".to_string(),
+            },
+            HdllParam {
+                name: "b".to_string(),
+                param_type: "f64".to_string(),
+            },
+            HdllParam {
+                name: "c".to_string(),
+                param_type: "dyn".to_string(),
+            },
         ];
 
-        let types: Vec<IrTypeDescriptor> = params.iter()
+        let types: Vec<IrTypeDescriptor> = params
+            .iter()
             .map(|p| {
                 HlTypeKind::from_manifest_str(&p.param_type)
                     .map(|t| t.to_ir_type_descriptor())

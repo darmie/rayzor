@@ -7,7 +7,7 @@ fn test_variadic_params() {
         return rest;
     }
 }"#;
-    
+
     match parser::parse_haxe_file("test.hx", content, false) {
         Ok(_) => println!("✅ Variadic params parsed"),
         Err(e) => println!("❌ Variadic params failed: {:?}", e),
@@ -24,7 +24,7 @@ macro function assert(expr:Expr):Expr {
         if (!$expr) throw "Assertion failed: " + $v{ExprTools.toString(expr)};
     };
 }"#;
-    
+
     match parser::parse_haxe_file("test.hx", content, false) {
         Ok(_) => println!("✅ Dollar expressions parsed"),
         Err(e) => println!("❌ Dollar expressions failed: {:?}", e),
@@ -40,7 +40,7 @@ fn test_inline_xml() {
         </div>;
     }
 }"#;
-    
+
     match parser::parse_haxe_file("test.hx", content, false) {
         Ok(_) => println!("✅ Inline XML parsed"),
         Err(e) => println!("❌ Inline XML failed: {:?}", e),
@@ -56,7 +56,7 @@ fn test_safe_navigation() {
         var first = nullable?.[0] ?? "default";
     }
 }"#;
-    
+
     match parser::parse_haxe_file("test.hx", content, false) {
         Ok(_) => println!("✅ Safe navigation parsed"),
         Err(e) => println!("❌ Safe navigation failed: {:?}", e),
@@ -71,7 +71,7 @@ fn test_null_coalescing() {
         var value = nullable ?? "default";
     }
 }"#;
-    
+
     match parser::parse_haxe_file("test.hx", content, false) {
         Ok(_) => println!("✅ Null coalescing parsed"),
         Err(e) => println!("❌ Null coalescing failed: {:?}", e),
@@ -86,7 +86,7 @@ fn test_metadata_on_expressions() {
         @:inline var fast = 42;
     }
 }"#;
-    
+
     match parser::parse_haxe_file("test.hx", content, false) {
         Ok(_) => println!("✅ Metadata on expressions parsed"),
         Err(e) => println!("❌ Metadata on expressions failed: {:?}", e),
@@ -103,7 +103,7 @@ fn test_do_while() {
         } while (i < 10);
     }
 }"#;
-    
+
     match parser::parse_haxe_file("test.hx", content, false) {
         Ok(_) => println!("✅ Do-while parsed"),
         Err(e) => println!("❌ Do-while failed: {:?}", e),
@@ -120,7 +120,7 @@ fn test_key_value_iteration() {
         }
     }
 }"#;
-    
+
     match parser::parse_haxe_file("test.hx", content, false) {
         Ok(_) => println!("✅ Key-value iteration parsed"),
         Err(e) => println!("❌ Key-value iteration failed: {:?}", e),
@@ -138,7 +138,7 @@ fn test_macro_reification() {
         };
     }
 }"#;
-    
+
     match parser::parse_haxe_file("test.hx", content, false) {
         Ok(_) => println!("✅ Macro reification parsed"),
         Err(e) => println!("❌ Macro reification failed: {:?}", e),
@@ -157,7 +157,7 @@ fn test_pattern_matching_guards() {
         }
     }
 }"#;
-    
+
     match parser::parse_haxe_file("test.hx", content, false) {
         Ok(_) => println!("✅ Pattern matching guards parsed"),
         Err(e) => println!("❌ Pattern matching guards failed: {:?}", e),
@@ -173,7 +173,7 @@ fn test_compiler_specific() {
         }
     }
 }"#;
-    
+
     match parser::parse_haxe_file("test.hx", content, false) {
         Ok(_) => println!("✅ Compiler-specific code parsed"),
         Err(e) => println!("❌ Compiler-specific code failed: {:?}", e),
@@ -189,7 +189,7 @@ fn test_array_comprehension_with_filter() {
         var nested = [for (i in 0...3) for (j in 0...3) i + j];
     }
 }"#;
-    
+
     match parser::parse_haxe_file("test.hx", content, false) {
         Ok(_) => println!("✅ Array comprehension with filter parsed"),
         Err(e) => println!("❌ Array comprehension with filter failed: {:?}", e),
@@ -204,7 +204,7 @@ fn test_map_comprehension_with_filter() {
         var filtered = [for (k => v in map) if (v > 5) k => v * 2];
     }
 }"#;
-    
+
     match parser::parse_haxe_file("test.hx", content, false) {
         Ok(_) => println!("✅ Map comprehension with filter parsed"),
         Err(e) => println!("❌ Map comprehension with filter failed: {:?}", e),
@@ -223,7 +223,7 @@ fn test_object_with_computed_properties() {
         };
     }
 }"#;
-    
+
     match parser::parse_haxe_file("test.hx", content, false) {
         Ok(_) => println!("✅ Object with computed properties parsed"),
         Err(e) => println!("❌ Object with computed properties failed: {:?}", e),
@@ -238,7 +238,7 @@ public final moduleConst:Int = 42;
 class Test {
     static function main() {}
 }"#;
-    
+
     match parser::parse_haxe_file("test.hx", content, false) {
         Ok(_) => println!("✅ Module-level vars parsed"),
         Err(e) => println!("❌ Module-level vars failed: {:?}", e),
@@ -257,7 +257,7 @@ fn test_macro_function() {
     });
     return fields;
 }"#;
-    
+
     match parser::parse_haxe_file("test.hx", content, false) {
         Ok(_) => println!("✅ Macro function parsed"),
         Err(e) => println!("❌ Macro function failed: {:?}", e),
@@ -277,7 +277,7 @@ fn test_conditional_compilation() {
         #end
     }
 }"#;
-    
+
     match parser::parse_haxe_file("test.hx", content, false) {
         Ok(_) => println!("✅ Conditional compilation parsed"),
         Err(e) => println!("❌ Conditional compilation failed: {:?}", e),
@@ -292,7 +292,7 @@ fn test_regex_literal() {
         var regex2 = ~/\d{3}-\d{4}/g;
     }
 }"#;
-    
+
     match parser::parse_haxe_file("test.hx", content, false) {
         Ok(_) => println!("✅ Regex literal parsed"),
         Err(e) => println!("❌ Regex literal failed: {:?}", e),
@@ -321,7 +321,7 @@ abstract SafeInt(Int) from Int to Int {
     
     public function toInt():Int return this;
 }"#;
-    
+
     match parser::parse_haxe_file("test.hx", content, false) {
         Ok(_) => println!("✅ Abstract with conversions parsed"),
         Err(e) => println!("❌ Abstract with conversions failed: {:?}", e),
@@ -338,7 +338,7 @@ fn test_inline_functions() {
         var result = helper(local(5));
     }
 }"#;
-    
+
     match parser::parse_haxe_file("test.hx", content, false) {
         Ok(_) => println!("✅ Inline functions parsed"),
         Err(e) => println!("❌ Inline functions failed: {:?}", e),

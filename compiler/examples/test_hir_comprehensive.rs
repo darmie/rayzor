@@ -1,3 +1,39 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
+#![allow(
+    clippy::too_many_arguments,
+    clippy::let_and_return,
+    clippy::single_match,
+    clippy::collapsible_match
+)]
 // Comprehensive integration test for all HIR features implemented in Weeks 1-3
 // Tests: Type preservation, symbol resolution, array comprehensions, pattern matching,
 // logical operators, lvalue operations, and more
@@ -293,6 +329,9 @@ class Main {
 
     let mut ast_lowering = AstLowering::new(
         &mut string_interner,
+        std::rc::Rc::new(std::cell::RefCell::new(
+            compiler::tast::StringInterner::new(),
+        )),
         &mut symbol_table,
         &type_table,
         &mut scope_tree,
@@ -310,9 +349,11 @@ class Main {
 
             // Debug: Check symbol table for stdlib symbols
             let total_symbols: usize = symbol_table.all_symbols().count();
-            let array_symbols: Vec<_> = symbol_table.all_symbols()
+            let array_symbols: Vec<_> = symbol_table
+                .all_symbols()
                 .filter(|s| {
-                    string_interner.get(s.name)
+                    string_interner
+                        .get(s.name)
                         .map(|name| name.contains("Array") || name.contains("push"))
                         .unwrap_or(false)
                 })
@@ -321,7 +362,8 @@ class Main {
             println!("   - Array/push symbols: {}", array_symbols.len());
             for sym in array_symbols.iter().take(5) {
                 if let Some(name) = string_interner.get(sym.name) {
-                    let qualified = sym.qualified_name
+                    let qualified = sym
+                        .qualified_name
                         .and_then(|q| string_interner.get(q))
                         .unwrap_or("<no qualified name>");
                     println!("     • Symbol: '{}' qualified: '{}'", name, qualified);
@@ -402,7 +444,12 @@ class Main {
 
     // Step 6: Lower HIR to MIR
     println!("\n6. Lowering HIR to MIR...");
-    match lower_hir_to_mir(&hir_module, &*string_interner_rc.borrow()) {
+    match lower_hir_to_mir(
+        &hir_module,
+        &*string_interner_rc.borrow(),
+        &type_table,
+        &symbol_table,
+    ) {
         Ok(mir) => {
             println!("   ✓ Successfully lowered to MIR");
             println!("   - Module: {}", mir.name);
@@ -497,20 +544,31 @@ fn validate_hir_features(hir: &HirModule, interner: &Rc<RefCell<StringInterner>>
 
         println!("     • Function '{}' processed", func_name);
     }
-    
+
     // Check methods in classes
     let interner_ref = interner.borrow();
     for type_decl in hir.types.values() {
         if let HirTypeDecl::Class(class) = type_decl {
             let class_name = interner_ref.get(class.name).unwrap_or("?").to_string();
-            println!("     • Class '{}' with {} methods", class_name, class.methods.len());
+            println!(
+                "     • Class '{}' with {} methods",
+                class_name,
+                class.methods.len()
+            );
 
             for method in &class.methods {
-                let method_name = interner_ref.get(method.function.name).unwrap_or("?").to_string();
-                
+                let method_name = interner_ref
+                    .get(method.function.name)
+                    .unwrap_or("?")
+                    .to_string();
+
                 if let Some(body) = &method.function.body {
-                    println!("       - Method '{}' has {} statements", method_name, body.statements.len());
-                    
+                    println!(
+                        "       - Method '{}' has {} statements",
+                        method_name,
+                        body.statements.len()
+                    );
+
                     // Debug: Print what type of statement we have
                     for (i, stmt) in body.statements.iter().enumerate() {
                         let stmt_type = match stmt {
@@ -525,7 +583,7 @@ fn validate_hir_features(hir: &HirModule, interner: &Rc<RefCell<StringInterner>>
                                     _ => "Expr(Other)",
                                 };
                                 expr_type
-                            },
+                            }
                             HirStatement::Assign { .. } => "Assign",
                             HirStatement::Return(_) => "Return",
                             HirStatement::Break(_) => "Break",
@@ -541,7 +599,7 @@ fn validate_hir_features(hir: &HirModule, interner: &Rc<RefCell<StringInterner>>
                         };
                         println!("         Statement {}: {}", i + 1, stmt_type);
                     }
-                    
+
                     check_block_for_features(
                         body,
                         &mut has_array_comp,
@@ -587,7 +645,7 @@ fn validate_hir_features(hir: &HirModule, interner: &Rc<RefCell<StringInterner>>
         "     {} Lvalue operations preserved",
         if has_lvalue_ops { "✓" } else { "✗" }
     );
-    
+
     println!("   Control Flow:");
     println!(
         "     {} Loops (while/for/do-while)",
@@ -609,7 +667,7 @@ fn validate_hir_features(hir: &HirModule, interner: &Rc<RefCell<StringInterner>>
         "     {} Throw statements",
         if has_throw_stmt { "✓" } else { "✗" }
     );
-    
+
     println!("   Language Features:");
     println!(
         "     {} Closures/lambdas",
@@ -658,15 +716,30 @@ fn check_block_for_features(
 ) {
     for (idx, stmt) in block.statements.iter().enumerate() {
         // Debug: print statement type
-        
+
         match stmt {
             HirStatement::Let { init, .. } => {
                 // Check if the Let initialization contains array comprehension (ForIn loops)
                 if let Some(init_expr) = init {
-                    check_expr_for_features(init_expr, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                        has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                        has_new_expr, has_method_calls, has_field_access, has_array_access,
-                        has_return_stmt, has_throw_stmt, has_break_continue);
+                    check_expr_for_features(
+                        init_expr,
+                        has_array_comp,
+                        has_pattern_match,
+                        has_logical_ops,
+                        has_lvalue_ops,
+                        has_loops,
+                        has_closures,
+                        has_try_catch,
+                        has_string_interp,
+                        has_null_safety,
+                        has_new_expr,
+                        has_method_calls,
+                        has_field_access,
+                        has_array_access,
+                        has_return_stmt,
+                        has_throw_stmt,
+                        has_break_continue,
+                    );
                 }
             }
             HirStatement::Assign { .. } => {
@@ -676,84 +749,246 @@ fn check_block_for_features(
             HirStatement::Switch { .. } => *has_pattern_match = true,
             HirStatement::ForIn { body, .. } => {
                 // Could be from array comprehension desugaring
-                 *has_array_comp = true;
-                 *has_loops = true;
-                check_block_for_features(body, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                    has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                    has_new_expr, has_method_calls, has_field_access, has_array_access,
-                    has_return_stmt, has_throw_stmt, has_break_continue);
+                *has_array_comp = true;
+                *has_loops = true;
+                check_block_for_features(
+                    body,
+                    has_array_comp,
+                    has_pattern_match,
+                    has_logical_ops,
+                    has_lvalue_ops,
+                    has_loops,
+                    has_closures,
+                    has_try_catch,
+                    has_string_interp,
+                    has_null_safety,
+                    has_new_expr,
+                    has_method_calls,
+                    has_field_access,
+                    has_array_access,
+                    has_return_stmt,
+                    has_throw_stmt,
+                    has_break_continue,
+                );
             }
-            HirStatement::If { then_branch, else_branch, .. } => {
+            HirStatement::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 // Check nested blocks in if statements
-                check_block_for_features(then_branch, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                    has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                    has_new_expr, has_method_calls, has_field_access, has_array_access,
-                    has_return_stmt, has_throw_stmt, has_break_continue);
+                check_block_for_features(
+                    then_branch,
+                    has_array_comp,
+                    has_pattern_match,
+                    has_logical_ops,
+                    has_lvalue_ops,
+                    has_loops,
+                    has_closures,
+                    has_try_catch,
+                    has_string_interp,
+                    has_null_safety,
+                    has_new_expr,
+                    has_method_calls,
+                    has_field_access,
+                    has_array_access,
+                    has_return_stmt,
+                    has_throw_stmt,
+                    has_break_continue,
+                );
                 if let Some(else_block) = else_branch {
-                    check_block_for_features(else_block, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                        has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                        has_new_expr, has_method_calls, has_field_access, has_array_access,
-                        has_return_stmt, has_throw_stmt, has_break_continue);
+                    check_block_for_features(
+                        else_block,
+                        has_array_comp,
+                        has_pattern_match,
+                        has_logical_ops,
+                        has_lvalue_ops,
+                        has_loops,
+                        has_closures,
+                        has_try_catch,
+                        has_string_interp,
+                        has_null_safety,
+                        has_new_expr,
+                        has_method_calls,
+                        has_field_access,
+                        has_array_access,
+                        has_return_stmt,
+                        has_throw_stmt,
+                        has_break_continue,
+                    );
                 }
             }
             HirStatement::While { body, .. } => {
                 *has_loops = true;
-                check_block_for_features(body, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                    has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                    has_new_expr, has_method_calls, has_field_access, has_array_access,
-                    has_return_stmt, has_throw_stmt, has_break_continue);
+                check_block_for_features(
+                    body,
+                    has_array_comp,
+                    has_pattern_match,
+                    has_logical_ops,
+                    has_lvalue_ops,
+                    has_loops,
+                    has_closures,
+                    has_try_catch,
+                    has_string_interp,
+                    has_null_safety,
+                    has_new_expr,
+                    has_method_calls,
+                    has_field_access,
+                    has_array_access,
+                    has_return_stmt,
+                    has_throw_stmt,
+                    has_break_continue,
+                );
             }
             HirStatement::DoWhile { body, .. } => {
                 *has_loops = true;
-                check_block_for_features(body, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                    has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                    has_new_expr, has_method_calls, has_field_access, has_array_access,
-                    has_return_stmt, has_throw_stmt, has_break_continue);
+                check_block_for_features(
+                    body,
+                    has_array_comp,
+                    has_pattern_match,
+                    has_logical_ops,
+                    has_lvalue_ops,
+                    has_loops,
+                    has_closures,
+                    has_try_catch,
+                    has_string_interp,
+                    has_null_safety,
+                    has_new_expr,
+                    has_method_calls,
+                    has_field_access,
+                    has_array_access,
+                    has_return_stmt,
+                    has_throw_stmt,
+                    has_break_continue,
+                );
             }
-            HirStatement::TryCatch { try_block, catches, finally_block, .. } => {
+            HirStatement::TryCatch {
+                try_block,
+                catches,
+                finally_block,
+                ..
+            } => {
                 *has_try_catch = true;
-                check_block_for_features(try_block, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                    has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                    has_new_expr, has_method_calls, has_field_access, has_array_access,
-                    has_return_stmt, has_throw_stmt, has_break_continue);
+                check_block_for_features(
+                    try_block,
+                    has_array_comp,
+                    has_pattern_match,
+                    has_logical_ops,
+                    has_lvalue_ops,
+                    has_loops,
+                    has_closures,
+                    has_try_catch,
+                    has_string_interp,
+                    has_null_safety,
+                    has_new_expr,
+                    has_method_calls,
+                    has_field_access,
+                    has_array_access,
+                    has_return_stmt,
+                    has_throw_stmt,
+                    has_break_continue,
+                );
                 for catch in catches {
-                    check_block_for_features(&catch.body, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                        has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                        has_new_expr, has_method_calls, has_field_access, has_array_access,
-                        has_return_stmt, has_throw_stmt, has_break_continue);
+                    check_block_for_features(
+                        &catch.body,
+                        has_array_comp,
+                        has_pattern_match,
+                        has_logical_ops,
+                        has_lvalue_ops,
+                        has_loops,
+                        has_closures,
+                        has_try_catch,
+                        has_string_interp,
+                        has_null_safety,
+                        has_new_expr,
+                        has_method_calls,
+                        has_field_access,
+                        has_array_access,
+                        has_return_stmt,
+                        has_throw_stmt,
+                        has_break_continue,
+                    );
                 }
                 if let Some(finally) = finally_block {
-                    check_block_for_features(finally, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                        has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                        has_new_expr, has_method_calls, has_field_access, has_array_access,
-                        has_return_stmt, has_throw_stmt, has_break_continue);
+                    check_block_for_features(
+                        finally,
+                        has_array_comp,
+                        has_pattern_match,
+                        has_logical_ops,
+                        has_lvalue_ops,
+                        has_loops,
+                        has_closures,
+                        has_try_catch,
+                        has_string_interp,
+                        has_null_safety,
+                        has_new_expr,
+                        has_method_calls,
+                        has_field_access,
+                        has_array_access,
+                        has_return_stmt,
+                        has_throw_stmt,
+                        has_break_continue,
+                    );
                 }
             }
             HirStatement::Return(ret_expr) => {
                 *has_return_stmt = true;
                 if let Some(expr) = ret_expr {
-                    check_expr_for_features(expr, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                        has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                        has_new_expr, has_method_calls, has_field_access, has_array_access,
-                        has_return_stmt, has_throw_stmt, has_break_continue);
+                    check_expr_for_features(
+                        expr,
+                        has_array_comp,
+                        has_pattern_match,
+                        has_logical_ops,
+                        has_lvalue_ops,
+                        has_loops,
+                        has_closures,
+                        has_try_catch,
+                        has_string_interp,
+                        has_null_safety,
+                        has_new_expr,
+                        has_method_calls,
+                        has_field_access,
+                        has_array_access,
+                        has_return_stmt,
+                        has_throw_stmt,
+                        has_break_continue,
+                    );
                 }
             }
             HirStatement::Throw(expr) => {
                 *has_throw_stmt = true;
-                check_expr_for_features(expr, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                    has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                    has_new_expr, has_method_calls, has_field_access, has_array_access,
-                    has_return_stmt, has_throw_stmt, has_break_continue);
+                check_expr_for_features(
+                    expr,
+                    has_array_comp,
+                    has_pattern_match,
+                    has_logical_ops,
+                    has_lvalue_ops,
+                    has_loops,
+                    has_closures,
+                    has_try_catch,
+                    has_string_interp,
+                    has_null_safety,
+                    has_new_expr,
+                    has_method_calls,
+                    has_field_access,
+                    has_array_access,
+                    has_return_stmt,
+                    has_throw_stmt,
+                    has_break_continue,
+                );
             }
             HirStatement::Break(_) | HirStatement::Continue(_) => {
                 *has_break_continue = true;
             }
-            
+
             HirStatement::Expr(expr) => {
                 // Special debugging for the testArrayComprehension method
                 if idx == 0 {
                     if let HirExprKind::Block(inner_block) = &expr.kind {
-                        println!("       DEBUG: Expr(Block) contains {} statements", inner_block.statements.len());
+                        println!(
+                            "       DEBUG: Expr(Block) contains {} statements",
+                            inner_block.statements.len()
+                        );
                         // Special debug for lvalue operations test
                         if inner_block.statements.len() == 5 {
                             for (i, stmt) in inner_block.statements.iter().enumerate() {
@@ -765,7 +1000,10 @@ fn check_block_for_features(
                                         // This is a workaround for the test
                                     }
                                     HirStatement::Assign { .. } => {
-                                        println!("         Statement {} is ASSIGN! Found lvalue op!", i + 1);
+                                        println!(
+                                            "         Statement {} is ASSIGN! Found lvalue op!",
+                                            i + 1
+                                        );
                                         // This would indicate proper lvalue operations
                                     }
                                     _ => {}
@@ -779,13 +1017,17 @@ fn check_block_for_features(
                                     if let Some(init_expr) = init {
                                         if let HirExprKind::Block(init_block) = &init_expr.kind {
                                             // This could be an array comprehension!
-                                            let has_forin = init_block.statements.iter().any(|s| 
-                                                matches!(s, HirStatement::ForIn { .. })
-                                            );
+                                            let has_forin = init_block
+                                                .statements
+                                                .iter()
+                                                .any(|s| matches!(s, HirStatement::ForIn { .. }));
                                             if has_forin {
                                                 format!("Let (with ForIn in init block!)")
                                             } else {
-                                                format!("Let (init block with {} stmts)", init_block.statements.len())
+                                                format!(
+                                                    "Let (init block with {} stmts)",
+                                                    init_block.statements.len()
+                                                )
                                             }
                                         } else {
                                             "Let".to_string()
@@ -793,7 +1035,7 @@ fn check_block_for_features(
                                     } else {
                                         "Let (no init)".to_string()
                                     }
-                                },
+                                }
                                 HirStatement::Expr(_) => "Expr".to_string(),
                                 HirStatement::ForIn { .. } => "ForIn".to_string(),
                                 HirStatement::Return(_) => "Return".to_string(),
@@ -803,10 +1045,25 @@ fn check_block_for_features(
                         }
                     }
                 }
-                check_expr_for_features(expr, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                    has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                    has_new_expr, has_method_calls, has_field_access, has_array_access,
-                    has_return_stmt, has_throw_stmt, has_break_continue);
+                check_expr_for_features(
+                    expr,
+                    has_array_comp,
+                    has_pattern_match,
+                    has_logical_ops,
+                    has_lvalue_ops,
+                    has_loops,
+                    has_closures,
+                    has_try_catch,
+                    has_string_interp,
+                    has_null_safety,
+                    has_new_expr,
+                    has_method_calls,
+                    has_field_access,
+                    has_array_access,
+                    has_return_stmt,
+                    has_throw_stmt,
+                    has_break_continue,
+                );
             }
             HirStatement::Return(Some(expr)) => {
                 *has_return_stmt = true;
@@ -820,29 +1077,59 @@ fn check_block_for_features(
                     }
                 }
                 // Check return expression for features
-                check_expr_for_features(expr, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                    has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                    has_new_expr, has_method_calls, has_field_access, has_array_access,
-                    has_return_stmt, has_throw_stmt, has_break_continue);
+                check_expr_for_features(
+                    expr,
+                    has_array_comp,
+                    has_pattern_match,
+                    has_logical_ops,
+                    has_lvalue_ops,
+                    has_loops,
+                    has_closures,
+                    has_try_catch,
+                    has_string_interp,
+                    has_null_safety,
+                    has_new_expr,
+                    has_method_calls,
+                    has_field_access,
+                    has_array_access,
+                    has_return_stmt,
+                    has_throw_stmt,
+                    has_break_continue,
+                );
             }
             _ => {}
         }
     }
-    
+
     // Also check the block's expression if it has one
     if let Some(expr) = &block.expr {
-        check_expr_for_features(expr, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-            has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-            has_new_expr, has_method_calls, has_field_access, has_array_access,
-            has_return_stmt, has_throw_stmt, has_break_continue);
+        check_expr_for_features(
+            expr,
+            has_array_comp,
+            has_pattern_match,
+            has_logical_ops,
+            has_lvalue_ops,
+            has_loops,
+            has_closures,
+            has_try_catch,
+            has_string_interp,
+            has_null_safety,
+            has_new_expr,
+            has_method_calls,
+            has_field_access,
+            has_array_access,
+            has_return_stmt,
+            has_throw_stmt,
+            has_break_continue,
+        );
     }
 }
 
 fn check_expr_for_features(
-    expr: &HirExpr, 
+    expr: &HirExpr,
     has_array_comp: &mut bool,
     has_pattern_match: &mut bool,
-    has_logical_ops: &mut bool, 
+    has_logical_ops: &mut bool,
     has_lvalue_ops: &mut bool,
     has_loops: &mut bool,
     has_closures: &mut bool,
@@ -869,127 +1156,415 @@ fn check_expr_for_features(
                 _ => {}
             }
             // Recursively check operands
-            check_expr_for_features(lhs, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                has_new_expr, has_method_calls, has_field_access, has_array_access,
-                has_return_stmt, has_throw_stmt, has_break_continue);
-            check_expr_for_features(rhs, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                has_new_expr, has_method_calls, has_field_access, has_array_access,
-                has_return_stmt, has_throw_stmt, has_break_continue);
-        },
+            check_expr_for_features(
+                lhs,
+                has_array_comp,
+                has_pattern_match,
+                has_logical_ops,
+                has_lvalue_ops,
+                has_loops,
+                has_closures,
+                has_try_catch,
+                has_string_interp,
+                has_null_safety,
+                has_new_expr,
+                has_method_calls,
+                has_field_access,
+                has_array_access,
+                has_return_stmt,
+                has_throw_stmt,
+                has_break_continue,
+            );
+            check_expr_for_features(
+                rhs,
+                has_array_comp,
+                has_pattern_match,
+                has_logical_ops,
+                has_lvalue_ops,
+                has_loops,
+                has_closures,
+                has_try_catch,
+                has_string_interp,
+                has_null_safety,
+                has_new_expr,
+                has_method_calls,
+                has_field_access,
+                has_array_access,
+                has_return_stmt,
+                has_throw_stmt,
+                has_break_continue,
+            );
+        }
         HirExprKind::Block(block) => {
             // Recursively check nested blocks - this is crucial for finding all features
-            check_block_for_features(block, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                has_new_expr, has_method_calls, has_field_access, has_array_access,
-                has_return_stmt, has_throw_stmt, has_break_continue);
+            check_block_for_features(
+                block,
+                has_array_comp,
+                has_pattern_match,
+                has_logical_ops,
+                has_lvalue_ops,
+                has_loops,
+                has_closures,
+                has_try_catch,
+                has_string_interp,
+                has_null_safety,
+                has_new_expr,
+                has_method_calls,
+                has_field_access,
+                has_array_access,
+                has_return_stmt,
+                has_throw_stmt,
+                has_break_continue,
+            );
         }
-        HirExprKind::If { condition, then_expr, else_expr } => {
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
             // Check if this is a desugared switch (pattern matching)
             // Heuristic: if we have nested if-else with equality checks, it's likely from switch
-            if let HirExprKind::Binary { op: HirBinaryOp::Eq, .. } = &condition.kind {
+            if let HirExprKind::Binary {
+                op: HirBinaryOp::Eq,
+                ..
+            } = &condition.kind
+            {
                 if let HirExprKind::If { .. } = &else_expr.kind {
                     // Nested if-else with equality - likely a desugared switch
                     *has_pattern_match = true;
                 }
             }
-            check_expr_for_features(condition, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                has_new_expr, has_method_calls, has_field_access, has_array_access,
-                has_return_stmt, has_throw_stmt, has_break_continue);
-            check_expr_for_features(then_expr, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                has_new_expr, has_method_calls, has_field_access, has_array_access,
-                has_return_stmt, has_throw_stmt, has_break_continue);
-            check_expr_for_features(else_expr, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                has_new_expr, has_method_calls, has_field_access, has_array_access,
-                has_return_stmt, has_throw_stmt, has_break_continue);
+            check_expr_for_features(
+                condition,
+                has_array_comp,
+                has_pattern_match,
+                has_logical_ops,
+                has_lvalue_ops,
+                has_loops,
+                has_closures,
+                has_try_catch,
+                has_string_interp,
+                has_null_safety,
+                has_new_expr,
+                has_method_calls,
+                has_field_access,
+                has_array_access,
+                has_return_stmt,
+                has_throw_stmt,
+                has_break_continue,
+            );
+            check_expr_for_features(
+                then_expr,
+                has_array_comp,
+                has_pattern_match,
+                has_logical_ops,
+                has_lvalue_ops,
+                has_loops,
+                has_closures,
+                has_try_catch,
+                has_string_interp,
+                has_null_safety,
+                has_new_expr,
+                has_method_calls,
+                has_field_access,
+                has_array_access,
+                has_return_stmt,
+                has_throw_stmt,
+                has_break_continue,
+            );
+            check_expr_for_features(
+                else_expr,
+                has_array_comp,
+                has_pattern_match,
+                has_logical_ops,
+                has_lvalue_ops,
+                has_loops,
+                has_closures,
+                has_try_catch,
+                has_string_interp,
+                has_null_safety,
+                has_new_expr,
+                has_method_calls,
+                has_field_access,
+                has_array_access,
+                has_return_stmt,
+                has_throw_stmt,
+                has_break_continue,
+            );
         }
-        HirExprKind::Call { callee, args, is_method, .. } => {
+        HirExprKind::Call {
+            callee,
+            args,
+            is_method,
+            ..
+        } => {
             if *is_method {
                 *has_method_calls = true;
             }
-            check_expr_for_features(callee, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                has_new_expr, has_method_calls, has_field_access, has_array_access,
-                has_return_stmt, has_throw_stmt, has_break_continue);
+            check_expr_for_features(
+                callee,
+                has_array_comp,
+                has_pattern_match,
+                has_logical_ops,
+                has_lvalue_ops,
+                has_loops,
+                has_closures,
+                has_try_catch,
+                has_string_interp,
+                has_null_safety,
+                has_new_expr,
+                has_method_calls,
+                has_field_access,
+                has_array_access,
+                has_return_stmt,
+                has_throw_stmt,
+                has_break_continue,
+            );
             for arg in args {
-                check_expr_for_features(arg, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                    has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                    has_new_expr, has_method_calls, has_field_access, has_array_access,
-                    has_return_stmt, has_throw_stmt, has_break_continue);
+                check_expr_for_features(
+                    arg,
+                    has_array_comp,
+                    has_pattern_match,
+                    has_logical_ops,
+                    has_lvalue_ops,
+                    has_loops,
+                    has_closures,
+                    has_try_catch,
+                    has_string_interp,
+                    has_null_safety,
+                    has_new_expr,
+                    has_method_calls,
+                    has_field_access,
+                    has_array_access,
+                    has_return_stmt,
+                    has_throw_stmt,
+                    has_break_continue,
+                );
             }
         }
         HirExprKind::Unary { operand, .. } => {
-            check_expr_for_features(operand, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                has_new_expr, has_method_calls, has_field_access, has_array_access,
-                has_return_stmt, has_throw_stmt, has_break_continue);
+            check_expr_for_features(
+                operand,
+                has_array_comp,
+                has_pattern_match,
+                has_logical_ops,
+                has_lvalue_ops,
+                has_loops,
+                has_closures,
+                has_try_catch,
+                has_string_interp,
+                has_null_safety,
+                has_new_expr,
+                has_method_calls,
+                has_field_access,
+                has_array_access,
+                has_return_stmt,
+                has_throw_stmt,
+                has_break_continue,
+            );
         }
         HirExprKind::Field { object, .. } => {
             *has_field_access = true;
-            check_expr_for_features(object, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                has_new_expr, has_method_calls, has_field_access, has_array_access,
-                has_return_stmt, has_throw_stmt, has_break_continue);
+            check_expr_for_features(
+                object,
+                has_array_comp,
+                has_pattern_match,
+                has_logical_ops,
+                has_lvalue_ops,
+                has_loops,
+                has_closures,
+                has_try_catch,
+                has_string_interp,
+                has_null_safety,
+                has_new_expr,
+                has_method_calls,
+                has_field_access,
+                has_array_access,
+                has_return_stmt,
+                has_throw_stmt,
+                has_break_continue,
+            );
         }
         HirExprKind::Index { object, index, .. } => {
             *has_array_access = true;
-            check_expr_for_features(object, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                has_new_expr, has_method_calls, has_field_access, has_array_access,
-                has_return_stmt, has_throw_stmt, has_break_continue);
-            check_expr_for_features(index, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                has_new_expr, has_method_calls, has_field_access, has_array_access,
-                has_return_stmt, has_throw_stmt, has_break_continue);
+            check_expr_for_features(
+                object,
+                has_array_comp,
+                has_pattern_match,
+                has_logical_ops,
+                has_lvalue_ops,
+                has_loops,
+                has_closures,
+                has_try_catch,
+                has_string_interp,
+                has_null_safety,
+                has_new_expr,
+                has_method_calls,
+                has_field_access,
+                has_array_access,
+                has_return_stmt,
+                has_throw_stmt,
+                has_break_continue,
+            );
+            check_expr_for_features(
+                index,
+                has_array_comp,
+                has_pattern_match,
+                has_logical_ops,
+                has_lvalue_ops,
+                has_loops,
+                has_closures,
+                has_try_catch,
+                has_string_interp,
+                has_null_safety,
+                has_new_expr,
+                has_method_calls,
+                has_field_access,
+                has_array_access,
+                has_return_stmt,
+                has_throw_stmt,
+                has_break_continue,
+            );
         }
         HirExprKind::Lambda { body, .. } => {
             *has_closures = true;
-            check_expr_for_features(body, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                has_new_expr, has_method_calls, has_field_access, has_array_access,
-                has_return_stmt, has_throw_stmt, has_break_continue);
+            check_expr_for_features(
+                body,
+                has_array_comp,
+                has_pattern_match,
+                has_logical_ops,
+                has_lvalue_ops,
+                has_loops,
+                has_closures,
+                has_try_catch,
+                has_string_interp,
+                has_null_safety,
+                has_new_expr,
+                has_method_calls,
+                has_field_access,
+                has_array_access,
+                has_return_stmt,
+                has_throw_stmt,
+                has_break_continue,
+            );
         }
         HirExprKind::StringInterpolation { parts, .. } => {
             *has_string_interp = true;
             for part in parts {
                 if let HirStringPart::Interpolation(interp_expr) = part {
-                    check_expr_for_features(interp_expr, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                        has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                        has_new_expr, has_method_calls, has_field_access, has_array_access,
-                        has_return_stmt, has_throw_stmt, has_break_continue);
+                    check_expr_for_features(
+                        interp_expr,
+                        has_array_comp,
+                        has_pattern_match,
+                        has_logical_ops,
+                        has_lvalue_ops,
+                        has_loops,
+                        has_closures,
+                        has_try_catch,
+                        has_string_interp,
+                        has_null_safety,
+                        has_new_expr,
+                        has_method_calls,
+                        has_field_access,
+                        has_array_access,
+                        has_return_stmt,
+                        has_throw_stmt,
+                        has_break_continue,
+                    );
                 }
             }
         }
-        HirExprKind::TryCatch { try_expr, catch_handlers, finally_expr, .. } => {
+        HirExprKind::TryCatch {
+            try_expr,
+            catch_handlers,
+            finally_expr,
+            ..
+        } => {
             *has_try_catch = true;
-            check_expr_for_features(try_expr, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                has_new_expr, has_method_calls, has_field_access, has_array_access,
-                has_return_stmt, has_throw_stmt, has_break_continue);
+            check_expr_for_features(
+                try_expr,
+                has_array_comp,
+                has_pattern_match,
+                has_logical_ops,
+                has_lvalue_ops,
+                has_loops,
+                has_closures,
+                has_try_catch,
+                has_string_interp,
+                has_null_safety,
+                has_new_expr,
+                has_method_calls,
+                has_field_access,
+                has_array_access,
+                has_return_stmt,
+                has_throw_stmt,
+                has_break_continue,
+            );
             for handler in catch_handlers {
-                check_expr_for_features(&handler.body, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                    has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                    has_new_expr, has_method_calls, has_field_access, has_array_access,
-                    has_return_stmt, has_throw_stmt, has_break_continue);
+                check_expr_for_features(
+                    &handler.body,
+                    has_array_comp,
+                    has_pattern_match,
+                    has_logical_ops,
+                    has_lvalue_ops,
+                    has_loops,
+                    has_closures,
+                    has_try_catch,
+                    has_string_interp,
+                    has_null_safety,
+                    has_new_expr,
+                    has_method_calls,
+                    has_field_access,
+                    has_array_access,
+                    has_return_stmt,
+                    has_throw_stmt,
+                    has_break_continue,
+                );
             }
             if let Some(finally) = finally_expr {
-                check_expr_for_features(finally, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                    has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                    has_new_expr, has_method_calls, has_field_access, has_array_access,
-                    has_return_stmt, has_throw_stmt, has_break_continue);
+                check_expr_for_features(
+                    finally,
+                    has_array_comp,
+                    has_pattern_match,
+                    has_logical_ops,
+                    has_lvalue_ops,
+                    has_loops,
+                    has_closures,
+                    has_try_catch,
+                    has_string_interp,
+                    has_null_safety,
+                    has_new_expr,
+                    has_method_calls,
+                    has_field_access,
+                    has_array_access,
+                    has_return_stmt,
+                    has_throw_stmt,
+                    has_break_continue,
+                );
             }
         }
         HirExprKind::New { args, .. } => {
             *has_new_expr = true;
             for arg in args {
-                check_expr_for_features(arg, has_array_comp, has_pattern_match, has_logical_ops, has_lvalue_ops,
-                    has_loops, has_closures, has_try_catch, has_string_interp, has_null_safety,
-                    has_new_expr, has_method_calls, has_field_access, has_array_access,
-                    has_return_stmt, has_throw_stmt, has_break_continue);
+                check_expr_for_features(
+                    arg,
+                    has_array_comp,
+                    has_pattern_match,
+                    has_logical_ops,
+                    has_lvalue_ops,
+                    has_loops,
+                    has_closures,
+                    has_try_catch,
+                    has_string_interp,
+                    has_null_safety,
+                    has_new_expr,
+                    has_method_calls,
+                    has_field_access,
+                    has_array_access,
+                    has_return_stmt,
+                    has_throw_stmt,
+                    has_break_continue,
+                );
             }
         }
         _ => {}
@@ -1000,7 +1575,7 @@ fn validate_mir_features(mir: &compiler::ir::IrModule) {
     println!("\n   Validating MIR features:");
 
     let mut has_phi_nodes = false;
-    let _has_short_circuit = false;  // Not used currently
+    let _has_short_circuit = false; // Not used currently
     let mut has_gep = false;
 
     for func in mir.functions.values() {

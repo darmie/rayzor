@@ -1,12 +1,12 @@
 //! Standard Library Loader
-//! 
+//!
 //! This module handles loading Haxe standard library types from source files
 //! rather than hardcoding them. This follows Haxe's actual implementation.
 
-use std::path::{Path, PathBuf};
+use log::{info, warn};
+use parser::{parse_haxe_file_with_diagnostics, ErrorFormatter, HaxeFile};
 use std::collections::HashMap;
-use parser::{parse_haxe_file_with_diagnostics, HaxeFile, ErrorFormatter};
-use log::{warn, info};
+use std::path::{Path, PathBuf};
 
 /// Strip ANSI escape codes from a string for cleaner error output
 fn strip_ansi_codes(input: &str) -> String {
@@ -14,12 +14,12 @@ fn strip_ansi_codes(input: &str) -> String {
     // This matches ESC[ followed by any number of digits, semicolons, and ends with a letter
     let mut result = String::new();
     let mut chars = input.chars().peekable();
-    
+
     while let Some(ch) = chars.next() {
         if ch == '\x1b' && chars.peek() == Some(&'[') {
             // Skip the ESC[
             chars.next(); // consume '['
-            
+
             // Skip until we find a letter (the final character of the escape sequence)
             while let Some(c) = chars.next() {
                 if c.is_ascii_alphabetic() {
@@ -30,7 +30,7 @@ fn strip_ansi_codes(input: &str) -> String {
             result.push(ch);
         }
     }
-    
+
     result
 }
 
@@ -39,10 +39,10 @@ fn strip_ansi_codes(input: &str) -> String {
 pub struct StdLibConfig {
     /// Paths to search for standard library files
     pub std_paths: Vec<PathBuf>,
-    
+
     /// Whether to load import.hx files automatically
     pub load_import_hx: bool,
-    
+
     /// Package imports that are always available (top-level)
     pub default_imports: Vec<String>,
 }
@@ -59,7 +59,7 @@ impl Default for StdLibConfig {
             load_import_hx: true,
             default_imports: vec![
                 // Top-level types that are always imported
-                "StdTypes.hx".to_string(),  // Contains Int, Float, String, Bool, etc.
+                "StdTypes.hx".to_string(), // Contains Int, Float, String, Bool, etc.
             ],
         }
     }
@@ -79,14 +79,20 @@ impl StdLibLoader {
             loaded_files: HashMap::new(),
         }
     }
-    
+
     /// Load a standard library file by name
     pub fn load_std_file(&mut self, filename: &str) -> Result<&HaxeFile, String> {
         // Filter out StdTypes typedefs that don't have separate files
         // Iterator, KeyValueIterator, Iterable, KeyValueIterable are defined in StdTypes.hx
-        if filename == "Iterator.hx" || filename == "KeyValueIterator.hx" ||
-           filename == "Iterable.hx" || filename == "KeyValueIterable.hx" {
-            return Err(format!("'{}' is a typedef in StdTypes.hx, not a separate file", filename));
+        if filename == "Iterator.hx"
+            || filename == "KeyValueIterator.hx"
+            || filename == "Iterable.hx"
+            || filename == "KeyValueIterable.hx"
+        {
+            return Err(format!(
+                "'{}' is a typedef in StdTypes.hx, not a separate file",
+                filename
+            ));
         }
 
         // Try to find the file in standard paths
@@ -97,28 +103,30 @@ impl StdLibLoader {
             }
         }
 
-        Err(format!("Standard library file '{}' not found in any std path", filename))
+        Err(format!(
+            "Standard library file '{}' not found in any std path",
+            filename
+        ))
     }
-    
+
     /// Load a specific file
     fn load_file(&mut self, path: &Path) -> Result<&HaxeFile, String> {
         // Check cache first
         if self.loaded_files.contains_key(path) {
             return Ok(self.loaded_files.get(path).unwrap());
         }
-        
+
         // Read and parse the file
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
-            
-        let parse_result = parse_haxe_file_with_diagnostics(
-            path.to_str().unwrap_or("unknown.hx"),
-            &content
-        ).map_err(|e| {
-            // Strip ANSI color codes from error message for cleaner output
-            let clean_error = strip_ansi_codes(&e);
-            format!("Failed to parse {}: {}", path.display(), clean_error)
-        })?;
+
+        let parse_result =
+            parse_haxe_file_with_diagnostics(path.to_str().unwrap_or("unknown.hx"), &content)
+                .map_err(|e| {
+                    // Strip ANSI color codes from error message for cleaner output
+                    let clean_error = strip_ansi_codes(&e);
+                    format!("Failed to parse {}: {}", path.display(), clean_error)
+                })?;
 
         let mut haxe_file = parse_result.file;
 
@@ -131,7 +139,7 @@ impl StdLibLoader {
         self.loaded_files.insert(path.to_path_buf(), haxe_file);
         Ok(self.loaded_files.get(path).unwrap())
     }
-    
+
     /// Load all default imports (top-level types)
     pub fn load_default_imports(&mut self) -> Vec<HaxeFile> {
         let mut files = Vec::new();
@@ -156,9 +164,7 @@ impl StdLibLoader {
         let mut files = Vec::new();
 
         // Find the first valid stdlib path
-        let stdlib_path = self.config.std_paths.iter()
-            .find(|p| p.exists())
-            .cloned();
+        let stdlib_path = self.config.std_paths.iter().find(|p| p.exists()).cloned();
 
         if let Some(path) = stdlib_path {
             info!("Loading root stdlib from: {}", path.display());
@@ -181,7 +187,9 @@ impl StdLibLoader {
                 let file_path = entry.path();
 
                 // Only load .hx files, skip directories
-                if file_path.is_file() && file_path.extension().and_then(|s| s.to_str()) == Some("hx") {
+                if file_path.is_file()
+                    && file_path.extension().and_then(|s| s.to_str()) == Some("hx")
+                {
                     match self.load_file(&file_path) {
                         Ok(file) => {
                             files.push(file.clone());
@@ -247,9 +255,7 @@ impl StdLibLoader {
         let mut files = Vec::new();
 
         // Find the first valid stdlib path
-        let stdlib_path = self.config.std_paths.iter()
-            .find(|p| p.exists())
-            .cloned();
+        let stdlib_path = self.config.std_paths.iter().find(|p| p.exists()).cloned();
 
         if let Some(path) = stdlib_path {
             info!("Loading all stdlib from: {}", path.display());
@@ -272,8 +278,8 @@ impl StdLibLoader {
         // These directories contain target-language-specific implementations
         let dir_name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let skip_dirs = [
-            "cpp", "cs", "eval", "flash", "hl", "java", "js", "jvm",
-            "lua", "neko", "php", "python", "flash8", "_std"
+            "cpp", "cs", "eval", "flash", "hl", "java", "js", "jvm", "lua", "neko", "php",
+            "python", "flash8", "_std",
         ];
 
         if skip_dirs.contains(&dir_name) {
@@ -315,23 +321,23 @@ impl StdLibLoader {
             }
         }
     }
-    
+
     /// Find and load import.hx files in a directory
     pub fn load_import_hx(&mut self, dir: &Path) -> Vec<HaxeFile> {
         if !self.config.load_import_hx {
             return Vec::new();
         }
-        
+
         let mut files = Vec::new();
         let import_path = dir.join("import.hx");
-        
+
         if import_path.exists() {
             match self.load_file(&import_path) {
                 Ok(file) => files.push(file.clone()),
                 Err(e) => warn!("Failed to load import.hx: {}", e),
             }
         }
-        
+
         files
     }
 }
@@ -381,7 +387,7 @@ package;
     public function splice(pos:Int, len:Int):Array<T>;
     public function toString():String;
     public function unshift(x:T):Void;
-    
+
     // Array access
     @:arrayAccess function get(i:Int):T;
     @:arrayAccess function set(i:Int, v:T):T;
@@ -432,7 +438,7 @@ extern class Math {
     static var POSITIVE_INFINITY(default, never):Float;
     static var NEGATIVE_INFINITY(default, never):Float;
     static var NaN(default, never):Float;
-    
+
     static function abs(v:Float):Float;
     static function acos(v:Float):Float;
     static function asin(v:Float):Float;
@@ -451,35 +457,35 @@ extern class Math {
     static function sin(v:Float):Float;
     static function sqrt(v:Float):Float;
     static function tan(v:Float):Float;
-    
+
     static inline function isNaN(v:Float):Bool {
         return v != v;
     }
-    
+
     static inline function isFinite(v:Float):Bool {
         return v != POSITIVE_INFINITY && v != NEGATIVE_INFINITY && !isNaN(v);
     }
 }
 
-// Std utility class  
+// Std utility class
 class Std {
     public static function int(x:Float):Int;
     public static function parseInt(x:String):Null<Int>;
     public static function parseFloat(x:String):Float;
     public static function string(s:Dynamic):String;
-    
+
     public static inline function is(v:Dynamic, t:Dynamic):Bool {
         return untyped __js__("(v instanceof t)");
     }
-    
+
     public static inline function isOfType(v:Dynamic, t:Dynamic):Bool {
         return is(v, t);
     }
-    
+
     public static inline function downcast<T, S:T>(value:T, c:Class<S>):S {
         return if (is(value, c)) cast value else null;
     }
-    
+
     public static inline function instance<T, S:T>(value:T, c:Class<S>):S {
         return downcast(value, c);
     }

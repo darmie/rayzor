@@ -3,7 +3,6 @@
 //! This avoids ABI issues with struct returns by using out-parameters
 
 use std::alloc::{alloc, dealloc, realloc, Layout};
-use std::ptr;
 
 #[repr(C)]
 #[derive(Copy, Clone)]

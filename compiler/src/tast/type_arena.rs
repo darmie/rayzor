@@ -171,8 +171,7 @@ pub struct TypedArena<T> {
     _phantom: PhantomData<fn() -> T>,
 }
 
-
-
+#[allow(clippy::mut_from_ref)] // Arena uses interior mutability (UnsafeCell) by design
 impl<T> TypedArena<T> {
     /// Create a new arena with default configuration
     pub fn new() -> Self {

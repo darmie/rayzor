@@ -9,14 +9,14 @@ fn test_untyped_expressions() {
         return result;
     }
 }"#;
-    
+
     println!("Test 1: simple untyped expression");
     match parse_haxe_file("test.hx", test1, false) {
         Ok(_) => println!("✓ Works"),
         Err(e) => println!("✗ Error: {}", e),
     }
     assert!(parse_haxe_file("test.hx", test1, false).is_ok());
-    
+
     // Test 2: Untyped block expression
     let test2 = r#"class Test {
     function test() {
@@ -27,14 +27,14 @@ fn test_untyped_expressions() {
         return result;
     }
 }"#;
-    
+
     println!("Test 2: untyped block expression");
     match parse_haxe_file("test.hx", test2, false) {
         Ok(_) => println!("✓ Works"),
         Err(e) => println!("✗ Error: {}", e),
     }
     assert!(parse_haxe_file("test.hx", test2, false).is_ok());
-    
+
     // Test 3: Untyped function call
     let test3 = r#"class Test {
     function test() {
@@ -42,14 +42,14 @@ fn test_untyped_expressions() {
         return result;
     }
 }"#;
-    
+
     println!("Test 3: untyped function call");
     match parse_haxe_file("test.hx", test3, false) {
         Ok(_) => println!("✓ Works"),
         Err(e) => println!("✗ Error: {}", e),
     }
     assert!(parse_haxe_file("test.hx", test3, false).is_ok());
-    
+
     // Test 4: Untyped field access
     let test4 = r#"class Test {
     function test() {
@@ -57,14 +57,14 @@ fn test_untyped_expressions() {
         return result;
     }
 }"#;
-    
+
     println!("Test 4: untyped field access");
     match parse_haxe_file("test.hx", test4, false) {
         Ok(_) => println!("✓ Works"),
         Err(e) => println!("✗ Error: {}", e),
     }
     assert!(parse_haxe_file("test.hx", test4, false).is_ok());
-    
+
     // Test 5: Nested untyped expressions
     let test5 = r#"class Test {
     function test() {
@@ -72,7 +72,7 @@ fn test_untyped_expressions() {
         return result;
     }
 }"#;
-    
+
     println!("Test 5: nested untyped expressions");
     match parse_haxe_file("test.hx", test5, false) {
         Ok(_) => println!("✓ Works"),
@@ -89,14 +89,14 @@ fn test_untyped_return_statements() {
         return untyped jsFunction();
     }
 }"#;
-    
+
     println!("Test 6: untyped return statement");
     match parse_haxe_file("test.hx", test6, false) {
         Ok(_) => println!("✓ Works"),
         Err(e) => println!("✗ Error: {}", e),
     }
     assert!(parse_haxe_file("test.hx", test6, false).is_ok());
-    
+
     // Test 7: Untyped with complex expression
     let test7 = r#"class Test {
     function test() {
@@ -104,7 +104,7 @@ fn test_untyped_return_statements() {
         return x;
     }
 }"#;
-    
+
     println!("Test 7: untyped with complex expression");
     match parse_haxe_file("test.hx", test7, false) {
         Ok(_) => println!("✓ Works"),

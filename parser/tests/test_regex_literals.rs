@@ -11,7 +11,7 @@ class Test {
     static var withEscape = ~/he\w+o/;
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(ast) => println!("✓ Simple regex literals work: {:?}", ast),
         Err(e) => println!("✗ Simple regex literals failed: {}", e),
@@ -31,9 +31,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(ast) => println!("✓ Regex in expressions works"),
+        Ok(_ast) => println!("✓ Regex in expressions works"),
         Err(e) => println!("✗ Regex in expressions failed: {}", e),
     }
 }
@@ -51,9 +51,9 @@ class Test {
     /mx;
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(ast) => println!("✓ Complex regex literals work"),
+        Ok(_ast) => println!("✓ Complex regex literals work"),
         Err(e) => println!("✗ Complex regex literals failed: {}", e),
     }
 }
@@ -67,9 +67,9 @@ class Test {
     static var htmlTag = ~/<\/?[a-z][a-z0-9]*>/i;
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(ast) => println!("✓ Regex with slashes works"),
+        Ok(_ast) => println!("✓ Regex with slashes works"),
         Err(e) => println!("✗ Regex with slashes failed: {}", e),
     }
 }

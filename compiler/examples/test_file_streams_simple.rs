@@ -1,9 +1,38 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Simple test for File.read/write
 
 use compiler::codegen::CraneliftBackend;
 use compiler::compilation::{CompilationConfig, CompilationUnit};
 use compiler::ir::IrModule;
-use rayzor_runtime;
 use std::sync::Arc;
 
 fn main() {
@@ -66,7 +95,7 @@ class Main {
             println!("✅ Test completed");
         }
         Err(e) => {
-            println!("❌ FAILED: {}", e);
+            println!("❌ FAILED: {:?}", e);
         }
     }
 
@@ -106,9 +135,9 @@ fn compile_and_run_with_mode(source: &str, name: &str, fast_mode: bool) -> Resul
     eprintln!("[PROFILE] Load stdlib + add file: {:?}", t0.elapsed());
 
     let t1 = Instant::now();
-    let _typed_files = unit.lower_to_tast().map_err(|errors| {
-        format!("TAST lowering failed: {:?}", errors)
-    })?;
+    let _typed_files = unit
+        .lower_to_tast()
+        .map_err(|errors| format!("TAST lowering failed: {:?}", errors))?;
     eprintln!("[PROFILE] TAST lowering: {:?}", t1.elapsed());
 
     let t2 = Instant::now();
@@ -133,7 +162,10 @@ fn compile_to_native(modules: &[Arc<IrModule>]) -> Result<CraneliftBackend, Stri
     compile_to_native_with_mode(modules, false)
 }
 
-fn compile_to_native_with_mode(modules: &[Arc<IrModule>], fast_mode: bool) -> Result<CraneliftBackend, String> {
+fn compile_to_native_with_mode(
+    modules: &[Arc<IrModule>],
+    fast_mode: bool,
+) -> Result<CraneliftBackend, String> {
     use std::time::Instant;
 
     let t0 = Instant::now();
@@ -147,22 +179,42 @@ fn compile_to_native_with_mode(modules: &[Arc<IrModule>], fast_mode: bool) -> Re
         CraneliftBackend::with_symbols(&symbols_ref)?
     };
     let mode_str = if fast_mode { "fast" } else { "speed" };
-    eprintln!("  [Cranelift-{}] Backend creation: {:?}", mode_str, t0.elapsed());
+    eprintln!(
+        "  [Cranelift-{}] Backend creation: {:?}",
+        mode_str,
+        t0.elapsed()
+    );
 
     let mut total_funcs = 0;
     let mut total_impl_funcs = 0;
     for (i, module) in modules.iter().enumerate() {
         let t1 = Instant::now();
         let func_count = module.functions.len();
-        let impl_count = module.functions.values().filter(|f| !f.cfg.blocks.is_empty()).count();
+        let impl_count = module
+            .functions
+            .values()
+            .filter(|f| !f.cfg.blocks.is_empty())
+            .count();
         total_funcs += func_count;
         total_impl_funcs += impl_count;
         backend.compile_module(module)?;
-        eprintln!("  [Cranelift-{}] Module {} '{}': {} funcs ({} impl) in {:?}",
-                  mode_str, i, module.name, func_count, impl_count, t1.elapsed());
+        eprintln!(
+            "  [Cranelift-{}] Module {} '{}': {} funcs ({} impl) in {:?}",
+            mode_str,
+            i,
+            module.name,
+            func_count,
+            impl_count,
+            t1.elapsed()
+        );
     }
-    eprintln!("  [Cranelift-{}] Total: {} modules, {} funcs ({} impl)",
-              mode_str, modules.len(), total_funcs, total_impl_funcs);
+    eprintln!(
+        "  [Cranelift-{}] Total: {} modules, {} funcs ({} impl)",
+        mode_str,
+        modules.len(),
+        total_funcs,
+        total_impl_funcs
+    );
 
     Ok(backend)
 }

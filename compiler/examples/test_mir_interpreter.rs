@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test MIR Interpreter execution with real code
 //!
 //! Demonstrates the 5-tier compilation system starting with the interpreter:
@@ -6,13 +36,12 @@
 //!
 //! Run with: cargo run --example test_mir_interpreter
 
-use compiler::codegen::mir_interpreter::{MirInterpreter, InterpValue};
-use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig, OptimizationTier};
+use compiler::codegen::mir_interpreter::{InterpValue, MirInterpreter};
 use compiler::codegen::profiling::ProfileConfig;
+use compiler::codegen::tiered_backend::{OptimizationTier, TieredBackend, TieredConfig};
 use compiler::ir::{
-    IrModule, IrFunction, IrFunctionId, IrFunctionSignature, IrParameter,
-    IrType, IrId, IrInstruction, IrTerminator, IrBlockId,
-    BinaryOp, CompareOp, CallingConvention,
+    BinaryOp, CallingConvention, CompareOp, IrBlockId, IrFunction, IrFunctionId,
+    IrFunctionSignature, IrId, IrInstruction, IrModule, IrParameter, IrTerminator, IrType,
 };
 use compiler::tast::SymbolId;
 
@@ -96,7 +125,7 @@ fn test_tiered_with_interpreter() {
     // Configure tiered backend with interpreter startup
     let config = TieredConfig {
         profile_config: ProfileConfig {
-            interpreter_threshold: 5,  // JIT after 5 calls
+            interpreter_threshold: 5, // JIT after 5 calls
             warm_threshold: 20,
             hot_threshold: 100,
             blazing_threshold: 500,
@@ -107,27 +136,32 @@ fn test_tiered_with_interpreter() {
         max_parallel_optimizations: 1,
         verbosity: 1,
         start_interpreted: true, // Start in interpreter mode
+        bailout_strategy: compiler::codegen::BailoutStrategy::Quick,
     };
 
     // Create tiered backend
-    let mut backend = TieredBackend::new(config)
-        .expect("Failed to create tiered backend");
+    let mut backend = TieredBackend::new(config).expect("Failed to create tiered backend");
 
     // Compile module (starts in interpreted mode)
-    backend.compile_module(module)
+    backend
+        .compile_module(module)
         .expect("Failed to compile module");
 
     // Verify function starts at Interpreted tier
     let stats = backend.get_statistics();
-    assert_eq!(stats.interpreted_functions, 1, "Expected 1 interpreted function");
-    println!("  Function starts at Phase 0 (Interpreted): {} functions", stats.interpreted_functions);
+    assert_eq!(
+        stats.interpreted_functions, 1,
+        "Expected 1 interpreted function"
+    );
+    println!(
+        "  Function starts at Phase 0 (Interpreted): {} functions",
+        stats.interpreted_functions
+    );
 
     // Execute via interpreter
     for i in 1..=10 {
-        let result = backend.execute_function(
-            func_id,
-            vec![InterpValue::I64(i), InterpValue::I64(2)],
-        );
+        let result =
+            backend.execute_function(func_id, vec![InterpValue::I64(i), InterpValue::I64(2)]);
 
         match result {
             Ok(InterpValue::I64(n)) => {
@@ -147,7 +181,10 @@ fn test_tiered_with_interpreter() {
     println!("  After 10 calls:");
     println!("    Interpreted (P0): {}", stats.interpreted_functions);
     println!("    Baseline (P1): {}", stats.baseline_functions);
-    println!("    Queued for optimization: {}", stats.queued_for_optimization);
+    println!(
+        "    Queued for optimization: {}",
+        stats.queued_for_optimization
+    );
 
     println!("  Tiered backend interpreter test PASSED\n");
 }
@@ -439,16 +476,12 @@ fn create_max_function() -> IrFunction {
 
     // Then block: return a
     if let Some(block) = function.cfg.get_block_mut(then_block) {
-        block.set_terminator(IrTerminator::Return {
-            value: Some(a_reg),
-        });
+        block.set_terminator(IrTerminator::Return { value: Some(a_reg) });
     }
 
     // Else block: return b
     if let Some(block) = function.cfg.get_block_mut(else_block) {
-        block.set_terminator(IrTerminator::Return {
-            value: Some(b_reg),
-        });
+        block.set_terminator(IrTerminator::Return { value: Some(b_reg) });
     }
 
     function

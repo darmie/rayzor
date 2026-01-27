@@ -1,6 +1,35 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 /// Test program-level safety mode detection and validation
 /// Tests @:safety(strict=true) and @:safety(strict=false) behavior
-
 use compiler::pipeline::compile_haxe_source;
 
 fn main() {
@@ -33,7 +62,11 @@ fn test_gc_mode() {
 
     if let Some(typed_file) = result.typed_files.first() {
         let safety_mode = typed_file.get_program_safety_mode();
-        assert!(safety_mode.is_none(), "Expected GC mode (None), got {:?}", safety_mode);
+        assert!(
+            safety_mode.is_none(),
+            "Expected GC mode (None), got {:?}",
+            safety_mode
+        );
         println!("  ✅ Program uses GC (no manual memory management)");
     } else {
         println!("  ❌ Failed to compile");
@@ -80,7 +113,10 @@ fn test_non_strict_mode() {
         if result.errors.is_empty() {
             println!("  ✅ No compilation errors (unannotated classes accepted)");
         } else {
-            println!("  ⚠️  Got {} errors (may be type errors, not safety errors)", result.errors.len());
+            println!(
+                "  ⚠️  Got {} errors (may be type errors, not safety errors)",
+                result.errors.len()
+            );
             for err in &result.errors {
                 println!("      {}", err.message);
             }
@@ -127,7 +163,9 @@ fn test_strict_mode_valid() {
         }
 
         // Should have no safety-related errors (all classes annotated)
-        let safety_errors: Vec<_> = result.errors.iter()
+        let safety_errors: Vec<_> = result
+            .errors
+            .iter()
             .filter(|e| e.message.contains("must have @:safety"))
             .collect();
 
@@ -174,7 +212,9 @@ fn test_strict_mode_invalid() {
         }
 
         // Should have errors about missing @:safety
-        let safety_errors: Vec<_> = result.errors.iter()
+        let safety_errors: Vec<_> = result
+            .errors
+            .iter()
             .filter(|e| e.message.contains("must have @:safety"))
             .collect();
 

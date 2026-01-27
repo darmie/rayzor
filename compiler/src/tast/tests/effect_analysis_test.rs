@@ -145,14 +145,14 @@ mod tests {
     fn test_throwing_function_detection() {
         let (type_table, symbol_table) = create_test_environment();
         let mut analyzer = EffectAnalyzer::new(&symbol_table, &type_table);
-        
+
         let throwing_func = create_throwing_function();
         let effects = analyzer.analyze_function(&throwing_func);
-        
+
         assert!(effects.can_throw, "Should detect function can throw");
         assert!(analyzer.throwing_functions.contains(&throwing_func.symbol_id),
             "Should track throwing functions");
-        
+
         println!("✅ Throwing function detection test passed");
     }
 
@@ -160,33 +160,33 @@ mod tests {
     fn test_async_function_detection() {
         let (type_table, symbol_table) = create_test_environment();
         let mut analyzer = EffectAnalyzer::new(&symbol_table, &type_table);
-        
+
         let async_func = create_async_function();
         let effects = analyzer.analyze_function(&async_func);
-        
+
         assert!(effects.is_async, "Should detect async function");
         assert!(analyzer.async_functions.contains(&async_func.symbol_id),
             "Should track async functions");
-        
+
         println!("✅ Async function detection test passed");
     }
 
     #[test]
     fn test_impure_function_detection() {
         let (type_table, mut symbol_table) = create_test_environment();
-        
+
         // Mark global var as mutable
         symbol_table.set_mutability(SymbolId::from_raw(100), true);
-        
+
         let mut analyzer = EffectAnalyzer::new(&symbol_table, &type_table);
-        
+
         let impure_func = create_impure_function();
         let effects = analyzer.analyze_function(&impure_func);
-        
+
         assert!(!effects.is_pure, "Should detect impure function");
         assert!(!analyzer.pure_functions.contains(&impure_func.symbol_id),
             "Should not track as pure function");
-        
+
         println!("✅ Impure function detection test passed");
     }
 
@@ -194,11 +194,11 @@ mod tests {
     fn test_effect_propagation_through_calls() {
         let (type_table, mut symbol_table) = create_test_environment();
         let mut analyzer = EffectAnalyzer::new(&symbol_table, &type_table);
-        
+
         // First analyze throwing function
         let throwing_func = create_throwing_function();
         let _ = analyzer.analyze_function(&throwing_func);
-        
+
         // Create a function that calls the throwing function
         let caller_func = TypedFunction {
             name: "caller".to_string(),
@@ -229,12 +229,12 @@ mod tests {
             effects: FunctionEffects::default(),
             source_location: SourceLocation::unknown(),
         };
-        
+
         let caller_effects = analyzer.analyze_function(&caller_func);
-        
-        assert!(caller_effects.can_throw, 
+
+        assert!(caller_effects.can_throw,
             "Should propagate throwing effect through call");
-        
+
         println!("✅ Effect propagation through calls test passed");
     }
 
@@ -242,7 +242,7 @@ mod tests {
     fn test_try_catch_effect_suppression() {
         let (type_table, symbol_table) = create_test_environment();
         let mut analyzer = EffectAnalyzer::new(&symbol_table, &type_table);
-        
+
         // Create try-catch that handles throw
         let try_catch = TypedStatement::Try {
             body: Box::new(TypedStatement::Throw {
@@ -283,10 +283,10 @@ mod tests {
         };
 
         let effects = analyzer.analyze_function(&function);
-        
-        assert!(!effects.can_throw, 
+
+        assert!(!effects.can_throw,
             "Try-catch should suppress throwing effect");
-        
+
         println!("✅ Try-catch effect suppression test passed");
     }
 
@@ -294,7 +294,7 @@ mod tests {
     fn test_pure_function_validation() {
         let (type_table, symbol_table) = create_test_environment();
         let mut analyzer = EffectAnalyzer::new(&symbol_table, &type_table);
-        
+
         // Pure function - only uses parameters and returns
         let pure_func = TypedFunction {
             name: "pureFunc".to_string(),
@@ -344,9 +344,9 @@ mod tests {
         };
 
         let effects = analyzer.analyze_function(&pure_func);
-        
+
         assert!(effects.is_pure, "Should validate as pure function");
-        
+
         println!("✅ Pure function validation test passed");
     }
 
@@ -354,14 +354,14 @@ mod tests {
     fn test_file_level_effect_analysis() {
         let (type_table, symbol_table) = create_test_environment();
         let string_interner = Rc::new(RefCell::new(StringInterner::new()));
-        
+
         let mut typed_file = TypedFile::new(string_interner);
-        
+
         // Add multiple functions with different effects
         let throwing_func = create_throwing_function();
         let async_func = create_async_function();
         let impure_func = create_impure_function();
-        
+
         // Create class with methods
         let class_decl = TypedDeclaration::Class(TypedClass {
             name: "TestClass".to_string(),
@@ -394,15 +394,15 @@ mod tests {
             metadata: None,
             source_location: SourceLocation::unknown(),
         });
-        
+
         typed_file.declarations.push(class_decl);
-        
+
         // Add standalone function
         typed_file.functions.push(impure_func);
-        
+
         // Analyze entire file
         analyze_file_effects(&typed_file, &symbol_table, &type_table);
-        
+
         // In a real implementation, we'd check that all functions were analyzed
         println!("✅ File-level effect analysis test passed");
     }
@@ -411,7 +411,7 @@ mod tests {
     fn test_complex_effect_combinations() {
         let (type_table, symbol_table) = create_test_environment();
         let mut analyzer = EffectAnalyzer::new(&symbol_table, &type_table);
-        
+
         // Function that is async, can throw, and is impure
         let complex_func = TypedFunction {
             name: "complexFunc".to_string(),
@@ -470,11 +470,11 @@ mod tests {
         };
 
         let effects = analyzer.analyze_function(&complex_func);
-        
+
         assert!(effects.can_throw, "Should detect throwing");
         assert!(effects.is_async, "Should detect async");
         assert!(!effects.is_pure, "Should detect impure");
-        
+
         println!("✅ Complex effect combinations test passed");
     }
 
@@ -482,21 +482,21 @@ mod tests {
     fn test_effect_analysis_caching() {
         let (type_table, symbol_table) = create_test_environment();
         let mut analyzer = EffectAnalyzer::new(&symbol_table, &type_table);
-        
+
         let func = create_throwing_function();
-        
+
         // Analyze same function twice
         let effects1 = analyzer.analyze_function(&func);
         let effects2 = analyzer.analyze_function(&func);
-        
+
         // Results should be consistent
         assert_eq!(effects1.can_throw, effects2.can_throw);
         assert_eq!(effects1.is_async, effects2.is_async);
         assert_eq!(effects1.is_pure, effects2.is_pure);
-        
+
         // Function should be in tracking sets
         assert!(analyzer.throwing_functions.contains(&func.symbol_id));
-        
+
         println!("✅ Effect analysis caching test passed");
     }
 }

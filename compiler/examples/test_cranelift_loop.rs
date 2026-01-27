@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 /// Test Cranelift backend with loop constructs
 ///
 /// **KNOWN LIMITATION - TEST CURRENTLY FAILS:**
@@ -29,7 +59,6 @@
 /// }
 ///
 /// This computes the sum 1+2+3+...+n
-
 use compiler::codegen::CraneliftBackend;
 use compiler::ir::*;
 use compiler::tast::SymbolId;
@@ -42,28 +71,27 @@ fn main() -> Result<(), String> {
     let symbol_id = SymbolId::from_raw(1);
 
     // Registers
-    let param_n = IrId::new(0);      // Parameter: n
-    let sum_reg = IrId::new(1);      // Local: sum
-    let i_reg = IrId::new(2);        // Local: i
-    let const_0 = IrId::new(3);      // Constant: 0
-    let const_1 = IrId::new(4);      // Constant: 1
-    let cond_reg = IrId::new(5);     // Condition: i <= n
-    let sum_new = IrId::new(6);      // sum + i
-    let i_new = IrId::new(7);        // i + 1
+    let param_n = IrId::new(0); // Parameter: n
+    let sum_reg = IrId::new(1); // Local: sum
+    let i_reg = IrId::new(2); // Local: i
+    let const_0 = IrId::new(3); // Constant: 0
+    let const_1 = IrId::new(4); // Constant: 1
+    let cond_reg = IrId::new(5); // Condition: i <= n
+    let sum_new = IrId::new(6); // sum + i
+    let i_new = IrId::new(7); // i + 1
 
     let signature = IrFunctionSignature {
-        parameters: vec![
-            IrParameter {
-                name: "n".to_string(),
-                ty: IrType::I64,
-                reg: param_n,
-                by_ref: false,
-            },
-        ],
+        parameters: vec![IrParameter {
+            name: "n".to_string(),
+            ty: IrType::I64,
+            reg: param_n,
+            by_ref: false,
+        }],
         return_type: IrType::I64,
         calling_convention: CallingConvention::Haxe,
         can_throw: false,
         type_params: vec![],
+        uses_sret: false,
     };
 
     let mut function = IrFunction::new(func_id, symbol_id, "sum_to_n".to_string(), signature);
@@ -92,10 +120,10 @@ fn main() -> Result<(), String> {
     }
 
     // Create blocks
-    let entry_block = function.cfg.entry_block;  // bb0: entry
+    let entry_block = function.cfg.entry_block; // bb0: entry
     let loop_header = function.cfg.create_block(); // bb1: loop header (check condition)
-    let loop_body = function.cfg.create_block();   // bb2: loop body
-    let exit_block = function.cfg.create_block();  // bb3: exit (after loop)
+    let loop_body = function.cfg.create_block(); // bb2: loop body
+    let exit_block = function.cfg.create_block(); // bb3: exit (after loop)
 
     // Entry block: initialize sum=0, i=1, jump to loop header
     {
@@ -237,11 +265,11 @@ fn main() -> Result<(), String> {
 
     // Test cases: sum_to_n(n) = n*(n+1)/2
     let tests = vec![
-        (0, 0),       // sum_to_n(0) = 0
-        (1, 1),       // sum_to_n(1) = 1
-        (5, 15),      // sum_to_n(5) = 1+2+3+4+5 = 15
-        (10, 55),     // sum_to_n(10) = 55
-        (100, 5050),  // sum_to_n(100) = 5050
+        (0, 0),      // sum_to_n(0) = 0
+        (1, 1),      // sum_to_n(1) = 1
+        (5, 15),     // sum_to_n(5) = 1+2+3+4+5 = 15
+        (10, 55),    // sum_to_n(10) = 55
+        (100, 5050), // sum_to_n(100) = 5050
     ];
 
     let mut all_passed = true;
@@ -250,7 +278,10 @@ fn main() -> Result<(), String> {
         let result = sum_fn(n);
         let passed = result == expected;
         let symbol = if passed { "✓" } else { "✗" };
-        println!("  {} sum_to_n({}) = {} (expected {})", symbol, n, result, expected);
+        println!(
+            "  {} sum_to_n({}) = {} (expected {})",
+            symbol, n, result, expected
+        );
         all_passed &= passed;
     }
 

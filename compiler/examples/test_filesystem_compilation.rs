@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test compilation unit with filesystem-based loading
 //!
 //! This demonstrates:
@@ -6,10 +36,10 @@
 //! 3. Directory scanning for .hx files
 //! 4. Import path resolution
 
-use compiler::compilation::{CompilationUnit, CompilationConfig};
-use std::path::PathBuf;
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 use std::fs;
 use std::io::Write;
+use std::path::PathBuf;
 
 fn main() {
     println!("=== Testing Filesystem-Based Compilation ===\n");
@@ -34,7 +64,8 @@ fn main() {
     // Write User.hx
     let user_file = model_dir.join("User.hx");
     let mut f = fs::File::create(&user_file).expect("Failed to create User.hx");
-    f.write_all(br#"
+    f.write_all(
+        br#"
 package com.example.model;
 
 class User {
@@ -50,12 +81,15 @@ class User {
         return "Hello, I am " + name;
     }
 }
-    "#).expect("Failed to write User.hx");
+    "#,
+    )
+    .expect("Failed to write User.hx");
 
     // Write UserService.hx
     let service_file = service_dir.join("UserService.hx");
     let mut f = fs::File::create(&service_file).expect("Failed to create UserService.hx");
-    f.write_all(br#"
+    f.write_all(
+        br#"
 package com.example.service;
 
 import com.example.model.User;
@@ -75,7 +109,9 @@ class UserService {
         return users.length;
     }
 }
-    "#).expect("Failed to write UserService.hx");
+    "#,
+    )
+    .expect("Failed to write UserService.hx");
 
     println!("   ✓ Created test project at: {:?}\n", temp_dir);
 
@@ -136,7 +172,9 @@ class UserService {
 
             // Verify symbols
             println!("6. Verifying compiled symbols...");
-            let user_class_symbols: Vec<_> = unit.symbol_table.all_symbols()
+            let user_class_symbols: Vec<_> = unit
+                .symbol_table
+                .all_symbols()
                 .filter(|s| {
                     if let Some(qname) = s.qualified_name {
                         let name = unit.string_interner.get(qname).unwrap_or("");
@@ -168,7 +206,7 @@ class UserService {
             println!("   - Multi-file compilation: ✓");
         }
         Err(e) => {
-            eprintln!("   ✗ Compilation failed: {}", e);
+            eprintln!("   ✗ Compilation failed: {:?}", e);
         }
     }
 

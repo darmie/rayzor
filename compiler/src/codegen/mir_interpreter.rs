@@ -27,14 +27,13 @@
 //! - When exponent bits != 0x7FF, it's a regular f64
 //! - Otherwise, tag bits identify: Ptr, I32, Bool, Null, etc.
 
+use crate::ir::{
+    BinaryOp, CompareOp, FunctionKind, IrBasicBlock, IrBlockId, IrExternFunction, IrFunction,
+    IrFunctionId, IrFunctionSignature, IrId, IrInstruction, IrModule, IrTerminator, IrType,
+    IrValue, UnaryOp,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::ir::{
-    IrModule, IrFunction, IrFunctionId, IrInstruction, IrValue, IrType,
-    IrBasicBlock, IrBlockId, IrTerminator, IrId,
-    BinaryOp, UnaryOp, CompareOp, IrFunctionSignature, IrExternFunction,
-    FunctionKind,
-};
 
 // ============================================================================
 // NaN Boxing Implementation
@@ -98,9 +97,9 @@ impl NanBoxedValue {
     const PAYLOAD_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
     /// Type tags
-    const TAG_PTR: u64 = 0x0000_0000_0000_0000;  // Pointer (48-bit)
-    const TAG_I32: u64 = 0x0001_0000_0000_0000;  // 32-bit signed int
-    const TAG_I64: u64 = 0x0002_0000_0000_0000;  // 64-bit int (lossy, 48 bits)
+    const TAG_PTR: u64 = 0x0000_0000_0000_0000; // Pointer (48-bit)
+    const TAG_I32: u64 = 0x0001_0000_0000_0000; // 32-bit signed int
+    const TAG_I64: u64 = 0x0002_0000_0000_0000; // 64-bit int (lossy, 48 bits)
     const TAG_BOOL: u64 = 0x0003_0000_0000_0000; // Boolean
     const TAG_NULL: u64 = 0x0004_0000_0000_0000; // Null
     const TAG_VOID: u64 = 0x0005_0000_0000_0000; // Void
@@ -303,8 +302,20 @@ impl NanBoxedValue {
                 BinaryOp::Add => Self::from_i32(l.wrapping_add(r)),
                 BinaryOp::Sub => Self::from_i32(l.wrapping_sub(r)),
                 BinaryOp::Mul => Self::from_i32(l.wrapping_mul(r)),
-                BinaryOp::Div => if r != 0 { Self::from_i32(l / r) } else { return None },
-                BinaryOp::Rem => if r != 0 { Self::from_i32(l % r) } else { return None },
+                BinaryOp::Div => {
+                    if r != 0 {
+                        Self::from_i32(l / r)
+                    } else {
+                        return None;
+                    }
+                }
+                BinaryOp::Rem => {
+                    if r != 0 {
+                        Self::from_i32(l % r)
+                    } else {
+                        return None;
+                    }
+                }
                 BinaryOp::And => Self::from_i32(l & r),
                 BinaryOp::Or => Self::from_i32(l | r),
                 BinaryOp::Xor => Self::from_i32(l ^ r),
@@ -436,7 +447,9 @@ pub struct ObjectHeap {
 
 impl ObjectHeap {
     pub fn new() -> Self {
-        Self { objects: Vec::new() }
+        Self {
+            objects: Vec::new(),
+        }
     }
 
     /// Allocate a new object and return its index
@@ -622,7 +635,9 @@ pub struct DecodedBlock {
 impl DecodedBlock {
     pub fn from_block(block: &IrBasicBlock) -> Self {
         Self {
-            instructions: block.instructions.iter()
+            instructions: block
+                .instructions
+                .iter()
                 .map(|i| DecodedInstruction::new(i.clone()))
                 .collect(),
             terminator: block.terminator.clone(),
@@ -649,7 +664,7 @@ pub enum InterpValue {
     U64(u64),
     F32(f32),
     F64(f64),
-    Ptr(usize),        // Raw pointer (for FFI)
+    Ptr(usize), // Raw pointer (for FFI)
     Null,
     /// String value (owned)
     String(String),
@@ -793,16 +808,13 @@ impl InterpValue {
             }
             InterpValue::Array(arr) => {
                 // Convert array elements recursively
-                let boxed: Vec<NanBoxedValue> = arr.iter()
-                    .map(|v| v.to_nan_boxed(heap))
-                    .collect();
+                let boxed: Vec<NanBoxedValue> = arr.iter().map(|v| v.to_nan_boxed(heap)).collect();
                 let idx = heap.alloc(HeapObject::Array(boxed));
                 NanBoxedValue::from_heap_index(idx)
             }
             InterpValue::Struct(fields) => {
-                let boxed: Vec<NanBoxedValue> = fields.iter()
-                    .map(|v| v.to_nan_boxed(heap))
-                    .collect();
+                let boxed: Vec<NanBoxedValue> =
+                    fields.iter().map(|v| v.to_nan_boxed(heap)).collect();
                 let idx = heap.alloc(HeapObject::Struct(boxed));
                 NanBoxedValue::from_heap_index(idx)
             }
@@ -844,13 +856,15 @@ impl InterpValue {
                 return match obj {
                     HeapObject::String(s) => InterpValue::String(s.clone()),
                     HeapObject::Array(arr) => {
-                        let values: Vec<InterpValue> = arr.iter()
+                        let values: Vec<InterpValue> = arr
+                            .iter()
                             .map(|v| InterpValue::from_nan_boxed(*v, heap))
                             .collect();
                         InterpValue::Array(values)
                     }
                     HeapObject::Struct(fields) => {
-                        let values: Vec<InterpValue> = fields.iter()
+                        let values: Vec<InterpValue> = fields
+                            .iter()
                             .map(|v| InterpValue::from_nan_boxed(*v, heap))
                             .collect();
                         InterpValue::Struct(values)
@@ -927,7 +941,7 @@ impl RegisterFile {
 #[derive(Debug)]
 struct InterpreterFrame {
     function_id: IrFunctionId,
-    registers: RegisterFile,       // Register-based storage (fast O(1) access)
+    registers: RegisterFile, // Register-based storage (fast O(1) access)
     current_block: IrBlockId,
     prev_block: Option<IrBlockId>, // For phi node resolution
 }
@@ -1295,13 +1309,17 @@ impl MirInterpreter {
 
                 // Try fast NaN-boxed path first
                 if let Some(result) = l.compare_op(*op, r) {
-                    self.current_frame_mut().registers.set(*dest, NanBoxedValue::from_bool(result));
+                    self.current_frame_mut()
+                        .registers
+                        .set(*dest, NanBoxedValue::from_bool(result));
                 } else {
                     // Fall back to InterpValue slow path
                     let l_interp = InterpValue::from_nan_boxed(l, &self.object_heap);
                     let r_interp = InterpValue::from_nan_boxed(r, &self.object_heap);
                     let result = self.eval_compare_op(*op, l_interp, r_interp)?;
-                    self.current_frame_mut().registers.set(*dest, NanBoxedValue::from_bool(result));
+                    self.current_frame_mut()
+                        .registers
+                        .set(*dest, NanBoxedValue::from_bool(result));
                 }
             }
 
@@ -1399,9 +1417,10 @@ impl MirInterpreter {
                     InterpValue::from_nan_boxed(offset_val, &self.object_heap).to_i64()? as usize
                 };
                 let elem_size = ty.size();
-                self.current_frame_mut()
-                    .registers
-                    .set(*dest, NanBoxedValue::from_ptr(base_ptr + offset_int * elem_size));
+                self.current_frame_mut().registers.set(
+                    *dest,
+                    NanBoxedValue::from_ptr(base_ptr + offset_int * elem_size),
+                );
             }
 
             // === Function Calls (convert at boundary for FFI compatibility) ===
@@ -1414,7 +1433,12 @@ impl MirInterpreter {
                 // Collect argument values - convert from NanBoxedValue to InterpValue
                 let arg_values: Vec<InterpValue> = args
                     .iter()
-                    .map(|a| InterpValue::from_nan_boxed(self.current_frame().registers.get(*a), &self.object_heap))
+                    .map(|a| {
+                        InterpValue::from_nan_boxed(
+                            self.current_frame().registers.get(*a),
+                            &self.object_heap,
+                        )
+                    })
                     .collect();
 
                 // Check if it's a user function or extern
@@ -1462,7 +1486,12 @@ impl MirInterpreter {
                 // Collect argument values - convert from NanBoxedValue to InterpValue
                 let arg_values: Vec<InterpValue> = args
                     .iter()
-                    .map(|a| InterpValue::from_nan_boxed(self.current_frame().registers.get(*a), &self.object_heap))
+                    .map(|a| {
+                        InterpValue::from_nan_boxed(
+                            self.current_frame().registers.get(*a),
+                            &self.object_heap,
+                        )
+                    })
                     .collect();
 
                 let result = match ptr_interp {
@@ -1478,7 +1507,12 @@ impl MirInterpreter {
                     }
                     InterpValue::Ptr(ptr) => {
                         // Call through function pointer with signature info
-                        if let IrType::Function { params, return_type, .. } = signature {
+                        if let IrType::Function {
+                            params,
+                            return_type,
+                            ..
+                        } = signature
+                        {
                             // We have full signature info - use it for proper FFI
                             self.call_ffi_ptr_with_types(ptr, &arg_values, params, return_type)?
                         } else {
@@ -1522,7 +1556,11 @@ impl MirInterpreter {
             }
 
             // === Struct Operations (use object heap for complex types) ===
-            IrInstruction::CreateStruct { dest, ty: _, fields } => {
+            IrInstruction::CreateStruct {
+                dest,
+                ty: _,
+                fields,
+            } => {
                 // Collect field values as NanBoxedValue
                 let field_values: Vec<NanBoxedValue> = fields
                     .iter()
@@ -1594,7 +1632,9 @@ impl MirInterpreter {
                 // Store as struct: [discriminant, value]
                 let fields = vec![NanBoxedValue::from_i32(*discriminant as i32), val];
                 let idx = self.object_heap.alloc(HeapObject::Struct(fields));
-                self.current_frame_mut().registers.set(*dest, NanBoxedValue::from_heap_index(idx));
+                self.current_frame_mut()
+                    .registers
+                    .set(*dest, NanBoxedValue::from_heap_index(idx));
             }
 
             IrInstruction::ExtractDiscriminant { dest, union_val } => {
@@ -1602,11 +1642,10 @@ impl MirInterpreter {
                 if union_v.is_heap() {
                     let idx = union_v.as_heap_index();
                     // Copy value before setting register to avoid borrow conflict
-                    let discriminant_val = self.object_heap.get(idx)
-                        .and_then(|obj| match obj {
-                            HeapObject::Struct(fields) if !fields.is_empty() => Some(fields[0]),
-                            _ => None,
-                        });
+                    let discriminant_val = self.object_heap.get(idx).and_then(|obj| match obj {
+                        HeapObject::Struct(fields) if !fields.is_empty() => Some(fields[0]),
+                        _ => None,
+                    });
                     if let Some(val) = discriminant_val {
                         self.current_frame_mut().registers.set(*dest, val);
                         return Ok(());
@@ -1625,17 +1664,18 @@ impl MirInterpreter {
                 if union_v.is_heap() {
                     let idx = union_v.as_heap_index();
                     // Copy value before setting register to avoid borrow conflict
-                    let union_data_val = self.object_heap.get(idx)
-                        .and_then(|obj| match obj {
-                            HeapObject::Struct(fields) if fields.len() > 1 => Some(fields[1]),
-                            _ => None,
-                        });
+                    let union_data_val = self.object_heap.get(idx).and_then(|obj| match obj {
+                        HeapObject::Struct(fields) if fields.len() > 1 => Some(fields[1]),
+                        _ => None,
+                    });
                     if let Some(val) = union_data_val {
                         self.current_frame_mut().registers.set(*dest, val);
                         return Ok(());
                     }
                 }
-                return Err(InterpError::TypeError("Expected union value with data".to_string()));
+                return Err(InterpError::TypeError(
+                    "Expected union value with data".to_string(),
+                ));
             }
 
             // === Select Operation (NaN-boxed fast path) ===
@@ -1674,7 +1714,8 @@ impl MirInterpreter {
                 captured_values,
             } => {
                 // Collect captured values as NanBoxedValue
-                let mut closure_data: Vec<NanBoxedValue> = vec![NanBoxedValue::from_func_id(func_id.0)];
+                let mut closure_data: Vec<NanBoxedValue> =
+                    vec![NanBoxedValue::from_func_id(func_id.0)];
                 for v in captured_values {
                     closure_data.push(self.current_frame().registers.get(*v));
                 }
@@ -1689,11 +1730,10 @@ impl MirInterpreter {
                 if closure_val.is_heap() {
                     let idx = closure_val.as_heap_index();
                     // Copy value before setting register to avoid borrow conflict
-                    let func_val = self.object_heap.get(idx)
-                        .and_then(|obj| match obj {
-                            HeapObject::Struct(fields) if !fields.is_empty() => Some(fields[0]),
-                            _ => None,
-                        });
+                    let func_val = self.object_heap.get(idx).and_then(|obj| match obj {
+                        HeapObject::Struct(fields) if !fields.is_empty() => Some(fields[0]),
+                        _ => None,
+                    });
                     if let Some(val) = func_val {
                         self.current_frame_mut().registers.set(*dest, val);
                         return Ok(());
@@ -1748,13 +1788,19 @@ impl MirInterpreter {
                 let src_val = self.current_frame().registers.get(*src);
                 let size_val = self.current_frame().registers.get(*size);
 
-                let dest_ptr = if dest_val.is_ptr() { dest_val.as_ptr() } else {
+                let dest_ptr = if dest_val.is_ptr() {
+                    dest_val.as_ptr()
+                } else {
                     InterpValue::from_nan_boxed(dest_val, &self.object_heap).to_usize()?
                 };
-                let src_ptr = if src_val.is_ptr() { src_val.as_ptr() } else {
+                let src_ptr = if src_val.is_ptr() {
+                    src_val.as_ptr()
+                } else {
                     InterpValue::from_nan_boxed(src_val, &self.object_heap).to_usize()?
                 };
-                let size_int = if size_val.is_i32() { size_val.as_i32() as usize } else {
+                let size_int = if size_val.is_i32() {
+                    size_val.as_i32() as usize
+                } else {
                     InterpValue::from_nan_boxed(size_val, &self.object_heap).to_usize()?
                 };
 
@@ -1771,13 +1817,19 @@ impl MirInterpreter {
                 let val = self.current_frame().registers.get(*value);
                 let size_val = self.current_frame().registers.get(*size);
 
-                let dest_ptr = if dest_val.is_ptr() { dest_val.as_ptr() } else {
+                let dest_ptr = if dest_val.is_ptr() {
+                    dest_val.as_ptr()
+                } else {
                     InterpValue::from_nan_boxed(dest_val, &self.object_heap).to_usize()?
                 };
-                let byte_val = if val.is_i32() { val.as_i32() as u8 } else {
+                let byte_val = if val.is_i32() {
+                    val.as_i32() as u8
+                } else {
                     InterpValue::from_nan_boxed(val, &self.object_heap).to_i64()? as u8
                 };
-                let size_int = if size_val.is_i32() { size_val.as_i32() as usize } else {
+                let size_int = if size_val.is_i32() {
+                    size_val.as_i32() as usize
+                } else {
                     InterpValue::from_nan_boxed(size_val, &self.object_heap).to_usize()?
                 };
 
@@ -1883,7 +1935,11 @@ impl MirInterpreter {
             }
 
             // === Global Variable Access ===
-            IrInstruction::LoadGlobal { dest, global_id, ty: _ } => {
+            IrInstruction::LoadGlobal {
+                dest,
+                global_id,
+                ty: _,
+            } => {
                 // Load value from global variable store
                 let val = if let Some(&stored_val) = self.global_store.get(global_id) {
                     stored_val
@@ -1974,13 +2030,13 @@ impl MirInterpreter {
                 Ok(TerminatorResult::Return(result))
             }
 
-            IrTerminator::Unreachable => {
-                Err(InterpError::RuntimeError("Reached unreachable code".to_string()))
-            }
+            IrTerminator::Unreachable => Err(InterpError::RuntimeError(
+                "Reached unreachable code".to_string(),
+            )),
 
-            IrTerminator::NoReturn { .. } => {
-                Err(InterpError::RuntimeError("NoReturn terminator executed".to_string()))
-            }
+            IrTerminator::NoReturn { .. } => Err(InterpError::RuntimeError(
+                "NoReturn terminator executed".to_string(),
+            )),
         }
     }
 
@@ -2013,7 +2069,10 @@ impl MirInterpreter {
                 Ok(InterpValue::Struct(values?))
             }
             IrValue::Function(func_id) => Ok(InterpValue::Function(*func_id)),
-            IrValue::Closure { function, environment } => {
+            IrValue::Closure {
+                function,
+                environment,
+            } => {
                 let env = self.ir_value_to_interp(environment)?;
                 Ok(InterpValue::Struct(vec![
                     InterpValue::Function(*function),
@@ -2051,20 +2110,23 @@ impl MirInterpreter {
                 Ok(NanBoxedValue::from_heap_index(idx))
             }
             IrValue::Array(arr) => {
-                let values: Result<Vec<_>, _> = arr.iter()
-                    .map(|v| self.ir_value_to_nanboxed(v))
-                    .collect();
+                let values: Result<Vec<_>, _> =
+                    arr.iter().map(|v| self.ir_value_to_nanboxed(v)).collect();
                 let idx = self.object_heap.alloc(HeapObject::Array(values?));
                 Ok(NanBoxedValue::from_heap_index(idx))
             }
             IrValue::Struct(fields) => {
-                let values: Result<Vec<_>, _> = fields.iter()
+                let values: Result<Vec<_>, _> = fields
+                    .iter()
                     .map(|v| self.ir_value_to_nanboxed(v))
                     .collect();
                 let idx = self.object_heap.alloc(HeapObject::Struct(values?));
                 Ok(NanBoxedValue::from_heap_index(idx))
             }
-            IrValue::Closure { function, environment } => {
+            IrValue::Closure {
+                function,
+                environment,
+            } => {
                 let env = self.ir_value_to_nanboxed(environment)?;
                 let func = NanBoxedValue::from_func_id(function.0);
                 let idx = self.object_heap.alloc(HeapObject::Struct(vec![func, env]));
@@ -2284,11 +2346,7 @@ impl MirInterpreter {
     }
 
     /// Evaluate a unary operation
-    fn eval_unary_op(
-        &self,
-        op: UnaryOp,
-        operand: InterpValue,
-    ) -> Result<InterpValue, InterpError> {
+    fn eval_unary_op(&self, op: UnaryOp, operand: InterpValue) -> Result<InterpValue, InterpError> {
         match op {
             UnaryOp::Neg => {
                 let val = operand.to_i64()?;
@@ -2350,11 +2408,7 @@ impl MirInterpreter {
     }
 
     /// Cast a value to a target type
-    fn cast_value(
-        &self,
-        val: InterpValue,
-        to_ty: &IrType,
-    ) -> Result<InterpValue, InterpError> {
+    fn cast_value(&self, val: InterpValue, to_ty: &IrType) -> Result<InterpValue, InterpError> {
         match to_ty {
             IrType::Bool => Ok(InterpValue::Bool(val.to_bool()?)),
             IrType::I8 => Ok(InterpValue::I8(val.to_i64()? as i8)),
@@ -2374,58 +2428,32 @@ impl MirInterpreter {
 
     /// Load a value from a pointer
     /// Uses raw pointer access since alloc_heap returns system allocator pointers
-    fn load_from_ptr(
-        &self,
-        ptr: InterpValue,
-        ty: &IrType,
-    ) -> Result<InterpValue, InterpError> {
+    fn load_from_ptr(&self, ptr: InterpValue, ty: &IrType) -> Result<InterpValue, InterpError> {
         let addr = ptr.to_usize()?;
 
         // Null pointer check
         if addr == 0 {
-            return Err(InterpError::RuntimeError("Null pointer dereference".to_string()));
+            return Err(InterpError::RuntimeError(
+                "Null pointer dereference".to_string(),
+            ));
         }
 
         // Use raw pointer access since alloc_heap uses system allocator
         // SAFETY: We trust that valid pointers come from alloc_heap or extern functions
         unsafe {
             match ty {
-                IrType::Bool => {
-                    Ok(InterpValue::Bool(*(addr as *const u8) != 0))
-                }
-                IrType::I8 => {
-                    Ok(InterpValue::I8(*(addr as *const i8)))
-                }
-                IrType::U8 => {
-                    Ok(InterpValue::U8(*(addr as *const u8)))
-                }
-                IrType::I16 => {
-                    Ok(InterpValue::I16(*(addr as *const i16)))
-                }
-                IrType::U16 => {
-                    Ok(InterpValue::U16(*(addr as *const u16)))
-                }
-                IrType::I32 => {
-                    Ok(InterpValue::I32(*(addr as *const i32)))
-                }
-                IrType::U32 => {
-                    Ok(InterpValue::U32(*(addr as *const u32)))
-                }
-                IrType::I64 => {
-                    Ok(InterpValue::I64(*(addr as *const i64)))
-                }
-                IrType::U64 => {
-                    Ok(InterpValue::U64(*(addr as *const u64)))
-                }
-                IrType::F32 => {
-                    Ok(InterpValue::F32(*(addr as *const f32)))
-                }
-                IrType::F64 => {
-                    Ok(InterpValue::F64(*(addr as *const f64)))
-                }
-                IrType::Ptr(_) => {
-                    Ok(InterpValue::Ptr(*(addr as *const usize)))
-                }
+                IrType::Bool => Ok(InterpValue::Bool(*(addr as *const u8) != 0)),
+                IrType::I8 => Ok(InterpValue::I8(*(addr as *const i8))),
+                IrType::U8 => Ok(InterpValue::U8(*(addr as *const u8))),
+                IrType::I16 => Ok(InterpValue::I16(*(addr as *const i16))),
+                IrType::U16 => Ok(InterpValue::U16(*(addr as *const u16))),
+                IrType::I32 => Ok(InterpValue::I32(*(addr as *const i32))),
+                IrType::U32 => Ok(InterpValue::U32(*(addr as *const u32))),
+                IrType::I64 => Ok(InterpValue::I64(*(addr as *const i64))),
+                IrType::U64 => Ok(InterpValue::U64(*(addr as *const u64))),
+                IrType::F32 => Ok(InterpValue::F32(*(addr as *const f32))),
+                IrType::F64 => Ok(InterpValue::F64(*(addr as *const f64))),
+                IrType::Ptr(_) => Ok(InterpValue::Ptr(*(addr as *const usize))),
                 _ => {
                     // For other types, return a placeholder
                     Ok(InterpValue::Void)
@@ -2535,11 +2563,7 @@ impl MirInterpreter {
     }
 
     /// Extract a value from an aggregate using indices
-    fn extract_value(
-        &self,
-        agg: InterpValue,
-        indices: &[u32],
-    ) -> Result<InterpValue, InterpError> {
+    fn extract_value(&self, agg: InterpValue, indices: &[u32]) -> Result<InterpValue, InterpError> {
         let mut current = agg;
         for &idx in indices {
             match current {
@@ -2648,7 +2672,10 @@ impl MirInterpreter {
                                         if let Some(InterpValue::I64(len)) = fields.get(1) {
                                             if *ptr != 0 && *len > 0 {
                                                 unsafe {
-                                                    let slice = std::slice::from_raw_parts(*ptr as *const u8, *len as usize);
+                                                    let slice = std::slice::from_raw_parts(
+                                                        *ptr as *const u8,
+                                                        *len as usize,
+                                                    );
                                                     if let Ok(s) = std::str::from_utf8(slice) {
                                                         println!("{}", s);
                                                     } else {
@@ -2708,9 +2735,7 @@ impl MirInterpreter {
             }
             "haxe_string_concat" => {
                 if args.len() >= 2 {
-                    if let (InterpValue::String(a), InterpValue::String(b)) =
-                        (&args[0], &args[1])
-                    {
+                    if let (InterpValue::String(a), InterpValue::String(b)) = (&args[0], &args[1]) {
                         return Ok(InterpValue::String(format!("{}{}", a, b)));
                     }
                 }
@@ -2766,7 +2791,8 @@ impl MirInterpreter {
         // First check built-ins
         let builtin_result = self.call_extern(&extern_fn.name, args);
         if let Ok(ref val) = builtin_result {
-            if !matches!(val, InterpValue::Void) || extern_fn.signature.return_type == IrType::Void {
+            if !matches!(val, InterpValue::Void) || extern_fn.signature.return_type == IrType::Void
+            {
                 // If we got a non-void result, or the function is supposed to return void,
                 // use the builtin result
                 if !extern_fn.name.starts_with("Unknown") {
@@ -2803,9 +2829,7 @@ impl MirInterpreter {
             .collect::<Result<_, _>>()?;
 
         // Call the function based on arity and return type
-        let result = unsafe {
-            self.call_native_fn(ptr, &native_args, &signature.return_type)?
-        };
+        let result = unsafe { self.call_native_fn(ptr, &native_args, &signature.return_type)? };
 
         // Convert result back to InterpValue
         self.native_to_interp(result, &signature.return_type)
@@ -2823,9 +2847,7 @@ impl MirInterpreter {
             .map(|arg| self.interp_to_native_inferred(arg))
             .collect::<Result<_, _>>()?;
 
-        let result = unsafe {
-            self.call_native_fn(ptr, &native_args, &IrType::I64)?
-        };
+        let result = unsafe { self.call_native_fn(ptr, &native_args, &IrType::I64)? };
 
         self.native_to_interp(result, &IrType::I64)
     }
@@ -2848,9 +2870,7 @@ impl MirInterpreter {
             })
             .collect::<Result<_, _>>()?;
 
-        let result = unsafe {
-            self.call_native_fn(ptr, &native_args, return_type)?
-        };
+        let result = unsafe { self.call_native_fn(ptr, &native_args, return_type)? };
 
         self.native_to_interp(result, return_type)
     }
@@ -2981,12 +3001,63 @@ impl MirInterpreter {
             0 => self.call_fn_0(ptr, return_type),
             1 => self.call_fn_1(ptr, arg_values[0], return_type),
             2 => self.call_fn_2(ptr, arg_values[0], arg_values[1], return_type),
-            3 => self.call_fn_3(ptr, arg_values[0], arg_values[1], arg_values[2], return_type),
-            4 => self.call_fn_4(ptr, arg_values[0], arg_values[1], arg_values[2], arg_values[3], return_type),
-            5 => self.call_fn_5(ptr, arg_values[0], arg_values[1], arg_values[2], arg_values[3], arg_values[4], return_type),
-            6 => self.call_fn_6(ptr, arg_values[0], arg_values[1], arg_values[2], arg_values[3], arg_values[4], arg_values[5], return_type),
-            7 => self.call_fn_7(ptr, arg_values[0], arg_values[1], arg_values[2], arg_values[3], arg_values[4], arg_values[5], arg_values[6], return_type),
-            8 => self.call_fn_8(ptr, arg_values[0], arg_values[1], arg_values[2], arg_values[3], arg_values[4], arg_values[5], arg_values[6], arg_values[7], return_type),
+            3 => self.call_fn_3(
+                ptr,
+                arg_values[0],
+                arg_values[1],
+                arg_values[2],
+                return_type,
+            ),
+            4 => self.call_fn_4(
+                ptr,
+                arg_values[0],
+                arg_values[1],
+                arg_values[2],
+                arg_values[3],
+                return_type,
+            ),
+            5 => self.call_fn_5(
+                ptr,
+                arg_values[0],
+                arg_values[1],
+                arg_values[2],
+                arg_values[3],
+                arg_values[4],
+                return_type,
+            ),
+            6 => self.call_fn_6(
+                ptr,
+                arg_values[0],
+                arg_values[1],
+                arg_values[2],
+                arg_values[3],
+                arg_values[4],
+                arg_values[5],
+                return_type,
+            ),
+            7 => self.call_fn_7(
+                ptr,
+                arg_values[0],
+                arg_values[1],
+                arg_values[2],
+                arg_values[3],
+                arg_values[4],
+                arg_values[5],
+                arg_values[6],
+                return_type,
+            ),
+            8 => self.call_fn_8(
+                ptr,
+                arg_values[0],
+                arg_values[1],
+                arg_values[2],
+                arg_values[3],
+                arg_values[4],
+                arg_values[5],
+                arg_values[6],
+                arg_values[7],
+                return_type,
+            ),
             n => {
                 return Err(InterpError::RuntimeError(format!(
                     "FFI calls with {} arguments not supported (max 8)",
@@ -3011,7 +3082,12 @@ impl MirInterpreter {
         }
     }
 
-    unsafe fn call_fn_1(&self, ptr: usize, a0: u64, ret_ty: &IrType) -> Result<NativeValue, InterpError> {
+    unsafe fn call_fn_1(
+        &self,
+        ptr: usize,
+        a0: u64,
+        ret_ty: &IrType,
+    ) -> Result<NativeValue, InterpError> {
         if ret_ty.is_float() {
             let f: extern "C" fn(u64) -> f64 = std::mem::transmute(ptr);
             Ok(NativeValue::F64(f(a0)))
@@ -3021,7 +3097,13 @@ impl MirInterpreter {
         }
     }
 
-    unsafe fn call_fn_2(&self, ptr: usize, a0: u64, a1: u64, ret_ty: &IrType) -> Result<NativeValue, InterpError> {
+    unsafe fn call_fn_2(
+        &self,
+        ptr: usize,
+        a0: u64,
+        a1: u64,
+        ret_ty: &IrType,
+    ) -> Result<NativeValue, InterpError> {
         if ret_ty.is_float() {
             let f: extern "C" fn(u64, u64) -> f64 = std::mem::transmute(ptr);
             Ok(NativeValue::F64(f(a0, a1)))
@@ -3031,7 +3113,14 @@ impl MirInterpreter {
         }
     }
 
-    unsafe fn call_fn_3(&self, ptr: usize, a0: u64, a1: u64, a2: u64, ret_ty: &IrType) -> Result<NativeValue, InterpError> {
+    unsafe fn call_fn_3(
+        &self,
+        ptr: usize,
+        a0: u64,
+        a1: u64,
+        a2: u64,
+        ret_ty: &IrType,
+    ) -> Result<NativeValue, InterpError> {
         if ret_ty.is_float() {
             let f: extern "C" fn(u64, u64, u64) -> f64 = std::mem::transmute(ptr);
             Ok(NativeValue::F64(f(a0, a1, a2)))
@@ -3041,7 +3130,15 @@ impl MirInterpreter {
         }
     }
 
-    unsafe fn call_fn_4(&self, ptr: usize, a0: u64, a1: u64, a2: u64, a3: u64, ret_ty: &IrType) -> Result<NativeValue, InterpError> {
+    unsafe fn call_fn_4(
+        &self,
+        ptr: usize,
+        a0: u64,
+        a1: u64,
+        a2: u64,
+        a3: u64,
+        ret_ty: &IrType,
+    ) -> Result<NativeValue, InterpError> {
         if ret_ty.is_float() {
             let f: extern "C" fn(u64, u64, u64, u64) -> f64 = std::mem::transmute(ptr);
             Ok(NativeValue::F64(f(a0, a1, a2, a3)))
@@ -3051,7 +3148,16 @@ impl MirInterpreter {
         }
     }
 
-    unsafe fn call_fn_5(&self, ptr: usize, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, ret_ty: &IrType) -> Result<NativeValue, InterpError> {
+    unsafe fn call_fn_5(
+        &self,
+        ptr: usize,
+        a0: u64,
+        a1: u64,
+        a2: u64,
+        a3: u64,
+        a4: u64,
+        ret_ty: &IrType,
+    ) -> Result<NativeValue, InterpError> {
         if ret_ty.is_float() {
             let f: extern "C" fn(u64, u64, u64, u64, u64) -> f64 = std::mem::transmute(ptr);
             Ok(NativeValue::F64(f(a0, a1, a2, a3, a4)))
@@ -3061,7 +3167,17 @@ impl MirInterpreter {
         }
     }
 
-    unsafe fn call_fn_6(&self, ptr: usize, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, ret_ty: &IrType) -> Result<NativeValue, InterpError> {
+    unsafe fn call_fn_6(
+        &self,
+        ptr: usize,
+        a0: u64,
+        a1: u64,
+        a2: u64,
+        a3: u64,
+        a4: u64,
+        a5: u64,
+        ret_ty: &IrType,
+    ) -> Result<NativeValue, InterpError> {
         if ret_ty.is_float() {
             let f: extern "C" fn(u64, u64, u64, u64, u64, u64) -> f64 = std::mem::transmute(ptr);
             Ok(NativeValue::F64(f(a0, a1, a2, a3, a4, a5)))
@@ -3071,22 +3187,49 @@ impl MirInterpreter {
         }
     }
 
-    unsafe fn call_fn_7(&self, ptr: usize, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64, ret_ty: &IrType) -> Result<NativeValue, InterpError> {
+    unsafe fn call_fn_7(
+        &self,
+        ptr: usize,
+        a0: u64,
+        a1: u64,
+        a2: u64,
+        a3: u64,
+        a4: u64,
+        a5: u64,
+        a6: u64,
+        ret_ty: &IrType,
+    ) -> Result<NativeValue, InterpError> {
         if ret_ty.is_float() {
-            let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> f64 = std::mem::transmute(ptr);
+            let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> f64 =
+                std::mem::transmute(ptr);
             Ok(NativeValue::F64(f(a0, a1, a2, a3, a4, a5, a6)))
         } else {
-            let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(ptr);
+            let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> u64 =
+                std::mem::transmute(ptr);
             Ok(NativeValue::U64(f(a0, a1, a2, a3, a4, a5, a6)))
         }
     }
 
-    unsafe fn call_fn_8(&self, ptr: usize, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64, a7: u64, ret_ty: &IrType) -> Result<NativeValue, InterpError> {
+    unsafe fn call_fn_8(
+        &self,
+        ptr: usize,
+        a0: u64,
+        a1: u64,
+        a2: u64,
+        a3: u64,
+        a4: u64,
+        a5: u64,
+        a6: u64,
+        a7: u64,
+        ret_ty: &IrType,
+    ) -> Result<NativeValue, InterpError> {
         if ret_ty.is_float() {
-            let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> f64 = std::mem::transmute(ptr);
+            let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> f64 =
+                std::mem::transmute(ptr);
             Ok(NativeValue::F64(f(a0, a1, a2, a3, a4, a5, a6, a7)))
         } else {
-            let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(ptr);
+            let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> u64 =
+                std::mem::transmute(ptr);
             Ok(NativeValue::U64(f(a0, a1, a2, a3, a4, a5, a6, a7)))
         }
     }
@@ -3227,7 +3370,10 @@ mod tests {
         let mut regs = RegisterFile::new(10);
         let mut heap = ObjectHeap::new();
         regs.set(IrId::new(0), InterpValue::I32(100).to_nan_boxed(&mut heap));
-        regs.set(IrId::new(5), InterpValue::Bool(true).to_nan_boxed(&mut heap));
+        regs.set(
+            IrId::new(5),
+            InterpValue::Bool(true).to_nan_boxed(&mut heap),
+        );
 
         let _100 = InterpValue::I32(100).to_nan_boxed(&mut heap);
         let _true = InterpValue::Bool(true).to_nan_boxed(&mut heap);
@@ -3301,10 +3447,12 @@ mod tests {
         interp.register_symbol("test_add", test_add as *const u8);
 
         // Call through simple FFI (without signature)
-        let result = interp.call_ffi_ptr_simple(
-            test_add as usize,
-            &[InterpValue::I64(5), InterpValue::I64(3)],
-        ).unwrap();
+        let result = interp
+            .call_ffi_ptr_simple(
+                test_add as usize,
+                &[InterpValue::I64(5), InterpValue::I64(3)],
+            )
+            .unwrap();
 
         match result {
             InterpValue::I64(n) => assert_eq!(n, 8),
@@ -3320,12 +3468,18 @@ mod tests {
         let param_types = vec![IrType::I64, IrType::I64, IrType::I64];
         let return_type = IrType::I64;
 
-        let result = interp.call_ffi_ptr_with_types(
-            test_mul as usize,
-            &[InterpValue::I64(2), InterpValue::I64(3), InterpValue::I64(4)],
-            &param_types,
-            &return_type,
-        ).unwrap();
+        let result = interp
+            .call_ffi_ptr_with_types(
+                test_mul as usize,
+                &[
+                    InterpValue::I64(2),
+                    InterpValue::I64(3),
+                    InterpValue::I64(4),
+                ],
+                &param_types,
+                &return_type,
+            )
+            .unwrap();
 
         match result {
             InterpValue::I64(n) => assert_eq!(n, 24), // 2 * 3 * 4 = 24
@@ -3341,12 +3495,14 @@ mod tests {
         let param_types = vec![IrType::F64, IrType::F64];
         let return_type = IrType::F64;
 
-        let result = interp.call_ffi_ptr_with_types(
-            test_f64_add as usize,
-            &[InterpValue::F64(1.5), InterpValue::F64(2.5)],
-            &param_types,
-            &return_type,
-        ).unwrap();
+        let result = interp
+            .call_ffi_ptr_with_types(
+                test_f64_add as usize,
+                &[InterpValue::F64(1.5), InterpValue::F64(2.5)],
+                &param_types,
+                &return_type,
+            )
+            .unwrap();
 
         match result {
             InterpValue::F64(n) => assert!((n - 4.0).abs() < 0.001),

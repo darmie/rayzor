@@ -14,7 +14,6 @@ class Test {
     }
 }
             "#,
-            
             // Undefined variable error
             r#"
 class Test {
@@ -23,7 +22,6 @@ class Test {
     }
 }
             "#,
-            
             // Wrong number of arguments
             r#"
 class Test {
@@ -33,7 +31,6 @@ class Test {
     }
 }
             "#,
-            
             // Access modifier violation
             r#"
 class Test {
@@ -45,33 +42,38 @@ class Test {
 }
             "#,
         ];
-        
+
         for (i, code) in test_cases.iter().enumerate() {
             println!("\n=== Test Case {} ===", i + 1);
             let result = compile_haxe_source(code);
-            
+
             // We expect errors in all test cases
-            assert!(!result.errors.is_empty(), "Test case {} should have errors", i + 1);
-            
+            assert!(
+                !result.errors.is_empty(),
+                "Test case {} should have errors",
+                i + 1
+            );
+
             // Check that no error has 0:0:0 location
             for error in &result.errors {
-                println!("Error: {} at {}:{}:{}", 
-                    error.message, 
-                    error.location.file_id, 
-                    error.location.line, 
+                println!(
+                    "Error: {} at {}:{}:{}",
+                    error.message,
+                    error.location.file_id,
+                    error.location.line,
                     error.location.column
                 );
-                
+
                 // The only valid case for line 0 is if file_id is u32::MAX (unknown location)
                 if error.location.line == 0 && error.location.column == 0 {
                     assert_eq!(
-                        error.location.file_id, 
-                        u32::MAX, 
-                        "Error has 0:0:0 location but file_id is not u32::MAX: {}", 
+                        error.location.file_id,
+                        u32::MAX,
+                        "Error has 0:0:0 location but file_id is not u32::MAX: {}",
                         error.message
                     );
                 }
-                
+
                 // For known files (file_id != u32::MAX), line and column should be non-zero
                 if error.location.file_id != u32::MAX {
                     assert!(
@@ -86,7 +88,7 @@ class Test {
             }
         }
     }
-    
+
     #[test]
     fn test_parse_error_locations() {
         // Test that parse errors don't show 0:0:0
@@ -97,26 +99,23 @@ class Test {
     }
 }
         "#;
-        
+
         let result = compile_haxe_source(invalid_code);
         assert!(!result.errors.is_empty(), "Should have parse errors");
-        
+
         for error in &result.errors {
-            println!("Parse error: {} at {}:{}:{}", 
-                error.message, 
-                error.location.file_id, 
-                error.location.line, 
-                error.location.column
+            println!(
+                "Parse error: {} at {}:{}:{}",
+                error.message, error.location.file_id, error.location.line, error.location.column
             );
-            
+
             // Parse errors currently show 0:0:0 - this is a known issue
             // Once fixed, this assertion should be updated
             if error.message.contains("Parse error") {
                 // TODO: Fix parse error locations in pipeline.rs:429
-                println!("WARNING: Parse error shows location {}:{}:{}", 
-                    error.location.file_id,
-                    error.location.line,
-                    error.location.column
+                println!(
+                    "WARNING: Parse error shows location {}:{}:{}",
+                    error.location.file_id, error.location.line, error.location.column
                 );
             }
         }

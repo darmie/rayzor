@@ -34,10 +34,10 @@ class TestForIn {
 
     // Create a minimal compilation pipeline
     let mut pipeline = HaxeCompilationPipeline::new();
-    
+
     // Compile the source
     let result = pipeline.compile_file("test_for_in.hx", source);
-    
+
     if result.errors.is_empty() {
         println!("✅ For-in compilation succeeded!");
         println!("  Typed files: {}", result.typed_files.len());

@@ -4,40 +4,40 @@
 //! IR types are lower-level than TAST types and map more directly to runtime representations.
 
 use super::IrId;
+use serde::{Deserialize, Serialize};
 use std::fmt;
-use serde::{Serialize, Deserialize};
 
 /// IR type representation
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum IrType {
     /// Void type (no value)
     Void,
-    
+
     /// Boolean type
     Bool,
-    
+
     /// Integer types
     I8,
     I16,
     I32,
     I64,
-    
+
     /// Unsigned integer types
     U8,
     U16,
     U32,
     U64,
-    
+
     /// Floating point types
     F32,
     F64,
-    
+
     /// Pointer type
     Ptr(Box<IrType>),
-    
+
     /// Reference type (managed pointer)
     Ref(Box<IrType>),
-    
+
     /// Array type with known size
     Array(Box<IrType>, usize),
 
@@ -52,36 +52,36 @@ pub enum IrType {
         /// Number of elements (typically 2, 4, 8, or 16)
         count: usize,
     },
-    
+
     /// String type (UTF-8)
     String,
-    
+
     /// Function type
     Function {
         params: Vec<IrType>,
         return_type: Box<IrType>,
         varargs: bool,
     },
-    
+
     /// Structure type
     Struct {
         name: String,
         fields: Vec<StructField>,
     },
-    
+
     /// Union type (sum type)
     Union {
         name: String,
         variants: Vec<UnionVariant>,
     },
-    
+
     /// Opaque type (for external types)
     Opaque {
         name: String,
         size: usize,
         align: usize,
     },
-    
+
     /// Type variable / type parameter (e.g., "T" in Container<T>)
     /// This represents a generic type parameter before monomorphization.
     /// Also aliased as TypeParam for clarity in generic contexts.
@@ -169,15 +169,14 @@ impl IrType {
             IrType::Ptr(_) | IrType::Ref(_) => std::mem::size_of::<usize>(),
             IrType::Array(elem_ty, count) => elem_ty.size() * count,
             IrType::Slice(_) => std::mem::size_of::<usize>() * 2, // ptr + len
-            IrType::String => std::mem::size_of::<usize>() * 3, // ptr + len + capacity
+            IrType::String => std::mem::size_of::<usize>() * 3,   // ptr + len + capacity
             IrType::Function { .. } => std::mem::size_of::<usize>(), // function pointer
-            IrType::Struct { fields, .. } => {
-                fields.iter().map(|f| f.ty.size()).sum()
-            }
+            IrType::Struct { fields, .. } => fields.iter().map(|f| f.ty.size()).sum(),
             IrType::Union { variants, .. } => {
                 // Tag size + largest variant
                 let tag_size = 4;
-                let max_variant_size = variants.iter()
+                let max_variant_size = variants
+                    .iter()
                     .map(|v| v.fields.iter().map(|f| f.size()).sum::<usize>())
                     .max()
                     .unwrap_or(0);
@@ -185,8 +184,12 @@ impl IrType {
             }
             IrType::Opaque { size, .. } => *size,
             IrType::Vector { element, count } => element.size() * count,
-            IrType::TypeVar(_) => panic!("Cannot get size of type variable before monomorphization"),
-            IrType::Generic { .. } => panic!("Cannot get size of generic type before monomorphization"),
+            IrType::TypeVar(_) => {
+                panic!("Cannot get size of type variable before monomorphization")
+            }
+            IrType::Generic { .. } => {
+                panic!("Cannot get size of generic type before monomorphization")
+            }
             IrType::Any => std::mem::size_of::<usize>() * 2, // type_id + value_ptr
         }
     }
@@ -203,41 +206,59 @@ impl IrType {
             IrType::Array(elem_ty, _) => elem_ty.align(),
             IrType::Slice(_) | IrType::String | IrType::Any => std::mem::align_of::<usize>(),
             IrType::Function { .. } => std::mem::align_of::<usize>(),
-            IrType::Struct { fields, .. } => {
-                fields.iter().map(|f| f.ty.align()).max().unwrap_or(1)
-            }
+            IrType::Struct { fields, .. } => fields.iter().map(|f| f.ty.align()).max().unwrap_or(1),
             IrType::Union { .. } => 4, // Assume 4-byte alignment for tag
             IrType::Opaque { align, .. } => *align,
             // SIMD vectors require alignment equal to their size for optimal performance
             IrType::Vector { element, count } => (element.size() * count).max(element.align()),
-            IrType::TypeVar(_) => panic!("Cannot get alignment of type variable before monomorphization"),
-            IrType::Generic { .. } => panic!("Cannot get alignment of generic type before monomorphization"),
+            IrType::TypeVar(_) => {
+                panic!("Cannot get alignment of type variable before monomorphization")
+            }
+            IrType::Generic { .. } => {
+                panic!("Cannot get alignment of generic type before monomorphization")
+            }
         }
     }
-    
+
     /// Check if this is a primitive type
     pub fn is_primitive(&self) -> bool {
-        matches!(self,
-            IrType::Void | IrType::Bool |
-            IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 |
-            IrType::U8 | IrType::U16 | IrType::U32 | IrType::U64 |
-            IrType::F32 | IrType::F64
+        matches!(
+            self,
+            IrType::Void
+                | IrType::Bool
+                | IrType::I8
+                | IrType::I16
+                | IrType::I32
+                | IrType::I64
+                | IrType::U8
+                | IrType::U16
+                | IrType::U32
+                | IrType::U64
+                | IrType::F32
+                | IrType::F64
         )
     }
-    
+
     /// Check if this is a pointer type
     pub fn is_pointer(&self) -> bool {
         matches!(self, IrType::Ptr(_) | IrType::Ref(_))
     }
-    
+
     /// Check if this is an integer type
     pub fn is_integer(&self) -> bool {
-        matches!(self,
-            IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 |
-            IrType::U8 | IrType::U16 | IrType::U32 | IrType::U64
+        matches!(
+            self,
+            IrType::I8
+                | IrType::I16
+                | IrType::I32
+                | IrType::I64
+                | IrType::U8
+                | IrType::U16
+                | IrType::U32
+                | IrType::U64
         )
     }
-    
+
     /// Check if this is a floating point type
     pub fn is_float(&self) -> bool {
         matches!(self, IrType::F32 | IrType::F64)
@@ -293,7 +314,7 @@ impl IrType {
                 | IrType::F64
         )
     }
-    
+
     /// Get the default value for this type
     pub fn default_value(&self) -> IrValue {
         match self {
@@ -374,13 +395,21 @@ impl fmt::Display for IrType {
             IrType::Array(ty, size) => write!(f, "[{}; {}]", ty, size),
             IrType::Slice(ty) => write!(f, "[{}]", ty),
             IrType::String => write!(f, "string"),
-            IrType::Function { params, return_type, varargs } => {
+            IrType::Function {
+                params,
+                return_type,
+                varargs,
+            } => {
                 write!(f, "fn(")?;
                 for (i, param) in params.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{}", param)?;
                 }
-                if *varargs { write!(f, ", ...")?; }
+                if *varargs {
+                    write!(f, ", ...")?;
+                }
                 write!(f, ") -> {}", return_type)
             }
             IrType::Struct { name, .. } => write!(f, "struct {}", name),
@@ -390,7 +419,9 @@ impl fmt::Display for IrType {
             IrType::Generic { base, type_args } => {
                 write!(f, "{}<", base)?;
                 for (i, arg) in type_args.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{}", arg)?;
                 }
                 write!(f, ">")
@@ -404,7 +435,7 @@ impl fmt::Display for IrType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_type_size() {
         assert_eq!(IrType::I32.size(), 4);
@@ -412,14 +443,17 @@ mod tests {
         assert_eq!(IrType::F64.size(), 8);
         assert_eq!(IrType::Array(Box::new(IrType::I32), 10).size(), 40);
     }
-    
+
     #[test]
     fn test_type_display() {
         assert_eq!(format!("{}", IrType::I32), "i32");
         assert_eq!(format!("{}", IrType::Ptr(Box::new(IrType::I32))), "*i32");
-        assert_eq!(format!("{}", IrType::Array(Box::new(IrType::U8), 16)), "[u8; 16]");
+        assert_eq!(
+            format!("{}", IrType::Array(Box::new(IrType::U8), 16)),
+            "[u8; 16]"
+        );
     }
-    
+
     #[test]
     fn test_type_properties() {
         assert!(IrType::I32.is_primitive());

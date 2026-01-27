@@ -8,44 +8,44 @@
 //! - Easy to optimize and transform
 //! - Suitable for targeting multiple backends (JS, C++, JVM, etc.)
 
-pub mod hir;  // High-level IR (close to source syntax)
-pub mod tast_to_hir;  // TAST to HIR lowering
-pub mod hir_to_mir;   // HIR to MIR lowering
-pub mod drop_analysis;  // Drop point analysis for automatic memory deallocation
+pub mod drop_analysis;
+pub mod hir; // High-level IR (close to source syntax)
+pub mod hir_to_mir; // HIR to MIR lowering
+pub mod tast_to_hir; // TAST to HIR lowering // Drop point analysis for automatic memory deallocation
 
 // MIR modules (the existing IR serves as MIR)
-pub mod types;
-pub mod instructions;
+pub mod blade; // BLADE format - Blazing Language Artifact Deployment Environment (.blade files)
 pub mod blocks;
-pub mod functions;
-pub mod modules;
 pub mod builder;
-pub mod lowering;  // Legacy TAST to MIR (being phased out)
+pub mod environment_layout; // Closure environment layout abstraction
+pub mod functions;
+pub mod inlining; // Function inlining and call graph analysis
+pub mod instructions;
+pub mod loop_analysis; // Loop analysis: dominators, natural loops, nesting
+pub mod lowering; // Legacy TAST to MIR (being phased out)
+pub mod mir_builder; // Programmatic MIR construction API
+pub mod modules;
+pub mod monomorphize; // Monomorphization pass for generics
+pub mod optimizable; // Generic optimization trait for different IR levels
 pub mod optimization;
+pub mod types;
 pub mod validation;
-pub mod optimizable;  // Generic optimization trait for different IR levels
-pub mod blade;  // BLADE format - Blazing Language Artifact Deployment Environment (.blade files)
-pub mod mir_builder;  // Programmatic MIR construction API
-pub mod environment_layout;  // Closure environment layout abstraction
-pub mod monomorphize;  // Monomorphization pass for generics
-pub mod loop_analysis;  // Loop analysis: dominators, natural loops, nesting
-pub mod inlining;       // Function inlining and call graph analysis
-pub mod vectorization;  // SIMD auto-vectorization for loops
+pub mod vectorization; // SIMD auto-vectorization for loops
 
-pub use types::*;
-pub use instructions::*;
+pub use blade::{load_bundle, save_bundle, BladeError, RayzorBundle};
 pub use blocks::*;
-pub use functions::*;
-pub use modules::*;
 pub use builder::*;
-pub use environment_layout::{EnvironmentLayout, EnvironmentField};
-pub use monomorphize::{Monomorphizer, MonoKey, MonomorphizationStats};
-pub use loop_analysis::{DominatorTree, NaturalLoop, LoopNestInfo, TripCount};
-pub use vectorization::{VectorType, VectorInstruction, LoopVectorizationPass};
-pub use blade::{RayzorBundle, load_bundle, save_bundle, BladeError};
+pub use environment_layout::{EnvironmentField, EnvironmentLayout};
+pub use functions::*;
+pub use instructions::*;
+pub use loop_analysis::{DominatorTree, LoopNestInfo, NaturalLoop, TripCount};
+pub use modules::*;
+pub use monomorphize::{MonoKey, MonomorphizationStats, Monomorphizer};
+pub use types::*;
+pub use vectorization::{LoopVectorizationPass, VectorInstruction, VectorType};
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
-use serde::{Serialize, Deserialize};
 
 /// IR version for compatibility checking
 pub const IR_VERSION: u32 = 1;
@@ -125,13 +125,13 @@ pub enum CallingConvention {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_ir_id() {
         let id = IrId::new(42);
         assert_eq!(format!("{}", id), "$42");
         assert!(id.is_valid());
-        
+
         let invalid = IrId::invalid();
         assert!(!invalid.is_valid());
     }

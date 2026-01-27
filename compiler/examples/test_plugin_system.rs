@@ -1,8 +1,38 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test the plugin-based runtime system with pointer-based Vec API
 
-use compiler::ir::mir_builder::MirBuilder;
-use compiler::ir::{IrType, CallingConvention, StructField};
 use compiler::codegen::cranelift_backend::CraneliftBackend;
+use compiler::ir::mir_builder::MirBuilder;
+use compiler::ir::{CallingConvention, IrType, StructField};
 use compiler::plugin::PluginRegistry;
 
 fn main() {
@@ -13,7 +43,8 @@ fn main() {
     let mut registry = PluginRegistry::new();
 
     // Register the Rayzor runtime plugin
-    registry.register(rayzor_runtime::get_plugin())
+    registry
+        .register(rayzor_runtime::get_plugin())
         .expect("Failed to register rayzor_runtime plugin");
 
     println!("  ✓ Registered plugins: {:?}\n", registry.list_plugins());
@@ -52,20 +83,23 @@ fn main() {
     });
 
     // Declare extern functions (pointer-based API - no struct returns!)
-    let vec_new_id = builder.begin_function("haxe_vec_new_ptr")
+    let vec_new_id = builder
+        .begin_function("haxe_vec_new_ptr")
         .param("out", ptr_vec_ty.clone())
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(vec_new_id);
 
-    let vec_push_id = builder.begin_function("haxe_vec_push_ptr")
+    let vec_push_id = builder
+        .begin_function("haxe_vec_push_ptr")
         .param("vec", ptr_vec_ty.clone())
         .param("value", u8_ty.clone())
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(vec_push_id);
 
-    let vec_len_id = builder.begin_function("haxe_vec_len_ptr")
+    let vec_len_id = builder
+        .begin_function("haxe_vec_len_ptr")
         .param("vec", ptr_vec_ty.clone())
         .returns(u64_ty.clone())
         .calling_convention(CallingConvention::C)
@@ -73,7 +107,8 @@ fn main() {
     builder.mark_as_extern(vec_len_id);
 
     // Create test function: fn test_vec() -> u64
-    let test_func_id = builder.begin_function("test_vec")
+    let test_func_id = builder
+        .begin_function("test_vec")
         .returns(u64_ty.clone())
         .calling_convention(CallingConvention::C)
         .build();
@@ -135,7 +170,7 @@ fn main() {
     match backend.compile_module(&mir_module) {
         Ok(_) => println!("  ✓ Compilation successful!\n"),
         Err(e) => {
-            eprintln!("  ✗ Compilation failed: {}\n", e);
+            eprintln!("  ✗ Compilation failed: {:?}\n", e);
             return;
         }
     }

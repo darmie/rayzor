@@ -5,7 +5,7 @@
 //!
 //! # Error Code Ranges
 //!
-//! - E0001-E0999: Parser and syntax errors  
+//! - E0001-E0999: Parser and syntax errors
 //! - E1000-E1999: Type system and type checking errors
 //! - E2000-E2999: Symbol resolution and scope errors
 //! - E3000-E3999: Generic and constraint errors
@@ -49,14 +49,19 @@ pub struct ErrorCode {
 impl ErrorCode {
     /// Create a new error code
     pub const fn new(
-        code: u16, 
-        category: &'static str, 
+        code: u16,
+        category: &'static str,
         description: &'static str,
-        help: Option<&'static str>
+        help: Option<&'static str>,
     ) -> Self {
-        Self { code, category, description, help }
+        Self {
+            code,
+            category,
+            description,
+            help,
+        }
     }
-    
+
     /// Format the error code as "E{code:04}" (e.g., "E1001")
     pub fn format_code(&self) -> String {
         format!("E{:04}", self.code)
@@ -65,7 +70,13 @@ impl ErrorCode {
 
 impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} [{}]: {}", self.format_code(), self.category, self.description)
+        write!(
+            f,
+            "{} [{}]: {}",
+            self.format_code(),
+            self.category,
+            self.description
+        )
     }
 }
 
@@ -83,12 +94,12 @@ impl ErrorCodeRegistry {
         registry.register_all_codes();
         registry
     }
-    
+
     /// Get an error code by its numeric value
     pub fn get(&self, code: u16) -> Option<&ErrorCode> {
         self.codes.get(&code)
     }
-    
+
     /// Get an error code by its formatted string (e.g., "E1001")
     pub fn get_by_string(&self, code_str: &str) -> Option<&ErrorCode> {
         if let Some(stripped) = code_str.strip_prefix('E') {
@@ -98,178 +109,372 @@ impl ErrorCodeRegistry {
         }
         None
     }
-    
+
     /// Register a new error code
     fn register(&mut self, error_code: ErrorCode) {
         self.codes.insert(error_code.code, error_code);
     }
-    
+
     /// Register all predefined error codes
     fn register_all_codes(&mut self) {
         // ===== PARSER ERRORS (E0001-E0999) =====
-        
+
         // General parser errors (E0001-E0099)
-        self.register(ErrorCode::new(1, "Parser", "Unexpected token", 
-            Some("Check for missing punctuation or keywords")));
-        self.register(ErrorCode::new(2, "Parser", "Missing closing delimiter", 
-            Some("Ensure all brackets, braces, and parentheses are properly closed")));
-        self.register(ErrorCode::new(3, "Parser", "Expected token", 
-            Some("Review the syntax requirements for this language construct")));
-        self.register(ErrorCode::new(4, "Parser", "Invalid syntax", 
-            Some("Check the language documentation for correct syntax")));
-        self.register(ErrorCode::new(5, "Parser", "Unexpected end of file", 
-            Some("The file ended unexpectedly; check for incomplete statements")));
-        
+        self.register(ErrorCode::new(
+            1,
+            "Parser",
+            "Unexpected token",
+            Some("Check for missing punctuation or keywords"),
+        ));
+        self.register(ErrorCode::new(
+            2,
+            "Parser",
+            "Missing closing delimiter",
+            Some("Ensure all brackets, braces, and parentheses are properly closed"),
+        ));
+        self.register(ErrorCode::new(
+            3,
+            "Parser",
+            "Expected token",
+            Some("Review the syntax requirements for this language construct"),
+        ));
+        self.register(ErrorCode::new(
+            4,
+            "Parser",
+            "Invalid syntax",
+            Some("Check the language documentation for correct syntax"),
+        ));
+        self.register(ErrorCode::new(
+            5,
+            "Parser",
+            "Unexpected end of file",
+            Some("The file ended unexpectedly; check for incomplete statements"),
+        ));
+
         // Declaration errors (E0100-E0199)
-        self.register(ErrorCode::new(101, "Parser", "Invalid class declaration", 
-            Some("Class declarations must follow 'class ClassName' syntax")));
-        self.register(ErrorCode::new(102, "Parser", "Invalid interface declaration", 
-            Some("Interface declarations must follow 'interface InterfaceName' syntax")));
-        self.register(ErrorCode::new(103, "Parser", "Invalid function declaration", 
-            Some("Function declarations must include 'function' keyword and name")));
-        self.register(ErrorCode::new(104, "Parser", "Invalid variable declaration", 
-            Some("Variable declarations must specify a name and optionally a type")));
-        self.register(ErrorCode::new(105, "Parser", "Invalid package declaration", 
-            Some("Package declarations must be at the top of the file")));
-        self.register(ErrorCode::new(106, "Parser", "Invalid import declaration", 
-            Some("Import statements must specify a valid module path")));
-        
+        self.register(ErrorCode::new(
+            101,
+            "Parser",
+            "Invalid class declaration",
+            Some("Class declarations must follow 'class ClassName' syntax"),
+        ));
+        self.register(ErrorCode::new(
+            102,
+            "Parser",
+            "Invalid interface declaration",
+            Some("Interface declarations must follow 'interface InterfaceName' syntax"),
+        ));
+        self.register(ErrorCode::new(
+            103,
+            "Parser",
+            "Invalid function declaration",
+            Some("Function declarations must include 'function' keyword and name"),
+        ));
+        self.register(ErrorCode::new(
+            104,
+            "Parser",
+            "Invalid variable declaration",
+            Some("Variable declarations must specify a name and optionally a type"),
+        ));
+        self.register(ErrorCode::new(
+            105,
+            "Parser",
+            "Invalid package declaration",
+            Some("Package declarations must be at the top of the file"),
+        ));
+        self.register(ErrorCode::new(
+            106,
+            "Parser",
+            "Invalid import declaration",
+            Some("Import statements must specify a valid module path"),
+        ));
+
         // Expression errors (E0200-E0299)
-        self.register(ErrorCode::new(201, "Parser", "Invalid expression", 
-            Some("Check expression syntax and operator precedence")));
-        self.register(ErrorCode::new(202, "Parser", "Malformed function call", 
-            Some("Function calls require parentheses around arguments")));
-        self.register(ErrorCode::new(203, "Parser", "Invalid array literal", 
-            Some("Array literals must be enclosed in brackets [...]")));
-        self.register(ErrorCode::new(204, "Parser", "Invalid object literal", 
-            Some("Object literals must be enclosed in braces {...}")));
-        
+        self.register(ErrorCode::new(
+            201,
+            "Parser",
+            "Invalid expression",
+            Some("Check expression syntax and operator precedence"),
+        ));
+        self.register(ErrorCode::new(
+            202,
+            "Parser",
+            "Malformed function call",
+            Some("Function calls require parentheses around arguments"),
+        ));
+        self.register(ErrorCode::new(
+            203,
+            "Parser",
+            "Invalid array literal",
+            Some("Array literals must be enclosed in brackets [...]"),
+        ));
+        self.register(ErrorCode::new(
+            204,
+            "Parser",
+            "Invalid object literal",
+            Some("Object literals must be enclosed in braces {...}"),
+        ));
+
         // ===== TYPE SYSTEM ERRORS (E1000-E1999) =====
-        
+
         // Basic type errors (E1000-E1099)
-        self.register(ErrorCode::new(1001, "Type", "Type mismatch", 
-            Some("Ensure the assigned value matches the expected type")));
-        self.register(ErrorCode::new(1002, "Type", "Undefined type", 
-            Some("Check that the type is imported or defined in scope")));
-        self.register(ErrorCode::new(1003, "Type", "Invalid type annotation", 
-            Some("Type annotations must use valid type syntax")));
-        self.register(ErrorCode::new(1004, "Type", "Circular type dependency", 
-            Some("Avoid creating circular references between types")));
-        self.register(ErrorCode::new(1005, "Type", "Type inference failed", 
-            Some("Provide explicit type annotations where inference is ambiguous")));
-        
+        self.register(ErrorCode::new(
+            1001,
+            "Type",
+            "Type mismatch",
+            Some("Ensure the assigned value matches the expected type"),
+        ));
+        self.register(ErrorCode::new(
+            1002,
+            "Type",
+            "Undefined type",
+            Some("Check that the type is imported or defined in scope"),
+        ));
+        self.register(ErrorCode::new(
+            1003,
+            "Type",
+            "Invalid type annotation",
+            Some("Type annotations must use valid type syntax"),
+        ));
+        self.register(ErrorCode::new(
+            1004,
+            "Type",
+            "Circular type dependency",
+            Some("Avoid creating circular references between types"),
+        ));
+        self.register(ErrorCode::new(
+            1005,
+            "Type",
+            "Type inference failed",
+            Some("Provide explicit type annotations where inference is ambiguous"),
+        ));
+
         // Function type errors (E1100-E1199)
-        self.register(ErrorCode::new(1101, "Type", "Function arity mismatch", 
-            Some("Ensure the correct number of arguments are provided")));
-        self.register(ErrorCode::new(1102, "Type", "Invalid return type", 
-            Some("Function return value must match declared return type")));
-        self.register(ErrorCode::new(1103, "Type", "Parameter type mismatch", 
-            Some("Function arguments must match parameter types")));
-        
+        self.register(ErrorCode::new(
+            1101,
+            "Type",
+            "Function arity mismatch",
+            Some("Ensure the correct number of arguments are provided"),
+        ));
+        self.register(ErrorCode::new(
+            1102,
+            "Type",
+            "Invalid return type",
+            Some("Function return value must match declared return type"),
+        ));
+        self.register(ErrorCode::new(
+            1103,
+            "Type",
+            "Parameter type mismatch",
+            Some("Function arguments must match parameter types"),
+        ));
+
         // Object and field type errors (E1200-E1299)
-        self.register(ErrorCode::new(1201, "Type", "Undefined field", 
-            Some("Check that the field exists on the object type")));
-        self.register(ErrorCode::new(1202, "Type", "Field access on non-object", 
-            Some("Field access is only valid on object types")));
-        self.register(ErrorCode::new(1203, "Type", "Field type mismatch", 
-            Some("Assigned value must match the field's declared type")));
-        self.register(ErrorCode::new(1204, "Type", "Private field access", 
-            Some("Private fields can only be accessed within the defining class")));
-        
+        self.register(ErrorCode::new(
+            1201,
+            "Type",
+            "Undefined field",
+            Some("Check that the field exists on the object type"),
+        ));
+        self.register(ErrorCode::new(
+            1202,
+            "Type",
+            "Field access on non-object",
+            Some("Field access is only valid on object types"),
+        ));
+        self.register(ErrorCode::new(
+            1203,
+            "Type",
+            "Field type mismatch",
+            Some("Assigned value must match the field's declared type"),
+        ));
+        self.register(ErrorCode::new(
+            1204,
+            "Type",
+            "Private field access",
+            Some("Private fields can only be accessed within the defining class"),
+        ));
+
         // Array and indexing errors (E1300-E1399)
-        self.register(ErrorCode::new(1301, "Type", "Invalid array index", 
-            Some("Array indices must be integers")));
-        self.register(ErrorCode::new(1302, "Type", "Index on non-indexable type", 
-            Some("Only arrays, strings, and maps support indexing")));
-        self.register(ErrorCode::new(1303, "Type", "Array element type mismatch", 
-            Some("All array elements must be compatible with the array type")));
-        
+        self.register(ErrorCode::new(
+            1301,
+            "Type",
+            "Invalid array index",
+            Some("Array indices must be integers"),
+        ));
+        self.register(ErrorCode::new(
+            1302,
+            "Type",
+            "Index on non-indexable type",
+            Some("Only arrays, strings, and maps support indexing"),
+        ));
+        self.register(ErrorCode::new(
+            1303,
+            "Type",
+            "Array element type mismatch",
+            Some("All array elements must be compatible with the array type"),
+        ));
+
         // ===== SYMBOL RESOLUTION ERRORS (E2000-E2999) =====
-        
+
         // Basic symbol errors (E2000-E2099)
-        self.register(ErrorCode::new(2001, "Symbol", "Undefined symbol", 
-            Some("Check that the identifier is declared and in scope")));
-        self.register(ErrorCode::new(2002, "Symbol", "Symbol already defined", 
-            Some("Choose a different name or check for duplicate declarations")));
-        self.register(ErrorCode::new(2003, "Symbol", "Symbol not in scope", 
-            Some("Ensure the symbol is accessible from the current context")));
-        self.register(ErrorCode::new(2004, "Symbol", "Ambiguous symbol reference", 
-            Some("Use fully qualified names to resolve ambiguity")));
-        
+        self.register(ErrorCode::new(
+            2001,
+            "Symbol",
+            "Undefined symbol",
+            Some("Check that the identifier is declared and in scope"),
+        ));
+        self.register(ErrorCode::new(
+            2002,
+            "Symbol",
+            "Symbol already defined",
+            Some("Choose a different name or check for duplicate declarations"),
+        ));
+        self.register(ErrorCode::new(
+            2003,
+            "Symbol",
+            "Symbol not in scope",
+            Some("Ensure the symbol is accessible from the current context"),
+        ));
+        self.register(ErrorCode::new(
+            2004,
+            "Symbol",
+            "Ambiguous symbol reference",
+            Some("Use fully qualified names to resolve ambiguity"),
+        ));
+
         // Scope and visibility errors (E2100-E2199)
-        self.register(ErrorCode::new(2101, "Symbol", "Private symbol access", 
-            Some("Private symbols can only be accessed within their defining scope")));
-        self.register(ErrorCode::new(2102, "Symbol", "Protected symbol access", 
-            Some("Protected symbols are only accessible to subclasses")));
-        
+        self.register(ErrorCode::new(
+            2101,
+            "Symbol",
+            "Private symbol access",
+            Some("Private symbols can only be accessed within their defining scope"),
+        ));
+        self.register(ErrorCode::new(
+            2102,
+            "Symbol",
+            "Protected symbol access",
+            Some("Protected symbols are only accessible to subclasses"),
+        ));
+
         // ===== GENERIC AND CONSTRAINT ERRORS (E3000-E3999) =====
-        
+
         // Generic parameter errors (E3000-E3099)
-        self.register(ErrorCode::new(3001, "Generic", "Generic parameter count mismatch", 
-            Some("Provide the correct number of type parameters")));
-        self.register(ErrorCode::new(3002, "Generic", "Invalid generic instantiation", 
-            Some("Check that type arguments satisfy the generic constraints")));
-        self.register(ErrorCode::new(3003, "Generic", "Unconstrained generic parameter", 
-            Some("Consider adding constraints to limit the generic parameter")));
-        
+        self.register(ErrorCode::new(
+            3001,
+            "Generic",
+            "Generic parameter count mismatch",
+            Some("Provide the correct number of type parameters"),
+        ));
+        self.register(ErrorCode::new(
+            3002,
+            "Generic",
+            "Invalid generic instantiation",
+            Some("Check that type arguments satisfy the generic constraints"),
+        ));
+        self.register(ErrorCode::new(
+            3003,
+            "Generic",
+            "Unconstrained generic parameter",
+            Some("Consider adding constraints to limit the generic parameter"),
+        ));
+
         // Constraint errors (E3100-E3199)
-        self.register(ErrorCode::new(3101, "Generic", "Constraint violation", 
-            Some("The type does not satisfy the required constraints")));
-        self.register(ErrorCode::new(3102, "Generic", "Recursive constraint", 
-            Some("Avoid creating circular constraint dependencies")));
-        self.register(ErrorCode::new(3103, "Generic", "Constraint resolution failed", 
-            Some("Unable to determine if constraints are satisfied")));
-        
+        self.register(ErrorCode::new(
+            3101,
+            "Generic",
+            "Constraint violation",
+            Some("The type does not satisfy the required constraints"),
+        ));
+        self.register(ErrorCode::new(
+            3102,
+            "Generic",
+            "Recursive constraint",
+            Some("Avoid creating circular constraint dependencies"),
+        ));
+        self.register(ErrorCode::new(
+            3103,
+            "Generic",
+            "Constraint resolution failed",
+            Some("Unable to determine if constraints are satisfied"),
+        ));
+
         // ===== IMPORT AND MODULE ERRORS (E4000-E4999) =====
-        
+
         // Import errors (E4000-E4099)
-        self.register(ErrorCode::new(4001, "Import", "Module not found", 
-            Some("Check that the module path is correct and the file exists")));
-        self.register(ErrorCode::new(4002, "Import", "Circular import dependency", 
-            Some("Restructure code to avoid circular module dependencies")));
-        self.register(ErrorCode::new(4003, "Import", "Invalid import path", 
-            Some("Import paths must use valid module naming conventions")));
-        
+        self.register(ErrorCode::new(
+            4001,
+            "Import",
+            "Module not found",
+            Some("Check that the module path is correct and the file exists"),
+        ));
+        self.register(ErrorCode::new(
+            4002,
+            "Import",
+            "Circular import dependency",
+            Some("Restructure code to avoid circular module dependencies"),
+        ));
+        self.register(ErrorCode::new(
+            4003,
+            "Import",
+            "Invalid import path",
+            Some("Import paths must use valid module naming conventions"),
+        ));
+
         // ===== INTERNAL COMPILER ERRORS (E9000-E9999) =====
-        
+
         // Internal errors (E9000-E9099)
-        self.register(ErrorCode::new(9001, "Internal", "Compiler assertion failed", 
-            Some("This is an internal compiler error; please report it")));
-        self.register(ErrorCode::new(9002, "Internal", "Unexpected compiler state", 
-            Some("This is an internal compiler error; please report it")));
-        self.register(ErrorCode::new(9999, "Internal", "Unknown error", 
-            Some("An unexpected error occurred; please report it with context")));
+        self.register(ErrorCode::new(
+            9001,
+            "Internal",
+            "Compiler assertion failed",
+            Some("This is an internal compiler error; please report it"),
+        ));
+        self.register(ErrorCode::new(
+            9002,
+            "Internal",
+            "Unexpected compiler state",
+            Some("This is an internal compiler error; please report it"),
+        ));
+        self.register(ErrorCode::new(
+            9999,
+            "Internal",
+            "Unknown error",
+            Some("An unexpected error occurred; please report it with context"),
+        ));
     }
-    
+
     /// Get all error codes in a specific range
     pub fn get_range(&self, start: u16, end: u16) -> Vec<&ErrorCode> {
-        let mut codes: Vec<&ErrorCode> = self.codes.values()
+        let mut codes: Vec<&ErrorCode> = self
+            .codes
+            .values()
             .filter(|code| code.code >= start && code.code <= end)
             .collect();
         codes.sort_by_key(|code| code.code);
         codes
     }
-    
+
     /// Get all parser error codes (E0001-E0999)
     pub fn get_parser_errors(&self) -> Vec<&ErrorCode> {
         self.get_range(1, 999)
     }
-    
+
     /// Get all type system error codes (E1000-E1999)
     pub fn get_type_errors(&self) -> Vec<&ErrorCode> {
         self.get_range(1000, 1999)
     }
-    
+
     /// Get all symbol resolution error codes (E2000-E2999)
     pub fn get_symbol_errors(&self) -> Vec<&ErrorCode> {
         self.get_range(2000, 2999)
     }
-    
+
     /// Get all generic/constraint error codes (E3000-E3999)
     pub fn get_generic_errors(&self) -> Vec<&ErrorCode> {
         self.get_range(3000, 3999)
     }
-    
+
     /// Validate that an error code is registered
     pub fn is_valid_code(&self, code: u16) -> bool {
         self.codes.contains_key(&code)
@@ -320,15 +525,15 @@ mod tests {
     #[test]
     fn test_registry_functionality() {
         let registry = ErrorCodeRegistry::new();
-        
+
         // Test getting a known error code
         let type_mismatch = registry.get(1001).unwrap();
         assert_eq!(type_mismatch.description, "Type mismatch");
-        
+
         // Test getting by string
         let by_string = registry.get_by_string("E1001").unwrap();
         assert_eq!(by_string.code, 1001);
-        
+
         // Test invalid codes
         assert!(registry.get(65535).is_none());
         assert!(registry.get_by_string("INVALID").is_none());
@@ -337,31 +542,33 @@ mod tests {
     #[test]
     fn test_error_code_ranges() {
         let registry = ErrorCodeRegistry::new();
-        
+
         // Test parser errors range
         let parser_errors = registry.get_parser_errors();
         assert!(!parser_errors.is_empty());
         assert!(parser_errors.iter().all(|e| e.code >= 1 && e.code <= 999));
-        
+
         // Test type errors range
         let type_errors = registry.get_type_errors();
         assert!(!type_errors.is_empty());
         assert!(type_errors.iter().all(|e| e.code >= 1000 && e.code <= 1999));
-        
+
         // Test symbol errors range
         let symbol_errors = registry.get_symbol_errors();
         assert!(!symbol_errors.is_empty());
-        assert!(symbol_errors.iter().all(|e| e.code >= 2000 && e.code <= 2999));
+        assert!(symbol_errors
+            .iter()
+            .all(|e| e.code >= 2000 && e.code <= 2999));
     }
 
     #[test]
     fn test_global_registry() {
         let reg1 = error_registry();
         let reg2 = error_registry();
-        
+
         // Should be the same instance
         assert!(std::ptr::eq(reg1, reg2));
-        
+
         // Should contain expected codes
         assert!(reg1.is_valid_code(1001));
         assert!(reg1.is_valid_code(2001));
@@ -372,12 +579,12 @@ mod tests {
     fn test_helper_functions() {
         assert_eq!(format_error_code(1001), "E1001");
         assert_eq!(format_error_code(42), "E0042");
-        
+
         assert_eq!(parse_error_code("E1001"), Some(1001));
         assert_eq!(parse_error_code("E0042"), Some(42));
         assert_eq!(parse_error_code("1001"), None);
         assert_eq!(parse_error_code("INVALID"), None);
-        
+
         let code = get_error_code(1001).unwrap();
         assert_eq!(code.description, "Type mismatch");
     }

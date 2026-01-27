@@ -4,7 +4,7 @@
 
 use crate::tast::{
     control_flow_analysis::ControlFlowAnalyzer,
-    node::{TypedFunction, TypedStatement, TypedExpression, TypedExpressionKind, LiteralValue, 
+    node::{TypedFunction, TypedStatement, TypedExpression, TypedExpressionKind, LiteralValue,
            Mutability, Visibility, FunctionEffects, BinaryOperator, VariableUsage, ExpressionMetadata},
     SymbolId, TypeId, SourceLocation, StringInterner,
 };
@@ -13,11 +13,11 @@ use std::cell::RefCell;
 
 pub fn test_control_flow_analyzer_integration() -> bool {
     println!("=== Testing Control Flow Analyzer Integration ===");
-    
+
     let string_interner = Rc::new(RefCell::new(StringInterner::new()));
     let func_name = string_interner.borrow_mut().intern("test");
     let x_symbol = SymbolId::from_raw(1);
-    
+
     // Create function: function test(): Int { var x: Int; return x + 1; }
     let function = TypedFunction {
         symbol_id: SymbolId::from_raw(0),
@@ -71,29 +71,29 @@ pub fn test_control_flow_analyzer_integration() -> bool {
         is_static: false,
         metadata: crate::tast::node::FunctionMetadata::default(),
     };
-    
+
     // Test control flow analyzer directly
     let mut analyzer = ControlFlowAnalyzer::new();
     let results = analyzer.analyze_function(&function);
-    
+
     println!("Control Flow Analysis Results:");
     println!("- Uninitialized uses found: {}", results.uninitialized_uses.len());
     println!("- Dead code regions found: {}", results.dead_code.len());
     println!("- Null dereferences found: {}", results.null_dereferences.len());
-    
+
     // Print detailed results
     for (i, uninit) in results.uninitialized_uses.iter().enumerate() {
-        println!("  Uninitialized Use #{}: Variable {:?} at {}:{}", 
+        println!("  Uninitialized Use #{}: Variable {:?} at {}:{}",
             i + 1, uninit.variable, uninit.location.line, uninit.location.column);
     }
-    
+
     // CRITICAL TEST: Check if we detected the uninitialized variable
     let detected_uninitialized = !results.uninitialized_uses.is_empty();
-    
+
     if detected_uninitialized {
         let uninit_use = &results.uninitialized_uses[0];
         if uninit_use.variable == x_symbol {
-            println!("🎉 SUCCESS: Detected uninitialized variable 'x' at line {}, column {}", 
+            println!("🎉 SUCCESS: Detected uninitialized variable 'x' at line {}, column {}",
                 uninit_use.location.line, uninit_use.location.column);
             println!("✅ Integration gap fixes are working correctly!");
             return true;
@@ -111,7 +111,7 @@ pub fn test_control_flow_analyzer_integration() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_integration_gap_fixes() {
         let success = test_control_flow_analyzer_integration();

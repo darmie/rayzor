@@ -1,6 +1,6 @@
 //! Test preprocessor with Bytes.hx pattern
-use parser::preprocessor::{preprocess, PreprocessorConfig};
 use parser::parse_haxe_file_with_diagnostics;
+use parser::preprocessor::{preprocess, PreprocessorConfig};
 
 fn main() {
     let config = PreprocessorConfig::default();
@@ -310,7 +310,8 @@ class Bytes {
     println!("Total preprocessed lines: {}", preprocessed.lines().count());
 
     // Count how many lines until "class Bytes"
-    let class_line = preprocessed.lines()
+    let class_line = preprocessed
+        .lines()
         .enumerate()
         .find(|(_, line)| line.contains("class Bytes"))
         .map(|(i, _)| i + 1);
@@ -357,7 +358,7 @@ class Bytes {
     // Print preprocessed lines 115-155 to find the failing area
     println!("\n=== Preprocessed content lines 115-155 ===");
     for (i, line) in preprocessed.lines().enumerate() {
-        if i >= 114 && i < 155 {
+        if (114..155).contains(&i) {
             println!("{:4}: {}", i + 1, line);
         }
     }
@@ -402,7 +403,12 @@ class Bytes {
 
     // Test first 115 lines (should include compare function signature)
     println!("\n=== Test first 115 lines of preprocessed Bytes.hx ===");
-    let first_115: String = preprocessed.lines().take(115).collect::<Vec<_>>().join("\n") + "\n}\n";
+    let first_115: String = preprocessed
+        .lines()
+        .take(115)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n}\n";
     let result_115 = parse_haxe_file_with_diagnostics("Bytes.hx", &first_115);
     match &result_115 {
         Ok(parse_result) => {
@@ -421,7 +427,12 @@ class Bytes {
 
     // Test first 150 lines
     println!("\n=== Test first 150 lines of preprocessed Bytes.hx ===");
-    let first_150: String = preprocessed.lines().take(150).collect::<Vec<_>>().join("\n") + "\n}\n";
+    let first_150: String = preprocessed
+        .lines()
+        .take(150)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n}\n";
     let result_150 = parse_haxe_file_with_diagnostics("Bytes.hx", &first_150);
     match &result_150 {
         Ok(parse_result) => {
@@ -440,7 +451,11 @@ class Bytes {
 
     // Test first 100 lines of preprocessed content (no closing brace - expected to fail)
     println!("\n=== Test first 100 lines of preprocessed Bytes.hx (no brace) ===");
-    let first_100: String = preprocessed.lines().take(100).collect::<Vec<_>>().join("\n");
+    let first_100: String = preprocessed
+        .lines()
+        .take(100)
+        .collect::<Vec<_>>()
+        .join("\n");
     let result_100 = parse_haxe_file_with_diagnostics("Bytes.hx", &first_100);
     match &result_100 {
         Ok(parse_result) => {
@@ -459,7 +474,11 @@ class Bytes {
 
     // Test first 200 lines
     println!("\n=== Test first 200 lines of preprocessed Bytes.hx ===");
-    let first_200: String = preprocessed.lines().take(200).collect::<Vec<_>>().join("\n");
+    let first_200: String = preprocessed
+        .lines()
+        .take(200)
+        .collect::<Vec<_>>()
+        .join("\n");
     let result_200 = parse_haxe_file_with_diagnostics("Bytes.hx", &first_200);
     match &result_200 {
         Ok(parse_result) => {
@@ -478,7 +497,10 @@ class Bytes {
 
     // Parse the preprocessed content directly (to simulate what the parser does)
     println!("\n=== Parsing preprocessed content ===");
-    let result = parser::incremental_parser_enhanced::parse_incrementally_enhanced("Bytes.hx", &preprocessed);
+    let result = parser::incremental_parser_enhanced::parse_incrementally_enhanced(
+        "Bytes.hx",
+        &preprocessed,
+    );
 
     println!("Parsed elements: {}", result.parsed_elements.len());
     for (i, elem) in result.parsed_elements.iter().enumerate() {
@@ -496,10 +518,14 @@ class Bytes {
                 let name = match td {
                     parser::haxe_ast::TypeDeclaration::Class(c) => format!("class {}", c.name),
                     parser::haxe_ast::TypeDeclaration::Enum(e) => format!("enum {}", e.name),
-                    parser::haxe_ast::TypeDeclaration::Interface(i) => format!("interface {}", i.name),
-                    parser::haxe_ast::TypeDeclaration::Abstract(a) => format!("abstract {}", a.name),
+                    parser::haxe_ast::TypeDeclaration::Interface(i) => {
+                        format!("interface {}", i.name)
+                    }
+                    parser::haxe_ast::TypeDeclaration::Abstract(a) => {
+                        format!("abstract {}", a.name)
+                    }
                     parser::haxe_ast::TypeDeclaration::Typedef(t) => format!("typedef {}", t.name),
-                    parser::haxe_ast::TypeDeclaration::Conditional(_) => format!("conditional"),
+                    parser::haxe_ast::TypeDeclaration::Conditional(_) => "conditional".to_string(),
                 };
                 println!("  {}: TypeDecl - {}", i, name);
             }

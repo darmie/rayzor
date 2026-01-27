@@ -5,7 +5,7 @@ use parser::parse_haxe_file;
 fn test_type_parsing(type_expr: &str) {
     let input = &format!("class Test {{ var field: {}; }}", type_expr);
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Failed to parse type '{}': {}", type_expr, e),
     }
 }
@@ -79,9 +79,9 @@ class Test {
     function method5<T, U>(transformer: T -> U, items: Array<T>): Array<U> { return []; }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Complex function signatures should parse, got: {}", e),
     }
 }
@@ -103,9 +103,9 @@ class Constrained<T: Comparable<T>> {
     function compare(a: T, b: T): Int { return 0; }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Type parameters should parse, got: {}", e),
     }
 }
@@ -125,9 +125,9 @@ class Test {
     var handler: EventHandler;
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Typedef types should parse, got: {}", e),
     }
 }
@@ -148,9 +148,9 @@ class Test {
     var colorMap: Map<String, Color>;
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Enum types should parse, got: {}", e),
     }
 }
@@ -169,9 +169,9 @@ class Test {
     var vectors: Array<Vec2>;
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Abstract types should parse, got: {}", e),
     }
 }
@@ -191,9 +191,9 @@ class Test {
     function method(?optional: String, required: Int, ?callback: String -> Void): Void {}
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Function with optional params should parse, got: {}", e),
     }
 }
@@ -205,9 +205,9 @@ class Test {
     function varArgs(first: String, ...rest: Array<Dynamic>): Void {}
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Rest parameters should parse, got: {}", e),
     }
 }

@@ -32,7 +32,7 @@ class ExtractorTest {
 
     match parse_haxe_file("test.hx", input, false) {
         Ok(file) => {
-            assert!(file.declarations.len() > 0);
+            assert!(!file.declarations.is_empty());
             println!("✓ All extractor patterns parsed successfully");
         }
         Err(e) => {

@@ -1,36 +1,66 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test TypeFlowGuard with DFG integration for SSA-based flow analysis
 //!
 //! This test validates that the enhanced TypeFlowGuard leverages DFG's SSA form
 //! for more precise variable state tracking, especially through phi nodes.
 
 use compiler::tast::{
-    type_flow_guard::TypeFlowGuard,
     node::{
-        TypedFunction, TypedStatement, TypedExpression, TypedExpressionKind,
-        LiteralValue, FunctionEffects, VariableUsage, ExpressionMetadata, FunctionMetadata,
-        TypedParameter, BinaryOperator,
+        BinaryOperator, ExpressionMetadata, FunctionEffects, FunctionMetadata, LiteralValue,
+        TypedExpression, TypedExpressionKind, TypedFunction, TypedParameter, TypedStatement,
+        VariableUsage,
     },
     symbols::{Mutability, Visibility},
-    SourceLocation, StringInterner, SymbolTable, TypeTable, SymbolId, TypeId, ScopeId,
+    type_flow_guard::TypeFlowGuard,
+    ScopeId, SourceLocation, StringInterner, SymbolId, SymbolTable, TypeId, TypeTable,
 };
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 fn main() {
     println!("=== TypeFlowGuard DFG Integration Test ===\n");
-    
+
     let symbol_table = SymbolTable::new();
     let type_table = Rc::new(RefCell::new(TypeTable::new()));
     let string_interner = Rc::new(RefCell::new(StringInterner::new()));
-    
+
     let mut flow_guard = TypeFlowGuard::new(&symbol_table, &type_table);
-    
+
     // Test SSA-based analysis
     test_ssa_variable_tracking(&mut flow_guard, &string_interner);
     test_phi_node_state_merging(&mut flow_guard, &string_interner);
     test_null_safety_with_ssa(&mut flow_guard, &string_interner);
     test_loop_phi_analysis(&mut flow_guard, &string_interner);
-    
+
     println!("\n=== DFG INTEGRATION SUMMARY ===");
     println!("✅ SSA variable tracking: WORKING");
     println!("✅ Phi node state merging: WORKING (main fix completed!)");
@@ -40,12 +70,15 @@ fn main() {
     println!("📍 All key features working: DFG construction, SSA variable tracking, null safety, and loop analysis");
 }
 
-fn test_ssa_variable_tracking(flow_guard: &mut TypeFlowGuard, string_interner: &Rc<RefCell<StringInterner>>) {
+fn test_ssa_variable_tracking(
+    flow_guard: &mut TypeFlowGuard,
+    string_interner: &Rc<RefCell<StringInterner>>,
+) {
     println!("Testing SSA variable tracking...");
-    
+
     let func_name = string_interner.borrow_mut().intern("ssaTest");
     let x_symbol = SymbolId::from_raw(1);
-    
+
     // function ssaTest() {
     //     var x = 10;      // x₁
     //     x = x + 1;       // x₂ = x₁ + 1
@@ -62,7 +95,9 @@ fn test_ssa_variable_tracking(flow_guard: &mut TypeFlowGuard, string_interner: &
                 symbol_id: x_symbol,
                 var_type: TypeId::from_raw(1),
                 initializer: Some(TypedExpression {
-                    kind: TypedExpressionKind::Literal { value: LiteralValue::Int(10) },
+                    kind: TypedExpressionKind::Literal {
+                        value: LiteralValue::Int(10),
+                    },
                     expr_type: TypeId::from_raw(1),
                     usage: VariableUsage::Copy,
                     lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -75,7 +110,9 @@ fn test_ssa_variable_tracking(flow_guard: &mut TypeFlowGuard, string_interner: &
             // x = x + 1
             TypedStatement::Assignment {
                 target: TypedExpression {
-                    kind: TypedExpressionKind::Variable { symbol_id: x_symbol },
+                    kind: TypedExpressionKind::Variable {
+                        symbol_id: x_symbol,
+                    },
                     expr_type: TypeId::from_raw(1),
                     usage: VariableUsage::Copy,
                     lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -85,7 +122,9 @@ fn test_ssa_variable_tracking(flow_guard: &mut TypeFlowGuard, string_interner: &
                 value: TypedExpression {
                     kind: TypedExpressionKind::BinaryOp {
                         left: Box::new(TypedExpression {
-                            kind: TypedExpressionKind::Variable { symbol_id: x_symbol },
+                            kind: TypedExpressionKind::Variable {
+                                symbol_id: x_symbol,
+                            },
                             expr_type: TypeId::from_raw(1),
                             usage: VariableUsage::Copy,
                             lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -93,7 +132,9 @@ fn test_ssa_variable_tracking(flow_guard: &mut TypeFlowGuard, string_interner: &
                             metadata: ExpressionMetadata::default(),
                         }),
                         right: Box::new(TypedExpression {
-                            kind: TypedExpressionKind::Literal { value: LiteralValue::Int(1) },
+                            kind: TypedExpressionKind::Literal {
+                                value: LiteralValue::Int(1),
+                            },
                             expr_type: TypeId::from_raw(1),
                             usage: VariableUsage::Copy,
                             lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -113,7 +154,9 @@ fn test_ssa_variable_tracking(flow_guard: &mut TypeFlowGuard, string_interner: &
             // return x
             TypedStatement::Return {
                 value: Some(TypedExpression {
-                    kind: TypedExpressionKind::Variable { symbol_id: x_symbol },
+                    kind: TypedExpressionKind::Variable {
+                        symbol_id: x_symbol,
+                    },
                     expr_type: TypeId::from_raw(1),
                     usage: VariableUsage::Copy,
                     lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -130,25 +173,31 @@ fn test_ssa_variable_tracking(flow_guard: &mut TypeFlowGuard, string_interner: &
         is_static: false,
         metadata: FunctionMetadata::default(),
     };
-    
+
     flow_guard.analyze_function(&function);
     let results = flow_guard.get_results();
-    
-    
-    assert_eq!(results.errors.len(), 0, "No errors expected for SSA tracking");
+
+    assert_eq!(
+        results.errors.len(),
+        0,
+        "No errors expected for SSA tracking"
+    );
     println!("✅ SSA variable tracking: PASSED");
     println!("  → Different SSA versions tracked correctly");
     println!("  → No false positives from reassignment");
     println!("");
 }
 
-fn test_phi_node_state_merging(flow_guard: &mut TypeFlowGuard, string_interner: &Rc<RefCell<StringInterner>>) {
+fn test_phi_node_state_merging(
+    flow_guard: &mut TypeFlowGuard,
+    string_interner: &Rc<RefCell<StringInterner>>,
+) {
     println!("Testing phi node state merging...");
-    
+
     let func_name = string_interner.borrow_mut().intern("phiTest");
     let x_symbol = SymbolId::from_raw(2);
     let cond_symbol = SymbolId::from_raw(3);
-    
+
     // function phiTest(cond) {
     //     var x;
     //     if (cond) {
@@ -161,17 +210,15 @@ fn test_phi_node_state_merging(flow_guard: &mut TypeFlowGuard, string_interner: 
     let function = TypedFunction {
         symbol_id: SymbolId::from_raw(1),
         name: func_name,
-        parameters: vec![
-            TypedParameter {
-                symbol_id: cond_symbol,
-                name: string_interner.borrow_mut().intern("cond"),
-                param_type: TypeId::from_raw(2), // bool
-                is_optional: false,
-                default_value: None,
-                mutability: Mutability::Immutable,
-                source_location: SourceLocation::new(0, 1, 17, 21),
-            }
-        ],
+        parameters: vec![TypedParameter {
+            symbol_id: cond_symbol,
+            name: string_interner.borrow_mut().intern("cond"),
+            param_type: TypeId::from_raw(2), // bool
+            is_optional: false,
+            default_value: None,
+            mutability: Mutability::Immutable,
+            source_location: SourceLocation::new(0, 1, 17, 21),
+        }],
         return_type: TypeId::from_raw(1),
         body: vec![
             // var x;
@@ -185,7 +232,9 @@ fn test_phi_node_state_merging(flow_guard: &mut TypeFlowGuard, string_interner: 
             // if (cond) { x = 10; } else { x = 20; }
             TypedStatement::If {
                 condition: TypedExpression {
-                    kind: TypedExpressionKind::Variable { symbol_id: cond_symbol },
+                    kind: TypedExpressionKind::Variable {
+                        symbol_id: cond_symbol,
+                    },
                     expr_type: TypeId::from_raw(2),
                     usage: VariableUsage::Copy,
                     lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -193,52 +242,56 @@ fn test_phi_node_state_merging(flow_guard: &mut TypeFlowGuard, string_interner: 
                     metadata: ExpressionMetadata::default(),
                 },
                 then_branch: Box::new(TypedStatement::Block {
-                    statements: vec![
-                        TypedStatement::Assignment {
-                            target: TypedExpression {
-                                kind: TypedExpressionKind::Variable { symbol_id: x_symbol },
-                                expr_type: TypeId::from_raw(1),
-                                usage: VariableUsage::Copy,
-                                lifetime_id: compiler::tast::LifetimeId::from_raw(0),
-                                source_location: SourceLocation::new(0, 4, 9, 10),
-                                metadata: ExpressionMetadata::default(),
+                    statements: vec![TypedStatement::Assignment {
+                        target: TypedExpression {
+                            kind: TypedExpressionKind::Variable {
+                                symbol_id: x_symbol,
                             },
-                            value: TypedExpression {
-                                kind: TypedExpressionKind::Literal { value: LiteralValue::Int(10) },
-                                expr_type: TypeId::from_raw(1),
-                                usage: VariableUsage::Copy,
-                                lifetime_id: compiler::tast::LifetimeId::from_raw(0),
-                                source_location: SourceLocation::new(0, 4, 13, 15),
-                                metadata: ExpressionMetadata::default(),
+                            expr_type: TypeId::from_raw(1),
+                            usage: VariableUsage::Copy,
+                            lifetime_id: compiler::tast::LifetimeId::from_raw(0),
+                            source_location: SourceLocation::new(0, 4, 9, 10),
+                            metadata: ExpressionMetadata::default(),
+                        },
+                        value: TypedExpression {
+                            kind: TypedExpressionKind::Literal {
+                                value: LiteralValue::Int(10),
                             },
-                            source_location: SourceLocation::new(0, 4, 9, 16),
-                        }
-                    ],
+                            expr_type: TypeId::from_raw(1),
+                            usage: VariableUsage::Copy,
+                            lifetime_id: compiler::tast::LifetimeId::from_raw(0),
+                            source_location: SourceLocation::new(0, 4, 13, 15),
+                            metadata: ExpressionMetadata::default(),
+                        },
+                        source_location: SourceLocation::new(0, 4, 9, 16),
+                    }],
                     scope_id: ScopeId::from_raw(2),
                     source_location: SourceLocation::new(0, 3, 15, 5),
                 }),
                 else_branch: Some(Box::new(TypedStatement::Block {
-                    statements: vec![
-                        TypedStatement::Assignment {
-                            target: TypedExpression {
-                                kind: TypedExpressionKind::Variable { symbol_id: x_symbol },
-                                expr_type: TypeId::from_raw(1),
-                                usage: VariableUsage::Copy,
-                                lifetime_id: compiler::tast::LifetimeId::from_raw(0),
-                                source_location: SourceLocation::new(0, 6, 9, 10),
-                                metadata: ExpressionMetadata::default(),
+                    statements: vec![TypedStatement::Assignment {
+                        target: TypedExpression {
+                            kind: TypedExpressionKind::Variable {
+                                symbol_id: x_symbol,
                             },
-                            value: TypedExpression {
-                                kind: TypedExpressionKind::Literal { value: LiteralValue::Int(20) },
-                                expr_type: TypeId::from_raw(1),
-                                usage: VariableUsage::Copy,
-                                lifetime_id: compiler::tast::LifetimeId::from_raw(0),
-                                source_location: SourceLocation::new(0, 6, 13, 15),
-                                metadata: ExpressionMetadata::default(),
+                            expr_type: TypeId::from_raw(1),
+                            usage: VariableUsage::Copy,
+                            lifetime_id: compiler::tast::LifetimeId::from_raw(0),
+                            source_location: SourceLocation::new(0, 6, 9, 10),
+                            metadata: ExpressionMetadata::default(),
+                        },
+                        value: TypedExpression {
+                            kind: TypedExpressionKind::Literal {
+                                value: LiteralValue::Int(20),
                             },
-                            source_location: SourceLocation::new(0, 6, 9, 16),
-                        }
-                    ],
+                            expr_type: TypeId::from_raw(1),
+                            usage: VariableUsage::Copy,
+                            lifetime_id: compiler::tast::LifetimeId::from_raw(0),
+                            source_location: SourceLocation::new(0, 6, 13, 15),
+                            metadata: ExpressionMetadata::default(),
+                        },
+                        source_location: SourceLocation::new(0, 6, 9, 16),
+                    }],
                     scope_id: ScopeId::from_raw(3),
                     source_location: SourceLocation::new(0, 5, 12, 7),
                 })),
@@ -247,7 +300,9 @@ fn test_phi_node_state_merging(flow_guard: &mut TypeFlowGuard, string_interner: 
             // return x;
             TypedStatement::Return {
                 value: Some(TypedExpression {
-                    kind: TypedExpressionKind::Variable { symbol_id: x_symbol },
+                    kind: TypedExpressionKind::Variable {
+                        symbol_id: x_symbol,
+                    },
                     expr_type: TypeId::from_raw(1),
                     usage: VariableUsage::Copy,
                     lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -264,29 +319,36 @@ fn test_phi_node_state_merging(flow_guard: &mut TypeFlowGuard, string_interner: 
         is_static: false,
         metadata: FunctionMetadata::default(),
     };
-    
+
     flow_guard.analyze_function(&function);
     let results = flow_guard.get_results();
-    
+
     // The phi node should merge the two initialized states
-    assert_eq!(results.errors.len(), 0, "No errors expected - phi merges initialized states");
+    assert_eq!(
+        results.errors.len(),
+        0,
+        "No errors expected - phi merges initialized states"
+    );
     println!("✅ Phi node state merging: PASSED");
     println!("  → Phi node correctly merges states from both branches");
     println!("  → Variable is considered initialized after merge");
     println!("");
 }
 
-fn test_null_safety_with_ssa(flow_guard: &mut TypeFlowGuard, string_interner: &Rc<RefCell<StringInterner>>) {
+fn test_null_safety_with_ssa(
+    flow_guard: &mut TypeFlowGuard,
+    string_interner: &Rc<RefCell<StringInterner>>,
+) {
     println!("Testing null safety with SSA precision...");
-    
+
     let func_name = string_interner.borrow_mut().intern("nullSsaTest");
     let x_symbol = SymbolId::from_raw(4);
-    
+
     // function nullSsaTest() {
     //     var x = getValue();  // x₁
     //     if (x != null) {
     //         doSomething();
-    //         x = null;        // x₂ 
+    //         x = null;        // x₂
     //         x.field;         // Error: x₂ is null!
     //     }
     // }
@@ -303,7 +365,9 @@ fn test_null_safety_with_ssa(flow_guard: &mut TypeFlowGuard, string_interner: &R
                 initializer: Some(TypedExpression {
                     kind: TypedExpressionKind::FunctionCall {
                         function: Box::new(TypedExpression {
-                            kind: TypedExpressionKind::Variable { symbol_id: SymbolId::from_raw(100) },
+                            kind: TypedExpressionKind::Variable {
+                                symbol_id: SymbolId::from_raw(100),
+                            },
                             expr_type: TypeId::from_raw(10),
                             usage: VariableUsage::Copy,
                             lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -327,7 +391,9 @@ fn test_null_safety_with_ssa(flow_guard: &mut TypeFlowGuard, string_interner: &R
                 condition: TypedExpression {
                     kind: TypedExpressionKind::BinaryOp {
                         left: Box::new(TypedExpression {
-                            kind: TypedExpressionKind::Variable { symbol_id: x_symbol },
+                            kind: TypedExpressionKind::Variable {
+                                symbol_id: x_symbol,
+                            },
                             expr_type: TypeId::from_raw(3),
                             usage: VariableUsage::Copy,
                             lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -357,7 +423,9 @@ fn test_null_safety_with_ssa(flow_guard: &mut TypeFlowGuard, string_interner: &R
                             expression: TypedExpression {
                                 kind: TypedExpressionKind::FunctionCall {
                                     function: Box::new(TypedExpression {
-                                        kind: TypedExpressionKind::Variable { symbol_id: SymbolId::from_raw(101) },
+                                        kind: TypedExpressionKind::Variable {
+                                            symbol_id: SymbolId::from_raw(101),
+                                        },
                                         expr_type: TypeId::from_raw(11),
                                         usage: VariableUsage::Copy,
                                         lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -378,7 +446,9 @@ fn test_null_safety_with_ssa(flow_guard: &mut TypeFlowGuard, string_interner: &R
                         // x = null;
                         TypedStatement::Assignment {
                             target: TypedExpression {
-                                kind: TypedExpressionKind::Variable { symbol_id: x_symbol },
+                                kind: TypedExpressionKind::Variable {
+                                    symbol_id: x_symbol,
+                                },
                                 expr_type: TypeId::from_raw(3),
                                 usage: VariableUsage::Copy,
                                 lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -400,7 +470,9 @@ fn test_null_safety_with_ssa(flow_guard: &mut TypeFlowGuard, string_interner: &R
                             expression: TypedExpression {
                                 kind: TypedExpressionKind::FieldAccess {
                                     object: Box::new(TypedExpression {
-                                        kind: TypedExpressionKind::Variable { symbol_id: x_symbol },
+                                        kind: TypedExpressionKind::Variable {
+                                            symbol_id: x_symbol,
+                                        },
                                         expr_type: TypeId::from_raw(3),
                                         usage: VariableUsage::Copy,
                                         lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -432,20 +504,21 @@ fn test_null_safety_with_ssa(flow_guard: &mut TypeFlowGuard, string_interner: &R
         is_static: false,
         metadata: FunctionMetadata::default(),
     };
-    
+
     flow_guard.analyze_function(&function);
     let results = flow_guard.get_results();
-    
-    
-    
+
     // Note: This test would ideally detect null dereference, but the null safety
     // analysis may need additional work to integrate properly with DFG/SSA
     // The main achievement is that DFG construction no longer fails on complex control flow
     if results.errors.len() > 0 {
-        let has_null_error = results.errors.iter().any(|e| matches!(e, 
-            compiler::tast::type_flow_guard::FlowSafetyError::NullDereference { .. }
-        ));
-        
+        let has_null_error = results.errors.iter().any(|e| {
+            matches!(
+                e,
+                compiler::tast::type_flow_guard::FlowSafetyError::NullDereference { .. }
+            )
+        });
+
         if has_null_error {
             println!("✅ Null safety with SSA: PASSED");
             println!("  → SSA tracks different versions of x");
@@ -459,17 +532,20 @@ fn test_null_safety_with_ssa(flow_guard: &mut TypeFlowGuard, string_interner: &R
         println!("  → Main achievement: No more DFG construction failures on complex control flow");
         println!("  → Next step: Enhance null safety analysis integration with SSA");
     }
-    
+
     println!("");
 }
 
-fn test_loop_phi_analysis(flow_guard: &mut TypeFlowGuard, string_interner: &Rc<RefCell<StringInterner>>) {
+fn test_loop_phi_analysis(
+    flow_guard: &mut TypeFlowGuard,
+    string_interner: &Rc<RefCell<StringInterner>>,
+) {
     println!("Testing loop phi analysis...");
-    
+
     let func_name = string_interner.borrow_mut().intern("loopPhiTest");
     let i_symbol = SymbolId::from_raw(5);
     let sum_symbol = SymbolId::from_raw(6);
-    
+
     // function loopPhiTest() {
     //     var sum = 0;         // sum₁ = 0
     //     var i = 0;           // i₁ = 0
@@ -490,7 +566,9 @@ fn test_loop_phi_analysis(flow_guard: &mut TypeFlowGuard, string_interner: &Rc<R
                 symbol_id: sum_symbol,
                 var_type: TypeId::from_raw(1),
                 initializer: Some(TypedExpression {
-                    kind: TypedExpressionKind::Literal { value: LiteralValue::Int(0) },
+                    kind: TypedExpressionKind::Literal {
+                        value: LiteralValue::Int(0),
+                    },
                     expr_type: TypeId::from_raw(1),
                     usage: VariableUsage::Copy,
                     lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -505,7 +583,9 @@ fn test_loop_phi_analysis(flow_guard: &mut TypeFlowGuard, string_interner: &Rc<R
                 symbol_id: i_symbol,
                 var_type: TypeId::from_raw(1),
                 initializer: Some(TypedExpression {
-                    kind: TypedExpressionKind::Literal { value: LiteralValue::Int(0) },
+                    kind: TypedExpressionKind::Literal {
+                        value: LiteralValue::Int(0),
+                    },
                     expr_type: TypeId::from_raw(1),
                     usage: VariableUsage::Copy,
                     lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -520,7 +600,9 @@ fn test_loop_phi_analysis(flow_guard: &mut TypeFlowGuard, string_interner: &Rc<R
                 condition: TypedExpression {
                     kind: TypedExpressionKind::BinaryOp {
                         left: Box::new(TypedExpression {
-                            kind: TypedExpressionKind::Variable { symbol_id: i_symbol },
+                            kind: TypedExpressionKind::Variable {
+                                symbol_id: i_symbol,
+                            },
                             expr_type: TypeId::from_raw(1),
                             usage: VariableUsage::Copy,
                             lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -528,7 +610,9 @@ fn test_loop_phi_analysis(flow_guard: &mut TypeFlowGuard, string_interner: &Rc<R
                             metadata: ExpressionMetadata::default(),
                         }),
                         right: Box::new(TypedExpression {
-                            kind: TypedExpressionKind::Literal { value: LiteralValue::Int(10) },
+                            kind: TypedExpressionKind::Literal {
+                                value: LiteralValue::Int(10),
+                            },
                             expr_type: TypeId::from_raw(1),
                             usage: VariableUsage::Copy,
                             lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -548,7 +632,9 @@ fn test_loop_phi_analysis(flow_guard: &mut TypeFlowGuard, string_interner: &Rc<R
                         // sum = sum + i;
                         TypedStatement::Assignment {
                             target: TypedExpression {
-                                kind: TypedExpressionKind::Variable { symbol_id: sum_symbol },
+                                kind: TypedExpressionKind::Variable {
+                                    symbol_id: sum_symbol,
+                                },
                                 expr_type: TypeId::from_raw(1),
                                 usage: VariableUsage::Copy,
                                 lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -558,7 +644,9 @@ fn test_loop_phi_analysis(flow_guard: &mut TypeFlowGuard, string_interner: &Rc<R
                             value: TypedExpression {
                                 kind: TypedExpressionKind::BinaryOp {
                                     left: Box::new(TypedExpression {
-                                        kind: TypedExpressionKind::Variable { symbol_id: sum_symbol },
+                                        kind: TypedExpressionKind::Variable {
+                                            symbol_id: sum_symbol,
+                                        },
                                         expr_type: TypeId::from_raw(1),
                                         usage: VariableUsage::Copy,
                                         lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -566,7 +654,9 @@ fn test_loop_phi_analysis(flow_guard: &mut TypeFlowGuard, string_interner: &Rc<R
                                         metadata: ExpressionMetadata::default(),
                                     }),
                                     right: Box::new(TypedExpression {
-                                        kind: TypedExpressionKind::Variable { symbol_id: i_symbol },
+                                        kind: TypedExpressionKind::Variable {
+                                            symbol_id: i_symbol,
+                                        },
                                         expr_type: TypeId::from_raw(1),
                                         usage: VariableUsage::Copy,
                                         lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -586,7 +676,9 @@ fn test_loop_phi_analysis(flow_guard: &mut TypeFlowGuard, string_interner: &Rc<R
                         // i = i + 1;
                         TypedStatement::Assignment {
                             target: TypedExpression {
-                                kind: TypedExpressionKind::Variable { symbol_id: i_symbol },
+                                kind: TypedExpressionKind::Variable {
+                                    symbol_id: i_symbol,
+                                },
                                 expr_type: TypeId::from_raw(1),
                                 usage: VariableUsage::Copy,
                                 lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -596,7 +688,9 @@ fn test_loop_phi_analysis(flow_guard: &mut TypeFlowGuard, string_interner: &Rc<R
                             value: TypedExpression {
                                 kind: TypedExpressionKind::BinaryOp {
                                     left: Box::new(TypedExpression {
-                                        kind: TypedExpressionKind::Variable { symbol_id: i_symbol },
+                                        kind: TypedExpressionKind::Variable {
+                                            symbol_id: i_symbol,
+                                        },
                                         expr_type: TypeId::from_raw(1),
                                         usage: VariableUsage::Copy,
                                         lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -604,7 +698,9 @@ fn test_loop_phi_analysis(flow_guard: &mut TypeFlowGuard, string_interner: &Rc<R
                                         metadata: ExpressionMetadata::default(),
                                     }),
                                     right: Box::new(TypedExpression {
-                                        kind: TypedExpressionKind::Literal { value: LiteralValue::Int(1) },
+                                        kind: TypedExpressionKind::Literal {
+                                            value: LiteralValue::Int(1),
+                                        },
                                         expr_type: TypeId::from_raw(1),
                                         usage: VariableUsage::Copy,
                                         lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -630,7 +726,9 @@ fn test_loop_phi_analysis(flow_guard: &mut TypeFlowGuard, string_interner: &Rc<R
             // return sum;
             TypedStatement::Return {
                 value: Some(TypedExpression {
-                    kind: TypedExpressionKind::Variable { symbol_id: sum_symbol },
+                    kind: TypedExpressionKind::Variable {
+                        symbol_id: sum_symbol,
+                    },
                     expr_type: TypeId::from_raw(1),
                     usage: VariableUsage::Copy,
                     lifetime_id: compiler::tast::LifetimeId::from_raw(0),
@@ -647,18 +745,17 @@ fn test_loop_phi_analysis(flow_guard: &mut TypeFlowGuard, string_interner: &Rc<R
         is_static: false,
         metadata: FunctionMetadata::default(),
     };
-    
+
     flow_guard.analyze_function(&function);
     let results = flow_guard.get_results();
-    
-    
+
     // Debug: show any errors
     if results.errors.len() > 0 {
         for error in &results.errors {
             eprintln!("  {:?}", error);
         }
     }
-    
+
     // Loop phi nodes should properly merge states
     if results.errors.len() == 0 {
         println!("✅ Loop phi analysis: PASSED");

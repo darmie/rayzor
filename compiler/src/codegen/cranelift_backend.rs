@@ -279,9 +279,7 @@ impl CraneliftBackend {
             IrType::TypeVar(_) => 0, // Should be monomorphized before codegen
             IrType::Generic { .. } => 0, // Should be monomorphized before codegen
             // SIMD vector types - size is element_size * count
-            IrType::Vector { element, count } => {
-                self.get_type_size(element) * (*count as u64)
-            }
+            IrType::Vector { element, count } => self.get_type_size(element) * (*count as u64),
         }
     }
 
@@ -315,8 +313,8 @@ impl CraneliftBackend {
                 max_align.max(4) // At least 4 for the tag
             }
             IrType::Opaque { align, .. } => *align as u32,
-            IrType::Any => 8, // Aligned to i64
-            IrType::TypeVar(_) => 1, // Should be monomorphized before codegen
+            IrType::Any => 8,            // Aligned to i64
+            IrType::TypeVar(_) => 1,     // Should be monomorphized before codegen
             IrType::Generic { .. } => 1, // Should be monomorphized before codegen
             // SIMD vectors require alignment matching their full size
             // 128-bit vectors need 16-byte alignment, 256-bit need 32-byte
@@ -415,7 +413,7 @@ impl CraneliftBackend {
 
         if !has_implementations {
             debug!(
-            ": Skipping module '{}' - no implementations (only {} extern declarations)",
+                ": Skipping module '{}' - no implementations (only {} extern declarations)",
                 mir_module.name,
                 mir_module.functions.len()
             );
@@ -490,21 +488,21 @@ impl CraneliftBackend {
             if function.name == "malloc" {
                 let libc_id = *self.runtime_functions.get("malloc").unwrap();
                 debug!(
-            ": Mapping MIR malloc {:?} -> Cranelift {:?}",
+                    ": Mapping MIR malloc {:?} -> Cranelift {:?}",
                     func_id, libc_id
                 );
                 self.function_map.insert(*func_id, libc_id);
             } else if function.name == "realloc" {
                 let libc_id = *self.runtime_functions.get("realloc").unwrap();
                 debug!(
-            ": Mapping MIR realloc {:?} -> Cranelift {:?}",
+                    ": Mapping MIR realloc {:?} -> Cranelift {:?}",
                     func_id, libc_id
                 );
                 self.function_map.insert(*func_id, libc_id);
             } else if function.name == "free" {
                 let libc_id = *self.runtime_functions.get("free").unwrap();
                 debug!(
-            ": Mapping MIR free {:?} -> Cranelift {:?}",
+                    ": Mapping MIR free {:?} -> Cranelift {:?}",
                     func_id, libc_id
                 );
                 self.function_map.insert(*func_id, libc_id);
@@ -517,21 +515,21 @@ impl CraneliftBackend {
             if extern_func.name == "malloc" {
                 let libc_id = *self.runtime_functions.get("malloc").unwrap();
                 debug!(
-            ": Mapping MIR extern malloc {:?} -> Cranelift {:?}",
+                    ": Mapping MIR extern malloc {:?} -> Cranelift {:?}",
                     func_id, libc_id
                 );
                 self.function_map.insert(*func_id, libc_id);
             } else if extern_func.name == "realloc" {
                 let libc_id = *self.runtime_functions.get("realloc").unwrap();
                 debug!(
-            ": Mapping MIR extern realloc {:?} -> Cranelift {:?}",
+                    ": Mapping MIR extern realloc {:?} -> Cranelift {:?}",
                     func_id, libc_id
                 );
                 self.function_map.insert(*func_id, libc_id);
             } else if extern_func.name == "free" {
                 let libc_id = *self.runtime_functions.get("free").unwrap();
                 debug!(
-            ": Mapping MIR extern free {:?} -> Cranelift {:?}",
+                    ": Mapping MIR extern free {:?} -> Cranelift {:?}",
                     func_id, libc_id
                 );
                 self.function_map.insert(*func_id, libc_id);
@@ -769,7 +767,7 @@ impl CraneliftBackend {
         // We use runtime_functions to track all such functions (not just libc ones)
         if let Some(&existing_func_id) = self.runtime_functions.get(&function.name) {
             debug!(
-            ": Reusing existing function '{}' - MIR {:?} -> Cranelift {:?}",
+                ": Reusing existing function '{}' - MIR {:?} -> Cranelift {:?}",
                 function.name, mir_func_id, existing_func_id
             );
             self.function_map.insert(mir_func_id, existing_func_id);
@@ -792,7 +790,8 @@ impl CraneliftBackend {
                     );
                     self.function_map.insert(mir_func_id, forward_ref_func_id);
                     // Also track by qualified name for future lookups
-                    self.qualified_name_to_func.insert(qualified_name.clone(), forward_ref_func_id);
+                    self.qualified_name_to_func
+                        .insert(qualified_name.clone(), forward_ref_func_id);
                     return Ok(());
                 }
             }
@@ -823,8 +822,8 @@ impl CraneliftBackend {
         // - Lambda functions (they already have an explicit 'env' parameter)
         let already_has_env_param = !function.signature.parameters.is_empty()
             && function.signature.parameters[0].name == "env";
-        let is_c_calling_conv = function.signature.calling_convention
-            == crate::ir::CallingConvention::C;
+        let is_c_calling_conv =
+            function.signature.calling_convention == crate::ir::CallingConvention::C;
 
         if !is_extern && !already_has_env_param && !is_c_calling_conv {
             sig.params.push(AbiParam::new(types::I64));
@@ -839,7 +838,13 @@ impl CraneliftBackend {
             let will_extend = is_extern
                 && function.signature.calling_convention == crate::ir::CallingConvention::C
                 && !cfg!(target_os = "windows")
-                && matches!(param.ty, crate::ir::IrType::I32 | crate::ir::IrType::U32 | crate::ir::IrType::Bool | crate::ir::IrType::I8);
+                && matches!(
+                    param.ty,
+                    crate::ir::IrType::I32
+                        | crate::ir::IrType::U32
+                        | crate::ir::IrType::Bool
+                        | crate::ir::IrType::I8
+                );
 
             if will_extend {
                 debug!("!!! EXTENDING {} param '{}' from {:?} to i64 (is_extern={}, calling_conv={:?})",
@@ -863,7 +868,7 @@ impl CraneliftBackend {
             || function.name == "Channel_init"
         {
             debug!(
-            ": Declaring '{}' (MIR {:?}) with {} params, is_extern={}, calling_conv={:?}",
+                ": Declaring '{}' (MIR {:?}) with {} params, is_extern={}, calling_conv={:?}",
                 function.name,
                 mir_func_id,
                 function.signature.parameters.len(),
@@ -879,7 +884,10 @@ impl CraneliftBackend {
                     && !cfg!(target_os = "windows")
                 {
                     match &param.ty {
-                        crate::ir::IrType::I32 | crate::ir::IrType::U32 | crate::ir::IrType::Bool | crate::ir::IrType::I8 => types::I64,
+                        crate::ir::IrType::I32
+                        | crate::ir::IrType::U32
+                        | crate::ir::IrType::Bool
+                        | crate::ir::IrType::I8 => types::I64,
                         _ => cranelift_ty,
                     }
                 } else {
@@ -899,7 +907,7 @@ impl CraneliftBackend {
         // Debug: log lambda function signatures
         if function.name.starts_with("<lambda_") {
             debug!(
-            " Lambda signature for {}: {} params",
+                " Lambda signature for {}: {} params",
                 function.name,
                 function.signature.parameters.len()
             );
@@ -973,7 +981,7 @@ impl CraneliftBackend {
         // Track extern functions and stdlib wrapper functions in runtime_functions so we don't declare them twice
         if is_extern {
             debug!(
-            ": Declared new extern '{}' - MIR {:?} -> Cranelift {:?}",
+                ": Declared new extern '{}' - MIR {:?} -> Cranelift {:?}",
                 func_name, mir_func_id, func_id
             );
             self.runtime_functions.insert(func_name, func_id);
@@ -985,7 +993,7 @@ impl CraneliftBackend {
                 .is_some();
             if is_stdlib_mir_wrapper {
                 debug!(
-            ": Declared new stdlib wrapper '{}' - MIR {:?} -> Cranelift {:?}",
+                    ": Declared new stdlib wrapper '{}' - MIR {:?} -> Cranelift {:?}",
                     func_name, mir_func_id, func_id
                 );
                 self.runtime_functions.insert(func_name, func_id);
@@ -1103,7 +1111,7 @@ impl CraneliftBackend {
         // functions with the same MIR name (e.g., 'new') but different Cranelift symbols
         if self.defined_functions.contains(&func_id) {
             debug!(
-            ": Skipping already-defined function '{}' (MIR {:?}, Cranelift {:?})",
+                ": Skipping already-defined function '{}' (MIR {:?}, Cranelift {:?})",
                 function.name, mir_func_id, func_id
             );
             return Ok(());
@@ -1130,8 +1138,8 @@ impl CraneliftBackend {
         // - Lambda functions (they already have an explicit 'env' parameter)
         let already_has_env_param = !function.signature.parameters.is_empty()
             && function.signature.parameters[0].name == "env";
-        let is_c_calling_conv = function.signature.calling_convention
-            == crate::ir::CallingConvention::C;
+        let is_c_calling_conv =
+            function.signature.calling_convention == crate::ir::CallingConvention::C;
 
         if !already_has_env_param && !is_c_calling_conv {
             self.ctx
@@ -1148,10 +1156,7 @@ impl CraneliftBackend {
             function.signature.parameters.len()
         );
         for (i, param) in function.signature.parameters.iter().enumerate() {
-            debug!(
-            " Cranelift:   param[{}]: {} ({})",
-                i, param.name, param.ty
-            );
+            debug!(" Cranelift:   param[{}]: {} ({})", i, param.name, param.ty);
             let cranelift_type = self.mir_type_to_cranelift(&param.ty)?;
             self.ctx
                 .func
@@ -1192,8 +1197,8 @@ impl CraneliftBackend {
         // Determine if this function already has an explicit 'env' parameter (e.g., lambdas)
         let already_has_env_param = !function.signature.parameters.is_empty()
             && function.signature.parameters[0].name == "env";
-        let is_c_calling_conv = function.signature.calling_convention
-            == crate::ir::CallingConvention::C;
+        let is_c_calling_conv =
+            function.signature.calling_convention == crate::ir::CallingConvention::C;
 
         // If using sret, first parameter is the return pointer
         // Environment parameter is next (if added implicitly, not for lambdas with explicit env)
@@ -1435,7 +1440,7 @@ impl CraneliftBackend {
             let actual_type = builder.func.dfg.value_type(cl_value);
             let final_value = if actual_type != expected_cl_type {
                 debug!(
-            ": Phi arg type mismatch for {:?}: actual {:?}, expected {:?}, coercing",
+                    ": Phi arg type mismatch for {:?}: actual {:?}, expected {:?}, coercing",
                     phi_node.dest, actual_type, expected_cl_type
                 );
                 // Coerce the value
@@ -1735,7 +1740,11 @@ impl CraneliftBackend {
                             // The value should be defined by an iconst instruction
                             match builder.func.dfg.value_def(count_value) {
                                 cranelift_codegen::ir::ValueDef::Result(inst, _) => {
-                                    if let cranelift_codegen::ir::InstructionData::UnaryImm { imm, .. } = builder.func.dfg.insts[inst] {
+                                    if let cranelift_codegen::ir::InstructionData::UnaryImm {
+                                        imm,
+                                        ..
+                                    } = builder.func.dfg.insts[inst]
+                                    {
                                         Some(imm.bits() as u32)
                                     } else {
                                         warn!("Alloc count instruction is not UnaryImm, defaulting to 1");
@@ -1748,7 +1757,10 @@ impl CraneliftBackend {
                                 }
                             }
                         } else {
-                            warn!("Alloc count IrId {:?} not found in value_map, defaulting to 1", count_id);
+                            warn!(
+                                "Alloc count IrId {:?} not found in value_map, defaulting to 1",
+                                count_id
+                            );
                             Some(1)
                         }
                     }
@@ -1771,9 +1783,11 @@ impl CraneliftBackend {
                 if let Some(extern_func) = mir_module.extern_functions.get(func_id) {
                     // This is an external runtime function call
                     info!("Calling external function: {}", extern_func.name);
-                    debug!("[extern_func] calling_convention={:?}, param_count={}",
-                             extern_func.signature.calling_convention,
-                             extern_func.signature.parameters.len());
+                    debug!(
+                        "[extern_func] calling_convention={:?}, param_count={}",
+                        extern_func.signature.calling_convention,
+                        extern_func.signature.parameters.len()
+                    );
                     for (i, p) in extern_func.signature.parameters.iter().enumerate() {
                         debug!("[extern_func]   param[{}] '{}': {:?}", i, p.name, p.ty);
                     }
@@ -1843,7 +1857,12 @@ impl CraneliftBackend {
 
                     // Get the expected Cranelift parameter types from the function signature
                     let expected_sig = module.declarations().get_function_decl(cl_func_id);
-                    let expected_param_types: Vec<_> = expected_sig.signature.params.iter().map(|p| p.value_type).collect();
+                    let expected_param_types: Vec<_> = expected_sig
+                        .signature
+                        .params
+                        .iter()
+                        .map(|p| p.value_type)
+                        .collect();
 
                     for (i, &arg_reg) in args.iter().enumerate() {
                         let mut cl_value = *value_map.get(&arg_reg).ok_or_else(|| {
@@ -1867,8 +1886,13 @@ impl CraneliftBackend {
                                 debug!("!!! [EXTERN BRANCH] Extending arg {} for {} from i32 to i64 (based on Cranelift signature)",
                                     i, extern_func.name);
                                 cl_value = builder.ins().sextend(types::I64, cl_value);
-                            } else if cl_value_type == types::I8 && expected_cl_type == Some(types::I64) {
-                                debug!("!!! [EXTERN BRANCH] Extending arg {} for {} from i8 to i64", i, extern_func.name);
+                            } else if cl_value_type == types::I8
+                                && expected_cl_type == Some(types::I64)
+                            {
+                                debug!(
+                                    "!!! [EXTERN BRANCH] Extending arg {} for {} from i8 to i64",
+                                    i, extern_func.name
+                                );
                                 cl_value = builder.ins().sextend(types::I64, cl_value);
                             } else if let Some(param) = extern_func.signature.parameters.get(i) {
                                 // Fallback to MIR type-based conversions for special cases
@@ -1877,7 +1901,8 @@ impl CraneliftBackend {
                                 {
                                     // Integer to float conversion (e.g., Math.abs(-5))
                                     cl_value = builder.ins().fcvt_from_sint(types::F64, cl_value);
-                                } else if (cl_value_type == types::I32 || cl_value_type == types::I64)
+                                } else if (cl_value_type == types::I32
+                                    || cl_value_type == types::I64)
                                     && matches!(param.ty, crate::ir::IrType::F32)
                                 {
                                     // Integer to float32 conversion
@@ -1913,10 +1938,13 @@ impl CraneliftBackend {
                             *runtime_functions.get(&called_func.name).ok_or_else(|| {
                                 format!("libc function {} not declared", called_func.name)
                             })?;
-                        debug!("[In {}] Redirecting {} call (MIR func_id={:?}) to libc func_id: {:?}", function.name, called_func.name, func_id, libc_id);
+                        debug!(
+                            "[In {}] Redirecting {} call (MIR func_id={:?}) to libc func_id: {:?}",
+                            function.name, called_func.name, func_id, libc_id
+                        );
                         let func_ref = module.declare_func_in_func(libc_id, builder.func);
                         debug!(
-            ": [In {}] Got func_ref for {} (libc_id={:?}): {:?}",
+                            ": [In {}] Got func_ref for {} (libc_id={:?}): {:?}",
                             function.name, called_func.name, libc_id, func_ref
                         );
                         (libc_id, func_ref)
@@ -1925,7 +1953,10 @@ impl CraneliftBackend {
                         let cl_func_id = *function_map.get(func_id).ok_or_else(|| {
                             format!("Function {:?} not found in function_map", func_id)
                         })?;
-                        debug!("[In {}] Regular function call to {:?} (MIR {:?} -> Cranelift {:?})", function.name, called_func.name, func_id, cl_func_id);
+                        debug!(
+                            "[In {}] Regular function call to {:?} (MIR {:?} -> Cranelift {:?})",
+                            function.name, called_func.name, func_id, cl_func_id
+                        );
                         let func_ref = module.declare_func_in_func(cl_func_id, builder.func);
                         (cl_func_id, func_ref)
                     };
@@ -1955,8 +1986,8 @@ impl CraneliftBackend {
                     // - Lambda functions (they already have an explicit 'env' parameter)
                     // - malloc/realloc/free (libc functions)
                     let is_lambda = called_func.name.starts_with("<lambda");
-                    let is_c_calling_conv = called_func.signature.calling_convention
-                        == crate::ir::CallingConvention::C;
+                    let is_c_calling_conv =
+                        called_func.signature.calling_convention == crate::ir::CallingConvention::C;
 
                     let should_add_env = !is_extern_func
                         && !is_lambda
@@ -2016,11 +2047,13 @@ impl CraneliftBackend {
                                         }
                                         crate::ir::IrType::F64 => {
                                             // Convert integer to f64 (e.g., Math.abs(-5))
-                                            arg_val = builder.ins().fcvt_from_sint(types::F64, arg_val);
+                                            arg_val =
+                                                builder.ins().fcvt_from_sint(types::F64, arg_val);
                                         }
                                         crate::ir::IrType::F32 => {
                                             // Convert integer to f32
-                                            arg_val = builder.ins().fcvt_from_sint(types::F32, arg_val);
+                                            arg_val =
+                                                builder.ins().fcvt_from_sint(types::F32, arg_val);
                                         }
                                         _ => {}
                                     }
@@ -2028,10 +2061,12 @@ impl CraneliftBackend {
                                     // Also handle i64 -> f64 conversion
                                     match &param.ty {
                                         crate::ir::IrType::F64 => {
-                                            arg_val = builder.ins().fcvt_from_sint(types::F64, arg_val);
+                                            arg_val =
+                                                builder.ins().fcvt_from_sint(types::F64, arg_val);
                                         }
                                         crate::ir::IrType::F32 => {
-                                            arg_val = builder.ins().fcvt_from_sint(types::F32, arg_val);
+                                            arg_val =
+                                                builder.ins().fcvt_from_sint(types::F32, arg_val);
                                         }
                                         _ => {}
                                     }
@@ -2051,7 +2086,8 @@ impl CraneliftBackend {
                                 if actual_cl_ty == types::I32 && expected_cl_ty == types::I64 {
                                     // Sign-extend i32 to i64
                                     arg_val = builder.ins().sextend(types::I64, arg_val);
-                                } else if actual_cl_ty == types::I64 && expected_cl_ty == types::I32 {
+                                } else if actual_cl_ty == types::I64 && expected_cl_ty == types::I32
+                                {
                                     // Reduce i64 to i32
                                     arg_val = builder.ins().ireduce(types::I32, arg_val);
                                 } else if (actual_cl_ty == types::I32 || actual_cl_ty == types::I64)
@@ -2064,10 +2100,12 @@ impl CraneliftBackend {
                                 {
                                     // Integer to float32 conversion
                                     arg_val = builder.ins().fcvt_from_sint(types::F32, arg_val);
-                                } else if actual_cl_ty == types::F64 && expected_cl_ty == types::I64 {
+                                } else if actual_cl_ty == types::F64 && expected_cl_ty == types::I64
+                                {
                                     // Float to integer conversion
                                     arg_val = builder.ins().fcvt_to_sint(types::I64, arg_val);
-                                } else if actual_cl_ty == types::F64 && expected_cl_ty == types::I32 {
+                                } else if actual_cl_ty == types::F64 && expected_cl_ty == types::I32
+                                {
                                     // Float to i32 conversion
                                     arg_val = builder.ins().fcvt_to_sint(types::I32, arg_val);
                                 }
@@ -2499,12 +2537,20 @@ impl CraneliftBackend {
 
                 let result = match (src_ty, dest_ty) {
                     // Float to Int (reinterpret bits)
-                    (types::F64, types::I64) => builder.ins().bitcast(types::I64, MemFlags::new(), src_val),
-                    (types::F32, types::I32) => builder.ins().bitcast(types::I32, MemFlags::new(), src_val),
+                    (types::F64, types::I64) => {
+                        builder.ins().bitcast(types::I64, MemFlags::new(), src_val)
+                    }
+                    (types::F32, types::I32) => {
+                        builder.ins().bitcast(types::I32, MemFlags::new(), src_val)
+                    }
 
                     // Int to Float (reinterpret bits)
-                    (types::I64, types::F64) => builder.ins().bitcast(types::F64, MemFlags::new(), src_val),
-                    (types::I32, types::F32) => builder.ins().bitcast(types::F32, MemFlags::new(), src_val),
+                    (types::I64, types::F64) => {
+                        builder.ins().bitcast(types::F64, MemFlags::new(), src_val)
+                    }
+                    (types::I32, types::F32) => {
+                        builder.ins().bitcast(types::F32, MemFlags::new(), src_val)
+                    }
 
                     // Same type - just copy
                     (from, to) if from == to => src_val,
@@ -2875,7 +2921,11 @@ impl CraneliftBackend {
                 value_map.insert(*dest, loaded);
             }
 
-            IrInstruction::VectorStore { ptr, value, vec_ty: _ } => {
+            IrInstruction::VectorStore {
+                ptr,
+                value,
+                vec_ty: _,
+            } => {
                 let ptr_val = *value_map
                     .get(ptr)
                     .ok_or_else(|| format!("VectorStore ptr {:?} not found", ptr))?;
@@ -2886,7 +2936,13 @@ impl CraneliftBackend {
                 builder.ins().store(MemFlags::new(), vec_val, ptr_val, 0);
             }
 
-            IrInstruction::VectorBinOp { dest, op, left, right, vec_ty } => {
+            IrInstruction::VectorBinOp {
+                dest,
+                op,
+                left,
+                right,
+                vec_ty,
+            } => {
                 let lhs = *value_map
                     .get(left)
                     .ok_or_else(|| format!("VectorBinOp left {:?} not found", left))?;
@@ -2896,7 +2952,9 @@ impl CraneliftBackend {
 
                 // Get element type to determine if we use integer or float SIMD ops
                 let is_float = match vec_ty {
-                    IrType::Vector { element, .. } => matches!(**element, IrType::F32 | IrType::F64),
+                    IrType::Vector { element, .. } => {
+                        matches!(**element, IrType::F32 | IrType::F64)
+                    }
                     _ => false,
                 };
 
@@ -2938,7 +2996,11 @@ impl CraneliftBackend {
                 value_map.insert(*dest, result);
             }
 
-            IrInstruction::VectorSplat { dest, scalar, vec_ty } => {
+            IrInstruction::VectorSplat {
+                dest,
+                scalar,
+                vec_ty,
+            } => {
                 let scalar_val = *value_map
                     .get(scalar)
                     .ok_or_else(|| format!("VectorSplat scalar {:?} not found", scalar))?;
@@ -2948,7 +3010,11 @@ impl CraneliftBackend {
                 value_map.insert(*dest, result);
             }
 
-            IrInstruction::VectorExtract { dest, vector, index } => {
+            IrInstruction::VectorExtract {
+                dest,
+                vector,
+                index,
+            } => {
                 let vec_val = *value_map
                     .get(vector)
                     .ok_or_else(|| format!("VectorExtract vector {:?} not found", vector))?;
@@ -2957,7 +3023,12 @@ impl CraneliftBackend {
                 value_map.insert(*dest, result);
             }
 
-            IrInstruction::VectorInsert { dest, vector, scalar, index } => {
+            IrInstruction::VectorInsert {
+                dest,
+                vector,
+                scalar,
+                index,
+            } => {
                 let vec_val = *value_map
                     .get(vector)
                     .ok_or_else(|| format!("VectorInsert vector {:?} not found", vector))?;
@@ -3011,12 +3082,20 @@ impl CraneliftBackend {
             }
 
             // Global variable access - uses runtime functions for storage
-            IrInstruction::LoadGlobal { dest, global_id, ty } => {
+            IrInstruction::LoadGlobal {
+                dest,
+                global_id,
+                ty,
+            } => {
                 // Call rayzor_global_load(global_id) to get the stored value
-                let global_id_val = builder.ins().iconst(cranelift_codegen::ir::types::I64, global_id.0 as i64);
+                let global_id_val = builder
+                    .ins()
+                    .iconst(cranelift_codegen::ir::types::I64, global_id.0 as i64);
 
                 // Get or declare the runtime function
-                let load_func_id = if let Some(&func_id) = runtime_functions.get("rayzor_global_load") {
+                let load_func_id = if let Some(&func_id) =
+                    runtime_functions.get("rayzor_global_load")
+                {
                     func_id
                 } else {
                     // Function not pre-declared, can't call it
@@ -3043,7 +3122,9 @@ impl CraneliftBackend {
                 let final_val = if cl_ty == cranelift_codegen::ir::types::I64 {
                     result
                 } else if cl_ty.is_float() {
-                    builder.ins().bitcast(cl_ty, cranelift_codegen::ir::MemFlags::new(), result)
+                    builder
+                        .ins()
+                        .bitcast(cl_ty, cranelift_codegen::ir::MemFlags::new(), result)
                 } else {
                     builder.ins().ireduce(cl_ty, result)
                 };
@@ -3054,26 +3135,40 @@ impl CraneliftBackend {
 
             IrInstruction::StoreGlobal { global_id, value } => {
                 // Call rayzor_global_store(global_id, value)
-                let global_id_val = builder.ins().iconst(cranelift_codegen::ir::types::I64, global_id.0 as i64);
-                let val = *value_map.get(value).ok_or_else(|| format!("StoreGlobal: value {:?} not found", value))?;
+                let global_id_val = builder
+                    .ins()
+                    .iconst(cranelift_codegen::ir::types::I64, global_id.0 as i64);
+                let val = *value_map
+                    .get(value)
+                    .ok_or_else(|| format!("StoreGlobal: value {:?} not found", value))?;
 
                 // Extend value to i64 for storage
                 let val_ty = builder.func.dfg.value_type(val);
                 let val_i64 = if val_ty == cranelift_codegen::ir::types::I64 {
                     val
                 } else if val_ty.is_float() {
-                    builder.ins().bitcast(cranelift_codegen::ir::types::I64, cranelift_codegen::ir::MemFlags::new(), val)
+                    builder.ins().bitcast(
+                        cranelift_codegen::ir::types::I64,
+                        cranelift_codegen::ir::MemFlags::new(),
+                        val,
+                    )
                 } else {
-                    builder.ins().uextend(cranelift_codegen::ir::types::I64, val)
+                    builder
+                        .ins()
+                        .uextend(cranelift_codegen::ir::types::I64, val)
                 };
 
                 // Get or declare the runtime function
                 if let Some(&store_func_id) = runtime_functions.get("rayzor_global_store") {
                     let store_func_ref = module.declare_func_in_func(store_func_id, builder.func);
-                    builder.ins().call(store_func_ref, &[global_id_val, val_i64]);
+                    builder
+                        .ins()
+                        .call(store_func_ref, &[global_id_val, val_i64]);
                     tracing::debug!("[CRANELIFT] StoreGlobal {:?} - calling runtime", global_id);
                 } else {
-                    tracing::warn!("[CRANELIFT] rayzor_global_store not found in runtime_functions");
+                    tracing::warn!(
+                        "[CRANELIFT] rayzor_global_store not found in runtime_functions"
+                    );
                 }
             }
 
@@ -3334,22 +3429,23 @@ impl CraneliftBackend {
                 let str_len = builder.ins().iconst(types::I64, s.len() as i64);
 
                 // Get or declare haxe_string_literal runtime function
-                let string_literal_func = if let Some(&func_id) = runtime_functions.get("haxe_string_literal") {
-                    func_id
-                } else {
-                    // Declare haxe_string_literal(ptr: *const u8, len: usize) -> *mut HaxeString
-                    let mut sig = module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64)); // ptr
-                    sig.params.push(AbiParam::new(types::I64)); // len
-                    sig.returns.push(AbiParam::new(types::I64)); // returns *mut HaxeString
+                let string_literal_func =
+                    if let Some(&func_id) = runtime_functions.get("haxe_string_literal") {
+                        func_id
+                    } else {
+                        // Declare haxe_string_literal(ptr: *const u8, len: usize) -> *mut HaxeString
+                        let mut sig = module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64)); // ptr
+                        sig.params.push(AbiParam::new(types::I64)); // len
+                        sig.returns.push(AbiParam::new(types::I64)); // returns *mut HaxeString
 
-                    let func_id = module
-                        .declare_function("haxe_string_literal", Linkage::Import, &sig)
-                        .map_err(|e| format!("Failed to declare haxe_string_literal: {}", e))?;
+                        let func_id = module
+                            .declare_function("haxe_string_literal", Linkage::Import, &sig)
+                            .map_err(|e| format!("Failed to declare haxe_string_literal: {}", e))?;
 
-                    runtime_functions.insert("haxe_string_literal".to_string(), func_id);
-                    func_id
-                };
+                        runtime_functions.insert("haxe_string_literal".to_string(), func_id);
+                        func_id
+                    };
 
                 // Call haxe_string_literal(ptr, len) -> *mut HaxeString
                 let func_ref = module.declare_func_in_func(string_literal_func, builder.func);
@@ -3404,9 +3500,7 @@ impl CraneliftBackend {
             IrType::TypeVar(_) => Ok(types::I64), // Should be monomorphized
             IrType::Generic { .. } => Ok(types::I64), // Should be monomorphized
             // SIMD Vector types - 128-bit vectors for SSE/NEON compatibility
-            IrType::Vector { element, count } => {
-                Self::mir_vector_to_cranelift(element, *count)
-            }
+            IrType::Vector { element, count } => Self::mir_vector_to_cranelift(element, *count),
         }
     }
 
@@ -3416,23 +3510,22 @@ impl CraneliftBackend {
         // We support 128-bit vectors (SSE/NEON compatible)
         match (element, count) {
             // 128-bit float vectors
-            (IrType::F32, 4) => Ok(types::F32X4),  // 4x32 = 128 bits
-            (IrType::F64, 2) => Ok(types::F64X2),  // 2x64 = 128 bits
+            (IrType::F32, 4) => Ok(types::F32X4), // 4x32 = 128 bits
+            (IrType::F64, 2) => Ok(types::F64X2), // 2x64 = 128 bits
 
             // 128-bit integer vectors
-            (IrType::I8 | IrType::U8, 16) => Ok(types::I8X16),   // 16x8 = 128 bits
-            (IrType::I16 | IrType::U16, 8) => Ok(types::I16X8),  // 8x16 = 128 bits
-            (IrType::I32 | IrType::U32, 4) => Ok(types::I32X4),  // 4x32 = 128 bits
-            (IrType::I64 | IrType::U64, 2) => Ok(types::I64X2),  // 2x64 = 128 bits
+            (IrType::I8 | IrType::U8, 16) => Ok(types::I8X16), // 16x8 = 128 bits
+            (IrType::I16 | IrType::U16, 8) => Ok(types::I16X8), // 8x16 = 128 bits
+            (IrType::I32 | IrType::U32, 4) => Ok(types::I32X4), // 4x32 = 128 bits
+            (IrType::I64 | IrType::U64, 2) => Ok(types::I64X2), // 2x64 = 128 bits
 
             // 256-bit vectors (AVX) - future extension
             // (IrType::F32, 8) => Ok(types::F32X8),
             // (IrType::F64, 4) => Ok(types::F64X4),
-
             _ => Err(format!(
                 "Unsupported vector type: {:?} x {}",
                 element, count
-            ))
+            )),
         }
     }
 
@@ -3530,7 +3623,7 @@ impl CraneliftBackend {
             IrType::Any => 8, // Boxed value pointer
             // SIMD vector types: element_size * count
             IrType::Vector { element, count } => Self::type_size(element) * count,
-            _ => 8,           // Default to pointer size
+            _ => 8, // Default to pointer size
         }
     }
 }

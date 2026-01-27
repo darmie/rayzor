@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test static inline variables (like in mandelbrot benchmark)
 
 use compiler::codegen::CraneliftBackend;
@@ -8,16 +38,19 @@ fn test_case(name: &str, source: &str, symbols: &[(&str, *const u8)]) -> Result<
 
     let mut unit = CompilationUnit::new(CompilationConfig::fast());
     unit.load_stdlib().map_err(|e| format!("stdlib: {}", e))?;
-    unit.add_file(source, &format!("{}.hx", name)).map_err(|e| format!("parse: {}", e))?;
+    unit.add_file(source, &format!("{}.hx", name))
+        .map_err(|e| format!("parse: {}", e))?;
     unit.lower_to_tast().map_err(|e| format!("tast: {:?}", e))?;
 
     let mir_modules = unit.get_mir_modules();
 
-    let mut backend = CraneliftBackend::with_symbols(symbols)
-        .map_err(|e| format!("backend: {}", e))?;
+    let mut backend =
+        CraneliftBackend::with_symbols(symbols).map_err(|e| format!("backend: {}", e))?;
 
     for module in &mir_modules {
-        backend.compile_module(module).map_err(|e| format!("compile: {}", e))?;
+        backend
+            .compile_module(module)
+            .map_err(|e| format!("compile: {}", e))?;
     }
 
     for module in mir_modules.iter().rev() {
@@ -37,13 +70,16 @@ fn test_case(name: &str, source: &str, symbols: &[(&str, *const u8)]) -> Result<
 
 fn main() {
     let plugin = rayzor_runtime::plugin_impl::get_plugin();
-    let symbols: Vec<(&str, *const u8)> = plugin.runtime_symbols()
+    let symbols: Vec<(&str, *const u8)> = plugin
+        .runtime_symbols()
         .iter()
         .map(|(n, p)| (*n, *p))
         .collect();
 
     // Test 1: Simple static inline variable
-    let _ = test_case("simple_inline", r#"
+    let _ = test_case(
+        "simple_inline",
+        r#"
 package test;
 class Main {
     static inline var SIZE = 10;
@@ -52,10 +88,14 @@ class Main {
         trace(SIZE);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 2: Static inline in loop
-    let _ = test_case("inline_in_loop", r#"
+    let _ = test_case(
+        "inline_in_loop",
+        r#"
 package test;
 class Main {
     static inline var SIZE = 5;
@@ -68,10 +108,14 @@ class Main {
         trace(sum);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 3: Multiple static inline vars (like WIDTH/HEIGHT)
-    let _ = test_case("multi_inline", r#"
+    let _ = test_case(
+        "multi_inline",
+        r#"
 package test;
 class Main {
     static inline var WIDTH = 3;
@@ -87,10 +131,14 @@ class Main {
         trace(count);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 4: Static inline with calculation (like mandelbrot)
-    let _ = test_case("inline_with_calc", r#"
+    let _ = test_case(
+        "inline_with_calc",
+        r#"
 package test;
 class Main {
     static inline var WIDTH = 5;
@@ -106,10 +154,14 @@ class Main {
         trace(25);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 5: Mandelbrot-like with inline vars and Complex
-    let _ = test_case("mandelbrot_inline_simple", r#"
+    let _ = test_case(
+        "mandelbrot_inline_simple",
+        r#"
 package test;
 class Complex {
     public var re:Float;
@@ -157,10 +209,14 @@ class Mandelbrot {
         return MAX_ITER;
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 6: Exact copy of mandelbrot benchmark structure with small values
-    let _ = test_case("mandelbrot_exact_structure", r#"
+    let _ = test_case(
+        "mandelbrot_exact_structure",
+        r#"
 package benchmarks;
 
 class Complex {
@@ -215,7 +271,9 @@ class Mandelbrot {
         return MAX_ITER;
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     println!("\n=== All tests completed ===");
 }

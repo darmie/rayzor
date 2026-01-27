@@ -13,7 +13,7 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(_) => println!("✓ Simple null coalescing works"),
         Err(e) => panic!("Failed to parse simple null coalescing: {}", e),
@@ -29,7 +29,7 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(_) => println!("✓ Chained null coalescing works"),
         Err(e) => panic!("Failed to parse chained null coalescing: {}", e),
@@ -45,7 +45,7 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(_) => println!("✓ Null coalescing in expressions works"),
         Err(e) => {

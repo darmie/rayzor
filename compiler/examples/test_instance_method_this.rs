@@ -1,11 +1,41 @@
-use compiler::ir::{tast_to_hir::lower_tast_to_hir, hir_to_mir::lower_hir_to_mir};
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
+use compiler::ir::{hir_to_mir::lower_hir_to_mir, tast_to_hir::lower_tast_to_hir};
 use compiler::tast::{
-    AstLowering, StringInterner, SymbolTable, TypeTable, ScopeTree, ScopeId,
-    namespace::NamespaceResolver,
+    namespace::NamespaceResolver, AstLowering, ScopeId, ScopeTree, StringInterner, SymbolTable,
+    TypeTable,
 };
 use parser::{parse_haxe_file, SourceMap};
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 fn main() {
     println!("=== Testing Instance Method 'this' Parameter ===\n");
@@ -33,8 +63,7 @@ fn main() {
     "#;
 
     println!("1. Parsing Haxe source...");
-    let source_map = Rc::new(RefCell::new(SourceMap::new()));
-    let result = parse_haxe_file(haxe_code, "test.hx", source_map.clone());
+    let result = parse_haxe_file("test.hx", haxe_code, false);
     let ast_file = match result {
         Ok(file) => {
             println!("   ✓ Successfully parsed");
@@ -53,13 +82,18 @@ fn main() {
     let type_table = Rc::new(RefCell::new(TypeTable::new()));
     let mut scope_tree = ScopeTree::new(ScopeId::from_raw(0));
     let mut namespace_resolver = NamespaceResolver::new(&string_interner);
+    let mut import_resolver = compiler::tast::namespace::ImportResolver::new(&namespace_resolver);
 
     let mut ast_lowering = AstLowering::new(
         &mut string_interner,
+        std::rc::Rc::new(std::cell::RefCell::new(
+            compiler::tast::StringInterner::new(),
+        )),
         &mut symbol_table,
         &type_table,
         &mut scope_tree,
         &mut namespace_resolver,
+        &mut import_resolver,
     );
 
     let typed_file = match ast_lowering.lower_file(&ast_file) {
@@ -68,11 +102,8 @@ fn main() {
             println!("   - Classes: {}", file.classes.len());
             file
         }
-        Err(errors) => {
-            eprintln!("   ✗ TAST lowering errors:");
-            for error in errors {
-                eprintln!("     - {}", error);
-            }
+        Err(error) => {
+            eprintln!("   ✗ TAST lowering error: {:?}", error);
             return;
         }
     };
@@ -120,8 +151,17 @@ fn main() {
             println!("   Class '{}' methods:", class_name);
             for method in &class.methods {
                 let method_name = interner_ref.get(method.function.name).unwrap_or("?");
-                let static_str = if method.is_static { "static" } else { "instance" };
-                println!("     - {} {} (params: {})", static_str, method_name, method.function.params.len());
+                let static_str = if method.is_static {
+                    "static"
+                } else {
+                    "instance"
+                };
+                println!(
+                    "     - {} {} (params: {})",
+                    static_str,
+                    method_name,
+                    method.function.params.len()
+                );
             }
         }
     }
@@ -129,7 +169,12 @@ fn main() {
 
     // Step 4: Lower HIR to MIR
     println!("\n5. Lowering HIR to MIR...");
-    let mir_module = match lower_hir_to_mir(&hir_module, &*string_interner_rc.borrow()) {
+    let mir_module = match lower_hir_to_mir(
+        &hir_module,
+        &*string_interner_rc.borrow(),
+        &type_table,
+        &symbol_table,
+    ) {
         Ok(mir) => {
             println!("   ✓ Successfully lowered to MIR");
             println!("   - Functions: {}", mir.functions.len());
@@ -151,14 +196,23 @@ fn main() {
         let param_count = function.signature.parameters.len();
 
         // Check if this looks like an instance method (has 'this' as first param)
-        let has_this = function.signature.parameters.first()
+        let has_this = function
+            .signature
+            .parameters
+            .first()
             .map(|p| p.name == "this")
             .unwrap_or(false);
 
         if has_this {
-            println!("   ✓ Function '{}' has 'this' parameter ({} total params)", func_name, param_count);
+            println!(
+                "   ✓ Function '{}' has 'this' parameter ({} total params)",
+                func_name, param_count
+            );
         } else if param_count > 0 {
-            println!("   • Function '{}' is static ({} params, no 'this')", func_name, param_count);
+            println!(
+                "   • Function '{}' is static ({} params, no 'this')",
+                func_name, param_count
+            );
         } else {
             println!("   • Function '{}' has no parameters", func_name);
         }

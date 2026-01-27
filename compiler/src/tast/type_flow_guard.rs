@@ -9,21 +9,17 @@
 // Use existing control flow analysis from TAST
 use crate::tast::control_flow_analysis::ControlFlowAnalyzer;
 
-// Use existing semantic graph components  
-use crate::semantic_graph::{
-    cfg::ControlFlowGraph as SemanticCfg,
-    dfg::DataFlowGraph,
-};
+// Use existing semantic graph components
+use crate::semantic_graph::{cfg::ControlFlowGraph as SemanticCfg, dfg::DataFlowGraph};
 
 // Use existing analyzers from semantic_graph/analysis
 use crate::semantic_graph::analysis::{
-    lifetime_analyzer::LifetimeAnalyzer,
-    ownership_analyzer::OwnershipAnalyzer,
+    lifetime_analyzer::LifetimeAnalyzer, ownership_analyzer::OwnershipAnalyzer,
 };
 
 use crate::tast::{
     node::{TypedFile, TypedFunction},
-    SymbolId, SourceLocation, SymbolTable, TypeTable,
+    SourceLocation, SymbolId, SymbolTable, TypeTable,
 };
 use std::cell::RefCell;
 
@@ -41,9 +37,7 @@ pub enum FlowSafetyError {
         location: SourceLocation,
     },
     /// Dead code detected
-    DeadCode {
-        location: SourceLocation,
-    },
+    DeadCode { location: SourceLocation },
     /// Use after move
     UseAfterMove {
         variable: SymbolId,
@@ -53,7 +47,7 @@ pub enum FlowSafetyError {
     /// Use after free
     UseAfterFree {
         variable: SymbolId,
-        use_location: SourceLocation, 
+        use_location: SourceLocation,
         free_location: SourceLocation,
     },
     /// Invalid borrow
@@ -63,9 +57,7 @@ pub enum FlowSafetyError {
         reason: String,
     },
     /// Type error in flow analysis
-    TypeError {
-        message: String,
-    },
+    TypeError { message: String },
     /// Resource leak detected (compatibility)
     ResourceLeak {
         resource: SymbolId,
@@ -144,10 +136,7 @@ pub struct TypeFlowGuard<'a> {
 
 impl<'a> TypeFlowGuard<'a> {
     /// Create a new TypeFlowGuard analyzer
-    pub fn new(
-        symbol_table: &'a SymbolTable,
-        type_table: &'a RefCell<TypeTable>,
-    ) -> Self {
+    pub fn new(symbol_table: &'a SymbolTable, type_table: &'a RefCell<TypeTable>) -> Self {
         Self {
             symbol_table,
             type_table,
@@ -156,7 +145,7 @@ impl<'a> TypeFlowGuard<'a> {
             ownership_analyzer: None,
         }
     }
-    
+
     /// Perform flow safety analysis on a file
     pub fn analyze_file(&mut self, file: &TypedFile) -> FlowSafetyResults {
         let _start_time = std::time::Instant::now();
@@ -185,7 +174,7 @@ impl<'a> TypeFlowGuard<'a> {
 
         std::mem::take(&mut self.results)
     }
-    
+
     /// Analyze a single function for flow safety
     pub fn analyze_function(&mut self, function: &TypedFunction) {
         let _start_time = std::time::Instant::now();
@@ -196,36 +185,37 @@ impl<'a> TypeFlowGuard<'a> {
         let cfg_start = std::time::Instant::now();
         let analysis_result = analyzer.analyze_function(function);
         self.results.metrics.cfg_construction_time_us += cfg_start.elapsed().as_micros() as u64;
-        
+
         // Convert control flow analysis results to flow safety errors
         for uninit_use in &analysis_result.uninitialized_uses {
-            self.results.errors.push(FlowSafetyError::UninitializedVariable {
-                variable: uninit_use.variable,
-                location: uninit_use.location,
-            });
+            self.results
+                .errors
+                .push(FlowSafetyError::UninitializedVariable {
+                    variable: uninit_use.variable,
+                    location: uninit_use.location,
+                });
         }
-        
+
         for null_deref in &analysis_result.null_dereferences {
             self.results.errors.push(FlowSafetyError::NullDereference {
                 variable: null_deref.variable,
                 location: null_deref.location,
             });
         }
-        
+
         for dead_code in &analysis_result.dead_code {
             self.results.warnings.push(FlowSafetyError::DeadCode {
                 location: dead_code.location,
             });
         }
-        
+
         // Update metrics
         self.results.metrics.functions_analyzed += 1;
         // Control flow analyzer doesn't expose block count, estimate from results
-        self.results.metrics.blocks_processed = 
-            analysis_result.uninitialized_uses.len() + 
-            analysis_result.dead_code.len() + 1;
+        self.results.metrics.blocks_processed =
+            analysis_result.uninitialized_uses.len() + analysis_result.dead_code.len() + 1;
     }
-    
+
     /// Analyze a function with pre-built CFG and DFG
     /// This is the main entry point for integration with the compilation pipeline
     pub fn analyze_function_safety(
@@ -236,13 +226,13 @@ impl<'a> TypeFlowGuard<'a> {
     ) {
         // First run standard control flow analysis
         self.analyze_function(function);
-        
+
         // Then run advanced DFG-based analysis if analyzers are available
         if self.lifetime_analyzer.is_some() || self.ownership_analyzer.is_some() {
             self.analyze_with_dfg(dfg, function);
         }
     }
-    
+
     /// Analyze using data flow graph for advanced safety checks
     /// This leverages the existing SSA form in the DFG for precise flow-sensitive analysis
     fn analyze_with_dfg(&mut self, dfg: &DataFlowGraph, function: &TypedFunction) {
@@ -299,10 +289,12 @@ impl<'a> TypeFlowGuard<'a> {
                     // Try to find the original symbol for better error messages
                     if let Some(ssa_var) = node.defines {
                         if let Some(ssa_info) = dfg.ssa_variables.get(&ssa_var) {
-                            self.results.errors.push(FlowSafetyError::UninitializedVariable {
-                                variable: ssa_info.original_symbol,
-                                location: node.source_location,
-                            });
+                            self.results
+                                .errors
+                                .push(FlowSafetyError::UninitializedVariable {
+                                    variable: ssa_info.original_symbol,
+                                    location: node.source_location,
+                                });
                         }
                     }
                 }
@@ -332,10 +324,12 @@ impl<'a> TypeFlowGuard<'a> {
                                     | DataFlowNodeKind::Call { .. } => {
                                         // This is a potential null dereference
                                         // unless there's a null check in a dominating block
-                                        self.results.warnings.push(FlowSafetyError::NullDereference {
-                                            variable: ssa_var.original_symbol,
-                                            location: use_node.source_location,
-                                        });
+                                        self.results.warnings.push(
+                                            FlowSafetyError::NullDereference {
+                                                variable: ssa_var.original_symbol,
+                                                location: use_node.source_location,
+                                            },
+                                        );
                                     }
                                     _ => {}
                                 }
@@ -361,12 +355,12 @@ impl<'a> TypeFlowGuard<'a> {
             }
         }
     }
-    
+
     /// Get the analysis results
     pub fn get_results(&self) -> &FlowSafetyResults {
         &self.results
     }
-    
+
     /// Take the analysis results (consuming)
     pub fn into_results(self) -> FlowSafetyResults {
         self.results

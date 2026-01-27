@@ -1,8 +1,38 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test stdlib method mapping
 //!
 //! Demonstrates how Haxe standard library method calls are mapped to runtime functions.
 
-use compiler::stdlib::{StdlibMapping, MethodSignature};
+use compiler::stdlib::{MethodSignature, StdlibMapping};
 
 fn main() {
     println!("🗺️  Haxe Standard Library Runtime Mapping\n");
@@ -15,9 +45,27 @@ fn main() {
     println!("{}", "-".repeat(70));
     test_mapping(&mapping, "String", "charAt", false, "haxe_string_char_at");
     test_mapping(&mapping, "String", "indexOf", false, "haxe_string_index_of");
-    test_mapping(&mapping, "String", "substring", false, "haxe_string_substring");
-    test_mapping(&mapping, "String", "toUpperCase", false, "haxe_string_to_upper_case");
-    test_mapping(&mapping, "String", "fromCharCode", true, "haxe_string_from_char_code");
+    test_mapping(
+        &mapping,
+        "String",
+        "substring",
+        false,
+        "haxe_string_substring",
+    );
+    test_mapping(
+        &mapping,
+        "String",
+        "toUpperCase",
+        false,
+        "haxe_string_to_upper_case",
+    );
+    test_mapping(
+        &mapping,
+        "String",
+        "fromCharCode",
+        true,
+        "haxe_string_from_char_code",
+    );
 
     // Array methods
     println!("\n📦 Array Methods");
@@ -67,6 +115,8 @@ fn test_mapping(
         class,
         method,
         is_static,
+        is_constructor: false,
+        param_count: 0,
     };
 
     match mapping.get(&sig) {
@@ -98,6 +148,8 @@ fn show_call_convention(
         class,
         method,
         is_static,
+        is_constructor: false,
+        param_count: 0,
     };
 
     if let Some(call) = mapping.get(&sig) {
@@ -128,7 +180,12 @@ fn show_call_convention(
             ""
         };
 
-        println!("    C signature: {}({}){}", call.runtime_name, params.join(", "), ret);
+        println!(
+            "    C signature: {}({}){}",
+            call.runtime_name,
+            params.join(", "),
+            ret
+        );
         println!();
     }
 }

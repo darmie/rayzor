@@ -9,16 +9,15 @@
 use tracing::{debug, warn};
 
 use crate::ir::hir::*;
-use crate::tast::{
-    node::*, TypeId, SymbolId, SourceLocation,
-    SymbolTable, TypeTable, InternedString, LifetimeId, ScopeId,
-    Visibility, StringInterner, TypeKind,
-};
 use crate::semantic_graph::SemanticGraphs;
-use crate::stdlib::{StdlibMapping, MethodSignature};
+use crate::stdlib::{MethodSignature, StdlibMapping};
+use crate::tast::{
+    node::*, InternedString, LifetimeId, ScopeId, SourceLocation, StringInterner, SymbolId,
+    SymbolTable, TypeId, TypeKind, TypeTable, Visibility,
+};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::cell::RefCell;
 
 /// Context for lowering TAST to HIR
 pub struct TastToHirContext<'a> {
@@ -33,22 +32,22 @@ pub struct TastToHirContext<'a> {
 
     /// Semantic graphs for additional information
     semantic_graphs: Option<&'a SemanticGraphs>,
-    
+
     /// Current module being built
     module: HirModule,
-    
+
     /// Current scope
     current_scope: ScopeId,
-    
+
     /// Current lifetime
     current_lifetime: LifetimeId,
-    
+
     /// Loop labels for break/continue
     loop_labels: Vec<Option<SymbolId>>,
-    
+
     /// Error accumulator
     errors: Vec<LoweringError>,
-    
+
     /// Counter for generating unique temporary variable names
     temp_var_counter: u32,
 
@@ -88,12 +87,12 @@ impl<T> LoweringResult<T> {
             LoweringResult::Error(err) => Err(vec![err]),
         }
     }
-    
+
     /// Check if this is a successful result (Ok or Partial)
     pub fn is_successful(&self) -> bool {
         !matches!(self, LoweringResult::Error(_))
     }
-    
+
     /// Extract any errors from the result
     pub fn errors(&self) -> Vec<LoweringError> {
         match self {
@@ -129,7 +128,7 @@ impl<'a> TastToHirContext<'a> {
             module: HirModule {
                 name: module_name,
                 imports: Vec::new(),
-                types: indexmap::IndexMap::new(),  // Use IndexMap for deterministic ordering
+                types: indexmap::IndexMap::new(), // Use IndexMap for deterministic ordering
                 functions: indexmap::IndexMap::new(),
                 globals: HashMap::new(),
                 metadata: HirMetadata {
@@ -149,30 +148,30 @@ impl<'a> TastToHirContext<'a> {
             inline_var_values: HashMap::new(),
         }
     }
-    
+
     /// Set semantic graphs for additional analysis info
     pub fn set_semantic_graphs(&mut self, graphs: &'a SemanticGraphs) {
         self.semantic_graphs = Some(graphs);
     }
-    
+
     /// Helper methods to get builtin types from type table
     fn get_void_type(&self) -> TypeId {
         self.type_table.borrow().void_type()
     }
-    
+
     fn get_bool_type(&self) -> TypeId {
         self.type_table.borrow().bool_type()
     }
-    
+
     fn get_string_type(&self) -> TypeId {
         self.type_table.borrow().string_type()
     }
-    
+
     fn get_null_type(&self) -> TypeId {
         // Use dynamic type for null for now
         self.type_table.borrow().dynamic_type()
     }
-    
+
     fn get_dynamic_type(&self) -> TypeId {
         self.type_table.borrow().dynamic_type()
     }
@@ -182,7 +181,9 @@ impl<'a> TastToHirContext<'a> {
     /// where PI is also a static inline var
     fn evaluate_inline_static_vars(&mut self, file: &TypedFile) {
         // Collect all static fields that need evaluation
-        let static_fields: Vec<_> = file.classes.iter()
+        let static_fields: Vec<_> = file
+            .classes
+            .iter()
             .flat_map(|class| class.fields.iter())
             .filter(|field| field.is_static && field.initializer.is_some())
             .map(|field| (field.symbol_id, field.initializer.as_ref().unwrap().clone()))
@@ -227,21 +228,23 @@ impl<'a> TastToHirContext<'a> {
                 // Check if this is an already-evaluated inline variable
                 self.inline_var_values.get(symbol_id).cloned()
             }
-            TypedExpressionKind::BinaryOp { operator, left, right } => {
+            TypedExpressionKind::BinaryOp {
+                operator,
+                left,
+                right,
+            } => {
                 let lhs = self.try_evaluate_const_expr(left)?;
                 let rhs = self.try_evaluate_const_expr(right)?;
 
                 // Evaluate based on types - prefer float if either operand is float
                 match (&lhs, &rhs) {
-                    (HirLiteral::Float(l), HirLiteral::Float(r)) => {
-                        match operator {
-                            BinaryOperator::Add => Some(HirLiteral::Float(l + r)),
-                            BinaryOperator::Sub => Some(HirLiteral::Float(l - r)),
-                            BinaryOperator::Mul => Some(HirLiteral::Float(l * r)),
-                            BinaryOperator::Div => Some(HirLiteral::Float(l / r)),
-                            _ => None,
-                        }
-                    }
+                    (HirLiteral::Float(l), HirLiteral::Float(r)) => match operator {
+                        BinaryOperator::Add => Some(HirLiteral::Float(l + r)),
+                        BinaryOperator::Sub => Some(HirLiteral::Float(l - r)),
+                        BinaryOperator::Mul => Some(HirLiteral::Float(l * r)),
+                        BinaryOperator::Div => Some(HirLiteral::Float(l / r)),
+                        _ => None,
+                    },
                     (HirLiteral::Float(l), HirLiteral::Int(r)) => {
                         let r = *r as f64;
                         match operator {
@@ -262,28 +265,24 @@ impl<'a> TastToHirContext<'a> {
                             _ => None,
                         }
                     }
-                    (HirLiteral::Int(l), HirLiteral::Int(r)) => {
-                        match operator {
-                            BinaryOperator::Add => Some(HirLiteral::Int(l + r)),
-                            BinaryOperator::Sub => Some(HirLiteral::Int(l - r)),
-                            BinaryOperator::Mul => Some(HirLiteral::Int(l * r)),
-                            BinaryOperator::Div => Some(HirLiteral::Int(l / r)),
-                            _ => None,
-                        }
-                    }
+                    (HirLiteral::Int(l), HirLiteral::Int(r)) => match operator {
+                        BinaryOperator::Add => Some(HirLiteral::Int(l + r)),
+                        BinaryOperator::Sub => Some(HirLiteral::Int(l - r)),
+                        BinaryOperator::Mul => Some(HirLiteral::Int(l * r)),
+                        BinaryOperator::Div => Some(HirLiteral::Int(l / r)),
+                        _ => None,
+                    },
                     _ => None,
                 }
             }
             TypedExpressionKind::UnaryOp { operator, operand } => {
                 let val = self.try_evaluate_const_expr(operand)?;
                 match operator {
-                    UnaryOperator::Neg => {
-                        match val {
-                            HirLiteral::Float(f) => Some(HirLiteral::Float(-f)),
-                            HirLiteral::Int(i) => Some(HirLiteral::Int(-i)),
-                            _ => None,
-                        }
-                    }
+                    UnaryOperator::Neg => match val {
+                        HirLiteral::Float(f) => Some(HirLiteral::Float(-f)),
+                        HirLiteral::Int(i) => Some(HirLiteral::Int(-i)),
+                        _ => None,
+                    },
                     _ => None,
                 }
             }
@@ -299,7 +298,7 @@ impl<'a> TastToHirContext<'a> {
             false
         }
     }
-    
+
     /// Check if class is abstract
     fn is_class_abstract(&self, class_symbol: SymbolId) -> bool {
         if let Some(hierarchy) = self.symbol_table.get_class_hierarchy(class_symbol) {
@@ -308,7 +307,7 @@ impl<'a> TastToHirContext<'a> {
             false
         }
     }
-    
+
     /// Lookup enum type from a constructor symbol
     fn lookup_enum_type_from_constructor(&self, constructor: SymbolId) -> TypeId {
         // Look up constructor symbol to find its parent enum type
@@ -324,7 +323,7 @@ impl<'a> TastToHirContext<'a> {
         // Fallback to dynamic type
         self.get_dynamic_type()
     }
-    
+
     /// Lower a typed file to HIR module
     pub fn lower_file(&mut self, file: &'a TypedFile) -> Result<HirModule, Vec<LoweringError>> {
         // Set current file for validation
@@ -344,55 +343,54 @@ impl<'a> TastToHirContext<'a> {
         for class in &file.classes {
             self.lower_class(class);
         }
-        
+
         for interface in &file.interfaces {
             self.lower_interface(interface);
         }
-        
+
         for enum_decl in &file.enums {
             self.lower_enum(enum_decl);
         }
-        
+
         // Lower abstract types
         for abstract_decl in &file.abstracts {
             self.lower_abstract(abstract_decl);
         }
-        
+
         // Lower type aliases
         for alias in &file.type_aliases {
             self.lower_type_alias(alias);
         }
-        
+
         // Lower module-level functions
         for function in &file.functions {
             let hir_func = self.lower_function(function);
             self.module.functions.insert(function.symbol_id, hir_func);
         }
-        
+
         // Lower module fields (global variables)
         for field in &file.module_fields {
             self.lower_module_field(field);
         }
-        
+
         if self.errors.is_empty() {
             Ok(self.module.clone())
         } else {
             Err(std::mem::take(&mut self.errors))
         }
     }
-    
+
     /// Lower a class declaration
     fn lower_class(&mut self, class: &TypedClass) {
         let mut hir_fields = Vec::new();
         let mut hir_methods = Vec::new();
         let mut hir_constructor = None;
-        
-        // Process constructors
-        for constructor in &class.constructors {
+
+        // Process constructors (take only the first)
+        if let Some(constructor) = class.constructors.first() {
             hir_constructor = Some(self.lower_constructor(constructor));
-            break; // Take only the first constructor for now
         }
-        
+
         // Process methods
         for method in &class.methods {
             hir_methods.push(HirMethod {
@@ -400,27 +398,27 @@ impl<'a> TastToHirContext<'a> {
                 visibility: self.convert_visibility(method.visibility),
                 is_static: method.is_static,
                 is_override: method.metadata.is_override,
-                is_abstract: false // Abstract methods would have no body
+                is_abstract: false, // Abstract methods would have no body
             });
         }
 
         // Process fields
         for field in &class.fields {
             hir_fields.push(HirClassField {
-                symbol_id: field.symbol_id,  // Preserve symbol_id for field access lowering
+                symbol_id: field.symbol_id, // Preserve symbol_id for field access lowering
                 name: field.name.clone(),
                 ty: field.field_type,
                 init: field.initializer.as_ref().map(|e| self.lower_expression(e)),
                 visibility: self.convert_visibility(field.visibility),
                 is_static: field.is_static,
                 is_final: !matches!(field.mutability, crate::tast::Mutability::Mutable),
-                property_access: field.property_access.clone(),  // Preserve property accessor info
+                property_access: field.property_access.clone(), // Preserve property accessor info
             });
         }
-        
+
         // Create type ID from symbol ID (simplified)
         let type_id = TypeId::from_raw(class.symbol_id.as_raw());
-        
+
         let hir_class = HirClass {
             symbol_id: class.symbol_id,
             name: class.name.clone(),
@@ -436,24 +434,31 @@ impl<'a> TastToHirContext<'a> {
             is_abstract: self.is_class_abstract(class.symbol_id),
             is_extern: false, // Would be in effects or metadata when available
         };
-        
-        self.module.types.insert(
-            type_id,
-            HirTypeDecl::Class(hir_class),
-        );
+
+        self.module
+            .types
+            .insert(type_id, HirTypeDecl::Class(hir_class));
     }
-    
+
     /// Lower an interface declaration
     fn lower_interface(&mut self, interface: &TypedInterface) {
         // Extract interface methods from method signatures
-        let hir_methods: Vec<HirInterfaceMethod> = interface.methods.iter().map(|method| {
-            HirInterfaceMethod {
-                name: method.name.clone(),
-                type_params: Vec::new(), // Type params are on the method signature in TAST
-                params: method.parameters.iter().map(|p| self.lower_param(p)).collect(),
-                return_type: method.return_type,
-            }
-        }).collect();
+        let hir_methods: Vec<HirInterfaceMethod> = interface
+            .methods
+            .iter()
+            .map(|method| {
+                HirInterfaceMethod {
+                    name: method.name.clone(),
+                    type_params: Vec::new(), // Type params are on the method signature in TAST
+                    params: method
+                        .parameters
+                        .iter()
+                        .map(|p| self.lower_param(p))
+                        .collect(),
+                    return_type: method.return_type,
+                }
+            })
+            .collect();
 
         // Interfaces don't have fields in Haxe, only properties (which are methods)
         let hir_fields: Vec<HirInterfaceField> = Vec::new();
@@ -471,12 +476,11 @@ impl<'a> TastToHirContext<'a> {
             metadata: Vec::new(), // Interfaces can have metadata
         };
 
-        self.module.types.insert(
-            type_id,
-            HirTypeDecl::Interface(hir_interface),
-        );
+        self.module
+            .types
+            .insert(type_id, HirTypeDecl::Interface(hir_interface));
     }
-    
+
     /// Lower an enum declaration
     fn lower_enum(&mut self, enum_decl: &TypedEnum) {
         let mut hir_variants = Vec::new();
@@ -484,12 +488,14 @@ impl<'a> TastToHirContext<'a> {
         for (i, variant) in enum_decl.variants.iter().enumerate() {
             // Extract variant fields from parameters
             // In Haxe, enum variants can have parameters like: Value(x: Int, y: String)
-            let hir_fields: Vec<HirEnumField> = variant.parameters.iter().map(|param| {
-                HirEnumField {
+            let hir_fields: Vec<HirEnumField> = variant
+                .parameters
+                .iter()
+                .map(|param| HirEnumField {
                     name: param.name.clone(),
                     ty: param.param_type,
-                }
-            }).collect();
+                })
+                .collect();
 
             hir_variants.push(HirEnumVariant {
                 name: variant.name.clone(),
@@ -508,13 +514,12 @@ impl<'a> TastToHirContext<'a> {
             variants: hir_variants,
             metadata: Vec::new(),
         };
-        
-        self.module.types.insert(
-            type_id,
-            HirTypeDecl::Enum(hir_enum),
-        );
+
+        self.module
+            .types
+            .insert(type_id, HirTypeDecl::Enum(hir_enum));
     }
-    
+
     /// Lower an abstract type
     fn lower_abstract(&mut self, abstract_decl: &TypedAbstract) {
         // Create type ID from symbol ID (simplified)
@@ -522,50 +527,67 @@ impl<'a> TastToHirContext<'a> {
 
         // Extract implicit conversion rules
         // @:from rules allow implicit conversion FROM other types TO this abstract
-        let from_rules: Vec<HirCastRule> = abstract_decl.from_types.iter().map(|&from_ty| {
-            HirCastRule {
-                from_type: from_ty,
-                to_type: type_id,
-                is_implicit: true, // @:from rules are implicit conversions
-                cast_function: None, // Will be resolved during type checking
-            }
-        }).collect();
+        let from_rules: Vec<HirCastRule> = abstract_decl
+            .from_types
+            .iter()
+            .map(|&from_ty| {
+                HirCastRule {
+                    from_type: from_ty,
+                    to_type: type_id,
+                    is_implicit: true,   // @:from rules are implicit conversions
+                    cast_function: None, // Will be resolved during type checking
+                }
+            })
+            .collect();
 
         // @:to rules allow implicit conversion FROM this abstract TO other types
-        let to_rules: Vec<HirCastRule> = abstract_decl.to_types.iter().map(|&to_ty| {
-            HirCastRule {
-                from_type: type_id,
-                to_type: to_ty,
-                is_implicit: true, // @:to rules are implicit conversions
-                cast_function: None, // Will be resolved during type checking
-            }
-        }).collect();
+        let to_rules: Vec<HirCastRule> = abstract_decl
+            .to_types
+            .iter()
+            .map(|&to_ty| {
+                HirCastRule {
+                    from_type: type_id,
+                    to_type: to_ty,
+                    is_implicit: true,   // @:to rules are implicit conversions
+                    cast_function: None, // Will be resolved during type checking
+                }
+            })
+            .collect();
 
         // Extract operator overloads from methods
         // Methods with @:op metadata become operators
-        let operators: Vec<HirOperatorOverload> = abstract_decl.methods.iter()
+        let operators: Vec<HirOperatorOverload> = abstract_decl
+            .methods
+            .iter()
             .filter_map(|_method| {
                 // Check if method has @:op metadata
                 // For now, return None as operators are extracted via metadata
                 // which we'll handle when macro infrastructure is ready
                 None
-            }).collect();
+            })
+            .collect();
 
         // Extract abstract fields
-        let fields: Vec<HirAbstractField> = abstract_decl.fields.iter().map(|field| {
-            HirAbstractField {
-                name: field.name.clone(),
-                ty: field.field_type,
-                getter: None, // Will be resolved during type checking
-                setter: None, // Will be resolved during type checking
-            }
-        }).collect();
+        let fields: Vec<HirAbstractField> = abstract_decl
+            .fields
+            .iter()
+            .map(|field| {
+                HirAbstractField {
+                    name: field.name.clone(),
+                    ty: field.field_type,
+                    getter: None, // Will be resolved during type checking
+                    setter: None, // Will be resolved during type checking
+                }
+            })
+            .collect();
 
         let hir_abstract = HirAbstract {
             symbol_id: abstract_decl.symbol_id,
             name: abstract_decl.name.clone(),
             type_params: self.lower_type_params(&abstract_decl.type_parameters),
-            underlying: abstract_decl.underlying_type.unwrap_or_else(|| self.get_dynamic_type()),
+            underlying: abstract_decl
+                .underlying_type
+                .unwrap_or_else(|| self.get_dynamic_type()),
             from_rules,
             to_rules,
             operators,
@@ -573,30 +595,28 @@ impl<'a> TastToHirContext<'a> {
             metadata: Vec::new(),
         };
 
-        self.module.types.insert(
-            type_id,
-            HirTypeDecl::Abstract(hir_abstract),
-        );
+        self.module
+            .types
+            .insert(type_id, HirTypeDecl::Abstract(hir_abstract));
     }
-    
+
     /// Lower a type alias
     fn lower_type_alias(&mut self, alias: &TypedTypeAlias) {
         // Create type ID from symbol ID (simplified)
         let type_id = TypeId::from_raw(alias.symbol_id.as_raw());
-        
+
         let hir_alias = HirTypeAlias {
             symbol_id: alias.symbol_id,
             name: alias.name.clone(),
             type_params: self.lower_type_params(&alias.type_parameters),
             aliased_type: alias.target_type,
         };
-        
-        self.module.types.insert(
-            type_id,
-            HirTypeDecl::TypeAlias(hir_alias),
-        );
+
+        self.module
+            .types
+            .insert(type_id, HirTypeDecl::TypeAlias(hir_alias));
     }
-    
+
     /// Lower a function
     fn lower_function(&mut self, function: &TypedFunction) -> HirFunction {
         // debug!(" TAST→HIR: Function {:?} has {} statements in body",
@@ -620,7 +640,8 @@ impl<'a> TastToHirContext<'a> {
         }
 
         // Get qualified name from symbol table
-        let qualified_name = self.symbol_table
+        let qualified_name = self
+            .symbol_table
             .get_symbol(function.symbol_id)
             .and_then(|sym| sym.qualified_name);
 
@@ -629,12 +650,16 @@ impl<'a> TastToHirContext<'a> {
             name: function.name.clone(),
             qualified_name,
             type_params: self.lower_type_params(&function.type_parameters),
-            params: function.parameters.iter().map(|p| self.lower_param(p)).collect(),
+            params: function
+                .parameters
+                .iter()
+                .map(|p| self.lower_param(p))
+                .collect(),
             return_type: function.return_type,
             body: hir_body,
             metadata,
             is_inline: function.effects.is_inline,
-            is_macro: false, // TODO: Extract from function metadata
+            is_macro: false,  // TODO: Extract from function metadata
             is_extern: false, // TODO: Extract from function metadata
             calling_convention: HirCallingConvention::Haxe,
             is_main,
@@ -659,7 +684,6 @@ impl<'a> TastToHirContext<'a> {
                 // 1. Variable usage patterns from SSA
                 let total_ssa_vars = dfg.ssa_variables.len();
                 if total_ssa_vars < 10 {
-                    
                     let hint_name = self.string_interner.intern("optimization_hint");
                     let hint_value = self.string_interner.intern("few_locals");
                     hints.push(HirAttribute {
@@ -669,7 +693,9 @@ impl<'a> TastToHirContext<'a> {
                 }
 
                 // 2. Dead code detection from SSA
-                let dead_nodes: usize = dfg.nodes.values()
+                let dead_nodes: usize = dfg
+                    .nodes
+                    .values()
                     .filter(|n| n.uses.is_empty() && !n.metadata.has_side_effects)
                     .count();
                 if dead_nodes > 0 {
@@ -683,7 +709,6 @@ impl<'a> TastToHirContext<'a> {
                 // 3. Phi node complexity (indicates control flow complexity)
                 let phi_count = dfg.metadata.phi_node_count;
                 if phi_count == 0 {
-                    
                     let hint_name = self.string_interner.intern("optimization_hint");
                     let hint_value = self.string_interner.intern("straight_line_code");
                     hints.push(HirAttribute {
@@ -691,7 +716,6 @@ impl<'a> TastToHirContext<'a> {
                         args: vec![HirAttributeArg::Literal(HirLiteral::String(hint_value))],
                     });
                 } else if phi_count > 20 {
-                    
                     let hint_name = self.string_interner.intern("optimization_hint");
                     let hint_value = self.string_interner.intern("complex_control_flow");
                     hints.push(HirAttribute {
@@ -702,7 +726,6 @@ impl<'a> TastToHirContext<'a> {
 
                 // 4. Value numbering opportunities
                 if dfg.value_numbering.expr_to_value.len() > 5 {
-                    
                     let hint_name = self.string_interner.intern("optimization_hint");
                     let hint_value = self.string_interner.intern("common_subexpressions");
                     hints.push(HirAttribute {
@@ -727,7 +750,6 @@ impl<'a> TastToHirContext<'a> {
         if let Some(cfg) = semantic_graphs.control_flow.get(&function.symbol_id) {
             let block_count = cfg.blocks.len();
             if block_count == 1 {
-                
                 let hint_name = self.string_interner.intern("optimization_hint");
                 let hint_value = self.string_interner.intern("single_block");
                 hints.push(HirAttribute {
@@ -739,7 +761,7 @@ impl<'a> TastToHirContext<'a> {
 
         hints
     }
-    
+
     /// Lower a constructor
     fn lower_constructor(&mut self, method: &TypedFunction) -> HirConstructor {
         let body = self.lower_block(&method.body);
@@ -754,20 +776,30 @@ impl<'a> TastToHirContext<'a> {
         // The full constructor body is preserved in `body` so no information is lost.
 
         HirConstructor {
-            params: method.parameters.iter().map(|p| self.lower_param(p)).collect(),
-            super_call: None, // Extracted in HIR constructor analysis pass
+            params: method
+                .parameters
+                .iter()
+                .map(|p| self.lower_param(p))
+                .collect(),
+            super_call: None,        // Extracted in HIR constructor analysis pass
             field_inits: Vec::new(), // Extracted in HIR constructor analysis pass
             body,
         }
     }
-    
+
     /// Lower a statement
     fn lower_statement(&mut self, stmt: &TypedStatement) -> HirStatement {
         match stmt {
-            TypedStatement::VarDeclaration { symbol_id, var_type, initializer, mutability, .. } => {
+            TypedStatement::VarDeclaration {
+                symbol_id,
+                var_type,
+                initializer,
+                mutability,
+                ..
+            } => {
                 use crate::tast::Mutability;
                 let is_mutable = matches!(mutability, Mutability::Mutable);
-                
+
                 HirStatement::Let {
                     pattern: HirPattern::Variable {
                         name: self.get_symbol_name(*symbol_id),
@@ -795,32 +827,40 @@ impl<'a> TastToHirContext<'a> {
             TypedStatement::Throw { exception, .. } => {
                 HirStatement::Throw(self.lower_expression(exception))
             }
-            TypedStatement::If { condition, then_branch, else_branch, .. } => {
-                HirStatement::If {
-                    condition: self.lower_expression(condition),
-                    then_branch: self.lower_block(std::slice::from_ref(then_branch)),
-                    else_branch: else_branch.as_ref().map(|s| 
-                        self.lower_block(std::slice::from_ref(&**s))
-                    ),
-                }
-            }
-            TypedStatement::Switch { discriminant, cases, default_case, .. } => {
+            TypedStatement::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => HirStatement::If {
+                condition: self.lower_expression(condition),
+                then_branch: self.lower_block(std::slice::from_ref(then_branch)),
+                else_branch: else_branch
+                    .as_ref()
+                    .map(|s| self.lower_block(std::slice::from_ref(&**s))),
+            },
+            TypedStatement::Switch {
+                discriminant,
+                cases,
+                default_case,
+                ..
+            } => {
                 let mut hir_cases = Vec::new();
-                
+
                 for case in cases {
                     // TAST TypedSwitchCase has case_value and body
                     let patterns = vec![self.lower_case_value_pattern(&case.case_value)];
-                    
+
                     let guard = None; // TAST doesn't have guard on switch cases
                     let body = self.lower_statement_as_block(&case.body);
-                    
+
                     hir_cases.push(HirMatchCase {
                         patterns,
                         guard,
                         body,
                     });
                 }
-                
+
                 // Add default case if present
                 if let Some(default) = default_case {
                     hir_cases.push(HirMatchCase {
@@ -829,13 +869,15 @@ impl<'a> TastToHirContext<'a> {
                         body: self.lower_block(std::slice::from_ref(&**default)),
                     });
                 }
-                
+
                 HirStatement::Switch {
                     scrutinee: self.lower_expression(discriminant),
                     cases: hir_cases,
                 }
             }
-            TypedStatement::While { condition, body, .. } => {
+            TypedStatement::While {
+                condition, body, ..
+            } => {
                 self.loop_labels.push(None);
                 let hir_stmt = HirStatement::While {
                     label: None,
@@ -846,15 +888,21 @@ impl<'a> TastToHirContext<'a> {
                 hir_stmt
             }
             // Note: DoWhile might not exist in TAST, handle via While
-            TypedStatement::For { init, condition, update, body, .. } => {
+            TypedStatement::For {
+                init,
+                condition,
+                update,
+                body,
+                ..
+            } => {
                 // Desugar for loop to while loop
                 let mut statements = Vec::new();
-                
+
                 // Add init statement if present
                 if let Some(init) = init {
                     statements.push(self.lower_statement(init));
                 }
-                
+
                 // Create while loop
                 self.loop_labels.push(None);
                 let while_body = if let Some(update) = update {
@@ -865,18 +913,19 @@ impl<'a> TastToHirContext<'a> {
                 } else {
                     self.lower_block(std::slice::from_ref(body))
                 };
-                
+
                 let while_stmt = HirStatement::While {
                     label: None,
-                    condition: condition.as_ref()
+                    condition: condition
+                        .as_ref()
                         .map(|e| self.lower_expression(e))
                         .unwrap_or_else(|| self.make_bool_literal(true)),
                     body: while_body,
                 };
                 self.loop_labels.pop();
-                
+
                 statements.push(while_stmt);
-                
+
                 // Wrap in a block
                 HirStatement::Expr(HirExpr::new(
                     HirExprKind::Block(HirBlock::new(statements, self.current_scope)),
@@ -885,10 +934,24 @@ impl<'a> TastToHirContext<'a> {
                     stmt.source_location(),
                 ))
             }
-            TypedStatement::ForIn { value_var, key_var, iterable, body, .. } => {
-                debug!(" [tast_to_hir ForIn]: Creating HirStatement::ForIn from TypedStatement::ForIn");
-                debug!(" [tast_to_hir ForIn]: value_var={:?}, key_var={:?}", value_var, key_var);
-                debug!(" [tast_to_hir ForIn]: iterable.expr_type={:?}", iterable.expr_type);
+            TypedStatement::ForIn {
+                value_var,
+                key_var,
+                iterable,
+                body,
+                ..
+            } => {
+                debug!(
+                    " [tast_to_hir ForIn]: Creating HirStatement::ForIn from TypedStatement::ForIn"
+                );
+                debug!(
+                    " [tast_to_hir ForIn]: value_var={:?}, key_var={:?}",
+                    value_var, key_var
+                );
+                debug!(
+                    " [tast_to_hir ForIn]: iterable.expr_type={:?}",
+                    iterable.expr_type
+                );
                 self.loop_labels.push(None);
 
                 // Create pattern from value_var and optional key_var
@@ -911,7 +974,7 @@ impl<'a> TastToHirContext<'a> {
                         symbol: *value_var,
                     }
                 };
-                
+
                 let hir_stmt = HirStatement::ForIn {
                     label: None,
                     pattern,
@@ -921,35 +984,45 @@ impl<'a> TastToHirContext<'a> {
                 self.loop_labels.pop();
                 hir_stmt
             }
-            TypedStatement::Try { body, catch_clauses, finally_block, .. } => {
-                let hir_catches = catch_clauses.iter().map(|c| HirCatchClause {
-                    exception_type: c.exception_type,
-                    exception_var: c.exception_variable,
-                    body: self.lower_block(std::slice::from_ref(&c.body)),
-                }).collect();
-                
+            TypedStatement::Try {
+                body,
+                catch_clauses,
+                finally_block,
+                ..
+            } => {
+                let hir_catches = catch_clauses
+                    .iter()
+                    .map(|c| HirCatchClause {
+                        exception_type: c.exception_type,
+                        exception_var: c.exception_variable,
+                        body: self.lower_block(std::slice::from_ref(&c.body)),
+                    })
+                    .collect();
+
                 HirStatement::TryCatch {
                     try_block: self.lower_block(std::slice::from_ref(body)),
                     catches: hir_catches,
-                    finally_block: finally_block.as_ref().map(|s| 
-                        self.lower_block(std::slice::from_ref(&**s))
-                    ),
+                    finally_block: finally_block
+                        .as_ref()
+                        .map(|s| self.lower_block(std::slice::from_ref(&**s))),
                 }
             }
-            TypedStatement::Block { statements, .. } => {
-                HirStatement::Expr(HirExpr::new(
-                    HirExprKind::Block(self.lower_block(statements)),
-                    self.get_void_type(),
-                    self.current_lifetime,
-                    stmt.source_location(),
-                ))
-            }
+            TypedStatement::Block { statements, .. } => HirStatement::Expr(HirExpr::new(
+                HirExprKind::Block(self.lower_block(statements)),
+                self.get_void_type(),
+                self.current_lifetime,
+                stmt.source_location(),
+            )),
             TypedStatement::Assignment { target, value, .. } => {
                 // ARRAY ACCESS OVERLOADING: Check if target is array access with @:arrayAccess set method
                 if let TypedExpressionKind::ArrayAccess { array, index } = &target.kind {
-                    if let Some((set_method, _abstract_symbol)) = self.find_array_access_method(array.expr_type, "set") {
-                        debug!(": Found array access set method for type {:?}: method symbol {:?}",
-                                  array.expr_type, set_method);
+                    if let Some((set_method, _abstract_symbol)) =
+                        self.find_array_access_method(array.expr_type, "set")
+                    {
+                        debug!(
+                            ": Found array access set method for type {:?}: method symbol {:?}",
+                            array.expr_type, set_method
+                        );
 
                         // Rewrite array assignment to method call:  `a[i] = v` → `a.set(i, v)`
                         // Create arguments: [index, value]
@@ -979,12 +1052,16 @@ impl<'a> TastToHirContext<'a> {
                     op: None,
                 }
             }
-            TypedStatement::PatternMatch { value, patterns, source_location } => {
+            TypedStatement::PatternMatch {
+                value,
+                patterns,
+                source_location,
+            } => {
                 // Desugar pattern matching to a series of if-else statements
                 // match value { pattern1 => body1, pattern2 => body2 } becomes:
                 // let _match = value;
                 // if (pattern1 matches _match) { body1 } else if (pattern2 matches _match) { body2 }
-                
+
                 self.desugar_pattern_match(value, patterns, *source_location)
             }
             _ => {
@@ -1040,7 +1117,10 @@ impl<'a> TastToHirContext<'a> {
         // This replaces hardcoded matches!(class_name, "Math" | "Sys")
         let is_static = self.stdlib_mapping.class_has_static_methods(class_name);
 
-        if self.stdlib_mapping.has_mapping(class_name, method_name, is_static) {
+        if self
+            .stdlib_mapping
+            .has_mapping(class_name, method_name, is_static)
+        {
             // Get the class name as a 'static str from the mapping registry
             // This replaces the hardcoded match statement
             let class_static = self.stdlib_mapping.get_class_static_str(class_name)?;
@@ -1084,7 +1164,8 @@ impl<'a> TastToHirContext<'a> {
                             if field.symbol_id == *symbol_id && field.is_static {
                                 // Found a static field - try to inline its constant value
                                 if let Some(ref init_expr) = field.initializer {
-                                    if let TypedExpressionKind::Literal { value } = &init_expr.kind {
+                                    if let TypedExpressionKind::Literal { value } = &init_expr.kind
+                                    {
                                         // Inline the constant value from the static field
                                         let lowered = self.lower_literal(value);
                                         inlined_static = Some(HirExprKind::Literal(lowered));
@@ -1111,13 +1192,18 @@ impl<'a> TastToHirContext<'a> {
             TypedExpressionKind::This { .. } => HirExprKind::This,
             TypedExpressionKind::Super { .. } => HirExprKind::Super,
             TypedExpressionKind::Null => HirExprKind::Null,
-            TypedExpressionKind::FieldAccess { object, field_symbol, .. } => {
-                HirExprKind::Field {
-                    object: Box::new(self.lower_expression(object)),
-                    field: *field_symbol,
-                }
-            }
-            TypedExpressionKind::StaticFieldAccess { class_symbol, field_symbol } => {
+            TypedExpressionKind::FieldAccess {
+                object,
+                field_symbol,
+                ..
+            } => HirExprKind::Field {
+                object: Box::new(self.lower_expression(object)),
+                field: *field_symbol,
+            },
+            TypedExpressionKind::StaticFieldAccess {
+                class_symbol,
+                field_symbol,
+            } => {
                 // Static fields with constant initializers should be inlined
                 // For non-constant static fields, we would need global data storage
                 let mut inlined_value = None;
@@ -1131,10 +1217,12 @@ impl<'a> TastToHirContext<'a> {
                                 if field.symbol_id == *field_symbol && field.is_static {
                                     // Check if field has a constant initializer
                                     if let Some(ref init_expr) = field.initializer {
-                                        if let TypedExpressionKind::Literal { value } = &init_expr.kind {
+                                        if let TypedExpressionKind::Literal { value } =
+                                            &init_expr.kind
+                                        {
                                             // Inline the literal value
                                             inlined_value = Some(HirExprKind::Literal(
-                                                self.lower_literal(value)
+                                                self.lower_literal(value),
                                             ));
                                         }
                                     }
@@ -1151,7 +1239,9 @@ impl<'a> TastToHirContext<'a> {
                 } else {
                     // Fallback: treat as variable (may not work for all cases)
                     // TODO: Add proper global static data storage for non-constant static fields
-                    debug!("WARNING: Static field access without constant initializer may not work");
+                    debug!(
+                        "WARNING: Static field access without constant initializer may not work"
+                    );
                     HirExprKind::Variable {
                         symbol: *field_symbol,
                         capture_mode: None,
@@ -1160,9 +1250,13 @@ impl<'a> TastToHirContext<'a> {
             }
             TypedExpressionKind::ArrayAccess { array, index } => {
                 // ARRAY ACCESS OVERLOADING: Check if array type has @:arrayAccess get method
-                if let Some((get_method, _abstract_symbol)) = self.find_array_access_method(array.expr_type, "get") {
-                    debug!(": Found array access get method for type {:?}: method symbol {:?}",
-                              array.expr_type, get_method);
+                if let Some((get_method, _abstract_symbol)) =
+                    self.find_array_access_method(array.expr_type, "get")
+                {
+                    debug!(
+                        ": Found array access get method for type {:?}: method symbol {:?}",
+                        array.expr_type, get_method
+                    );
 
                     // Rewrite array access to method call:  `a[i]` → `a.get(i)`
                     // Then try to inline it using existing infrastructure
@@ -1187,7 +1281,12 @@ impl<'a> TastToHirContext<'a> {
                     index: Box::new(self.lower_expression(index)),
                 }
             }
-            TypedExpressionKind::FunctionCall { function, type_arguments, arguments, .. } => {
+            TypedExpressionKind::FunctionCall {
+                function,
+                type_arguments,
+                arguments,
+                ..
+            } => {
                 HirExprKind::Call {
                     callee: Box::new(self.lower_expression(function)),
                     type_args: type_arguments.clone(),
@@ -1195,7 +1294,12 @@ impl<'a> TastToHirContext<'a> {
                     is_method: false, // TODO: Determine from context
                 }
             }
-            TypedExpressionKind::MethodCall { receiver, method_symbol, type_arguments, arguments } => {
+            TypedExpressionKind::MethodCall {
+                receiver,
+                method_symbol,
+                type_arguments,
+                arguments,
+            } => {
                 // println!("DEBUG lower_expression: MethodCall on type {:?}", receiver.expr_type);
 
                 // Check if this is an abstract type method that should be inlined
@@ -1204,7 +1308,7 @@ impl<'a> TastToHirContext<'a> {
                     *method_symbol,
                     arguments,
                     expr.expr_type,
-                    expr.source_location
+                    expr.source_location,
                 ) {
                     // println!("DEBUG lower_expression: Method inlined successfully!");
                     return inlined;
@@ -1220,7 +1324,7 @@ impl<'a> TastToHirContext<'a> {
                         class: class_name,
                         method: method_name,
                         is_static: _is_static,
-                        is_constructor: false,  // Not checking for constructors in this code path
+                        is_constructor: false, // Not checking for constructors in this code path
                         param_count: arguments.len(), // Use actual arg count for lookup
                     };
 
@@ -1258,18 +1362,24 @@ impl<'a> TastToHirContext<'a> {
                     is_method: true, // Mark that this was originally a method call
                 }
             }
-            TypedExpressionKind::New { class_type, type_arguments, arguments, class_name: tast_class_name } => {
+            TypedExpressionKind::New {
+                class_type,
+                type_arguments,
+                arguments,
+                class_name: tast_class_name,
+            } => {
                 // Validate constructor exists and is accessible
                 self.validate_constructor(*class_type, arguments.len(), expr.source_location);
 
                 // Use class_name from TAST if available, otherwise extract from TypeId
                 // (for cases where TypeId might be invalid, e.g., extern stdlib classes)
                 let class_name = tast_class_name.or_else(|| {
-                    self.type_table.borrow().get(*class_type)
+                    self.type_table
+                        .borrow()
+                        .get(*class_type)
                         .and_then(|type_ref| {
                             if let crate::tast::TypeKind::Class { symbol_id, .. } = &type_ref.kind {
-                                self.symbol_table.get_symbol(*symbol_id)
-                                    .map(|sym| sym.name)
+                                self.symbol_table.get_symbol(*symbol_id).map(|sym| sym.name)
                             } else {
                                 None
                             }
@@ -1285,7 +1395,9 @@ impl<'a> TastToHirContext<'a> {
             }
             TypedExpressionKind::UnaryOp { operator, operand } => {
                 // OPERATOR OVERLOADING: Check if operand has abstract type with @:op metadata
-                if let Some((method_symbol, _abstract_symbol)) = self.find_unary_operator_method(operand.expr_type, operator) {
+                if let Some((method_symbol, _abstract_symbol)) =
+                    self.find_unary_operator_method(operand.expr_type, operator)
+                {
                     // debug!(": Found unary operator method for {:?} on type {:?}: method symbol {:?}",
                     //           operator, operand.expr_type, method_symbol);
 
@@ -1294,7 +1406,7 @@ impl<'a> TastToHirContext<'a> {
                     if let Some(inlined) = self.try_inline_abstract_method(
                         operand,
                         method_symbol,
-                        &[],  // No arguments for unary operators
+                        &[], // No arguments for unary operators
                         expr.expr_type,
                         expr.source_location,
                     ) {
@@ -1312,11 +1424,17 @@ impl<'a> TastToHirContext<'a> {
                     operand: Box::new(self.lower_expression(operand)),
                 }
             }
-            TypedExpressionKind::BinaryOp { left, operator, right } => {
+            TypedExpressionKind::BinaryOp {
+                left,
+                operator,
+                right,
+            } => {
                 // ARRAY ACCESS OVERLOADING: Check if this is an assignment to array access with @:arrayAccess set method
                 if *operator == BinaryOperator::Assign {
                     if let TypedExpressionKind::ArrayAccess { array, index } = &left.kind {
-                        if let Some((set_method, _abstract_symbol)) = self.find_array_access_method(array.expr_type, "set") {
+                        if let Some((set_method, _abstract_symbol)) =
+                            self.find_array_access_method(array.expr_type, "set")
+                        {
                             // debug!(": Found array access set method in BinaryOp for type {:?}: method symbol {:?}",
                             //           array.expr_type, set_method);
 
@@ -1343,7 +1461,9 @@ impl<'a> TastToHirContext<'a> {
                 }
 
                 // OPERATOR OVERLOADING: Check if left operand has abstract type with @:op metadata
-                if let Some((method_symbol, _abstract_symbol)) = self.find_binary_operator_method(left.expr_type, operator) {
+                if let Some((method_symbol, _abstract_symbol)) =
+                    self.find_binary_operator_method(left.expr_type, operator)
+                {
                     // debug!(": Found operator method for {:?} on type {:?}: method symbol {:?}",
                     //           operator, left.expr_type, method_symbol);
 
@@ -1367,16 +1487,16 @@ impl<'a> TastToHirContext<'a> {
 
                 // Check if this is an assignment operator
                 match operator {
-                    BinaryOperator::Assign | 
-                    BinaryOperator::AddAssign |
-                    BinaryOperator::SubAssign |
-                    BinaryOperator::MulAssign |
-                    BinaryOperator::DivAssign |
-                    BinaryOperator::ModAssign => {
+                    BinaryOperator::Assign
+                    | BinaryOperator::AddAssign
+                    | BinaryOperator::SubAssign
+                    | BinaryOperator::MulAssign
+                    | BinaryOperator::DivAssign
+                    | BinaryOperator::ModAssign => {
                         // Assignments in expression position need special handling
                         // In HIR, assignments are statements, not expressions
                         // We need to create a block that performs the assignment and returns the value
-                        
+
                         // Create an assignment statement
                         let assign_stmt = HirStatement::Assign {
                             lhs: self.lower_lvalue(left),
@@ -1388,12 +1508,12 @@ impl<'a> TastToHirContext<'a> {
                                 BinaryOperator::DivAssign => Some(HirBinaryOp::Div),
                                 BinaryOperator::ModAssign => Some(HirBinaryOp::Mod),
                                 _ => None, // Simple assignment
-                            }
+                            },
                         };
-                        
+
                         // Create a variable reference to the assigned value
                         let result_expr = self.lower_expression(left);
-                        
+
                         // Wrap in a block that performs assignment and returns the value
                         HirExprKind::Block(HirBlock {
                             statements: vec![assign_stmt],
@@ -1411,7 +1531,11 @@ impl<'a> TastToHirContext<'a> {
                     }
                 }
             }
-            TypedExpressionKind::Cast { expression, target_type, cast_kind } => {
+            TypedExpressionKind::Cast {
+                expression,
+                target_type,
+                cast_kind,
+            } => {
                 use CastKind;
                 HirExprKind::Cast {
                     expr: Box::new(self.lower_expression(expression)),
@@ -1419,24 +1543,36 @@ impl<'a> TastToHirContext<'a> {
                     is_safe: !matches!(cast_kind, CastKind::Unsafe),
                 }
             }
-            TypedExpressionKind::Conditional { condition, then_expr, else_expr } => {
-                HirExprKind::If {
-                    condition: Box::new(self.lower_expression(condition)),
-                    then_expr: Box::new(self.lower_expression(then_expr)),
-                    else_expr: Box::new(else_expr.as_ref()
+            TypedExpressionKind::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+            } => HirExprKind::If {
+                condition: Box::new(self.lower_expression(condition)),
+                then_expr: Box::new(self.lower_expression(then_expr)),
+                else_expr: Box::new(
+                    else_expr
+                        .as_ref()
                         .map(|e| self.lower_expression(e))
-                        .unwrap_or_else(|| self.make_null_literal())),
-                }
-            }
-            TypedExpressionKind::FunctionLiteral { parameters, body, return_type: _ } => {
+                        .unwrap_or_else(|| self.make_null_literal()),
+                ),
+            },
+            TypedExpressionKind::FunctionLiteral {
+                parameters,
+                body,
+                return_type: _,
+            } => {
                 // Compute captured variables from the lambda body
-                let param_symbols: std::collections::HashSet<_> = parameters.iter()
-                    .map(|p| p.symbol_id)
-                    .collect();
+                let param_symbols: std::collections::HashSet<_> =
+                    parameters.iter().map(|p| p.symbol_id).collect();
 
                 let captures = self.compute_captures(body, &param_symbols);
 
-                debug!("DEBUG TAST->HIR: Lambda has {} parameters, found {} captures", parameters.len(), captures.len());
+                debug!(
+                    "DEBUG TAST->HIR: Lambda has {} parameters, found {} captures",
+                    parameters.len(),
+                    captures.len()
+                );
                 for capture in &captures {
                     debug!("  Captured symbol: {:?}", capture.symbol);
                 }
@@ -1447,26 +1583,30 @@ impl<'a> TastToHirContext<'a> {
                     captures,
                 }
             }
-            TypedExpressionKind::ArrayLiteral { elements } => {
-                HirExprKind::Array {
-                    elements: elements.iter().map(|e| self.lower_expression(e)).collect(),
-                }
-            }
-            TypedExpressionKind::ObjectLiteral { fields, .. } => {
-                HirExprKind::ObjectLiteral {
-                    fields: fields.iter().map(|f| {
-                        (f.name.clone(), self.lower_expression(&f.value))
-                    }).collect(),
-                }
-            }
-            TypedExpressionKind::MapLiteral { entries } => {
-                HirExprKind::Map {
-                    entries: entries.iter().map(|entry| {
-                        (self.lower_expression(&entry.key), self.lower_expression(&entry.value))
-                    }).collect(),
-                }
-            }
-            TypedExpressionKind::Block { statements, scope_id } => {
+            TypedExpressionKind::ArrayLiteral { elements } => HirExprKind::Array {
+                elements: elements.iter().map(|e| self.lower_expression(e)).collect(),
+            },
+            TypedExpressionKind::ObjectLiteral { fields, .. } => HirExprKind::ObjectLiteral {
+                fields: fields
+                    .iter()
+                    .map(|f| (f.name.clone(), self.lower_expression(&f.value)))
+                    .collect(),
+            },
+            TypedExpressionKind::MapLiteral { entries } => HirExprKind::Map {
+                entries: entries
+                    .iter()
+                    .map(|entry| {
+                        (
+                            self.lower_expression(&entry.key),
+                            self.lower_expression(&entry.value),
+                        )
+                    })
+                    .collect(),
+            },
+            TypedExpressionKind::Block {
+                statements,
+                scope_id,
+            } => {
                 let hir_block = HirBlock {
                     statements: statements.iter().map(|s| self.lower_statement(s)).collect(),
                     expr: None, // Block expression result handled separately
@@ -1478,7 +1618,7 @@ impl<'a> TastToHirContext<'a> {
                 // Desugar string interpolation to concatenation
                 // "Hello ${name}!" becomes "Hello " + name + "!"
                 // This simplifies later optimization and code generation
-                
+
                 if parts.is_empty() {
                     return HirExpr::new(
                         HirExprKind::Literal(HirLiteral::String(self.intern_str(""))),
@@ -1487,9 +1627,9 @@ impl<'a> TastToHirContext<'a> {
                         expr.source_location,
                     );
                 }
-                
+
                 let mut result = None;
-                
+
                 for part in parts {
                     let part_expr = match part {
                         StringInterpolationPart::String(s) => {
@@ -1505,7 +1645,7 @@ impl<'a> TastToHirContext<'a> {
                             self.lower_expression(e)
                         }
                     };
-                    
+
                     result = match result {
                         None => Some(part_expr),
                         Some(left) => {
@@ -1523,18 +1663,23 @@ impl<'a> TastToHirContext<'a> {
                         }
                     };
                 }
-                
-                result.map(|e| e.kind).unwrap_or_else(|| 
+
+                result.map(|e| e.kind).unwrap_or_else(|| {
                     HirExprKind::Literal(HirLiteral::String(self.intern_str("")))
-                )
+                })
             }
-            TypedExpressionKind::ArrayComprehension { for_parts, expression, element_type } => {
+            TypedExpressionKind::ArrayComprehension {
+                for_parts,
+                expression,
+                element_type,
+            } => {
                 // Desugar array comprehension to a loop that builds an array
                 self.desugar_array_comprehension(for_parts, expression, *element_type)
             }
             TypedExpressionKind::Return { value } => {
                 // Return as an expression creates a block that never returns normally
-                let return_stmt = HirStatement::Return(value.as_ref().map(|v| self.lower_expression(v)));
+                let return_stmt =
+                    HirStatement::Return(value.as_ref().map(|v| self.lower_expression(v)));
                 let block = HirBlock {
                     statements: vec![return_stmt],
                     expr: None,
@@ -1562,13 +1707,18 @@ impl<'a> TastToHirContext<'a> {
                 };
                 HirExprKind::Block(block)
             }
-            TypedExpressionKind::Switch { discriminant, cases, default_case } => {
+            TypedExpressionKind::Switch {
+                discriminant,
+                cases,
+                default_case,
+            } => {
                 // Convert switch expression to a block with if-then-else chain
                 let discriminant_expr = self.lower_expression(discriminant);
-                let mut current_expr = default_case.as_ref()
+                let mut current_expr = default_case
+                    .as_ref()
                     .map(|expr| self.lower_expression(expr))
                     .unwrap_or_else(|| self.make_null_literal());
-                
+
                 // Build if-then-else chain from right to left
                 for case in cases.iter().rev() {
                     let case_value = self.lower_expression(&case.case_value);
@@ -1591,7 +1741,7 @@ impl<'a> TastToHirContext<'a> {
                             )
                         }
                     };
-                    
+
                     // Create condition: discriminant == case_value
                     let condition = HirExpr::new(
                         HirExprKind::Binary {
@@ -1603,7 +1753,7 @@ impl<'a> TastToHirContext<'a> {
                         self.current_lifetime,
                         SourceLocation::unknown(),
                     );
-                    
+
                     current_expr = HirExpr::new(
                         HirExprKind::If {
                             condition: Box::new(condition),
@@ -1616,7 +1766,7 @@ impl<'a> TastToHirContext<'a> {
                         SourceLocation::unknown(),
                     );
                 }
-                
+
                 current_expr.kind
             }
             TypedExpressionKind::Throw { expression } => {
@@ -1630,40 +1780,52 @@ impl<'a> TastToHirContext<'a> {
                 };
                 HirExprKind::Block(block)
             }
-            TypedExpressionKind::Try { try_expr, catch_clauses, finally_block } => {
+            TypedExpressionKind::Try {
+                try_expr,
+                catch_clauses,
+                finally_block,
+            } => {
                 // Lower try-catch-finally expression to HIR
                 let try_body = self.lower_expression(try_expr);
-                let catch_handlers = catch_clauses.iter().map(|clause| {
-                    // Lower the catch body
-                    let body = match &clause.body {
-                        TypedStatement::Expression { expression, .. } => {
-                            self.lower_expression(expression)
-                        }
-                        _ => {
-                            let stmt = self.lower_statement(&clause.body);
-                            // Wrap statement in a block expression
-                            HirExpr::new(
-                                HirExprKind::Block(HirBlock {
-                                    statements: vec![stmt],
-                                    expr: None,
-                                    scope: self.current_scope,
-                                }),
-                                self.get_void_type(),
-                                self.current_lifetime,
-                                SourceLocation::unknown(),
-                            )
-                        }
-                    };
+                let catch_handlers = catch_clauses
+                    .iter()
+                    .map(|clause| {
+                        // Lower the catch body
+                        let body = match &clause.body {
+                            TypedStatement::Expression { expression, .. } => {
+                                self.lower_expression(expression)
+                            }
+                            _ => {
+                                let stmt = self.lower_statement(&clause.body);
+                                // Wrap statement in a block expression
+                                HirExpr::new(
+                                    HirExprKind::Block(HirBlock {
+                                        statements: vec![stmt],
+                                        expr: None,
+                                        scope: self.current_scope,
+                                    }),
+                                    self.get_void_type(),
+                                    self.current_lifetime,
+                                    SourceLocation::unknown(),
+                                )
+                            }
+                        };
 
-                    crate::ir::hir::HirCatchHandler {
-                        exception_var: clause.exception_variable,
-                        exception_type: clause.exception_type,
-                        guard: clause.filter.as_ref().map(|f| Box::new(self.lower_expression(f))),
-                        body: Box::new(body),
-                    }
-                }).collect();
+                        crate::ir::hir::HirCatchHandler {
+                            exception_var: clause.exception_variable,
+                            exception_type: clause.exception_type,
+                            guard: clause
+                                .filter
+                                .as_ref()
+                                .map(|f| Box::new(self.lower_expression(f))),
+                            body: Box::new(body),
+                        }
+                    })
+                    .collect();
 
-                let finally_expr = finally_block.as_ref().map(|f| Box::new(self.lower_expression(f)));
+                let finally_expr = finally_block
+                    .as_ref()
+                    .map(|f| Box::new(self.lower_expression(f)));
 
                 HirExprKind::TryCatch {
                     try_expr: Box::new(try_body),
@@ -1671,7 +1833,12 @@ impl<'a> TastToHirContext<'a> {
                     finally_expr,
                 }
             }
-            TypedExpressionKind::StaticMethodCall { class_symbol, method_symbol, type_arguments, arguments } => {
+            TypedExpressionKind::StaticMethodCall {
+                class_symbol,
+                method_symbol,
+                type_arguments,
+                arguments,
+            } => {
                 // Lower static method call to a regular function call
                 // Static methods are just functions in the class namespace
                 HirExprKind::Call {
@@ -1685,25 +1852,37 @@ impl<'a> TastToHirContext<'a> {
                         expr.source_location,
                     )),
                     type_args: type_arguments.clone(),
-                    args: arguments.iter().map(|arg| self.lower_expression(arg)).collect(),
-                    is_method: false,  // Static methods are regular function calls
+                    args: arguments
+                        .iter()
+                        .map(|arg| self.lower_expression(arg))
+                        .collect(),
+                    is_method: false, // Static methods are regular function calls
                 }
             }
-            TypedExpressionKind::PatternPlaceholder { pattern, source_location } => {
+            TypedExpressionKind::PatternPlaceholder {
+                pattern,
+                source_location,
+            } => {
                 // Complex patterns (object, type, enum constructor, array rest) are
                 // not yet compiled to decision trees. For now, lower as a wildcard
                 // match (null) so the switch case compiles. This is semantically a
                 // placeholder — proper pattern compilation is future work.
                 HirExprKind::Null
             }
-            TypedExpressionKind::StaticFieldAccess { class_symbol, field_symbol } => {
+            TypedExpressionKind::StaticFieldAccess {
+                class_symbol,
+                field_symbol,
+            } => {
                 // Static field access is a variable reference to the field symbol
                 HirExprKind::Variable {
                     symbol: *field_symbol,
                     capture_mode: None,
                 }
             }
-            TypedExpressionKind::While { condition, then_expr } => {
+            TypedExpressionKind::While {
+                condition,
+                then_expr,
+            } => {
                 // While loops as expressions: wrap in a block with a while statement
                 let cond = self.lower_expression(condition);
                 let body_expr = self.lower_expression(then_expr);
@@ -1722,7 +1901,11 @@ impl<'a> TastToHirContext<'a> {
                     scope: self.current_scope,
                 })
             }
-            TypedExpressionKind::For { variable, iterable, body } => {
+            TypedExpressionKind::For {
+                variable,
+                iterable,
+                body,
+            } => {
                 let _iter_expr = self.lower_expression(iterable);
                 let body_expr = self.lower_expression(body);
                 let while_stmt = HirStatement::While {
@@ -1740,7 +1923,12 @@ impl<'a> TastToHirContext<'a> {
                     scope: self.current_scope,
                 })
             }
-            TypedExpressionKind::ForIn { value_var, key_var, iterable, body } => {
+            TypedExpressionKind::ForIn {
+                value_var,
+                key_var,
+                iterable,
+                body,
+            } => {
                 let _iter_expr = self.lower_expression(iterable);
                 let body_expr = self.lower_expression(body);
                 let while_stmt = HirStatement::While {
@@ -1758,17 +1946,26 @@ impl<'a> TastToHirContext<'a> {
                     scope: self.current_scope,
                 })
             }
-            TypedExpressionKind::Is { expression, check_type } => {
+            TypedExpressionKind::Is {
+                expression,
+                check_type,
+            } => {
                 // Type check expression — lower as a call or placeholder
                 let inner = self.lower_expression(expression);
                 // For now, lower as the expression itself (type check is a future feature)
                 return inner;
             }
-            TypedExpressionKind::Meta { metadata, expression } => {
+            TypedExpressionKind::Meta {
+                metadata,
+                expression,
+            } => {
                 // Metadata-annotated expression — just lower the inner expression
                 return self.lower_expression(expression);
             }
-            TypedExpressionKind::MacroExpression { macro_symbol, arguments } => {
+            TypedExpressionKind::MacroExpression {
+                macro_symbol,
+                arguments,
+            } => {
                 // Macro expression — lower as a function call
                 HirExprKind::Call {
                     callee: Box::new(HirExpr::new(
@@ -1781,7 +1978,10 @@ impl<'a> TastToHirContext<'a> {
                         expr.source_location,
                     )),
                     type_args: Vec::new(),
-                    args: arguments.iter().map(|arg| self.lower_expression(arg)).collect(),
+                    args: arguments
+                        .iter()
+                        .map(|arg| self.lower_expression(arg))
+                        .collect(),
                     is_method: false,
                 }
             }
@@ -1792,15 +1992,10 @@ impl<'a> TastToHirContext<'a> {
                 return self.make_error_expr(&error_msg, expr.source_location);
             }
         };
-        
-        HirExpr::new(
-            kind,
-            expr.expr_type,
-            expr.lifetime_id,
-            expr.source_location,
-        )
+
+        HirExpr::new(kind, expr.expr_type, expr.lifetime_id, expr.source_location)
     }
-    
+
     /// Lower a block of statements
     fn lower_block(&mut self, statements: &[TypedStatement]) -> HirBlock {
         // Debug: Print statement types
@@ -1821,9 +2016,7 @@ impl<'a> TastToHirContext<'a> {
             // debug!(" TAST statement {}: {}", i, stmt_type);
         }
 
-        let hir_stmts: Vec<_> = statements.iter()
-            .map(|s| self.lower_statement(s))
-            .collect();
+        let hir_stmts: Vec<_> = statements.iter().map(|s| self.lower_statement(s)).collect();
 
         // Debug: Print HIR statement types
         for (i, stmt) in hir_stmts.iter().enumerate() {
@@ -1841,22 +2034,22 @@ impl<'a> TastToHirContext<'a> {
 
         HirBlock::new(hir_stmts, self.current_scope)
     }
-    
+
     // Helper methods...
-    
+
     fn lower_pattern(&mut self, pattern: &TypedPattern) -> HirPattern {
         match pattern {
-            TypedPattern::Variable { symbol_id, .. } => {
-                HirPattern::Variable {
-                    name: self.get_symbol_name(*symbol_id),
-                    symbol: *symbol_id,
-                }
-            }
+            TypedPattern::Variable { symbol_id, .. } => HirPattern::Variable {
+                name: self.get_symbol_name(*symbol_id),
+                symbol: *symbol_id,
+            },
             TypedPattern::Wildcard { .. } => HirPattern::Wildcard,
             TypedPattern::Literal { value, .. } => {
                 HirPattern::Literal(self.lower_expression_as_literal(value))
             }
-            TypedPattern::Constructor { constructor, args, .. } => {
+            TypedPattern::Constructor {
+                constructor, args, ..
+            } => {
                 // Extract enum type from constructor symbol
                 HirPattern::Constructor {
                     // TODO: Get actual enum type from constructor symbol
@@ -1866,51 +2059,51 @@ impl<'a> TastToHirContext<'a> {
                 }
             }
             // TAST doesn't have Tuple pattern, handle via Array
-            TypedPattern::Array { elements, rest, .. } => {
-                HirPattern::Array {
-                    elements: elements.iter().map(|e| self.lower_pattern(e)).collect(),
-                    rest: rest.as_ref().map(|r| Box::new(self.lower_pattern(r))),
-                }
-            }
+            TypedPattern::Array { elements, rest, .. } => HirPattern::Array {
+                elements: elements.iter().map(|e| self.lower_pattern(e)).collect(),
+                rest: rest.as_ref().map(|r| Box::new(self.lower_pattern(r))),
+            },
             TypedPattern::Object { fields, .. } => {
                 HirPattern::Object {
-                    fields: fields.iter().map(|f| {
-                        (self.intern_str(&f.field_name), self.lower_pattern(&f.pattern))
-                    }).collect(),
+                    fields: fields
+                        .iter()
+                        .map(|f| {
+                            (
+                                self.intern_str(&f.field_name),
+                                self.lower_pattern(&f.pattern),
+                            )
+                        })
+                        .collect(),
                     rest: false, // TODO: Extract from pattern
                 }
             }
             // TAST doesn't have Or pattern directly
-            TypedPattern::Guard { pattern, guard } => {
-                HirPattern::Guard {
-                    pattern: Box::new(self.lower_pattern(pattern)),
-                    condition: self.lower_expression(guard),
-                }
-            }
+            TypedPattern::Guard { pattern, guard } => HirPattern::Guard {
+                pattern: Box::new(self.lower_pattern(pattern)),
+                condition: self.lower_expression(guard),
+            },
             TypedPattern::Extractor { .. } => {
                 // Extractor patterns need special handling
                 HirPattern::Wildcard
             }
         }
     }
-    
+
     fn lower_lvalue(&mut self, expr: &TypedExpression) -> HirLValue {
         match &expr.kind {
-            TypedExpressionKind::Variable { symbol_id } => {
-                HirLValue::Variable(*symbol_id)
-            }
-            TypedExpressionKind::FieldAccess { object, field_symbol, .. } => {
-                HirLValue::Field {
-                    object: Box::new(self.lower_expression(object)),
-                    field: *field_symbol,
-                }
-            }
-            TypedExpressionKind::ArrayAccess { array, index } => {
-                HirLValue::Index {
-                    object: Box::new(self.lower_expression(array)),
-                    index: Box::new(self.lower_expression(index)),
-                }
-            }
+            TypedExpressionKind::Variable { symbol_id } => HirLValue::Variable(*symbol_id),
+            TypedExpressionKind::FieldAccess {
+                object,
+                field_symbol,
+                ..
+            } => HirLValue::Field {
+                object: Box::new(self.lower_expression(object)),
+                field: *field_symbol,
+            },
+            TypedExpressionKind::ArrayAccess { array, index } => HirLValue::Index {
+                object: Box::new(self.lower_expression(array)),
+                index: Box::new(self.lower_expression(index)),
+            },
             _ => {
                 self.add_error("Invalid assignment target", expr.source_location);
                 // Return invalid symbol - this will be caught during validation
@@ -1918,7 +2111,7 @@ impl<'a> TastToHirContext<'a> {
             }
         }
     }
-    
+
     fn lower_literal(&mut self, lit: &LiteralValue) -> HirLiteral {
         match lit {
             LiteralValue::Int(i) => HirLiteral::Int(*i),
@@ -1936,7 +2129,7 @@ impl<'a> TastToHirContext<'a> {
             },
         }
     }
-    
+
     fn convert_unary_op(&self, op: &UnaryOperator) -> HirUnaryOp {
         match op {
             UnaryOperator::Not => HirUnaryOp::Not,
@@ -1948,7 +2141,7 @@ impl<'a> TastToHirContext<'a> {
             UnaryOperator::PostDec => HirUnaryOp::PostDecr,
         }
     }
-    
+
     fn convert_binary_op(&self, op: &BinaryOperator) -> HirBinaryOp {
         match op {
             BinaryOperator::Add => HirBinaryOp::Add,
@@ -1973,7 +2166,7 @@ impl<'a> TastToHirContext<'a> {
             _ => HirBinaryOp::Add, // Default fallback
         }
     }
-    
+
     fn convert_visibility(&self, vis: Visibility) -> HirVisibility {
         match vis {
             Visibility::Public => HirVisibility::Public,
@@ -1982,10 +2175,12 @@ impl<'a> TastToHirContext<'a> {
             Visibility::Internal => HirVisibility::Internal,
         }
     }
-    
+
     fn lower_import(&mut self, import: &TypedImport) {
         // Convert module path from InternedString to String
-        let module_path_str = self.string_interner.get(import.module_path)
+        let module_path_str = self
+            .string_interner
+            .get(import.module_path)
             .unwrap_or("Unknown");
         let module_path = module_path_str.split('.').map(|s| s.to_string()).collect();
 
@@ -1993,20 +2188,25 @@ impl<'a> TastToHirContext<'a> {
         // For now, we just track the symbol names - actual symbol resolution happens during import
         let imported_symbols = if let Some(symbols) = &import.imported_symbols {
             // Create symbol IDs for each imported symbol name
-            symbols.iter().filter_map(|&sym_str| {
-                // Look up the symbol in the symbol table
-                // The symbol should have been registered during TAST lowering
-                // if let Some(name) = self.string_interner.get(sym_str) {
-                //     debug!(": Lowering import symbol: {}", name);
-                // }
-                None // For now, we don't track the actual SymbolIds in HIR imports
-            }).collect()
+            symbols
+                .iter()
+                .filter_map(|&sym_str| {
+                    // Look up the symbol in the symbol table
+                    // The symbol should have been registered during TAST lowering
+                    // if let Some(name) = self.string_interner.get(sym_str) {
+                    //     debug!(": Lowering import symbol: {}", name);
+                    // }
+                    None // For now, we don't track the actual SymbolIds in HIR imports
+                })
+                .collect()
         } else {
             Vec::new()
         };
 
         // Convert alias if present
-        let alias = import.alias.and_then(|a| self.string_interner.get(a).map(|s| s.to_string()));
+        let alias = import
+            .alias
+            .and_then(|a| self.string_interner.get(a).map(|s| s.to_string()));
 
         let hir_import = HirImport {
             module_path,
@@ -2017,37 +2217,43 @@ impl<'a> TastToHirContext<'a> {
 
         self.module.imports.push(hir_import);
     }
-    
+
     fn lower_module_field(&mut self, _field: &TypedModuleField) {
         // TODO: Implement module field lowering
     }
-    
+
     fn lower_type_params(&mut self, params: &[TypedTypeParameter]) -> Vec<HirTypeParam> {
-        params.iter().map(|param| {
-            HirTypeParam {
-                name: param.name.clone(),
-                bounds: param.constraints.clone(),
-                default: None, // TODO: Add default type support if needed
-            }
-        }).collect()
+        params
+            .iter()
+            .map(|param| {
+                HirTypeParam {
+                    name: param.name.clone(),
+                    bounds: param.constraints.clone(),
+                    default: None, // TODO: Add default type support if needed
+                }
+            })
+            .collect()
     }
-    
+
     fn lower_param(&mut self, param: &TypedParameter) -> HirParam {
         HirParam {
             symbol_id: param.symbol_id, // Preserve symbol ID for variable lookup in MIR!
             name: param.name.clone(),
             ty: param.param_type,
-            default: param.default_value.as_ref().map(|e| self.lower_expression(e)),
+            default: param
+                .default_value
+                .as_ref()
+                .map(|e| self.lower_expression(e)),
             is_optional: param.is_optional,
             is_rest: false, // TODO: Extract from parameter metadata
         }
     }
-    
+
     fn lower_metadata(&mut self, _metadata: &[TypedMetadata]) -> Vec<HirAttribute> {
         // TODO: Implement metadata lowering
         Vec::new()
     }
-    
+
     /// Desugar array comprehension into a loop that builds an array
     /// [for (x in xs) if (condition) expression] becomes:
     /// {
@@ -2060,10 +2266,10 @@ impl<'a> TastToHirContext<'a> {
     ///     result
     /// }
     fn desugar_array_comprehension(
-        &mut self, 
-        for_parts: &[TypedComprehensionFor], 
+        &mut self,
+        for_parts: &[TypedComprehensionFor],
         expression: &TypedExpression,
-        element_type: TypeId
+        element_type: TypeId,
     ) -> HirExprKind {
         // Full desugaring: [for (x in xs) if (cond) expr] becomes:
         // {
@@ -2075,21 +2281,23 @@ impl<'a> TastToHirContext<'a> {
         //     }
         //     _tmp
         // }
-        
+
         let mut statements = Vec::new();
-        
+
         // 1. Create temporary array variable
         let (temp_name, temp_symbol) = self.gen_temp_var();
         let array_type = self.type_table.borrow_mut().create_array_type(element_type);
-        
+
         // Create empty array literal
         let empty_array = HirExpr::new(
-            HirExprKind::Array { elements: Vec::new() },
+            HirExprKind::Array {
+                elements: Vec::new(),
+            },
             array_type,
             self.current_lifetime,
             SourceLocation::unknown(),
         );
-        
+
         // let _tmp = []
         statements.push(HirStatement::Let {
             pattern: HirPattern::Variable {
@@ -2100,13 +2308,13 @@ impl<'a> TastToHirContext<'a> {
             init: Some(empty_array),
             is_mutable: true,
         });
-        
+
         // 2. Build nested for loops
         let mut current_body = match self.build_comprehension_body(
             expression,
             temp_symbol,
             temp_name.clone(),
-            array_type
+            array_type,
         ) {
             Ok(body) => body,
             Err(err) => {
@@ -2115,7 +2323,7 @@ impl<'a> TastToHirContext<'a> {
                 return error_expr.kind;
             }
         };
-        
+
         // Iterate through for parts in reverse to build nested structure
         for for_part in for_parts.iter().rev() {
             let pattern = if let Some(key_var) = for_part.key_var_symbol {
@@ -2137,12 +2345,12 @@ impl<'a> TastToHirContext<'a> {
                     symbol: for_part.var_symbol,
                 }
             };
-            
+
             // BACKLOG: TypedComprehensionFor doesn't have a condition field
             // Haxe array comprehensions support filters like: [for (x in xs) if (x > 0) x * 2]
             // Need to check how filters are represented in TAST
             // For now, no filter support in desugaring
-            
+
             // Create for-in loop
             let for_stmt = HirStatement::ForIn {
                 label: None,
@@ -2150,13 +2358,13 @@ impl<'a> TastToHirContext<'a> {
                 iterator: self.lower_expression(&for_part.iterator),
                 body: current_body,
             };
-            
+
             current_body = HirBlock::new(vec![for_stmt], self.current_scope);
         }
-        
+
         // Add the nested loops to statements
         statements.extend(current_body.statements);
-        
+
         // 3. Return the temporary array variable
         let result_expr = HirExpr::new(
             HirExprKind::Variable {
@@ -2167,17 +2375,17 @@ impl<'a> TastToHirContext<'a> {
             self.current_lifetime,
             SourceLocation::unknown(),
         );
-        
+
         // Create block that evaluates to the array
         let block = HirBlock {
             statements,
             expr: Some(Box::new(result_expr)),
             scope: self.current_scope,
         };
-        
+
         HirExprKind::Block(block)
     }
-    
+
     /// Build the innermost body for array comprehension that pushes to the array
     fn build_comprehension_body(
         &mut self,
@@ -2196,18 +2404,18 @@ impl<'a> TastToHirContext<'a> {
             self.current_lifetime,
             SourceLocation::unknown(),
         );
-        
+
         // BACKLOG: Need proper method resolution for Array.push
         // See src/ir/BACKLOG.md section 2a
         // For now, we cannot properly resolve the push method symbol
         // This blocks correct array comprehension desugaring
-        
+
         // Attempt to look up push method from Array type
         let push_symbol = self.lookup_array_push_method(array_type)
             .ok_or_else(|| {
                 format!("Cannot resolve Array.push method for comprehension desugaring. Array type methods must be loaded from haxe-std")
             })?;
-        
+
         // Create method call: array.push(element)
         let push_call = HirExpr::new(
             HirExprKind::Call {
@@ -2228,13 +2436,13 @@ impl<'a> TastToHirContext<'a> {
             self.current_lifetime,
             SourceLocation::unknown(),
         );
-        
+
         Ok(HirBlock::new(
             vec![HirStatement::Expr(push_call)],
             self.current_scope,
         ))
     }
-    
+
     fn make_bool_literal(&self, value: bool) -> HirExpr {
         HirExpr::new(
             HirExprKind::Literal(HirLiteral::Bool(value)),
@@ -2243,7 +2451,7 @@ impl<'a> TastToHirContext<'a> {
             SourceLocation::unknown(),
         )
     }
-    
+
     fn make_null_literal(&self) -> HirExpr {
         HirExpr::new(
             HirExprKind::Null,
@@ -2252,14 +2460,14 @@ impl<'a> TastToHirContext<'a> {
             SourceLocation::unknown(),
         )
     }
-    
+
     fn add_error(&mut self, msg: &str, location: SourceLocation) {
         self.errors.push(LoweringError {
             message: msg.to_string(),
             location,
         });
     }
-    
+
     /// Create an error expression node that preserves structure during error recovery
     /// Get a human-readable name for an expression type
     fn get_expression_type_name(&self, kind: &TypedExpressionKind) -> String {
@@ -2278,7 +2486,9 @@ impl<'a> TastToHirContext<'a> {
             TypedExpressionKind::UnaryOp { .. } => "unary operation".to_string(),
             TypedExpressionKind::BinaryOp { .. } => "binary operation".to_string(),
             TypedExpressionKind::Cast { .. } => "type cast".to_string(),
-            TypedExpressionKind::Conditional { .. } => "conditional expression (ternary)".to_string(),
+            TypedExpressionKind::Conditional { .. } => {
+                "conditional expression (ternary)".to_string()
+            }
             TypedExpressionKind::FunctionLiteral { .. } => "function literal".to_string(),
             TypedExpressionKind::ArrayLiteral { .. } => "array literal".to_string(),
             TypedExpressionKind::ObjectLiteral { .. } => "object literal".to_string(),
@@ -2313,14 +2523,14 @@ impl<'a> TastToHirContext<'a> {
             location,
         )
     }
-    
+
     /// Create an error statement node
     fn make_error_stmt(&mut self, msg: &str, location: SourceLocation) -> HirStatement {
         self.add_error(msg, location);
         // Return a no-op statement
         HirStatement::Expr(self.make_error_expr(msg, location))
     }
-    
+
     /// Get symbol name from symbol table
     fn get_symbol_name(&self, symbol_id: SymbolId) -> InternedString {
         // Look up symbol name from the symbol table
@@ -2332,12 +2542,12 @@ impl<'a> TastToHirContext<'a> {
             self.intern_str(&name)
         }
     }
-    
+
     /// Intern a string
     fn intern_str(&self, s: &str) -> InternedString {
         self.string_interner.intern(s)
     }
-    
+
     /// Generate a unique temporary variable name
     fn gen_temp_var(&mut self) -> (InternedString, SymbolId) {
         let name = format!("_tmp{}", self.temp_var_counter);
@@ -2347,7 +2557,7 @@ impl<'a> TastToHirContext<'a> {
         let symbol_id = SymbolId::from_raw(u32::MAX - self.temp_var_counter);
         (interned, symbol_id)
     }
-    
+
     /// Look up the push method for Array type
     fn lookup_array_push_method(&self, array_type: TypeId) -> Option<SymbolId> {
         // Array is loaded from haxe-std/Array.hx as an extern class
@@ -2360,7 +2570,10 @@ impl<'a> TastToHirContext<'a> {
 
         // Strategy 1: Look for "Array.push" qualified name
         let array_push_qualified = self.string_interner.intern("Array.push");
-        if let Some(symbol_id) = self.symbol_table.resolve_qualified_name(array_push_qualified) {
+        if let Some(symbol_id) = self
+            .symbol_table
+            .resolve_qualified_name(array_push_qualified)
+        {
             return Some(symbol_id);
         }
 
@@ -2393,21 +2606,21 @@ impl<'a> TastToHirContext<'a> {
         // If we still can't find it, the standard library wasn't properly loaded
         None
     }
-    
+
     /// Desugar pattern matching statement to if-else chain
     fn desugar_pattern_match(
-        &mut self, 
+        &mut self,
         value: &TypedExpression,
         patterns: &[TypedPatternCase],
-        source_location: SourceLocation
+        source_location: SourceLocation,
     ) -> HirStatement {
         if patterns.is_empty() {
             return self.make_error_stmt("Pattern match with no cases", source_location);
         }
-        
+
         // Generate temp variable to hold matched value
         let (match_var_name, match_var_symbol) = self.gen_temp_var();
-        
+
         // Create let statement for matched value
         let match_let = HirStatement::Let {
             pattern: HirPattern::Variable {
@@ -2418,21 +2631,18 @@ impl<'a> TastToHirContext<'a> {
             init: Some(self.lower_expression(value)),
             is_mutable: false,
         };
-        
+
         // Build if-else chain from patterns
         let mut else_branch: Option<HirBlock> = None;
-        
+
         // Process patterns in reverse to build nested if-else
         for (i, case) in patterns.iter().enumerate().rev() {
             let is_last = i == patterns.len() - 1;
-            
+
             // Generate condition from pattern
-            let (condition, bindings) = self.pattern_to_condition(
-                &case.pattern,
-                match_var_symbol,
-                value.expr_type
-            );
-            
+            let (condition, bindings) =
+                self.pattern_to_condition(&case.pattern, match_var_symbol, value.expr_type);
+
             // Add guard condition if present
             let final_condition = if let Some(guard) = &case.guard {
                 // Combine pattern condition with guard: pattern_cond && guard
@@ -2449,10 +2659,10 @@ impl<'a> TastToHirContext<'a> {
             } else {
                 condition
             };
-            
+
             // Build body with bindings
             let mut body_stmts = Vec::new();
-            
+
             // Add variable bindings from pattern
             for (bind_symbol, bind_expr) in bindings {
                 body_stmts.push(HirStatement::Let {
@@ -2465,30 +2675,30 @@ impl<'a> TastToHirContext<'a> {
                     is_mutable: false,
                 });
             }
-            
+
             // Add the actual case body
             body_stmts.push(self.lower_statement(&case.body));
-            
+
             let then_branch = HirBlock::new(body_stmts, self.current_scope);
-            
+
             // Create if statement
             let if_stmt = HirStatement::If {
                 condition: final_condition,
                 then_branch,
                 else_branch,
             };
-            
+
             // This if becomes the else branch for the previous case
             else_branch = Some(HirBlock::new(vec![if_stmt], self.current_scope));
         }
-        
+
         // Combine match variable declaration with the if-else chain
         let mut statements = vec![match_let];
         if let Some(else_block) = else_branch {
             // The else_block contains the entire if-else chain
             statements.extend(else_block.statements);
         }
-        
+
         // Wrap in a block statement
         HirStatement::Expr(HirExpr::new(
             HirExprKind::Block(HirBlock::new(statements, self.current_scope)),
@@ -2497,7 +2707,7 @@ impl<'a> TastToHirContext<'a> {
             source_location,
         ))
     }
-    
+
     /// Convert a pattern to a condition expression and extract variable bindings
     fn pattern_to_condition(
         &mut self,
@@ -2506,13 +2716,17 @@ impl<'a> TastToHirContext<'a> {
         match_type: TypeId,
     ) -> (HirExpr, Vec<(SymbolId, HirExpr)>) {
         let mut bindings = Vec::new();
-        
+
         let condition = match pattern {
             TypedPattern::Wildcard { .. } => {
                 // Wildcard always matches
                 self.make_bool_literal(true)
             }
-            TypedPattern::Variable { symbol_id, source_location, .. } => {
+            TypedPattern::Variable {
+                symbol_id,
+                source_location,
+                ..
+            } => {
                 // Variable pattern always matches and creates a binding
                 let match_expr = HirExpr::new(
                     HirExprKind::Variable {
@@ -2526,7 +2740,10 @@ impl<'a> TastToHirContext<'a> {
                 bindings.push((*symbol_id, match_expr));
                 self.make_bool_literal(true)
             }
-            TypedPattern::Literal { value, source_location } => {
+            TypedPattern::Literal {
+                value,
+                source_location,
+            } => {
                 // Literal pattern: match_var == literal
                 let match_expr = HirExpr::new(
                     HirExprKind::Variable {
@@ -2548,58 +2765,69 @@ impl<'a> TastToHirContext<'a> {
                     *source_location,
                 )
             }
-            TypedPattern::Constructor { constructor, args, source_location, .. } => {
+            TypedPattern::Constructor {
+                constructor,
+                args,
+                source_location,
+                ..
+            } => {
                 // Constructor pattern: check type and extract fields
                 // BACKLOG: Need proper enum variant checking
                 // This requires:
                 // 1. Runtime type information for enum variants
                 // 2. Field extraction from enum constructors
                 // 3. Nested pattern matching for constructor arguments
-                
+
                 // For now, create a placeholder that always fails
                 self.add_error(
                     "Constructor patterns not yet supported in desugaring",
-                    *source_location
+                    *source_location,
                 );
                 self.make_bool_literal(false)
             }
-            TypedPattern::Array { elements, rest, source_location, .. } => {
+            TypedPattern::Array {
+                elements,
+                rest,
+                source_location,
+                ..
+            } => {
                 // Array pattern: check length and elements
                 // BACKLOG: Need proper array pattern matching
                 // This requires:
                 // 1. Array length checking
                 // 2. Element extraction and matching
                 // 3. Rest pattern handling
-                
+
                 self.add_error(
                     "Array patterns not yet supported in desugaring",
-                    *source_location
+                    *source_location,
                 );
                 self.make_bool_literal(false)
             }
-            TypedPattern::Object { fields, source_location, .. } => {
+            TypedPattern::Object {
+                fields,
+                source_location,
+                ..
+            } => {
                 // Object pattern: check fields
                 // BACKLOG: Need proper object pattern matching
                 // This requires:
                 // 1. Field existence checking
                 // 2. Field extraction and matching
                 // 3. Nested pattern matching for field values
-                
+
                 self.add_error(
                     "Object patterns not yet supported in desugaring",
-                    *source_location
+                    *source_location,
                 );
                 self.make_bool_literal(false)
             }
             TypedPattern::Guard { pattern, guard } => {
                 // Guard pattern: pattern && guard
-                let (pattern_cond, pattern_bindings) = self.pattern_to_condition(
-                    pattern,
-                    match_var,
-                    match_type
-                );
+                let (pattern_cond, pattern_bindings) =
+                    self.pattern_to_condition(pattern, match_var, match_type);
                 bindings.extend(pattern_bindings);
-                
+
                 HirExpr::new(
                     HirExprKind::Binary {
                         op: HirBinaryOp::And,
@@ -2611,20 +2839,22 @@ impl<'a> TastToHirContext<'a> {
                     guard.source_location,
                 )
             }
-            TypedPattern::Extractor { source_location, .. } => {
+            TypedPattern::Extractor {
+                source_location, ..
+            } => {
                 // Extractor pattern: needs special handling
                 // BACKLOG: Extractor patterns require method calls
                 self.add_error(
                     "Extractor patterns not yet supported in desugaring",
-                    *source_location
+                    *source_location,
                 );
                 self.make_bool_literal(false)
             }
         };
-        
+
         (condition, bindings)
     }
-    
+
     /// Extract function metadata
     fn extract_function_metadata(&self, metadata: &FunctionMetadata) -> Vec<HirAttribute> {
         let mut attrs = Vec::new();
@@ -2634,7 +2864,9 @@ impl<'a> TastToHirContext<'a> {
             let complexity_name = self.string_interner.intern("complexity");
             attrs.push(HirAttribute {
                 name: complexity_name,
-                args: vec![HirAttributeArg::Literal(HirLiteral::Int(metadata.complexity_score as i64))],
+                args: vec![HirAttributeArg::Literal(HirLiteral::Int(
+                    metadata.complexity_score as i64,
+                ))],
             });
         }
 
@@ -2658,7 +2890,7 @@ impl<'a> TastToHirContext<'a> {
 
         attrs
     }
-    
+
     /// Lower a switch case value to a pattern
     fn lower_case_value_pattern(&mut self, expr: &TypedExpression) -> HirPattern {
         // Convert constant expression to pattern
@@ -2669,7 +2901,7 @@ impl<'a> TastToHirContext<'a> {
             _ => HirPattern::Wildcard,
         }
     }
-    
+
     /// Convert a single statement to a block
     fn lower_statement_as_block(&mut self, stmt: &TypedStatement) -> HirBlock {
         HirBlock {
@@ -2678,7 +2910,7 @@ impl<'a> TastToHirContext<'a> {
             scope: self.current_scope,
         }
     }
-    
+
     /// Convert statements to an expression
     fn lower_statements_as_expr(&mut self, stmts: &[TypedStatement]) -> HirExpr {
         let block = self.lower_block(stmts);
@@ -2689,7 +2921,7 @@ impl<'a> TastToHirContext<'a> {
             SourceLocation::unknown(),
         )
     }
-    
+
     /// Look up method type from symbol table
     fn lookup_method_type(&mut self, method_symbol: SymbolId, receiver_type: TypeId) -> TypeId {
         // Try to get the method's type from the symbol table
@@ -2698,15 +2930,15 @@ impl<'a> TastToHirContext<'a> {
                 return symbol_info.type_id;
             }
         }
-        
+
         // Fallback: return the receiver type (method should return something compatible)
         self.add_error(
             &format!("Method type not found for symbol {:?}", method_symbol),
-            SourceLocation::unknown()
+            SourceLocation::unknown(),
         );
         receiver_type
     }
-    
+
     /// Look up enum type from constructor symbol
     fn lookup_enum_type(&mut self, constructor: SymbolId) -> TypeId {
         // Look up the constructor's parent enum type
@@ -2716,10 +2948,10 @@ impl<'a> TastToHirContext<'a> {
                 return symbol_info.type_id;
             }
         }
-        
+
         self.add_error(
             &format!("Enum type not found for constructor {:?}", constructor),
-            SourceLocation::unknown()
+            SourceLocation::unknown(),
         );
         self.get_dynamic_type() // Fallback to dynamic
     }
@@ -2793,14 +3025,20 @@ impl<'a> TastToHirContext<'a> {
                 "Gt" => Some(BinaryOperator::Gt),
                 "Ge" => Some(BinaryOperator::Ge),
                 _ => {
-                    warn!("WARNING: Unknown binary operator in metadata: '{}'", operator);
+                    warn!(
+                        "WARNING: Unknown binary operator in metadata: '{}'",
+                        operator
+                    );
                     None
                 }
             }
         } else {
             // Not a valid binary operator pattern
-            warn!("WARNING: Invalid binary operator pattern (expected 3 tokens, got {}): '{}'",
-                      tokens.len(), op_str);
+            warn!(
+                "WARNING: Invalid binary operator pattern (expected 3 tokens, got {}): '{}'",
+                tokens.len(),
+                op_str
+            );
             None
         }
     }
@@ -2917,10 +3155,14 @@ impl<'a> TastToHirContext<'a> {
                     // Check if the method name matches what we're looking for
                     if let Some(name_str) = self.string_interner.get(method.name) {
                         if name_str == method_name {
-                            debug!("DEBUG: Matched array access '{}' to method {} on abstract '{}'",
-                                      method_name,
-                                      name_str,
-                                      self.string_interner.get(abstract_def.name).unwrap_or("<unknown>"));
+                            debug!(
+                                "DEBUG: Matched array access '{}' to method {} on abstract '{}'",
+                                method_name,
+                                name_str,
+                                self.string_interner
+                                    .get(abstract_def.name)
+                                    .unwrap_or("<unknown>")
+                            );
                             return Some((method.symbol_id, abstract_symbol));
                         }
                     }
@@ -2960,7 +3202,11 @@ impl<'a> TastToHirContext<'a> {
 
         for abstract_def in &current_file.abstracts {
             // Try to find method by symbol ID first
-            if let Some(method) = abstract_def.methods.iter().find(|m| m.symbol_id == method_symbol) {
+            if let Some(method) = abstract_def
+                .methods
+                .iter()
+                .find(|m| m.symbol_id == method_symbol)
+            {
                 found_abstract = Some(abstract_def);
                 found_method = Some(method);
                 break;
@@ -2986,7 +3232,8 @@ impl<'a> TastToHirContext<'a> {
 
         // Inline the method body
         // Build a parameter mapping: parameter symbols -> argument expressions (already lowered to HIR)
-        let lowered_arguments: Vec<HirExpr> = arguments.iter()
+        let lowered_arguments: Vec<HirExpr> = arguments
+            .iter()
             .map(|arg| self.lower_expression(arg))
             .collect();
 
@@ -2994,7 +3241,8 @@ impl<'a> TastToHirContext<'a> {
 
         // Map parameters to arguments
         if method.parameters.len() == arguments.len() {
-            for (param, lowered_arg) in method.parameters.iter().zip(lowered_arguments.into_iter()) {
+            for (param, lowered_arg) in method.parameters.iter().zip(lowered_arguments.into_iter())
+            {
                 // println!("DEBUG: Mapping parameter {:?} to argument: {:?}", param.symbol_id, lowered_arg);
                 param_map.insert(param.symbol_id, lowered_arg);
             }
@@ -3010,7 +3258,11 @@ impl<'a> TastToHirContext<'a> {
         // For simple methods with just a return statement, inline the return expression
         if method.body.len() == 1 {
             if let Some(return_stmt) = method.body.first() {
-                if let TypedStatement::Return { value: Some(return_expr), .. } = return_stmt {
+                if let TypedStatement::Return {
+                    value: Some(return_expr),
+                    ..
+                } = return_stmt
+                {
                     // Clone and inline the return expression
                     // Replace references to `this` with the receiver and params with arguments
                     let inlined = self.inline_expression_deep(
@@ -3057,9 +3309,7 @@ impl<'a> TastToHirContext<'a> {
         // println!("DEBUG inline_expression_deep: Processing {}", kind_name);
         match &expr.kind {
             // If it's a `this` reference, replace it with the receiver
-            TypedExpressionKind::This { .. } => {
-                this_replacement.clone()
-            }
+            TypedExpressionKind::This { .. } => this_replacement.clone(),
 
             // If it's a variable reference, check if it's a parameter
             TypedExpressionKind::Variable { symbol_id, .. } => {
@@ -3074,7 +3324,12 @@ impl<'a> TastToHirContext<'a> {
             }
 
             // For method calls on parameters, optimize identity methods like toInt()
-            TypedExpressionKind::MethodCall { receiver: inner_receiver, method_symbol, type_arguments, arguments } => {
+            TypedExpressionKind::MethodCall {
+                receiver: inner_receiver,
+                method_symbol,
+                type_arguments,
+                arguments,
+            } => {
                 // println!("DEBUG inline_expression_deep: Found MethodCall on {:?}", method_symbol);
 
                 // Special optimization: if receiver is a parameter and method is an identity method (toInt, etc.)
@@ -3088,7 +3343,10 @@ impl<'a> TastToHirContext<'a> {
                         if let Some(symbol) = self.symbol_table.get_symbol(*method_symbol) {
                             if let Some(method_name_str) = self.string_interner.get(symbol.name) {
                                 // println!("DEBUG inline_expression_deep: Method name is {}", method_name_str);
-                                if method_name_str == "toInt" || method_name_str == "toFloat" || method_name_str == "toString" {
+                                if method_name_str == "toInt"
+                                    || method_name_str == "toFloat"
+                                    || method_name_str == "toString"
+                                {
                                     // println!("DEBUG inline_expression_deep: Optimizing identity method - returning receiver");
                                     return replacement.clone();
                                 }
@@ -3099,9 +3357,17 @@ impl<'a> TastToHirContext<'a> {
 
                 // Otherwise, substitute receiver and arguments and create call
                 // println!("DEBUG inline_expression_deep: Creating Call expression for method");
-                let lowered_receiver = self.inline_expression_deep(inner_receiver, this_replacement, param_map, inner_receiver.expr_type);
-                let lowered_args: Vec<HirExpr> = arguments.iter()
-                    .map(|arg| self.inline_expression_deep(arg, this_replacement, param_map, arg.expr_type))
+                let lowered_receiver = self.inline_expression_deep(
+                    inner_receiver,
+                    this_replacement,
+                    param_map,
+                    inner_receiver.expr_type,
+                );
+                let lowered_args: Vec<HirExpr> = arguments
+                    .iter()
+                    .map(|arg| {
+                        self.inline_expression_deep(arg, this_replacement, param_map, arg.expr_type)
+                    })
                     .collect();
 
                 let mut call_args = vec![lowered_receiver];
@@ -3129,9 +3395,19 @@ impl<'a> TastToHirContext<'a> {
             }
 
             // For binary operations, recursively inline both operands
-            TypedExpressionKind::BinaryOp { operator, left, right } => {
-                let lowered_left = self.inline_expression_deep(left, this_replacement, param_map, left.expr_type);
-                let lowered_right = self.inline_expression_deep(right, this_replacement, param_map, right.expr_type);
+            TypedExpressionKind::BinaryOp {
+                operator,
+                left,
+                right,
+            } => {
+                let lowered_left =
+                    self.inline_expression_deep(left, this_replacement, param_map, left.expr_type);
+                let lowered_right = self.inline_expression_deep(
+                    right,
+                    this_replacement,
+                    param_map,
+                    right.expr_type,
+                );
 
                 HirExpr::new(
                     HirExprKind::Binary {
@@ -3147,7 +3423,12 @@ impl<'a> TastToHirContext<'a> {
 
             // For unary operations, recursively inline the operand
             TypedExpressionKind::UnaryOp { operator, operand } => {
-                let lowered_operand = self.inline_expression_deep(operand, this_replacement, param_map, operand.expr_type);
+                let lowered_operand = self.inline_expression_deep(
+                    operand,
+                    this_replacement,
+                    param_map,
+                    operand.expr_type,
+                );
 
                 HirExpr::new(
                     HirExprKind::Unary {
@@ -3161,9 +3442,17 @@ impl<'a> TastToHirContext<'a> {
             }
 
             // For New expressions, recursively inline constructor arguments
-            TypedExpressionKind::New { class_type, type_arguments, arguments, class_name: tast_class_name } => {
-                let lowered_args: Vec<HirExpr> = arguments.iter()
-                    .map(|arg| self.inline_expression_deep(arg, this_replacement, param_map, expected_type))
+            TypedExpressionKind::New {
+                class_type,
+                type_arguments,
+                arguments,
+                class_name: tast_class_name,
+            } => {
+                let lowered_args: Vec<HirExpr> = arguments
+                    .iter()
+                    .map(|arg| {
+                        self.inline_expression_deep(arg, this_replacement, param_map, expected_type)
+                    })
                     .collect();
 
                 // Fix the type information: if class_type is UNKNOWN/invalid, use expected_type
@@ -3176,10 +3465,13 @@ impl<'a> TastToHirContext<'a> {
 
                 // Use class_name from TAST if available, otherwise extract from TypeId
                 let class_name = tast_class_name.or_else(|| {
-                    self.type_table.borrow().get(fixed_class_type)
+                    self.type_table
+                        .borrow()
+                        .get(fixed_class_type)
                         .and_then(|type_ref| {
                             if let crate::tast::TypeKind::Class { symbol_id, .. } = &type_ref.kind {
-                                self.symbol_table.get_symbol(*symbol_id)
+                                self.symbol_table
+                                    .get_symbol(*symbol_id)
                                     .and_then(|sym| Some(sym.name))
                             } else {
                                 None
@@ -3213,25 +3505,32 @@ impl<'a> TastToHirContext<'a> {
             _ => HirLiteral::Bool(false), // Default
         }
     }
-    
+
     /// Validate that a constructor exists for the given class type and argument count
-    fn validate_constructor(&mut self, class_type: TypeId, arg_count: usize, location: SourceLocation) {
+    fn validate_constructor(
+        &mut self,
+        class_type: TypeId,
+        arg_count: usize,
+        location: SourceLocation,
+    ) {
         // Check if we have a current file being processed
         if let Some(file) = &self.current_file {
             // Look up the class type in the original TAST data
             for class in &file.classes {
                 // Get the type symbol for this class
-                if let Some(class_symbol_id) = self.type_table.borrow().get_type_symbol(class_type) {
+                if let Some(class_symbol_id) = self.type_table.borrow().get_type_symbol(class_type)
+                {
                     // Check if this matches our class symbol
                     if class.symbol_id == class_symbol_id {
                         // Check if the class has a constructor
                         let has_constructor = !class.constructors.is_empty();
-                        
+
                         if !has_constructor {
                             // In Haxe, classes without explicit constructors have
                             // an implicit default (no-arg) constructor.
                             if arg_count > 0 {
-                                let class_name_str = self.string_interner
+                                let class_name_str = self
+                                    .string_interner
                                     .get(class.name)
                                     .unwrap_or("?")
                                     .to_string();
@@ -3244,7 +3543,7 @@ impl<'a> TastToHirContext<'a> {
                             }
                             return;
                         }
-                        
+
                         // Basic validation passed
                         // Note: Enhanced validation features are tracked in BACKLOG.md
                         return;
@@ -3252,7 +3551,7 @@ impl<'a> TastToHirContext<'a> {
                 }
             }
         }
-        
+
         // Class not found in current file - might be from imported module
         // Enhanced cross-module lookup tracked in BACKLOG.md
     }
@@ -3270,8 +3569,7 @@ impl<'a> TastToHirContext<'a> {
         body: &[TypedStatement],
         param_symbols: &std::collections::HashSet<SymbolId>,
     ) -> Vec<HirCapture> {
-        use std::collections::{HashSet, HashMap};
-
+        use std::collections::{HashMap, HashSet};
 
         // Collect all variable references with their types
         let mut referenced_vars: HashMap<SymbolId, TypeId> = HashMap::new();
@@ -3300,7 +3598,11 @@ impl<'a> TastToHirContext<'a> {
     }
 
     /// Collect all variable references in a statement
-    fn collect_var_refs_stmt(&self, stmt: &TypedStatement, refs: &mut std::collections::HashMap<SymbolId, TypeId>) {
+    fn collect_var_refs_stmt(
+        &self,
+        stmt: &TypedStatement,
+        refs: &mut std::collections::HashMap<SymbolId, TypeId>,
+    ) {
         match stmt {
             TypedStatement::Expression { expression, .. } => {
                 self.collect_var_refs_expr(expression, refs);
@@ -3315,14 +3617,21 @@ impl<'a> TastToHirContext<'a> {
                     self.collect_var_refs_expr(val, refs);
                 }
             }
-            TypedStatement::If { condition, then_branch, else_branch, .. } => {
+            TypedStatement::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 self.collect_var_refs_expr(condition, refs);
                 self.collect_var_refs_stmt(then_branch, refs);
                 if let Some(else_stmt) = else_branch {
                     self.collect_var_refs_stmt(else_stmt, refs);
                 }
             }
-            TypedStatement::While { condition, body, .. } => {
+            TypedStatement::While {
+                condition, body, ..
+            } => {
                 self.collect_var_refs_expr(condition, refs);
                 self.collect_var_refs_stmt(body, refs);
             }
@@ -3331,7 +3640,11 @@ impl<'a> TastToHirContext<'a> {
     }
 
     /// Collect all variable references in an expression
-    fn collect_var_refs_expr(&self, expr: &TypedExpression, refs: &mut std::collections::HashMap<SymbolId, TypeId>) {
+    fn collect_var_refs_expr(
+        &self,
+        expr: &TypedExpression,
+        refs: &mut std::collections::HashMap<SymbolId, TypeId>,
+    ) {
         match &expr.kind {
             TypedExpressionKind::Variable { symbol_id, .. } => {
                 // Store the variable with its type from the expression
@@ -3345,7 +3658,11 @@ impl<'a> TastToHirContext<'a> {
                 self.collect_var_refs_expr(array, refs);
                 self.collect_var_refs_expr(index, refs);
             }
-            TypedExpressionKind::MethodCall { receiver, arguments, .. } => {
+            TypedExpressionKind::MethodCall {
+                receiver,
+                arguments,
+                ..
+            } => {
                 self.collect_var_refs_expr(receiver, refs);
                 for arg in arguments {
                     self.collect_var_refs_expr(arg, refs);
@@ -3358,7 +3675,11 @@ impl<'a> TastToHirContext<'a> {
             TypedExpressionKind::UnaryOp { operand, .. } => {
                 self.collect_var_refs_expr(operand, refs);
             }
-            TypedExpressionKind::FunctionCall { function, arguments, .. } => {
+            TypedExpressionKind::FunctionCall {
+                function,
+                arguments,
+                ..
+            } => {
                 self.collect_var_refs_expr(function, refs);
                 for arg in arguments {
                     self.collect_var_refs_expr(arg, refs);
@@ -3379,7 +3700,11 @@ impl<'a> TastToHirContext<'a> {
     }
 
     /// Collect all locally defined variables in a statement
-    fn collect_local_defs_stmt(&self, stmt: &TypedStatement, defs: &mut std::collections::HashSet<SymbolId>) {
+    fn collect_local_defs_stmt(
+        &self,
+        stmt: &TypedStatement,
+        defs: &mut std::collections::HashSet<SymbolId>,
+    ) {
         match stmt {
             TypedStatement::Expression { expression, .. } => {
                 // FIX: Expression statements can contain Block expressions with local definitions
@@ -3394,7 +3719,11 @@ impl<'a> TastToHirContext<'a> {
                     self.collect_local_defs_stmt(s, defs);
                 }
             }
-            TypedStatement::If { then_branch, else_branch, .. } => {
+            TypedStatement::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 self.collect_local_defs_stmt(then_branch, defs);
                 if let Some(else_stmt) = else_branch {
                     self.collect_local_defs_stmt(else_stmt, defs);
@@ -3410,7 +3739,12 @@ impl<'a> TastToHirContext<'a> {
                 }
                 self.collect_local_defs_stmt(body, defs);
             }
-            TypedStatement::ForIn { value_var, key_var, body, .. } => {
+            TypedStatement::ForIn {
+                value_var,
+                key_var,
+                body,
+                ..
+            } => {
                 // For-in loops define iteration variables
                 defs.insert(*value_var);
                 if let Some(key) = key_var {
@@ -3423,7 +3757,11 @@ impl<'a> TastToHirContext<'a> {
     }
 
     /// Collect all locally defined variables in an expression (e.g., Block expressions)
-    fn collect_local_defs_expr(&self, expr: &TypedExpression, defs: &mut std::collections::HashSet<SymbolId>) {
+    fn collect_local_defs_expr(
+        &self,
+        expr: &TypedExpression,
+        defs: &mut std::collections::HashSet<SymbolId>,
+    ) {
         match &expr.kind {
             TypedExpressionKind::Block { statements, .. } => {
                 for stmt in statements {
@@ -3438,7 +3776,12 @@ impl<'a> TastToHirContext<'a> {
                 defs.insert(*variable);
                 self.collect_local_defs_expr(body, defs);
             }
-            TypedExpressionKind::ForIn { value_var, key_var, body, .. } => {
+            TypedExpressionKind::ForIn {
+                value_var,
+                key_var,
+                body,
+                ..
+            } => {
                 // For-in expressions define iteration variables
                 defs.insert(*value_var);
                 if let Some(key) = key_var {
@@ -3446,7 +3789,11 @@ impl<'a> TastToHirContext<'a> {
                 }
                 self.collect_local_defs_expr(body, defs);
             }
-            TypedExpressionKind::Conditional { then_expr, else_expr, .. } => {
+            TypedExpressionKind::Conditional {
+                then_expr,
+                else_expr,
+                ..
+            } => {
                 self.collect_local_defs_expr(then_expr, defs);
                 if let Some(else_e) = else_expr {
                     self.collect_local_defs_expr(else_e, defs);
@@ -3459,7 +3806,11 @@ impl<'a> TastToHirContext<'a> {
     /// Copy parent class methods to child class's HIR method list
     /// This enables method inheritance - child instances can call parent methods
     /// Child methods should already be in the list so they override parent methods
-    fn copy_parent_methods_to_hir(&mut self, child_methods: &mut Vec<HirMethod>, parent_type_id: TypeId) {
+    fn copy_parent_methods_to_hir(
+        &mut self,
+        child_methods: &mut Vec<HirMethod>,
+        parent_type_id: TypeId,
+    ) {
         // First, resolve the parent TypeId to get the parent class's SymbolId
         // parent_type_id might be an instance type, we need to find the declaration
         let parent_symbol = {
@@ -3495,7 +3846,6 @@ impl<'a> TastToHirContext<'a> {
             }
         }
     }
-
 }
 
 /// Public entry point for TAST to HIR lowering
@@ -3510,14 +3860,16 @@ pub fn lower_tast_to_hir(
         symbol_table,
         type_table,
         string_interner,
-        file.metadata.package_name.as_ref()
+        file.metadata
+            .package_name
+            .as_ref()
             .map(|n| n.to_string())
             .unwrap_or_else(|| "main".to_string()),
     );
-    
+
     if let Some(graphs) = semantic_graphs {
         context.set_semantic_graphs(graphs);
     }
-    
+
     context.lower_file(file)
 }

@@ -5,8 +5,8 @@
 //! control flow integrity, and other invariants.
 
 use super::{
-    IrModule, IrFunction, IrBasicBlock, IrInstruction, IrTerminator,
-    IrType, IrId, IrBlockId, IrFunctionId, IrValue, LifetimeId,
+    IrBasicBlock, IrBlockId, IrFunction, IrFunctionId, IrId, IrInstruction, IrModule, IrTerminator,
+    IrType, IrValue, LifetimeId,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -98,70 +98,53 @@ pub struct ValidationError {
 pub enum ValidationErrorKind {
     /// Register used before definition
     UseBeforeDefine { register: IrId },
-    
+
     /// Register defined multiple times
     MultipleDefinitions { register: IrId },
-    
+
     /// Type mismatch
     TypeMismatch {
         expected: IrType,
         found: IrType,
         register: IrId,
     },
-    
+
     /// Invalid instruction operand
-    InvalidOperand {
-        instruction: String,
-        reason: String,
-    },
-    
+    InvalidOperand { instruction: String, reason: String },
+
     /// Missing terminator in basic block
     MissingTerminator { block: IrBlockId },
-    
+
     /// Unreachable code after terminator
     UnreachableCode { block: IrBlockId },
-    
+
     /// Invalid control flow
     InvalidControlFlow {
         from: IrBlockId,
         to: IrBlockId,
         reason: String,
     },
-    
+
     /// Phi node inconsistency
-    InvalidPhiNode {
-        block: IrBlockId,
-        reason: String,
-    },
-    
+    InvalidPhiNode { block: IrBlockId, reason: String },
+
     /// Function signature mismatch
     SignatureMismatch {
         function: IrFunctionId,
         reason: String,
     },
-    
+
     /// Invalid SSA form
-    InvalidSSA {
-        register: IrId,
-        reason: String,
-    },
+    InvalidSSA { register: IrId, reason: String },
 
     /// Memory safety violation: use after move
-    UseAfterMove {
-        register: IrId,
-        moved_at: String,
-    },
+    UseAfterMove { register: IrId, moved_at: String },
 
     /// Memory safety violation: use of moved value
-    UseOfMovedValue {
-        register: IrId,
-    },
+    UseOfMovedValue { register: IrId },
 
     /// Memory safety violation: double move
-    DoubleMove {
-        register: IrId,
-        first_move: String,
-    },
+    DoubleMove { register: IrId, first_move: String },
 
     /// Borrow checking violation: mutable borrow while immutable borrows exist
     MutableBorrowConflict {
@@ -176,16 +159,10 @@ pub enum ValidationErrorKind {
     },
 
     /// Borrow checking violation: use while mutably borrowed
-    UseWhileMutablyBorrowed {
-        register: IrId,
-        borrow: IrId,
-    },
+    UseWhileMutablyBorrowed { register: IrId, borrow: IrId },
 
     /// Lifetime violation: borrow outlives owner
-    BorrowOutlivesOwner {
-        borrow: IrId,
-        owner: IrId,
-    },
+    BorrowOutlivesOwner { borrow: IrId, owner: IrId },
 
     /// Lifetime violation: dangling reference
     DanglingReference {
@@ -194,15 +171,10 @@ pub enum ValidationErrorKind {
     },
 
     /// Drop of already dropped value
-    DoubleDropind {
-        register: IrId,
-    },
+    DoubleDropind { register: IrId },
 
     /// Drop of borrowed value
-    DropWhileBorrowed {
-        register: IrId,
-        borrows: Vec<IrId>,
-    },
+    DropWhileBorrowed { register: IrId, borrows: Vec<IrId> },
 }
 
 impl ValidationContext {
@@ -221,7 +193,7 @@ impl ValidationContext {
             active_lifetimes: HashMap::new(),
         }
     }
-    
+
     /// Add a validation error
     fn add_error(&mut self, kind: ValidationErrorKind) {
         self.errors.push(ValidationError {
@@ -231,12 +203,12 @@ impl ValidationContext {
             instruction: None,
         });
     }
-    
+
     /// Get the module reference
     fn module(&self) -> &IrModule {
         unsafe { &*self.module }
     }
-    
+
     /// Record register definition with type
     fn define_register(&mut self, reg: IrId, ty: IrType) {
         if self.defined_registers.contains(&reg) {
@@ -245,11 +217,11 @@ impl ValidationContext {
         self.defined_registers.insert(reg);
         self.register_types.insert(reg, ty);
     }
-    
+
     /// Record register use and check if defined
     fn use_register(&mut self, reg: IrId) -> Option<&IrType> {
         self.used_registers.insert(reg);
-        
+
         if !self.defined_registers.contains(&reg) {
             self.add_error(ValidationErrorKind::UseBeforeDefine { register: reg });
             None
@@ -257,7 +229,7 @@ impl ValidationContext {
             self.register_types.get(&reg)
         }
     }
-    
+
     /// Check type compatibility
     fn check_type_compat(&mut self, expected: &IrType, found: &IrType, reg: IrId) {
         if !types_compatible(expected, found) {
@@ -274,15 +246,15 @@ impl ValidationContext {
 pub fn validate_module(module: &IrModule) -> Result<(), Vec<ValidationError>> {
     let mut ctx = ValidationContext::new();
     ctx.module = module as *const IrModule;
-    
+
     // Validate all functions
     for (&func_id, function) in &module.functions {
         ctx.current_function = Some(func_id);
         validate_function(&mut ctx, function);
     }
-    
+
     // TODO: Validate globals, types, etc.
-    
+
     if ctx.errors.is_empty() {
         Ok(())
     } else {
@@ -296,19 +268,19 @@ fn validate_function(ctx: &mut ValidationContext, function: &IrFunction) {
     ctx.register_types.clear();
     ctx.defined_registers.clear();
     ctx.used_registers.clear();
-    
+
     // Define parameter registers
     for param in &function.signature.parameters {
         ctx.define_register(param.reg, param.ty.clone());
     }
-    
+
     // Validate control flow graph structure
     validate_cfg_structure(ctx, function);
-    
+
     // Validate each basic block
     let mut visited = HashSet::new();
     validate_block_recursive(ctx, function, function.entry_block(), &mut visited);
-    
+
     // Check for unused registers (potential dead code)
     for &reg in &ctx.defined_registers {
         if !ctx.used_registers.contains(&reg) && !is_void_type(&ctx.register_types[&reg]) {
@@ -316,7 +288,7 @@ fn validate_function(ctx: &mut ValidationContext, function: &IrFunction) {
             // Could be reported for optimization
         }
     }
-    
+
     // Validate return types
     validate_return_types(ctx, function);
 }
@@ -332,7 +304,7 @@ fn validate_cfg_structure(ctx: &mut ValidationContext, function: &IrFunction) {
         });
         return;
     }
-    
+
     // Check all blocks are reachable from entry
     let reachable = find_reachable_blocks(function);
     for &block_id in function.cfg.blocks.keys() {
@@ -340,7 +312,7 @@ fn validate_cfg_structure(ctx: &mut ValidationContext, function: &IrFunction) {
             // This is a warning - unreachable code
         }
     }
-    
+
     // Validate predecessor/successor consistency
     for (&block_id, block) in &function.cfg.blocks {
         for &succ in &block.successors() {
@@ -359,7 +331,7 @@ fn validate_cfg_structure(ctx: &mut ValidationContext, function: &IrFunction) {
 fn find_reachable_blocks(function: &IrFunction) -> HashSet<IrBlockId> {
     let mut reachable = HashSet::new();
     let mut worklist = vec![function.entry_block()];
-    
+
     while let Some(block_id) = worklist.pop() {
         if reachable.insert(block_id) {
             if let Some(block) = function.cfg.get_block(block_id) {
@@ -367,7 +339,7 @@ fn find_reachable_blocks(function: &IrFunction) -> HashSet<IrBlockId> {
             }
         }
     }
-    
+
     reachable
 }
 
@@ -381,10 +353,10 @@ fn validate_block_recursive(
     if !visited.insert(block_id) {
         return; // Already visited
     }
-    
+
     if let Some(block) = function.cfg.get_block(block_id) {
         validate_block(ctx, block);
-        
+
         // Recursively validate successors
         for &succ in &block.successors() {
             validate_block_recursive(ctx, function, succ, visited);
@@ -398,17 +370,17 @@ fn validate_block(ctx: &mut ValidationContext, block: &IrBasicBlock) {
     for phi in &block.phi_nodes {
         validate_phi_node(ctx, block, phi);
     }
-    
+
     // Validate instructions
     for (i, inst) in block.instructions.iter().enumerate() {
         validate_instruction(ctx, inst);
-        
+
         // Check for instructions after terminator
         if inst.is_terminator() && i < block.instructions.len() - 1 {
             ctx.add_error(ValidationErrorKind::UnreachableCode { block: block.id });
         }
     }
-    
+
     // Validate terminator
     if !block.is_terminated() {
         ctx.add_error(ValidationErrorKind::MissingTerminator { block: block.id });
@@ -418,11 +390,7 @@ fn validate_block(ctx: &mut ValidationContext, block: &IrBasicBlock) {
 }
 
 /// Validate a phi node
-fn validate_phi_node(
-    ctx: &mut ValidationContext,
-    block: &IrBasicBlock,
-    phi: &super::IrPhiNode,
-) {
+fn validate_phi_node(ctx: &mut ValidationContext, block: &IrBasicBlock, phi: &super::IrPhiNode) {
     // Check that incoming blocks are predecessors
     for &(pred_block, _) in &phi.incoming {
         if !block.predecessors.contains(&pred_block) {
@@ -432,7 +400,7 @@ fn validate_phi_node(
             });
         }
     }
-    
+
     // Check that all predecessors have entries
     for &pred in &block.predecessors {
         if !phi.incoming.iter().any(|(b, _)| *b == pred) {
@@ -442,10 +410,10 @@ fn validate_phi_node(
             });
         }
     }
-    
+
     // Define the phi result
     ctx.define_register(phi.dest, phi.ty.clone());
-    
+
     // Check all incoming values have compatible types
     for &(_, value) in &phi.incoming {
         if let Some(value_ty) = ctx.use_register(value) {
@@ -458,20 +426,20 @@ fn validate_phi_node(
 /// Validate an instruction
 fn validate_instruction(ctx: &mut ValidationContext, inst: &IrInstruction) {
     use IrInstruction::*;
-    
+
     match inst {
         Const { dest, value } => {
             let ty = value_type(value);
             ctx.define_register(*dest, ty);
         }
-        
+
         Copy { dest, src } => {
             if let Some(src_ty) = ctx.use_register(*src) {
                 let src_ty_clone = src_ty.clone();
                 ctx.define_register(*dest, src_ty_clone);
             }
         }
-        
+
         Load { dest, ptr, ty } => {
             if let Some(ptr_ty) = ctx.use_register(*ptr) {
                 // Check that ptr is actually a pointer
@@ -490,7 +458,7 @@ fn validate_instruction(ctx: &mut ValidationContext, inst: &IrInstruction) {
             }
             ctx.define_register(*dest, ty.clone());
         }
-        
+
         Store { ptr, value } => {
             let ptr_ty = ctx.use_register(*ptr).cloned();
             let val_ty = ctx.use_register(*value).cloned();
@@ -508,8 +476,13 @@ fn validate_instruction(ctx: &mut ValidationContext, inst: &IrInstruction) {
                 }
             }
         }
-        
-        BinOp { dest, op, left, right } => {
+
+        BinOp {
+            dest,
+            op,
+            left,
+            right,
+        } => {
             let left_ty = ctx.use_register(*left).cloned();
             let right_ty = ctx.use_register(*right).cloned();
             if let (Some(left_ty), Some(right_ty)) = (left_ty, right_ty) {
@@ -521,13 +494,13 @@ fn validate_instruction(ctx: &mut ValidationContext, inst: &IrInstruction) {
                         register: *right,
                     });
                 }
-                
+
                 // Determine result type
                 let result_ty = binary_op_result_type(*op, &left_ty);
                 ctx.define_register(*dest, result_ty);
             }
         }
-        
+
         UnOp { dest, op, operand } => {
             if let Some(operand_ty) = ctx.use_register(*operand) {
                 let operand_ty_clone = operand_ty.clone();
@@ -535,8 +508,13 @@ fn validate_instruction(ctx: &mut ValidationContext, inst: &IrInstruction) {
                 ctx.define_register(*dest, result_ty);
             }
         }
-        
-        Cmp { dest, op: _, left, right } => {
+
+        Cmp {
+            dest,
+            op: _,
+            left,
+            right,
+        } => {
             let left_ty = ctx.use_register(*left).cloned();
             let right_ty = ctx.use_register(*right).cloned();
             if let (Some(left_ty), Some(right_ty)) = (left_ty, right_ty) {
@@ -550,8 +528,15 @@ fn validate_instruction(ctx: &mut ValidationContext, inst: &IrInstruction) {
                 ctx.define_register(*dest, IrType::Bool);
             }
         }
-        
-        CallDirect { dest, func_id, args, arg_ownership: _, type_args: _, is_tail_call: _ } => {
+
+        CallDirect {
+            dest,
+            func_id,
+            args,
+            arg_ownership: _,
+            type_args: _,
+            is_tail_call: _,
+        } => {
             // For direct calls, we'd need to look up the function signature from the module
             // For now, just validate that arguments are valid registers
             // TODO: Validate ownership modes match function signature
@@ -566,7 +551,14 @@ fn validate_instruction(ctx: &mut ValidationContext, inst: &IrInstruction) {
             }
         }
 
-        CallIndirect { dest, func_ptr, args, signature, arg_ownership: _, is_tail_call: _ } => {
+        CallIndirect {
+            dest,
+            func_ptr,
+            args,
+            signature,
+            arg_ownership: _,
+            is_tail_call: _,
+        } => {
             // Validate function pointer
             ctx.use_register(*func_ptr);
 
@@ -588,7 +580,11 @@ fn validate_instruction(ctx: &mut ValidationContext, inst: &IrInstruction) {
             }
         }
 
-        MakeClosure { dest, func_id: _, captured_values } => {
+        MakeClosure {
+            dest,
+            func_id: _,
+            captured_values,
+        } => {
             // Validate all captured values are valid registers
             for &val in captured_values {
                 ctx.use_register(val);
@@ -619,12 +615,12 @@ fn validate_instruction(ctx: &mut ValidationContext, inst: &IrInstruction) {
 /// Validate a terminator
 fn validate_terminator(ctx: &mut ValidationContext, term: &IrTerminator) {
     use IrTerminator::*;
-    
+
     match term {
         Branch { .. } => {
             // Nothing to validate
         }
-        
+
         CondBranch { condition, .. } => {
             if let Some(cond_ty) = ctx.use_register(*condition) {
                 let cond_ty_clone = cond_ty.clone();
@@ -637,7 +633,7 @@ fn validate_terminator(ctx: &mut ValidationContext, term: &IrTerminator) {
                 }
             }
         }
-        
+
         Switch { value, .. } => {
             if let Some(val_ty) = ctx.use_register(*value) {
                 if !val_ty.is_integer() {
@@ -648,7 +644,7 @@ fn validate_terminator(ctx: &mut ValidationContext, term: &IrTerminator) {
                 }
             }
         }
-        
+
         Return { value } => {
             if let Some(val) = value {
                 ctx.use_register(*val);
@@ -662,7 +658,7 @@ fn validate_terminator(ctx: &mut ValidationContext, term: &IrTerminator) {
 /// Validate return types
 fn validate_return_types(ctx: &mut ValidationContext, function: &IrFunction) {
     let expected_return = &function.signature.return_type;
-    
+
     // Check all return statements
     for block in function.cfg.blocks.values() {
         if let IrTerminator::Return { value } = &block.terminator {
@@ -862,14 +858,23 @@ impl<'a> MirSafetyValidator<'a> {
             }
 
             // Load operations: check pointer validity
-            Load { dest: _, ptr, ty: _ } => {
+            Load {
+                dest: _,
+                ptr,
+                ty: _,
+            } => {
                 if let Some(&symbol_id) = self.register_to_symbol.get(ptr) {
                     self.check_not_moved(symbol_id, *ptr);
                 }
             }
 
             // Binary/Unary operations: check operands
-            BinOp { dest: _, op: _, left, right } => {
+            BinOp {
+                dest: _,
+                op: _,
+                left,
+                right,
+            } => {
                 if let Some(&symbol_id) = self.register_to_symbol.get(left) {
                     self.check_not_moved(symbol_id, *left);
                 }
@@ -878,15 +883,33 @@ impl<'a> MirSafetyValidator<'a> {
                 }
             }
 
-            UnOp { dest: _, op: _, operand } => {
+            UnOp {
+                dest: _,
+                op: _,
+                operand,
+            } => {
                 if let Some(&symbol_id) = self.register_to_symbol.get(operand) {
                     self.check_not_moved(symbol_id, *operand);
                 }
             }
 
             // Function calls: check all arguments
-            CallDirect { dest: _, func_id: _, args, arg_ownership: _, type_args: _, is_tail_call: _ } |
-            CallIndirect { dest: _, func_ptr: _, args, signature: _, arg_ownership: _, is_tail_call: _ } => {
+            CallDirect {
+                dest: _,
+                func_id: _,
+                args,
+                arg_ownership: _,
+                type_args: _,
+                is_tail_call: _,
+            }
+            | CallIndirect {
+                dest: _,
+                func_ptr: _,
+                args,
+                signature: _,
+                arg_ownership: _,
+                is_tail_call: _,
+            } => {
                 for arg in args {
                     if let Some(&symbol_id) = self.register_to_symbol.get(arg) {
                         self.check_not_moved(symbol_id, *arg);
@@ -929,7 +952,12 @@ impl<'a> MirSafetyValidator<'a> {
     /// Check if a symbol has been moved (use-after-move detection)
     fn check_not_moved(&mut self, symbol_id: SymbolId, register: IrId) {
         // Query the ownership graph from semantic analysis
-        if let Some(ownership_node) = self.semantic_graphs.ownership_graph.variables.get(&symbol_id) {
+        if let Some(ownership_node) = self
+            .semantic_graphs
+            .ownership_graph
+            .variables
+            .get(&symbol_id)
+        {
             use crate::semantic_graph::OwnershipKind;
 
             // If the ownership kind indicates the value was moved, report error
@@ -955,48 +983,50 @@ mod tests {
     use super::*;
     use crate::ir::builder::*;
     use crate::tast::SymbolId;
-    
+
     #[test]
     fn test_validate_simple_function() {
         let mut builder = IrBuilder::new("test".to_string(), "test.hx".to_string());
-        
+
         let sig = FunctionSignatureBuilder::new()
             .param("x".to_string(), IrType::I32)
             .returns(IrType::I32)
             .build();
-            
+
         builder.start_function(SymbolId::from_raw(1), "identity".to_string(), sig);
-        
-        let x = builder.current_function().unwrap().get_param_reg(0).unwrap();
+
+        let x = builder
+            .current_function()
+            .unwrap()
+            .get_param_reg(0)
+            .unwrap();
         builder.build_return(Some(x));
-        
+
         builder.finish_function();
-        
+
         // Validate the module
         let result = validate_module(&builder.module);
         assert!(result.is_ok());
     }
-    
+
     #[test]
     fn test_validate_type_mismatch() {
         let mut builder = IrBuilder::new("test".to_string(), "test.hx".to_string());
-        
-        let sig = FunctionSignatureBuilder::new()
-            .returns(IrType::I32)
-            .build();
-            
+
+        let sig = FunctionSignatureBuilder::new().returns(IrType::I32).build();
+
         builder.start_function(SymbolId::from_raw(1), "bad_return".to_string(), sig);
-        
+
         // Return a boolean instead of i32
         let bool_val = builder.build_bool(true).unwrap();
         builder.build_return(Some(bool_val));
-        
+
         builder.finish_function();
-        
+
         // Validate the module
         let result = validate_module(&builder.module);
         assert!(result.is_err());
-        
+
         if let Err(errors) = result {
             assert!(!errors.is_empty());
             // Should have type mismatch error

@@ -3,19 +3,19 @@
 //! Memory layout: [length: usize, capacity: usize, data...]
 //! All strings are UTF-8 encoded and null-terminated for C interop
 
-use std::alloc::{alloc, dealloc, realloc, Layout};
+use log::debug;
+use std::alloc::{alloc, dealloc, Layout};
 use std::ptr;
 use std::slice;
 use std::str;
-use log::debug;
 
 /// Haxe String representation (pointer-based, no struct returns)
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct HaxeString {
-    pub ptr: *mut u8,   // Pointer to string data (UTF-8)
-    pub len: usize,     // Length in bytes
-    pub cap: usize,     // Capacity in bytes
+    pub ptr: *mut u8, // Pointer to string data (UTF-8)
+    pub len: usize,   // Length in bytes
+    pub cap: usize,   // Capacity in bytes
 }
 
 const INITIAL_CAPACITY: usize = 32;
@@ -142,7 +142,11 @@ pub extern "C" fn haxe_string_char_code_at(s: *const HaxeString, index: usize) -
 
 /// Concatenate two strings
 #[no_mangle]
-pub extern "C" fn haxe_string_concat(out: *mut HaxeString, a: *const HaxeString, b: *const HaxeString) {
+pub extern "C" fn haxe_string_concat(
+    out: *mut HaxeString,
+    a: *const HaxeString,
+    b: *const HaxeString,
+) {
     if a.is_null() && b.is_null() {
         haxe_string_new(out);
         return;
@@ -181,7 +185,12 @@ pub extern "C" fn haxe_string_concat(out: *mut HaxeString, a: *const HaxeString,
 
 /// Get substring
 #[no_mangle]
-pub extern "C" fn haxe_string_substring(out: *mut HaxeString, s: *const HaxeString, start: usize, end: usize) {
+pub extern "C" fn haxe_string_substring(
+    out: *mut HaxeString,
+    s: *const HaxeString,
+    start: usize,
+    end: usize,
+) {
     if s.is_null() {
         haxe_string_new(out);
         return;
@@ -217,7 +226,12 @@ pub extern "C" fn haxe_string_substring(out: *mut HaxeString, s: *const HaxeStri
 
 /// Substring with just start position (to end of string)
 #[no_mangle]
-pub extern "C" fn haxe_string_substr(out: *mut HaxeString, s: *const HaxeString, start: usize, length: usize) {
+pub extern "C" fn haxe_string_substr(
+    out: *mut HaxeString,
+    s: *const HaxeString,
+    start: usize,
+    length: usize,
+) {
     if s.is_null() {
         haxe_string_new(out);
         return;
@@ -285,7 +299,11 @@ pub extern "C" fn haxe_string_to_lower_case(out: *mut HaxeString, s: *const Haxe
 
 /// Index of substring
 #[no_mangle]
-pub extern "C" fn haxe_string_index_of(s: *const HaxeString, needle: *const HaxeString, start: usize) -> i32 {
+pub extern "C" fn haxe_string_index_of(
+    s: *const HaxeString,
+    needle: *const HaxeString,
+    start: usize,
+) -> i32 {
     if s.is_null() || needle.is_null() {
         return -1;
     }
@@ -318,7 +336,7 @@ pub extern "C" fn haxe_string_split(
     out: *mut *mut HaxeString,
     out_len: *mut usize,
     s: *const HaxeString,
-    delimiter: *const HaxeString
+    delimiter: *const HaxeString,
 ) {
     debug!("[OLD haxe_string_split] Called!");
     if s.is_null() || delimiter.is_null() {
@@ -333,7 +351,10 @@ pub extern "C" fn haxe_string_split(
         let s_ref = &*s;
         let delim_ref = &*delimiter;
 
-        debug!("[OLD split] s.len={}, delimiter.len={}", s_ref.len, delim_ref.len);
+        debug!(
+            "[OLD split] s.len={}, delimiter.len={}",
+            s_ref.len, delim_ref.len
+        );
 
         // Count occurrences
         let mut count = 1;
@@ -377,11 +398,14 @@ pub extern "C" fn haxe_string_split(
 #[no_mangle]
 pub extern "C" fn haxe_string_split_array(
     s: *const HaxeString,
-    delimiter: *const HaxeString
+    delimiter: *const HaxeString,
 ) -> *mut crate::haxe_array::HaxeArray {
     use crate::haxe_array::HaxeArray;
 
-    debug!("[split] Function entry: s={:?}, delimiter={:?}", s, delimiter);
+    debug!(
+        "[split] Function entry: s={:?}, delimiter={:?}",
+        s, delimiter
+    );
 
     if s.is_null() || delimiter.is_null() {
         // Return empty array
@@ -398,7 +422,10 @@ pub extern "C" fn haxe_string_split_array(
         let s_ref = &*s;
         let delim_ref = &*delimiter;
 
-        debug!("[split] s.len={}, delimiter.len={}", s_ref.len, delim_ref.len);
+        debug!(
+            "[split] s.len={}, delimiter.len={}",
+            s_ref.len, delim_ref.len
+        );
 
         // Count occurrences
         let mut count = 1;
@@ -466,7 +493,10 @@ pub extern "C" fn haxe_string_split_array(
             elem_size: 8,
         });
         let arr_ptr = Box::into_raw(arr);
-        debug!("[split] Returning HaxeArray pointer: {:?} (count={})", arr_ptr, count);
+        debug!(
+            "[split] Returning HaxeArray pointer: {:?} (count={})",
+            arr_ptr, count
+        );
         arr_ptr
     }
 }

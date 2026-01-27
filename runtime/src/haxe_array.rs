@@ -3,20 +3,18 @@
 //! Generic dynamic array supporting any element type
 //! Memory layout: [length: usize, capacity: usize, elements...]
 
+use crate::haxe_string::HaxeString;
+use log::debug;
 use std::alloc::{alloc, dealloc, realloc, Layout};
 use std::ptr;
-use std::slice;
-use std::str;
-use log::debug;
-use crate::haxe_string::HaxeString;
 
 /// Haxe Array representation (generic via element size)
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct HaxeArray {
-    pub ptr: *mut u8,   // Pointer to array data
-    pub len: usize,     // Number of elements
-    pub cap: usize,     // Capacity (number of elements)
+    pub ptr: *mut u8,     // Pointer to array data
+    pub len: usize,       // Number of elements
+    pub cap: usize,       // Capacity (number of elements)
     pub elem_size: usize, // Size of each element in bytes
 }
 
@@ -51,7 +49,7 @@ pub extern "C" fn haxe_array_from_elements(
     out: *mut HaxeArray,
     elements: *const u8,
     count: usize,
-    elem_size: usize
+    elem_size: usize,
 ) {
     if count == 0 {
         haxe_array_new(out, elem_size);
@@ -92,8 +90,10 @@ pub extern "C" fn haxe_array_length(arr: *const HaxeArray) -> usize {
     }
     unsafe {
         let arr_ref = &*arr;
-        debug!("[haxe_array_length] arr.len={}, arr.cap={}, arr.elem_size={}, arr.ptr={:?}",
-            arr_ref.len, arr_ref.cap, arr_ref.elem_size, arr_ref.ptr);
+        debug!(
+            "[haxe_array_length] arr.len={}, arr.cap={}, arr.elem_size={}, arr.ptr={:?}",
+            arr_ref.len, arr_ref.cap, arr_ref.elem_size, arr_ref.ptr
+        );
 
         // If it's an array of pointers (elem_size=8), print first few elements
         if arr_ref.elem_size == 8 && arr_ref.len > 0 && !arr_ref.ptr.is_null() {
@@ -135,7 +135,10 @@ pub extern "C" fn haxe_array_get(arr: *const HaxeArray, index: usize, out: *mut 
 /// Set element at index (copies from data buffer)
 #[no_mangle]
 pub extern "C" fn haxe_array_set(arr: *mut HaxeArray, index: usize, data: *const u8) -> bool {
-    debug!("[haxe_array_set] Called with arr={:?}, index={}, data={:?}", arr, index, data);
+    debug!(
+        "[haxe_array_set] Called with arr={:?}, index={}, data={:?}",
+        arr, index, data
+    );
     if arr.is_null() || data.is_null() {
         debug!("[haxe_array_set] arr or data is null, returning false");
         return false;
@@ -143,14 +146,23 @@ pub extern "C" fn haxe_array_set(arr: *mut HaxeArray, index: usize, data: *const
 
     unsafe {
         let arr_ref = &mut *arr;
-        debug!("[haxe_array_set] arr.len={}, arr.elem_size={}", arr_ref.len, arr_ref.elem_size);
+        debug!(
+            "[haxe_array_set] arr.len={}, arr.elem_size={}",
+            arr_ref.len, arr_ref.elem_size
+        );
         if index >= arr_ref.len {
-            debug!("[haxe_array_set] index {} >= len {}, returning false", index, arr_ref.len);
+            debug!(
+                "[haxe_array_set] index {} >= len {}, returning false",
+                index, arr_ref.len
+            );
             return false;
         }
 
         let elem_ptr = arr_ref.ptr.add(index * arr_ref.elem_size);
-        debug!("[haxe_array_set] Copying {} bytes from {:?} to {:?}", arr_ref.elem_size, data, elem_ptr);
+        debug!(
+            "[haxe_array_set] Copying {} bytes from {:?} to {:?}",
+            arr_ref.elem_size, data, elem_ptr
+        );
         ptr::copy_nonoverlapping(data, elem_ptr, arr_ref.elem_size);
         debug!("[haxe_array_set] Successfully set element, returning true");
         true
@@ -160,7 +172,10 @@ pub extern "C" fn haxe_array_set(arr: *mut HaxeArray, index: usize, data: *const
 /// Get pointer to element (for direct access)
 #[no_mangle]
 pub extern "C" fn haxe_array_get_ptr(arr: *const HaxeArray, index: usize) -> *mut u8 {
-    debug!("[haxe_array_get_ptr] Called with arr={:?}, index={}", arr, index);
+    debug!(
+        "[haxe_array_get_ptr] Called with arr={:?}, index={}",
+        arr, index
+    );
     if arr.is_null() {
         debug!("[haxe_array_get_ptr] arr is null, returning null");
         return ptr::null_mut();
@@ -168,9 +183,15 @@ pub extern "C" fn haxe_array_get_ptr(arr: *const HaxeArray, index: usize) -> *mu
 
     unsafe {
         let arr_ref = &*arr;
-        debug!("[haxe_array_get_ptr] arr.len={}, arr.elem_size={}", arr_ref.len, arr_ref.elem_size);
+        debug!(
+            "[haxe_array_get_ptr] arr.len={}, arr.elem_size={}",
+            arr_ref.len, arr_ref.elem_size
+        );
         if index >= arr_ref.len {
-            debug!("[haxe_array_get_ptr] index {} >= len {}, returning null", index, arr_ref.len);
+            debug!(
+                "[haxe_array_get_ptr] index {} >= len {}, returning null",
+                index, arr_ref.len
+            );
             return ptr::null_mut();
         }
 
@@ -187,7 +208,10 @@ pub extern "C" fn haxe_array_get_ptr(arr: *const HaxeArray, index: usize) -> *mu
 /// Push element onto array
 #[no_mangle]
 pub extern "C" fn haxe_array_push(arr: *mut HaxeArray, data: *const u8) {
-    debug!("[haxe_array_push] Called with arr={:?}, data={:?}", arr, data);
+    debug!(
+        "[haxe_array_push] Called with arr={:?}, data={:?}",
+        arr, data
+    );
     if arr.is_null() || data.is_null() {
         debug!("[haxe_array_push] arr or data is null, returning");
         return;
@@ -195,7 +219,10 @@ pub extern "C" fn haxe_array_push(arr: *mut HaxeArray, data: *const u8) {
 
     unsafe {
         let arr_ref = &mut *arr;
-        debug!("[haxe_array_push] Before push: len={}, cap={}, elem_size={}", arr_ref.len, arr_ref.cap, arr_ref.elem_size);
+        debug!(
+            "[haxe_array_push] Before push: len={}, cap={}, elem_size={}",
+            arr_ref.len, arr_ref.cap, arr_ref.elem_size
+        );
 
         // Check if we need to grow
         if arr_ref.len >= arr_ref.cap {
@@ -230,7 +257,10 @@ pub extern "C" fn haxe_array_push(arr: *mut HaxeArray, data: *const u8) {
         let elem_ptr = arr_ref.ptr.add(arr_ref.len * arr_ref.elem_size);
         ptr::copy_nonoverlapping(data, elem_ptr, arr_ref.elem_size);
         arr_ref.len += 1;
-        debug!("[haxe_array_push] After push: len={}, element added successfully", arr_ref.len);
+        debug!(
+            "[haxe_array_push] After push: len={}, element added successfully",
+            arr_ref.len
+        );
     }
 }
 
@@ -446,8 +476,16 @@ pub extern "C" fn haxe_array_copy(out: *mut HaxeArray, arr: *const HaxeArray) {
 
 /// Slice array
 #[no_mangle]
-pub extern "C" fn haxe_array_slice(out: *mut HaxeArray, arr: *const HaxeArray, start: usize, end: usize) {
-    debug!("[haxe_array_slice] Called with out={:?}, arr={:?}, start={}, end={}", out, arr, start, end);
+pub extern "C" fn haxe_array_slice(
+    out: *mut HaxeArray,
+    arr: *const HaxeArray,
+    start: usize,
+    end: usize,
+) {
+    debug!(
+        "[haxe_array_slice] Called with out={:?}, arr={:?}, start={}, end={}",
+        out, arr, start, end
+    );
     if arr.is_null() {
         debug!("[haxe_array_slice] arr is null, returning");
         return;
@@ -455,10 +493,16 @@ pub extern "C" fn haxe_array_slice(out: *mut HaxeArray, arr: *const HaxeArray, s
 
     unsafe {
         let arr_ref = &*arr;
-        debug!("[haxe_array_slice] arr.len={}, arr.cap={}, arr.elem_size={}", arr_ref.len, arr_ref.cap, arr_ref.elem_size);
+        debug!(
+            "[haxe_array_slice] arr.len={}, arr.cap={}, arr.elem_size={}",
+            arr_ref.len, arr_ref.cap, arr_ref.elem_size
+        );
         let actual_start = start.min(arr_ref.len);
         let actual_end = end.min(arr_ref.len);
-        debug!("[haxe_array_slice] actual_start={}, actual_end={}", actual_start, actual_end);
+        debug!(
+            "[haxe_array_slice] actual_start={}, actual_end={}",
+            actual_start, actual_end
+        );
 
         if actual_start >= actual_end {
             debug!("[haxe_array_slice] Creating empty array (start >= end)");
@@ -468,7 +512,10 @@ pub extern "C" fn haxe_array_slice(out: *mut HaxeArray, arr: *const HaxeArray, s
 
         let count = actual_end - actual_start;
         let start_ptr = arr_ref.ptr.add(actual_start * arr_ref.elem_size);
-        debug!("[haxe_array_slice] Copying {} elements from offset {}", count, actual_start);
+        debug!(
+            "[haxe_array_slice] Copying {} elements from offset {}",
+            count, actual_start
+        );
         haxe_array_from_elements(out, start_ptr, count, arr_ref.elem_size);
         debug!("[haxe_array_slice] Done");
     }
@@ -559,7 +606,10 @@ pub extern "C" fn haxe_array_get_f64(arr: *const HaxeArray, index: usize) -> f64
 /// sep: separator string
 /// Returns: pointer to a new HaxeString (caller should manage memory)
 #[no_mangle]
-pub extern "C" fn haxe_array_join(arr: *const HaxeArray, sep: *const HaxeString) -> *mut HaxeString {
+pub extern "C" fn haxe_array_join(
+    arr: *const HaxeArray,
+    sep: *const HaxeString,
+) -> *mut HaxeString {
     unsafe {
         // Allocate result string
         let result_layout = Layout::new::<HaxeString>();

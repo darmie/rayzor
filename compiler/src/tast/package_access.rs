@@ -4,25 +4,24 @@
 //! It handles cross-package access validation, internal visibility checks, and import
 //! permission validation to ensure proper encapsulation between compilation units.
 
-use std::collections::{HashMap, HashSet};
 use super::{
-    InternedString, SymbolId, TypeId, PackageId, SourceLocation,
-    Visibility, StringInterner, SymbolTable, NamespaceResolver,
-    TypeCheckError, TypeErrorKind, AccessLevel,
+    AccessLevel, InternedString, NamespaceResolver, PackageId, SourceLocation, StringInterner,
+    SymbolId, SymbolTable, TypeCheckError, TypeErrorKind, TypeId, Visibility,
 };
+use std::collections::{HashMap, HashSet};
 
 /// Package access context for tracking current compilation unit
 #[derive(Debug, Clone)]
 pub struct PackageAccessContext {
     /// Current package being compiled
     pub current_package: Option<PackageId>,
-    
+
     /// Current file path for multi-file compilation
     pub current_file: Option<InternedString>,
-    
+
     /// Symbols visible from current context
     pub visible_symbols: HashSet<SymbolId>,
-    
+
     /// Import permissions for current context
     pub import_permissions: HashMap<PackageId, AccessPermission>,
 }
@@ -71,10 +70,10 @@ impl PackageAccessContext {
 pub enum AccessPermission {
     /// Full access to all public members
     Public,
-    
+
     /// Access to public and internal members (same package)
     Internal,
-    
+
     /// No access
     None,
 }
@@ -83,19 +82,19 @@ pub enum AccessPermission {
 pub struct PackageAccessValidator<'a> {
     /// Symbol table reference
     symbol_table: &'a SymbolTable,
-    
+
     /// Namespace resolver reference
     namespace_resolver: &'a NamespaceResolver,
-    
+
     /// String interner reference
     string_interner: &'a StringInterner,
-    
+
     /// Current access context
     context: PackageAccessContext,
-    
+
     /// Cache of symbol-to-package mappings
     symbol_packages: HashMap<SymbolId, PackageId>,
-    
+
     /// Cache of package relationships
     package_cache: PackageRelationCache,
 }
@@ -121,7 +120,7 @@ impl<'a> PackageAccessValidator<'a> {
     pub fn set_context(&mut self, package: Option<PackageId>, file: Option<InternedString>) {
         self.context.set_package(package);
         self.context.set_file(file);
-        
+
         // Populate visible symbols for the package
         if let Some(pkg_id) = package {
             self.populate_visible_symbols(pkg_id);
@@ -143,7 +142,7 @@ impl<'a> PackageAccessValidator<'a> {
         while let Some(pkg_id) = current_package {
             if let Some(package) = self.namespace_resolver.get_package(pkg_id) {
                 current_package = package.parent;
-                
+
                 // Add public symbols from parent
                 for &symbol_id in package.symbols.values() {
                     if let Some(symbol) = self.symbol_table.get_symbol(symbol_id) {
@@ -165,7 +164,9 @@ impl<'a> PackageAccessValidator<'a> {
         location: SourceLocation,
     ) -> Result<(), TypeCheckError> {
         // Get symbol information
-        let symbol_info = self.symbol_table.get_symbol(target_symbol)
+        let symbol_info = self
+            .symbol_table
+            .get_symbol(target_symbol)
             .ok_or_else(|| self.create_unknown_symbol_error(target_symbol, location))?;
 
         // Check visibility
@@ -193,7 +194,7 @@ impl<'a> PackageAccessValidator<'a> {
     ) -> Result<(), TypeCheckError> {
         // Get target symbol's package
         let target_package = self.get_symbol_package(target_symbol)?;
-        
+
         // Check if we're in the same package
         if let Some(current_package) = self.context.current_package {
             if self.are_packages_same(current_package, target_package) {
@@ -257,7 +258,7 @@ impl<'a> PackageAccessValidator<'a> {
 
         // Check if one is a sub-package of the other
         let result = self.is_sub_package(pkg1, pkg2) || self.is_sub_package(pkg2, pkg1);
-        
+
         self.package_cache.same_package.insert(key, result);
         result
     }
@@ -269,7 +270,9 @@ impl<'a> PackageAccessValidator<'a> {
             if pkg_id == pkg2 {
                 return true;
             }
-            current = self.namespace_resolver.get_package(pkg_id)
+            current = self
+                .namespace_resolver
+                .get_package(pkg_id)
                 .and_then(|p| p.parent);
         }
         false
@@ -286,7 +289,7 @@ impl<'a> PackageAccessValidator<'a> {
             // Check if we have permission to import from this package
             if let Some(current_package) = self.context.current_package {
                 let permission = self.get_import_permission(current_package, package_id);
-                
+
                 if permission == AccessPermission::None {
                     return Err(self.create_import_permission_error(
                         package_id,
@@ -294,11 +297,11 @@ impl<'a> PackageAccessValidator<'a> {
                         location,
                     ));
                 }
-                
+
                 // Add import permission to context
                 self.context.add_import_permission(package_id, permission);
             }
-            
+
             Ok(())
         } else {
             Err(self.create_unknown_package_error(import_path, location))
@@ -306,10 +309,16 @@ impl<'a> PackageAccessValidator<'a> {
     }
 
     /// Get import permission between packages
-    fn get_import_permission(&self, from_package: PackageId, to_package: PackageId) -> AccessPermission {
+    fn get_import_permission(
+        &self,
+        from_package: PackageId,
+        to_package: PackageId,
+    ) -> AccessPermission {
         if from_package == to_package {
             AccessPermission::Internal
-        } else if self.is_sub_package(from_package, to_package) || self.is_sub_package(to_package, from_package) {
+        } else if self.is_sub_package(from_package, to_package)
+            || self.is_sub_package(to_package, from_package)
+        {
             AccessPermission::Internal
         } else {
             AccessPermission::Public
@@ -317,7 +326,11 @@ impl<'a> PackageAccessValidator<'a> {
     }
 
     /// Create error for unknown symbol
-    fn create_unknown_symbol_error(&self, symbol: SymbolId, location: SourceLocation) -> TypeCheckError {
+    fn create_unknown_symbol_error(
+        &self,
+        symbol: SymbolId,
+        location: SourceLocation,
+    ) -> TypeCheckError {
         TypeCheckError {
             kind: TypeErrorKind::UnknownSymbol {
                 name: format!("Symbol#{}", symbol.as_raw()),
@@ -336,15 +349,21 @@ impl<'a> PackageAccessValidator<'a> {
         current_package: PackageId,
         location: SourceLocation,
     ) -> TypeCheckError {
-        let symbol_name = self.symbol_table.get_symbol(symbol)
+        let symbol_name = self
+            .symbol_table
+            .get_symbol(symbol)
             .map(|s| self.string_interner.get(s.name).unwrap_or("<unknown>"))
             .unwrap_or("<unknown>");
-            
-        let target_pkg_name = self.namespace_resolver.get_package(target_package)
+
+        let target_pkg_name = self
+            .namespace_resolver
+            .get_package(target_package)
             .map(|p| p.qualified_path(self.string_interner))
             .unwrap_or_else(|| "<unknown>".to_string());
-            
-        let current_pkg_name = self.namespace_resolver.get_package(current_package)
+
+        let current_pkg_name = self
+            .namespace_resolver
+            .get_package(current_package)
             .map(|p| p.qualified_path(self.string_interner))
             .unwrap_or_else(|| "<default>".to_string());
 
@@ -354,7 +373,7 @@ impl<'a> PackageAccessValidator<'a> {
                 required_access: AccessLevel::Internal,
             },
             location,
-            context: format!("Internal symbol '{}' in package '{}' cannot be accessed from package '{}'", 
+            context: format!("Internal symbol '{}' in package '{}' cannot be accessed from package '{}'",
                 symbol_name, target_pkg_name, current_pkg_name),
             suggestion: Some("Make the symbol public to access from different packages, or move the accessing code to the same package".to_string()),
         }
@@ -367,21 +386,33 @@ impl<'a> PackageAccessValidator<'a> {
         current_package: PackageId,
         location: SourceLocation,
     ) -> TypeCheckError {
-        let target_pkg_name = self.namespace_resolver.get_package(target_package)
+        let target_pkg_name = self
+            .namespace_resolver
+            .get_package(target_package)
             .map(|p| p.qualified_path(self.string_interner))
             .unwrap_or_else(|| "<unknown>".to_string());
-            
-        let current_pkg_name = self.namespace_resolver.get_package(current_package)
+
+        let current_pkg_name = self
+            .namespace_resolver
+            .get_package(current_package)
             .map(|p| p.qualified_path(self.string_interner))
             .unwrap_or_else(|| "<default>".to_string());
 
         TypeCheckError {
             kind: TypeErrorKind::ImportError {
-                message: format!("Cannot import package '{}' from '{}'", target_pkg_name, current_pkg_name),
+                message: format!(
+                    "Cannot import package '{}' from '{}'",
+                    target_pkg_name, current_pkg_name
+                ),
             },
             location,
-            context: format!("Import restriction: package '{}' cannot be imported from '{}'", target_pkg_name, current_pkg_name),
-            suggestion: Some("Check package visibility settings and import permissions".to_string()),
+            context: format!(
+                "Import restriction: package '{}' cannot be imported from '{}'",
+                target_pkg_name, current_pkg_name
+            ),
+            suggestion: Some(
+                "Check package visibility settings and import permissions".to_string(),
+            ),
         }
     }
 
@@ -403,7 +434,9 @@ impl<'a> PackageAccessValidator<'a> {
             },
             location,
             context: format!("Package '{}' not found", path_str),
-            suggestion: Some("Check that the package path is correct and the package exists".to_string()),
+            suggestion: Some(
+                "Check that the package path is correct and the package exists".to_string(),
+            ),
         }
     }
 
@@ -438,28 +471,28 @@ impl PackageRelationCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tast::{StringInterner, SymbolTable, NamespaceResolver};
+    use crate::tast::{NamespaceResolver, StringInterner, SymbolTable};
 
     #[test]
     fn test_package_access_validation() {
         let mut interner = StringInterner::new();
         let mut symbol_table = SymbolTable::new();
         let mut namespace = NamespaceResolver::new(&interner);
-        
+
         // Create packages
         let com = interner.intern("com");
         let example = interner.intern("example");
         let pkg1 = namespace.get_or_create_package(vec![com, example]);
-        
+
         let utils = interner.intern("utils");
         let pkg2 = namespace.get_or_create_package(vec![utils]);
-        
+
         // Create validator
         let mut validator = PackageAccessValidator::new(&symbol_table, &namespace, &interner);
-        
+
         // Set context to pkg1
         validator.set_context(Some(pkg1), None);
-        
+
         // Test same-package access
         assert!(validator.are_packages_same(pkg1, pkg1));
         assert!(!validator.are_packages_same(pkg1, pkg2));
@@ -470,16 +503,16 @@ mod tests {
         let mut interner = StringInterner::new();
         let symbol_table = SymbolTable::new();
         let mut namespace = NamespaceResolver::new(&interner);
-        
+
         let com = interner.intern("com");
         let example = interner.intern("example");
         let game = interner.intern("game");
-        
+
         let parent = namespace.get_or_create_package(vec![com, example]);
         let child = namespace.get_or_create_package(vec![com, example, game]);
-        
+
         let validator = PackageAccessValidator::new(&symbol_table, &namespace, &interner);
-        
+
         assert!(validator.is_sub_package(child, parent));
         assert!(!validator.is_sub_package(parent, child));
     }

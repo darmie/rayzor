@@ -1,8 +1,9 @@
 use parser::preprocessor::{preprocess, PreprocessorConfig};
 
 fn main() {
-    let source = std::fs::read_to_string("compiler/haxe-std/haxe/iterators/StringIteratorUnicode.hx")
-        .expect("Failed to read StringIteratorUnicode.hx");
+    let source =
+        std::fs::read_to_string("compiler/haxe-std/haxe/iterators/StringIteratorUnicode.hx")
+            .expect("Failed to read StringIteratorUnicode.hx");
 
     let config = PreprocessorConfig::default();
     let result = preprocess(&source, &config);

@@ -1,6 +1,6 @@
 //! Test to show parser works correctly with valid code
 
-use parser::{parse_haxe_file, HaxeFile};
+use parser::parse_haxe_file;
 
 fn main() {
     // Test 1: Valid code parses correctly

@@ -12,24 +12,31 @@ class Test {
     }
 }
 "#;
-    
+
     let result = parse_haxe_file("test.hx", input, false);
-    assert!(result.is_ok(), "Failed to parse $type identifier: {:?}", result.err());
-    
+    assert!(
+        result.is_ok(),
+        "Failed to parse $type identifier: {:?}",
+        result.err()
+    );
+
     let file = result.unwrap();
     assert_eq!(file.declarations.len(), 1);
-    
+
     if let TypeDeclaration::Class(class) = &file.declarations[0] {
         assert_eq!(class.name, "Test");
         assert_eq!(class.fields.len(), 1);
-        
+
         if let ClassFieldKind::Function(func) = &class.fields[0].kind {
             assert_eq!(func.name, "test");
             if let Some(body) = &func.body {
                 if let ExprKind::Block(block) = &body.kind {
                     assert_eq!(block.len(), 1);
                     if let BlockElement::Expr(expr) = &block[0] {
-                        if let ExprKind::Call { expr: call_expr, .. } = &expr.kind {
+                        if let ExprKind::Call {
+                            expr: call_expr, ..
+                        } = &expr.kind
+                        {
                             if let ExprKind::DollarIdent { name, arg } = &call_expr.kind {
                                 assert_eq!(name, "type");
                                 assert!(arg.is_none());
@@ -65,13 +72,17 @@ class Test {
     }
 }
 "#;
-    
+
     let result = parse_haxe_file("test.hx", input, false);
-    assert!(result.is_ok(), "Failed to parse $v identifier: {:?}", result.err());
-    
+    assert!(
+        result.is_ok(),
+        "Failed to parse $v identifier: {:?}",
+        result.err()
+    );
+
     let file = result.unwrap();
     assert_eq!(file.declarations.len(), 1);
-    
+
     if let TypeDeclaration::Class(class) = &file.declarations[0] {
         if let ClassFieldKind::Function(func) = &class.fields[0].kind {
             if let Some(body) = &func.body {
@@ -106,10 +117,14 @@ class Test {
     }
 }
 "#;
-    
+
     let result = parse_haxe_file("test.hx", input, false);
-    assert!(result.is_ok(), "Failed to parse $i identifier: {:?}", result.err());
-    
+    assert!(
+        result.is_ok(),
+        "Failed to parse $i identifier: {:?}",
+        result.err()
+    );
+
     let file = result.unwrap();
     if let TypeDeclaration::Class(class) = &file.declarations[0] {
         if let ClassFieldKind::Function(func) = &class.fields[0].kind {
@@ -141,10 +156,14 @@ class Test {
     }
 }
 "#;
-    
+
     let result = parse_haxe_file("test.hx", input, false);
-    assert!(result.is_ok(), "Failed to parse $a identifier: {:?}", result.err());
-    
+    assert!(
+        result.is_ok(),
+        "Failed to parse $a identifier: {:?}",
+        result.err()
+    );
+
     let file = result.unwrap();
     if let TypeDeclaration::Class(class) = &file.declarations[0] {
         if let ClassFieldKind::Function(func) = &class.fields[0].kind {
@@ -182,10 +201,14 @@ class Test {
     }
 }
 "#;
-    
+
     let result = parse_haxe_file("test.hx", input, false);
-    assert!(result.is_ok(), "Failed to parse $e identifier: {:?}", result.err());
-    
+    assert!(
+        result.is_ok(),
+        "Failed to parse $e identifier: {:?}",
+        result.err()
+    );
+
     let file = result.unwrap();
     if let TypeDeclaration::Class(class) = &file.declarations[0] {
         if let ClassFieldKind::Function(func) = &class.fields[0].kind {
@@ -217,10 +240,14 @@ class Test {
     }
 }
 "#;
-    
+
     let result = parse_haxe_file("test.hx", input, false);
-    assert!(result.is_ok(), "Failed to parse regular reification: {:?}", result.err());
-    
+    assert!(
+        result.is_ok(),
+        "Failed to parse regular reification: {:?}",
+        result.err()
+    );
+
     let file = result.unwrap();
     if let TypeDeclaration::Class(class) = &file.declarations[0] {
         if let ClassFieldKind::Function(func) = &class.fields[0].kind {
@@ -254,27 +281,34 @@ class Test {
     }
 }
 "#;
-    
+
     let result = parse_haxe_file("test.hx", input, false);
-    assert!(result.is_ok(), "Failed to parse mixed dollar expressions: {:?}", result.err());
-    
+    assert!(
+        result.is_ok(),
+        "Failed to parse mixed dollar expressions: {:?}",
+        result.err()
+    );
+
     let file = result.unwrap();
     if let TypeDeclaration::Class(class) = &file.declarations[0] {
         if let ClassFieldKind::Function(func) = &class.fields[0].kind {
             if let Some(body) = &func.body {
                 if let ExprKind::Block(block) = &body.kind {
                     assert_eq!(block.len(), 3);
-                    
+
                     // First: $type(expr) - should be a call to $type
                     if let BlockElement::Expr(expr) = &block[0] {
-                        if let ExprKind::Call { expr: call_expr, .. } = &expr.kind {
+                        if let ExprKind::Call {
+                            expr: call_expr, ..
+                        } = &expr.kind
+                        {
                             if let ExprKind::DollarIdent { name, arg } = &call_expr.kind {
                                 assert_eq!(name, "type");
                                 assert!(arg.is_none());
                             }
                         }
                     }
-                    
+
                     // Second: $v{value} - should be a dollar identifier
                     if let BlockElement::Expr(expr) = &block[1] {
                         if let ExprKind::DollarIdent { name, arg } = &expr.kind {
@@ -282,10 +316,15 @@ class Test {
                             assert!(arg.is_some());
                         }
                     }
-                    
+
                     // Third: var x = $someExpr - should be a var declaration with reification
                     if let BlockElement::Expr(expr) = &block[2] {
-                        if let ExprKind::Var { name, expr: Some(var_expr), .. } = &expr.kind {
+                        if let ExprKind::Var {
+                            name,
+                            expr: Some(var_expr),
+                            ..
+                        } = &expr.kind
+                        {
                             assert_eq!(name, "x");
                             if let ExprKind::Reify(reify_expr) = &var_expr.kind {
                                 if let ExprKind::Ident(ident) = &reify_expr.kind {

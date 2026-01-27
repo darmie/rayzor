@@ -17,33 +17,58 @@ class Test {
     match parse_haxe_file_with_debug("test.hx", input, true, true) {
         Ok(result) => {
             // Extract the try-catch from the AST
-            if let Some(class_decl) = result.declarations.first() {
-                if let parser::haxe_ast::TypeDeclaration::Class(class) = class_decl {
+            if let Some(parser::haxe_ast::TypeDeclaration::Class(class)) =
+                result.declarations.first()
+            {
+                {
                     if let Some(method) = class.fields.first() {
                         if let parser::haxe_ast::ClassFieldKind::Function(func) = &method.kind {
                             if let Some(body) = &func.body {
                                 if let parser::haxe_ast::ExprKind::Block(block) = &body.kind {
-                                    if let Some(parser::haxe_ast::BlockElement::Expr(try_expr)) = block.first() {
-                                        if let parser::haxe_ast::ExprKind::Try { catches, .. } = &try_expr.kind {
-                                            assert_eq!(catches.len(), 1, "Should have 1 catch block");
+                                    if let Some(parser::haxe_ast::BlockElement::Expr(try_expr)) =
+                                        block.first()
+                                    {
+                                        if let parser::haxe_ast::ExprKind::Try { catches, .. } =
+                                            &try_expr.kind
+                                        {
+                                            assert_eq!(
+                                                catches.len(),
+                                                1,
+                                                "Should have 1 catch block"
+                                            );
                                             let catch_block = &catches[0];
                                             assert_eq!(catch_block.var, "e");
                                             assert!(catch_block.type_hint.is_some());
-                                            assert!(catch_block.filter.is_some(), "Should have a filter");
-                                            
+                                            assert!(
+                                                catch_block.filter.is_some(),
+                                                "Should have a filter"
+                                            );
+
                                             // Check if the filter is a binary comparison
                                             if let Some(filter) = &catch_block.filter {
                                                 // Handle parenthesized expressions - the filter is wrapped in parentheses
                                                 let actual_filter = match &filter.kind {
-                                                    parser::haxe_ast::ExprKind::Paren(inner) => inner,
+                                                    parser::haxe_ast::ExprKind::Paren(inner) => {
+                                                        inner
+                                                    }
                                                     _ => filter,
                                                 };
                                                 match &actual_filter.kind {
-                                                    parser::haxe_ast::ExprKind::Binary { left, op, right } => {
-                                                        assert_eq!(*op, parser::haxe_ast::BinaryOp::Gt);
+                                                    parser::haxe_ast::ExprKind::Binary {
+                                                        left,
+                                                        op,
+                                                        right,
+                                                    } => {
+                                                        assert_eq!(
+                                                            *op,
+                                                            parser::haxe_ast::BinaryOp::Gt
+                                                        );
                                                         // left should be field access e.length
                                                         match &left.kind {
-                                                            parser::haxe_ast::ExprKind::Field { expr, field } => {
+                                                            parser::haxe_ast::ExprKind::Field {
+                                                                expr,
+                                                                field,
+                                                            } => {
                                                                 assert_eq!(field, "length");
                                                                 match &expr.kind {
                                                                     parser::haxe_ast::ExprKind::Ident(name) => {
@@ -56,13 +81,19 @@ class Test {
                                                         }
                                                         // right should be literal 0
                                                         match &right.kind {
-                                                            parser::haxe_ast::ExprKind::Int(val) => {
+                                                            parser::haxe_ast::ExprKind::Int(
+                                                                val,
+                                                            ) => {
                                                                 assert_eq!(*val, 0);
                                                             }
-                                                            _ => panic!("Expected integer literal 0"),
+                                                            _ => {
+                                                                panic!("Expected integer literal 0")
+                                                            }
                                                         }
                                                     }
-                                                    _ => panic!("Expected binary expression for filter"),
+                                                    _ => panic!(
+                                                        "Expected binary expression for filter"
+                                                    ),
                                                 }
                                             }
                                             return;
@@ -75,7 +106,7 @@ class Test {
                 }
             }
             panic!("Could not find expected AST structure");
-        },
+        }
         Err(e) => {
             panic!("Should parse successfully, got error: {}", e);
         }
@@ -99,19 +130,32 @@ class Test {
     match parse_haxe_file_with_debug("test.hx", input, true, true) {
         Ok(result) => {
             // Extract the try-catch from the AST
-            if let Some(class_decl) = result.declarations.first() {
-                if let parser::haxe_ast::TypeDeclaration::Class(class) = class_decl {
+            if let Some(parser::haxe_ast::TypeDeclaration::Class(class)) =
+                result.declarations.first()
+            {
+                {
                     if let Some(method) = class.fields.first() {
                         if let parser::haxe_ast::ClassFieldKind::Function(func) = &method.kind {
                             if let Some(body) = &func.body {
                                 if let parser::haxe_ast::ExprKind::Block(block) = &body.kind {
-                                    if let Some(parser::haxe_ast::BlockElement::Expr(try_expr)) = block.first() {
-                                        if let parser::haxe_ast::ExprKind::Try { catches, .. } = &try_expr.kind {
-                                            assert_eq!(catches.len(), 1, "Should have 1 catch block");
+                                    if let Some(parser::haxe_ast::BlockElement::Expr(try_expr)) =
+                                        block.first()
+                                    {
+                                        if let parser::haxe_ast::ExprKind::Try { catches, .. } =
+                                            &try_expr.kind
+                                        {
+                                            assert_eq!(
+                                                catches.len(),
+                                                1,
+                                                "Should have 1 catch block"
+                                            );
                                             let catch_block = &catches[0];
                                             assert_eq!(catch_block.var, "e");
                                             assert!(catch_block.type_hint.is_some());
-                                            assert!(catch_block.filter.is_none(), "Should not have a filter");
+                                            assert!(
+                                                catch_block.filter.is_none(),
+                                                "Should not have a filter"
+                                            );
                                             return;
                                         }
                                     }
@@ -122,7 +166,7 @@ class Test {
                 }
             }
             panic!("Could not find expected AST structure");
-        },
+        }
         Err(e) => {
             panic!("Should parse successfully, got error: {}", e);
         }
@@ -150,28 +194,47 @@ class Test {
     match parse_haxe_file_with_debug("test.hx", input, true, true) {
         Ok(result) => {
             // Extract the try-catch from the AST
-            if let Some(class_decl) = result.declarations.first() {
-                if let parser::haxe_ast::TypeDeclaration::Class(class) = class_decl {
+            if let Some(parser::haxe_ast::TypeDeclaration::Class(class)) =
+                result.declarations.first()
+            {
+                {
                     if let Some(method) = class.fields.first() {
                         if let parser::haxe_ast::ClassFieldKind::Function(func) = &method.kind {
                             if let Some(body) = &func.body {
                                 if let parser::haxe_ast::ExprKind::Block(block) = &body.kind {
-                                    if let Some(parser::haxe_ast::BlockElement::Expr(try_expr)) = block.first() {
-                                        if let parser::haxe_ast::ExprKind::Try { catches, .. } = &try_expr.kind {
-                                            assert_eq!(catches.len(), 3, "Should have 3 catch blocks");
-                                            
+                                    if let Some(parser::haxe_ast::BlockElement::Expr(try_expr)) =
+                                        block.first()
+                                    {
+                                        if let parser::haxe_ast::ExprKind::Try { catches, .. } =
+                                            &try_expr.kind
+                                        {
+                                            assert_eq!(
+                                                catches.len(),
+                                                3,
+                                                "Should have 3 catch blocks"
+                                            );
+
                                             // First catch: has filter
-                                            assert!(catches[0].filter.is_some(), "First catch should have filter");
+                                            assert!(
+                                                catches[0].filter.is_some(),
+                                                "First catch should have filter"
+                                            );
                                             assert_eq!(catches[0].var, "e");
-                                            
+
                                             // Second catch: no filter
-                                            assert!(catches[1].filter.is_none(), "Second catch should not have filter");
+                                            assert!(
+                                                catches[1].filter.is_none(),
+                                                "Second catch should not have filter"
+                                            );
                                             assert_eq!(catches[1].var, "e");
-                                            
+
                                             // Third catch: has filter
-                                            assert!(catches[2].filter.is_some(), "Third catch should have filter");
+                                            assert!(
+                                                catches[2].filter.is_some(),
+                                                "Third catch should have filter"
+                                            );
                                             assert_eq!(catches[2].var, "e");
-                                            
+
                                             return;
                                         }
                                     }
@@ -182,7 +245,7 @@ class Test {
                 }
             }
             panic!("Could not find expected AST structure");
-        },
+        }
         Err(e) => {
             panic!("Should parse successfully, got error: {}", e);
         }

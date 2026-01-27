@@ -1,8 +1,8 @@
 //! Standard error message syntax for parser context strings
-//! 
+//!
 //! Context strings follow a structured format that can be parsed during diagnostic generation:
 //! `[CODE] message | help: help_text | label: label_text`
-//! 
+//!
 //! Examples:
 //! - `[E0040] expected '(' after 'if' in case guard | help: case guard expressions must be enclosed in parentheses`
 //! - `[E0002] expected ';' after statement | help: add a semicolon at the end of the statement`
@@ -42,7 +42,7 @@ impl ParsedError {
         let parts: Vec<&str> = message_for_split.splitn(2, " | ").collect();
         if parts.len() == 2 {
             message = parts[0].to_string();
-            
+
             // Parse additional fields
             for field in parts[1].split(" | ") {
                 let field = field.trim();
@@ -67,10 +67,7 @@ impl ParsedError {
 
     /// Convert to a diagnostic using the parsed components
     pub fn to_diagnostic(&self, span: SourceSpan) -> Diagnostic {
-        let mut builder = DiagnosticBuilder::error(
-            self.message.clone(),
-            span.clone(),
-        );
+        let mut builder = DiagnosticBuilder::error(self.message.clone(), span.clone());
 
         if let Some(code) = &self.code {
             builder = builder.code(code);
@@ -99,17 +96,26 @@ macro_rules! error_context {
     ($code:expr, $msg:expr, help: $help:expr) => {
         concat!("[", $code, "] ", $msg, " | help: ", $help)
     };
-    
+
     // With code, help, and label
     ($code:expr, $msg:expr, help: $help:expr, label: $label:expr) => {
-        concat!("[", $code, "] ", $msg, " | help: ", $help, " | label: ", $label)
+        concat!(
+            "[",
+            $code,
+            "] ",
+            $msg,
+            " | help: ",
+            $help,
+            " | label: ",
+            $label
+        )
     };
-    
+
     // With code only
     ($code:expr, $msg:expr) => {
         concat!("[", $code, "] ", $msg)
     };
-    
+
     // Message only (no code)
     ($msg:expr) => {
         $msg
@@ -122,9 +128,10 @@ mod tests {
 
     #[test]
     fn test_parse_full_format() {
-        let input = "[E0040] expected '(' after 'if' | help: use parentheses | label: missing parenthesis";
+        let input =
+            "[E0040] expected '(' after 'if' | help: use parentheses | label: missing parenthesis";
         let parsed = ParsedError::parse(input);
-        
+
         assert_eq!(parsed.code, Some("E0040".to_string()));
         assert_eq!(parsed.message, "expected '(' after 'if'");
         assert_eq!(parsed.help, Some("use parentheses".to_string()));
@@ -135,7 +142,7 @@ mod tests {
     fn test_parse_code_and_message() {
         let input = "[E0002] expected semicolon";
         let parsed = ParsedError::parse(input);
-        
+
         assert_eq!(parsed.code, Some("E0002".to_string()));
         assert_eq!(parsed.message, "expected semicolon");
         assert_eq!(parsed.help, None);
@@ -145,7 +152,7 @@ mod tests {
     fn test_parse_message_only() {
         let input = "expected identifier";
         let parsed = ParsedError::parse(input);
-        
+
         assert_eq!(parsed.code, None);
         assert_eq!(parsed.message, "expected identifier");
         assert_eq!(parsed.help, None);

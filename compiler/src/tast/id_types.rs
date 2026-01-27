@@ -4,9 +4,9 @@
 //! the Typed AST system. Each ID type is a lightweight wrapper around u32
 //! that prevents mixing up different kinds of identifiers.
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::num::NonZeroU32;
-use serde::{Serialize, Deserialize};
 
 /// Trait for ID types that can be created and validated
 pub trait IdType: Copy + Clone + PartialEq + Eq + std::hash::Hash + fmt::Debug {
@@ -215,7 +215,7 @@ define_id_type! {
     BorrowEdgeId
 }
 
-define_id_type!{
+define_id_type! {
     /// Unique identifier for move edges
    MoveEdgeId
 }
@@ -447,7 +447,7 @@ pub mod collections {
         HashMap::with_capacity(256)
     }
 
-    /// Create a new ID set with reasonable default capacity  
+    /// Create a new ID set with reasonable default capacity
     pub fn new_id_set<T: IdType>() -> IdSet<T> {
         HashSet::with_capacity(256)
     }

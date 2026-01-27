@@ -14,9 +14,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Simple if should parse, got: {}", e),
     }
 }
@@ -35,9 +35,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("If-else should parse, got: {}", e),
     }
 }
@@ -60,9 +60,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("If-else if chain should parse, got: {}", e),
     }
 }
@@ -84,9 +84,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Nested if statements should parse, got: {}", e),
     }
 }
@@ -103,9 +103,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("While loop should parse, got: {}", e),
     }
 }
@@ -122,9 +122,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Do-while loop should parse, got: {}", e),
     }
 }
@@ -140,9 +140,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("For loop should parse, got: {}", e),
     }
 }
@@ -165,9 +165,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Nested loops should parse, got: {}", e),
     }
 }
@@ -190,9 +190,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Switch statement should parse, got: {}", e),
     }
 }
@@ -215,9 +215,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Switch with guards should parse, got: {}", e),
     }
 }
@@ -237,9 +237,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Try-catch should parse, got: {}", e),
     }
 }
@@ -269,9 +269,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Control flow statements should parse, got: {}", e),
     }
 }
@@ -301,9 +301,9 @@ class Outer {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Complex nested control flow should parse, got: {}", e),
     }
 }
@@ -332,9 +332,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Expression contexts should parse, got: {}", e),
     }
 }

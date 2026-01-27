@@ -4,11 +4,11 @@
 //! replacing dynamic_type placeholders with actual types.
 
 use super::{
-    TypeId, TypeTable, TypeKind, SymbolTable, SymbolId, InternedString,
-    StringInterner, SourceLocation, ScopeTree, ScopeId,
+    InternedString, ScopeId, ScopeTree, SourceLocation, StringInterner, SymbolId, SymbolTable,
+    TypeId, TypeKind, TypeTable,
 };
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Type resolution context for AST lowering
 pub struct TypeResolutionHelpers<'a> {
@@ -37,11 +37,11 @@ impl<'a> TypeResolutionHelpers<'a> {
     pub fn resolve_type_alias(&self, symbol_id: SymbolId) -> TypeId {
         if let Some(symbol) = self.symbol_table.get_symbol(symbol_id) {
             let type_table = self.type_table.borrow();
-            
+
             // Follow alias chain
             let mut current_type = symbol.type_id;
             let mut visited = vec![current_type];
-            
+
             while let Some(type_info) = type_table.get(current_type) {
                 match &type_info.kind {
                     TypeKind::TypeAlias { target_type, .. } => {
@@ -56,7 +56,7 @@ impl<'a> TypeResolutionHelpers<'a> {
                     _ => return current_type,
                 }
             }
-            
+
             current_type
         } else {
             self.type_table.borrow().dynamic_type()
@@ -67,7 +67,7 @@ impl<'a> TypeResolutionHelpers<'a> {
     pub fn resolve_abstract_type(&self, symbol_id: SymbolId) -> TypeId {
         if let Some(symbol) = self.symbol_table.get_symbol(symbol_id) {
             let type_table = self.type_table.borrow();
-            
+
             if let Some(type_info) = type_table.get(symbol.type_id) {
                 match &type_info.kind {
                     TypeKind::Abstract { underlying, .. } => {
@@ -109,7 +109,7 @@ impl<'a> TypeResolutionHelpers<'a> {
     pub fn resolve_this_type(&self, current_scope: ScopeId) -> TypeId {
         // Walk up scopes to find enclosing class
         let mut scope_id = current_scope;
-        
+
         loop {
             if let Some(scope) = self.scope_tree.get_scope(scope_id) {
                 // Check if this is a class scope
@@ -124,7 +124,7 @@ impl<'a> TypeResolutionHelpers<'a> {
                         }
                     }
                 }
-                
+
                 // Move to parent scope
                 if let Some(parent) = scope.parent_id {
                     scope_id = parent;
@@ -135,7 +135,7 @@ impl<'a> TypeResolutionHelpers<'a> {
                 break;
             }
         }
-        
+
         // No enclosing class found
         self.type_table.borrow().dynamic_type()
     }
@@ -144,7 +144,7 @@ impl<'a> TypeResolutionHelpers<'a> {
     pub fn resolve_super_type(&self, current_scope: ScopeId) -> TypeId {
         // First find the current class
         let class_type = self.resolve_this_type(current_scope);
-        
+
         let type_table = self.type_table.borrow();
         if let Some(type_info) = type_table.get(class_type) {
             match &type_info.kind {
@@ -173,15 +173,15 @@ impl<'a> TypeResolutionHelpers<'a> {
 
     /// Create a map type with key and value types
     pub fn create_map_type(&self, key_type: TypeId, value_type: TypeId) -> TypeId {
-        self.type_table.borrow_mut().create_map_type(key_type, value_type)
+        self.type_table
+            .borrow_mut()
+            .create_map_type(key_type, value_type)
     }
 
     /// Create an anonymous object type from fields
-    pub fn create_anonymous_object_type(
-        &self,
-        fields: Vec<(InternedString, TypeId)>,
-    ) -> TypeId {
-        let anonymous_fields: Vec<_> = fields.into_iter()
+    pub fn create_anonymous_object_type(&self, fields: Vec<(InternedString, TypeId)>) -> TypeId {
+        let anonymous_fields: Vec<_> = fields
+            .into_iter()
             .map(|(name, type_id)| super::core::AnonymousField {
                 name,
                 type_id,
@@ -189,17 +189,16 @@ impl<'a> TypeResolutionHelpers<'a> {
                 optional: false,
             })
             .collect();
-        
-        self.type_table.borrow_mut().create_type(TypeKind::Anonymous { 
-            fields: anonymous_fields 
-        })
+
+        self.type_table
+            .borrow_mut()
+            .create_type(TypeKind::Anonymous {
+                fields: anonymous_fields,
+            })
     }
 
     /// Infer type from object literal fields
-    pub fn infer_object_literal_type(
-        &self,
-        fields: &[(InternedString, TypeId)],
-    ) -> TypeId {
+    pub fn infer_object_literal_type(&self, fields: &[(InternedString, TypeId)]) -> TypeId {
         if fields.is_empty() {
             // Empty object
             self.create_anonymous_object_type(vec![])
@@ -214,30 +213,30 @@ impl<'a> TypeResolutionHelpers<'a> {
         if types.is_empty() {
             return self.type_table.borrow().void_type();
         }
-        
+
         if types.len() == 1 {
             return types[0];
         }
-        
+
         // Deduplicate and filter out void types
         let type_table = self.type_table.borrow();
         let void_type = type_table.void_type();
-        
+
         let mut unique_types = Vec::new();
         for t in types {
             if t != void_type && !unique_types.contains(&t) {
                 unique_types.push(t);
             }
         }
-        
+
         if unique_types.is_empty() {
             return void_type;
         }
-        
+
         if unique_types.len() == 1 {
             return unique_types[0];
         }
-        
+
         drop(type_table);
         self.type_table.borrow_mut().create_union_type(unique_types)
     }

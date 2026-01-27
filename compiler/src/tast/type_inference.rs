@@ -89,14 +89,14 @@ impl<'a> TypeInferenceContext<'a> {
             constraints: Vec::new(),
         }
     }
-    
+
     /// Create a new inference variable
     pub fn new_inference_variable(&mut self) -> InferenceVariableId {
         let id = InferenceVariableId(self.next_inference_var);
         self.next_inference_var += 1;
         id
     }
-    
+
     /// Infer concrete types for a function
     pub fn infer_function_types(&mut self, function: &mut TypedFunction) -> Result<(), Vec<InferenceError>> {
         // Infer parameter types
@@ -105,7 +105,7 @@ impl<'a> TypeInferenceContext<'a> {
                 parameter.param_type = self.infer_parameter_type(parameter);
             }
         }
-        
+
         // Infer return type from function body
         if self.is_dynamic_type(function.return_type) {
             match self.infer_return_type(&function.body) {
@@ -113,20 +113,20 @@ impl<'a> TypeInferenceContext<'a> {
                 Err(e) => return Err(vec![e]),
             }
         }
-        
+
         // Infer types for all statements in the body
         for statement in &mut function.body {
             if let Err(e) = self.infer_statement_types(statement) {
                 return Err(vec![e]);
             }
         }
-        
+
         // Solve constraints
         self.solve_constraints()?;
-        
+
         Ok(())
     }
-    
+
     /// Infer concrete types for a class
     pub fn infer_class_types(&mut self, class: &mut TypedClass) -> Result<(), Vec<InferenceError>> {
         // Infer field types
@@ -135,15 +135,15 @@ impl<'a> TypeInferenceContext<'a> {
                 field.field_type = self.infer_field_type(field);
             }
         }
-        
+
         // Infer method types
         for method in &mut class.methods {
             self.infer_function_types(method)?;
         }
-        
+
         Ok(())
     }
-    
+
     /// Check if a type is Dynamic (needs inference)
     fn is_dynamic_type(&self, type_id: TypeId) -> bool {
         let type_table = self.type_table.borrow();
@@ -154,22 +154,22 @@ impl<'a> TypeInferenceContext<'a> {
             true
         }
     }
-    
+
     /// Infer parameter type from usage context
     fn infer_parameter_type(&mut self, parameter: &TypedParameter) -> TypeId {
         // For now, parameters without explicit types default to Dynamic
         // In a full implementation, we would analyze usage patterns
         self.type_table.borrow().dynamic_type()
     }
-    
+
     /// Infer return type from function body
     fn infer_return_type(&mut self, body: &[TypedStatement]) -> Result<TypeId, InferenceError> {
         let mut return_types = Vec::new();
-        
+
         for statement in body {
             self.collect_return_types(statement, &mut return_types);
         }
-        
+
         if return_types.is_empty() {
             // No return statements, function returns void
             Ok(self.type_table.borrow().void_type())
@@ -181,7 +181,7 @@ impl<'a> TypeInferenceContext<'a> {
             self.find_common_supertype(&return_types)
         }
     }
-    
+
     /// Collect all return types from a statement
     fn collect_return_types(&self, statement: &TypedStatement, return_types: &mut Vec<TypeId>) {
         match statement {
@@ -213,15 +213,15 @@ impl<'a> TypeInferenceContext<'a> {
             _ => {}
         }
     }
-    
+
     /// Find common supertype for multiple types
     fn find_common_supertype(&self, types: &[TypeId]) -> Result<TypeId, InferenceError> {
         if types.is_empty() {
             return Ok(self.type_table.borrow().void_type());
         }
-        
+
         let first_type = types[0];
-        
+
         // For now, if all types are the same, return that type
         // Otherwise, return the first type as a fallback
         for &type_id in types.iter().skip(1) {
@@ -234,10 +234,10 @@ impl<'a> TypeInferenceContext<'a> {
                 return Ok(first_type);
             }
         }
-        
+
         Ok(first_type)
     }
-    
+
     /// Infer field type from initializer or usage
     fn infer_field_type(&mut self, field: &TypedField) -> TypeId {
         // If field has an initializer, use its type
@@ -246,11 +246,11 @@ impl<'a> TypeInferenceContext<'a> {
                 return init_expr.expr_type;
             }
         }
-        
+
         // Default to String for now - in practice, we'd analyze usage patterns
         self.type_table.borrow().string_type()
     }
-    
+
     /// Infer types for a statement
     fn infer_statement_types(&mut self, statement: &mut TypedStatement) -> Result<(), InferenceError> {
         match statement {
@@ -260,7 +260,7 @@ impl<'a> TypeInferenceContext<'a> {
             TypedStatement::VarDecl { var_type, initializer, .. } => {
                 if let Some(init_expr) = initializer {
                     self.infer_expression_types(init_expr)?;
-                    
+
                     // If variable type is dynamic, infer from initializer
                     if self.is_dynamic_type(*var_type) && !self.is_dynamic_type(init_expr.expr_type) {
                         *var_type = init_expr.expr_type;
@@ -270,7 +270,7 @@ impl<'a> TypeInferenceContext<'a> {
             TypedStatement::Assignment { target, value, .. } => {
                 self.infer_expression_types(target)?;
                 self.infer_expression_types(value)?;
-                
+
                 // Add constraint that value type must be assignable to target type
                 self.constraints.push(TypeConstraint::Assignable {
                     from: value.expr_type,
@@ -290,13 +290,13 @@ impl<'a> TypeInferenceContext<'a> {
             }
             TypedStatement::If { condition, then_branch, else_branch, .. } => {
                 self.infer_expression_types(condition)?;
-                
+
                 // Condition must be boolean
                 self.constraints.push(TypeConstraint::Boolean {
                     type_id: condition.expr_type,
                     reason: "if condition".to_string(),
                 });
-                
+
                 self.infer_statement_types(then_branch)?;
                 if let Some(else_stmt) = else_branch {
                     self.infer_statement_types(else_stmt)?;
@@ -304,13 +304,13 @@ impl<'a> TypeInferenceContext<'a> {
             }
             TypedStatement::While { condition, body, .. } => {
                 self.infer_expression_types(condition)?;
-                
+
                 // Condition must be boolean
                 self.constraints.push(TypeConstraint::Boolean {
                     type_id: condition.expr_type,
                     reason: "while condition".to_string(),
                 });
-                
+
                 self.infer_statement_types(body)?;
             }
             TypedStatement::For { iterable, body, .. } => {
@@ -321,10 +321,10 @@ impl<'a> TypeInferenceContext<'a> {
                 // No type inference needed
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Infer types for an expression
     fn infer_expression_types(&mut self, expression: &mut TypedExpression) -> Result<(), InferenceError> {
         match &mut expression.kind {
@@ -350,7 +350,7 @@ impl<'a> TypeInferenceContext<'a> {
             TypedExpressionKind::BinaryOp { left, right, .. } => {
                 self.infer_expression_types(left)?;
                 self.infer_expression_types(right)?;
-                
+
                 // Infer result type based on operation
                 expression.expr_type = self.infer_binary_op_result_type(left.expr_type, right.expr_type)?;
             }
@@ -359,7 +359,7 @@ impl<'a> TypeInferenceContext<'a> {
                 for arg in args {
                     self.infer_expression_types(arg)?;
                 }
-                
+
                 // For now, assume String result - would need function signature lookup
                 if self.is_dynamic_type(expression.expr_type) {
                     expression.expr_type = self.type_table.borrow().string_type();
@@ -367,7 +367,7 @@ impl<'a> TypeInferenceContext<'a> {
             }
             TypedExpressionKind::FieldAccess { object, .. } => {
                 self.infer_expression_types(object)?;
-                
+
                 // Field access result depends on field type - default to String
                 if self.is_dynamic_type(expression.expr_type) {
                     expression.expr_type = self.type_table.borrow().string_type();
@@ -376,14 +376,14 @@ impl<'a> TypeInferenceContext<'a> {
             TypedExpressionKind::ArrayAccess { array, index } => {
                 self.infer_expression_types(array)?;
                 self.infer_expression_types(index)?;
-                
+
                 // Index must be Int
                 self.constraints.push(TypeConstraint::Equality {
                     left: index.expr_type,
                     right: self.type_table.borrow().int_type(),
                     reason: "array index".to_string(),
                 });
-                
+
                 // Result type is array element type - default to String
                 if self.is_dynamic_type(expression.expr_type) {
                     expression.expr_type = self.type_table.borrow().string_type();
@@ -392,16 +392,16 @@ impl<'a> TypeInferenceContext<'a> {
             TypedExpressionKind::Conditional { condition, then_expr, else_expr } => {
                 self.infer_expression_types(condition)?;
                 self.infer_expression_types(then_expr)?;
-                
+
                 // Condition must be boolean
                 self.constraints.push(TypeConstraint::Boolean {
                     type_id: condition.expr_type,
                     reason: "conditional expression condition".to_string(),
                 });
-                
+
                 if let Some(else_expr) = else_expr {
                     self.infer_expression_types(else_expr)?;
-                    
+
                     // Result type is common supertype of then and else branches
                     expression.expr_type = self.find_common_supertype(&[then_expr.expr_type, else_expr.expr_type])?;
                 } else {
@@ -413,7 +413,7 @@ impl<'a> TypeInferenceContext<'a> {
                 for stmt in statements {
                     self.infer_statement_types(stmt)?;
                 }
-                
+
                 // Block result is void unless it ends with an expression
                 if self.is_dynamic_type(expression.expr_type) {
                     expression.expr_type = self.type_table.borrow().void_type();
@@ -427,23 +427,23 @@ impl<'a> TypeInferenceContext<'a> {
                 }
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Infer the result type of a binary operation
     fn infer_binary_op_result_type(&self, left_type: TypeId, right_type: TypeId) -> Result<TypeId, InferenceError> {
         let type_table = self.type_table.borrow();
-        
+
         let int_type = type_table.int_type();
         let float_type = type_table.float_type();
         let bool_type = type_table.bool_type();
         let string_type = type_table.string_type();
-        
+
         // Numeric operations
         if left_type == int_type && right_type == int_type {
             Ok(int_type)
-        } else if (left_type == int_type && right_type == float_type) || 
+        } else if (left_type == int_type && right_type == float_type) ||
                   (left_type == float_type && right_type == int_type) ||
                   (left_type == float_type && right_type == float_type) {
             Ok(float_type)
@@ -455,24 +455,24 @@ impl<'a> TypeInferenceContext<'a> {
             Ok(bool_type)
         }
     }
-    
+
     /// Solve all accumulated constraints
     fn solve_constraints(&mut self) -> Result<(), Vec<InferenceError>> {
         let mut errors = Vec::new();
-        
+
         for constraint in &self.constraints {
             if let Err(error) = self.solve_constraint(constraint) {
                 errors.push(error);
             }
         }
-        
+
         if errors.is_empty() {
             Ok(())
         } else {
             Err(errors)
         }
     }
-    
+
     /// Solve a single constraint
     fn solve_constraint(&self, constraint: &TypeConstraint) -> Result<(), InferenceError> {
         match constraint {
@@ -499,7 +499,7 @@ impl<'a> TypeInferenceContext<'a> {
                 let type_table = self.type_table.borrow();
                 let int_type = type_table.int_type();
                 let float_type = type_table.float_type();
-                
+
                 if *type_id != int_type && *type_id != float_type {
                     return Err(InferenceError::TypeMismatch {
                         expected: "Int or Float".to_string(),
@@ -513,7 +513,7 @@ impl<'a> TypeInferenceContext<'a> {
                 // For now, assume other constraints are satisfied
             }
         }
-        
+
         Ok(())
     }
 }
@@ -522,23 +522,23 @@ impl<'a> TypeInferenceContext<'a> {
 pub fn infer_concrete_types(tast_file: &mut TypedFile, type_table: &Rc<RefCell<TypeTable>>) -> Result<(), Vec<InferenceError>> {
     let mut inference_context = TypeInferenceContext::new(type_table);
     let mut all_errors = Vec::new();
-    
+
     // Infer types for all functions
     for function in &mut tast_file.functions {
         if let Err(mut errors) = inference_context.infer_function_types(function) {
             all_errors.append(&mut errors);
         }
     }
-    
+
     // Infer types for all classes
     for class in &mut tast_file.classes {
         if let Err(mut errors) = inference_context.infer_class_types(class) {
             all_errors.append(&mut errors);
         }
     }
-    
+
     // TODO: Handle interfaces, enums, abstracts
-    
+
     if all_errors.is_empty() {
         Ok(())
     } else {

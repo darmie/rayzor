@@ -29,10 +29,20 @@ class ColorTest {
             for (i, t) in ast.declarations.iter().enumerate() {
                 match t {
                     parser::haxe_ast::TypeDeclaration::Enum(e) => {
-                        println!("Type {}: Enum {} with {} constructors", i, e.name, e.constructors.len());
+                        println!(
+                            "Type {}: Enum {} with {} constructors",
+                            i,
+                            e.name,
+                            e.constructors.len()
+                        );
                     }
                     parser::haxe_ast::TypeDeclaration::Class(c) => {
-                        println!("Type {}: Class {} with {} fields", i, c.name, c.fields.len());
+                        println!(
+                            "Type {}: Class {} with {} fields",
+                            i,
+                            c.name,
+                            c.fields.len()
+                        );
                     }
                     _ => println!("Type {}: Other", i),
                 }

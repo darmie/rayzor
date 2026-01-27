@@ -27,11 +27,11 @@
 //! ```
 
 use crate::tast::{
-    TypeId, SymbolId, ScopeId, TypeTable, SymbolTable,
-    node::{TypedExpression, TypedStatement, TypedClass, TypedFunction, TypedParameter},
-    trait_checker::TraitChecker,
-    capture_analyzer::{CaptureAnalyzer, CaptureAnalysis, CapturedVariable},
+    capture_analyzer::{CaptureAnalysis, CaptureAnalyzer, CapturedVariable},
     core_types::CoreTypeChecker,
+    node::{TypedClass, TypedExpression, TypedFunction, TypedParameter, TypedStatement},
+    trait_checker::TraitChecker,
+    ScopeId, SymbolId, SymbolTable, TypeId, TypeTable,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -128,7 +128,10 @@ impl<'a> SendSyncValidator<'a> {
         };
 
         // Check if it's a function literal
-        if let TypedExpressionKind::FunctionLiteral { parameters, body, .. } = &closure_expr.kind {
+        if let TypedExpressionKind::FunctionLiteral {
+            parameters, body, ..
+        } = &closure_expr.kind
+        {
             // Analyze captures
             let analyzer = CaptureAnalyzer::new(ScopeId::invalid()); // TODO: Get actual scope
             let analysis = analyzer.analyze_function_literal(parameters, body);
@@ -161,7 +164,8 @@ impl<'a> SendSyncValidator<'a> {
                      Type must implement Send trait or use @:derive([Send])"
                 ),
                 type_id,
-            ).with_symbol(capture.symbol_id));
+            )
+            .with_symbol(capture.symbol_id));
         }
 
         Ok(())
@@ -235,7 +239,12 @@ impl<'a> SendSyncValidator<'a> {
                 self.validate_expression(value)?;
             }
 
-            TypedStatement::If { condition, then_branch, else_branch, .. } => {
+            TypedStatement::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 self.validate_expression(condition)?;
                 self.validate_statement(then_branch)?;
                 if let Some(else_stmt) = else_branch {
@@ -243,12 +252,20 @@ impl<'a> SendSyncValidator<'a> {
                 }
             }
 
-            TypedStatement::While { condition, body, .. } => {
+            TypedStatement::While {
+                condition, body, ..
+            } => {
                 self.validate_expression(condition)?;
                 self.validate_statement(body)?;
             }
 
-            TypedStatement::For { init, condition, update, body, .. } => {
+            TypedStatement::For {
+                init,
+                condition,
+                update,
+                body,
+                ..
+            } => {
                 if let Some(init_stmt) = init {
                     self.validate_statement(init_stmt)?;
                 }
@@ -276,7 +293,12 @@ impl<'a> SendSyncValidator<'a> {
                 self.validate_expression(exception)?;
             }
 
-            TypedStatement::Try { body, catch_clauses, finally_block, .. } => {
+            TypedStatement::Try {
+                body,
+                catch_clauses,
+                finally_block,
+                ..
+            } => {
                 self.validate_statement(body)?;
                 for catch in catch_clauses {
                     self.validate_statement(&catch.body)?;
@@ -286,7 +308,12 @@ impl<'a> SendSyncValidator<'a> {
                 }
             }
 
-            TypedStatement::Switch { discriminant, cases, default_case, .. } => {
+            TypedStatement::Switch {
+                discriminant,
+                cases,
+                default_case,
+                ..
+            } => {
                 self.validate_expression(discriminant)?;
                 for case in cases {
                     self.validate_expression(&case.case_value)?;
@@ -303,16 +330,18 @@ impl<'a> SendSyncValidator<'a> {
                 }
             }
 
-            TypedStatement::PatternMatch { value, patterns, .. } => {
+            TypedStatement::PatternMatch {
+                value, patterns, ..
+            } => {
                 self.validate_expression(value)?;
                 for pattern in patterns {
                     self.validate_statement(&pattern.body)?;
                 }
             }
 
-            TypedStatement::Break { .. } |
-            TypedStatement::Continue { .. } |
-            TypedStatement::MacroExpansion { .. } => {
+            TypedStatement::Break { .. }
+            | TypedStatement::Continue { .. }
+            | TypedStatement::MacroExpansion { .. } => {
                 // No validation needed
             }
         }
@@ -326,7 +355,11 @@ impl<'a> SendSyncValidator<'a> {
 
         match &expr.kind {
             // Function calls - check for Thread::spawn
-            TypedExpressionKind::FunctionCall { function, arguments, .. } => {
+            TypedExpressionKind::FunctionCall {
+                function,
+                arguments,
+                ..
+            } => {
                 self.validate_expression(function)?;
                 for arg in arguments {
                     self.validate_expression(arg)?;
@@ -334,7 +367,11 @@ impl<'a> SendSyncValidator<'a> {
                 self.validate_call(expr)?;
             }
 
-            TypedExpressionKind::MethodCall { receiver, arguments, .. } => {
+            TypedExpressionKind::MethodCall {
+                receiver,
+                arguments,
+                ..
+            } => {
                 self.validate_expression(receiver)?;
                 for arg in arguments {
                     self.validate_expression(arg)?;
@@ -383,7 +420,11 @@ impl<'a> SendSyncValidator<'a> {
                 self.validate_expression(operand)?;
             }
 
-            TypedExpressionKind::Conditional { condition, then_expr, else_expr } => {
+            TypedExpressionKind::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
                 self.validate_expression(condition)?;
                 self.validate_expression(then_expr)?;
                 if let Some(else_e) = else_expr {
@@ -415,7 +456,11 @@ impl<'a> SendSyncValidator<'a> {
                 }
             }
 
-            TypedExpressionKind::Switch { discriminant, cases, default_case } => {
+            TypedExpressionKind::Switch {
+                discriminant,
+                cases,
+                default_case,
+            } => {
                 self.validate_expression(discriminant)?;
                 for case in cases {
                     self.validate_expression(&case.case_value)?;
@@ -426,7 +471,11 @@ impl<'a> SendSyncValidator<'a> {
                 }
             }
 
-            TypedExpressionKind::Try { try_expr, catch_clauses, finally_block } => {
+            TypedExpressionKind::Try {
+                try_expr,
+                catch_clauses,
+                finally_block,
+            } => {
                 self.validate_expression(try_expr)?;
                 for catch in catch_clauses {
                     self.validate_statement(&catch.body)?;
@@ -437,14 +486,14 @@ impl<'a> SendSyncValidator<'a> {
             }
 
             // Expressions that don't need validation
-            TypedExpressionKind::Literal { .. } |
-            TypedExpressionKind::Variable { .. } |
-            TypedExpressionKind::StaticFieldAccess { .. } |
-            TypedExpressionKind::This { .. } |
-            TypedExpressionKind::Super { .. } |
-            TypedExpressionKind::Null |
-            TypedExpressionKind::Break |
-            TypedExpressionKind::Continue => {}
+            TypedExpressionKind::Literal { .. }
+            | TypedExpressionKind::Variable { .. }
+            | TypedExpressionKind::StaticFieldAccess { .. }
+            | TypedExpressionKind::This { .. }
+            | TypedExpressionKind::Super { .. }
+            | TypedExpressionKind::Null
+            | TypedExpressionKind::Break
+            | TypedExpressionKind::Continue => {}
 
             _ => {
                 // TODO: Handle remaining expression kinds

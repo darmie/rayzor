@@ -1,9 +1,38 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 /// Minimal reproduction test for heap corruption
 /// Run specific subtests to isolate which one causes the crash.
 use compiler::codegen::CraneliftBackend;
 use compiler::compilation::{CompilationConfig, CompilationUnit};
 use compiler::ir::IrModule;
-use rayzor_runtime;
 use std::sync::Arc;
 
 fn compile_and_run(name: &str, source: &str) -> Result<(), String> {
@@ -13,7 +42,8 @@ fn compile_and_run(name: &str, source: &str) -> Result<(), String> {
     unit.load_stdlib().map_err(|e| format!("stdlib: {}", e))?;
 
     let filename = format!("{}.hx", name);
-    unit.add_file(source, &filename).map_err(|e| format!("add_file: {}", e))?;
+    unit.add_file(source, &filename)
+        .map_err(|e| format!("add_file: {}", e))?;
 
     let _typed_files = unit.lower_to_tast().map_err(|e| format!("tast: {:?}", e))?;
 
@@ -47,7 +77,9 @@ fn main() {
 
     let tests: Vec<(&str, &str)> = vec![
         // Test A: Thread with no-capture closure
-        ("thread_nocapture", r#"
+        (
+            "thread_nocapture",
+            r#"
 package test;
 import rayzor.concurrent.Thread;
 class Main {
@@ -56,9 +88,12 @@ class Main {
         var result = handle.join();
     }
 }
-"#),
+"#,
+        ),
         // Test B: Thread with captured primitive
-        ("thread_capture_int", r#"
+        (
+            "thread_capture_int",
+            r#"
 package test;
 import rayzor.concurrent.Thread;
 class Main {
@@ -68,9 +103,12 @@ class Main {
         var result = handle.join();
     }
 }
-"#),
+"#,
+        ),
         // Test C: Arc only (no thread)
-        ("arc_only", r#"
+        (
+            "arc_only",
+            r#"
 package test;
 import rayzor.concurrent.Arc;
 class Main {
@@ -80,9 +118,12 @@ class Main {
         var v = a.get();
     }
 }
-"#),
+"#,
+        ),
         // Test D: Channel only (no thread, no Arc)
-        ("channel_only", r#"
+        (
+            "channel_only",
+            r#"
 package test;
 import rayzor.concurrent.Channel;
 class Main {
@@ -92,9 +133,12 @@ class Main {
         var v = ch.tryReceive();
     }
 }
-"#),
+"#,
+        ),
         // Test E: Arc + Thread, no channel
-        ("arc_thread", r#"
+        (
+            "arc_thread",
+            r#"
 package test;
 import rayzor.concurrent.Thread;
 import rayzor.concurrent.Arc;
@@ -109,9 +153,12 @@ class Main {
         handle.join();
     }
 }
-"#),
+"#,
+        ),
         // Test F: Full Arc+Channel+Thread (original failing test)
-        ("full_channel", r#"
+        (
+            "full_channel",
+            r#"
 package test;
 import rayzor.concurrent.Thread;
 import rayzor.concurrent.Channel;
@@ -129,9 +176,12 @@ class Main {
         return;
     }
 }
-"#),
+"#,
+        ),
         // Test G: Thread with class instance (user-defined, AutoDrop)
-        ("thread_class", r#"
+        (
+            "thread_class",
+            r#"
 package test;
 import rayzor.concurrent.Thread;
 @:derive([Send])
@@ -148,7 +198,8 @@ class Main {
         var result = handle.join();
     }
 }
-"#),
+"#,
+        ),
     ];
 
     for (name, source) in &tests {

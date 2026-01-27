@@ -1,3 +1,34 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
+#![allow(clippy::format_in_format_args)]
 //! Benchmark: Bundle Loading vs Full Compilation
 //!
 //! This benchmark compares different execution paths:
@@ -12,13 +43,12 @@
 //!   # Then run benchmark
 //!   cargo run --release --package compiler --example benchmark_bundle -- /tmp/bench.rzb
 
-use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig};
 use compiler::codegen::profiling::ProfileConfig;
+use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig};
 use compiler::codegen::CraneliftBackend;
 use compiler::compilation::{CompilationConfig, CompilationUnit};
 use compiler::ir::blade::{load_bundle, RayzorBundle};
 use compiler::ir::IrModule;
-use rayzor_runtime;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -42,13 +72,18 @@ fn main() {
     } else {
         println!("No bundle provided. Using in-memory benchmark.\n");
         println!("For full benchmark with bundle, run:");
-        println!("  cargo run --release --bin preblade -- --bundle /tmp/bench.rzb /tmp/BenchMain.hx");
+        println!(
+            "  cargo run --release --bin preblade -- --bundle /tmp/bench.rzb /tmp/BenchMain.hx"
+        );
         println!("  cargo run --release --example benchmark_bundle -- /tmp/bench.rzb\n");
         (None, get_default_source())
     };
 
     // Run benchmarks
-    println!("Running {} warmup iterations, {} benchmark iterations...\n", WARMUP_RUNS, BENCH_RUNS);
+    println!(
+        "Running {} warmup iterations, {} benchmark iterations...\n",
+        WARMUP_RUNS, BENCH_RUNS
+    );
 
     let mut results = Vec::new();
 
@@ -90,7 +125,8 @@ fn main() {
     let baseline = results[0].1;
     for (name, time) in &results {
         let speedup = baseline.as_micros() as f64 / time.as_micros() as f64;
-        let bar_len = (50.0 * (baseline.as_micros() as f64 / time.as_micros() as f64).min(10.0) / 10.0) as usize;
+        let bar_len = (50.0 * (baseline.as_micros() as f64 / time.as_micros() as f64).min(10.0)
+            / 10.0) as usize;
         let bar: String = "█".repeat(bar_len.min(50));
 
         println!("║ {:22} │ {:>10.2?} │ {:>5.1}x │", name, time, speedup);
@@ -136,7 +172,8 @@ class Main {
         }
     }
 }
-"#.to_string()
+"#
+    .to_string()
 }
 
 fn get_runtime_symbols() -> Vec<(&'static str, *const u8)> {
@@ -148,7 +185,7 @@ fn get_runtime_symbols() -> Vec<(&'static str, *const u8)> {
 fn create_interp_config() -> TieredConfig {
     TieredConfig {
         profile_config: ProfileConfig {
-            interpreter_threshold: 1000000,  // Stay in interpreter
+            interpreter_threshold: 1000000, // Stay in interpreter
             warm_threshold: 10000000,
             hot_threshold: 100000000,
             blazing_threshold: 1000000000,
@@ -159,6 +196,7 @@ fn create_interp_config() -> TieredConfig {
         max_parallel_optimizations: 1,
         verbosity: 0,
         start_interpreted: true,
+        bailout_strategy: compiler::codegen::BailoutStrategy::Quick,
     }
 }
 
@@ -190,16 +228,19 @@ fn bench_full_compile_jit(source: &str) -> Duration {
 fn run_full_compile_jit(source: &str, symbols: &[(&str, *const u8)]) -> Result<(), String> {
     let mut unit = CompilationUnit::new(CompilationConfig::default());
     unit.load_stdlib().map_err(|e| format!("stdlib: {}", e))?;
-    unit.add_file(source, "bench.hx").map_err(|e| format!("parse: {}", e))?;
+    unit.add_file(source, "bench.hx")
+        .map_err(|e| format!("parse: {}", e))?;
     unit.lower_to_tast().map_err(|e| format!("tast: {:?}", e))?;
 
     let mir_modules = unit.get_mir_modules();
 
-    let mut backend = CraneliftBackend::with_symbols(symbols)
-        .map_err(|e| format!("backend: {}", e))?;
+    let mut backend =
+        CraneliftBackend::with_symbols(symbols).map_err(|e| format!("backend: {}", e))?;
 
     for module in &mir_modules {
-        backend.compile_module(module).map_err(|e| format!("compile: {}", e))?;
+        backend
+            .compile_module(module)
+            .map_err(|e| format!("compile: {}", e))?;
     }
 
     for module in mir_modules.iter().rev() {
@@ -239,29 +280,40 @@ fn bench_full_compile_interp(source: &str) -> Duration {
 fn run_full_compile_interp(source: &str, symbols: &[(&str, *const u8)]) -> Result<(), String> {
     let mut unit = CompilationUnit::new(CompilationConfig::default());
     unit.load_stdlib().map_err(|e| format!("stdlib: {}", e))?;
-    unit.add_file(source, "bench.hx").map_err(|e| format!("parse: {}", e))?;
+    unit.add_file(source, "bench.hx")
+        .map_err(|e| format!("parse: {}", e))?;
     unit.lower_to_tast().map_err(|e| format!("tast: {:?}", e))?;
 
     let mir_modules = unit.get_mir_modules();
 
     let config = create_interp_config();
-    let mut backend = TieredBackend::with_symbols(config, symbols)
-        .map_err(|e| format!("backend: {}", e))?;
+    let mut backend =
+        TieredBackend::with_symbols(config, symbols).map_err(|e| format!("backend: {}", e))?;
 
     // Find main module
-    let main_module = mir_modules.iter().rev()
-        .find(|m| m.functions.values().any(|f| f.name.ends_with("_main") || f.name == "main"))
+    let main_module = mir_modules
+        .iter()
+        .rev()
+        .find(|m| {
+            m.functions
+                .values()
+                .any(|f| f.name.ends_with("_main") || f.name == "main")
+        })
         .ok_or("No main module")?;
 
-    let main_id = main_module.functions.iter()
+    let main_id = main_module
+        .functions
+        .iter()
         .find(|(_, f)| f.name.ends_with("_main") || f.name == "main")
         .map(|(id, _)| *id)
         .ok_or("No main function")?;
 
-    backend.compile_module((**main_module).clone())
+    backend
+        .compile_module((**main_module).clone())
         .map_err(|e| format!("load: {}", e))?;
 
-    backend.execute_function(main_id, vec![])
+    backend
+        .execute_function(main_id, vec![])
         .map_err(|e| format!("exec: {}", e))?;
 
     Ok(())
@@ -295,29 +347,40 @@ fn bench_fast_compile_interp(source: &str) -> Duration {
 fn run_fast_compile_interp(source: &str, symbols: &[(&str, *const u8)]) -> Result<(), String> {
     let mut unit = CompilationUnit::new(CompilationConfig::fast());
     unit.load_stdlib().map_err(|e| format!("stdlib: {}", e))?;
-    unit.add_file(source, "bench.hx").map_err(|e| format!("parse: {}", e))?;
+    unit.add_file(source, "bench.hx")
+        .map_err(|e| format!("parse: {}", e))?;
     unit.lower_to_tast().map_err(|e| format!("tast: {:?}", e))?;
 
     let mir_modules = unit.get_mir_modules();
 
     let config = create_interp_config();
-    let mut backend = TieredBackend::with_symbols(config, symbols)
-        .map_err(|e| format!("backend: {}", e))?;
+    let mut backend =
+        TieredBackend::with_symbols(config, symbols).map_err(|e| format!("backend: {}", e))?;
 
     // Find main module
-    let main_module = mir_modules.iter().rev()
-        .find(|m| m.functions.values().any(|f| f.name.ends_with("_main") || f.name == "main"))
+    let main_module = mir_modules
+        .iter()
+        .rev()
+        .find(|m| {
+            m.functions
+                .values()
+                .any(|f| f.name.ends_with("_main") || f.name == "main")
+        })
         .ok_or("No main module")?;
 
-    let main_id = main_module.functions.iter()
+    let main_id = main_module
+        .functions
+        .iter()
         .find(|(_, f)| f.name.ends_with("_main") || f.name == "main")
         .map(|(id, _)| *id)
         .ok_or("No main function")?;
 
-    backend.compile_module((**main_module).clone())
+    backend
+        .compile_module((**main_module).clone())
         .map_err(|e| format!("load: {}", e))?;
 
-    backend.execute_function(main_id, vec![])
+    backend
+        .execute_function(main_id, vec![])
         .map_err(|e| format!("exec: {}", e))?;
 
     Ok(())
@@ -349,24 +412,25 @@ fn bench_bundle_interp(bundle_path: &str) -> Duration {
 }
 
 fn run_bundle_interp(bundle_path: &str, symbols: &[(&str, *const u8)]) -> Result<(), String> {
-    let bundle = load_bundle(bundle_path)
-        .map_err(|e| format!("load bundle: {:?}", e))?;
+    let bundle = load_bundle(bundle_path).map_err(|e| format!("load bundle: {:?}", e))?;
 
     let config = create_interp_config();
-    let mut backend = TieredBackend::with_symbols(config, symbols)
-        .map_err(|e| format!("backend: {}", e))?;
+    let mut backend =
+        TieredBackend::with_symbols(config, symbols).map_err(|e| format!("backend: {}", e))?;
 
-    let entry_module = bundle.entry_module()
-        .ok_or("No entry module")?;
+    let entry_module = bundle.entry_module().ok_or("No entry module")?;
 
     // Use pre-computed entry function ID (O(1) lookup)
-    let main_id = bundle.entry_function_id()
+    let main_id = bundle
+        .entry_function_id()
         .ok_or("No entry function ID in bundle")?;
 
-    backend.compile_module(entry_module.clone())
+    backend
+        .compile_module(entry_module.clone())
         .map_err(|e| format!("load: {}", e))?;
 
-    backend.execute_function(main_id, vec![])
+    backend
+        .execute_function(main_id, vec![])
         .map_err(|e| format!("exec: {}", e))?;
 
     Ok(())
@@ -398,11 +462,26 @@ fn detailed_breakdown(source: &str, bundle_path: &str) {
 
     let total_compile = t0.elapsed();
 
-    println!("│   stdlib:    {:>10.2?}                                       │", stdlib_time);
-    println!("│   parse:     {:>10.2?}                                       │", parse_time);
-    println!("│   tast:      {:>10.2?}                                       │", tast_time);
-    println!("│   mir:       {:>10.2?}                                       │", mir_time);
-    println!("│   TOTAL:     {:>10.2?}                                       │", total_compile);
+    println!(
+        "│   stdlib:    {:>10.2?}                                       │",
+        stdlib_time
+    );
+    println!(
+        "│   parse:     {:>10.2?}                                       │",
+        parse_time
+    );
+    println!(
+        "│   tast:      {:>10.2?}                                       │",
+        tast_time
+    );
+    println!(
+        "│   mir:       {:>10.2?}                                       │",
+        mir_time
+    );
+    println!(
+        "│   TOTAL:     {:>10.2?}                                       │",
+        total_compile
+    );
     println!("│                                                                │");
 
     // Bundle load breakdown
@@ -423,15 +502,30 @@ fn detailed_breakdown(source: &str, bundle_path: &str) {
 
     let total_bundle = load_time + backend_time + module_load_time;
 
-    println!("│   file read: {:>10.2?}                                       │", load_time);
-    println!("│   backend:   {:>10.2?}                                       │", backend_time);
-    println!("│   module:    {:>10.2?}                                       │", module_load_time);
-    println!("│   TOTAL:     {:>10.2?}                                       │", total_bundle);
+    println!(
+        "│   file read: {:>10.2?}                                       │",
+        load_time
+    );
+    println!(
+        "│   backend:   {:>10.2?}                                       │",
+        backend_time
+    );
+    println!(
+        "│   module:    {:>10.2?}                                       │",
+        module_load_time
+    );
+    println!(
+        "│   TOTAL:     {:>10.2?}                                       │",
+        total_bundle
+    );
     println!("│                                                                │");
 
     // Speedup
     let speedup = total_compile.as_micros() as f64 / total_bundle.as_micros() as f64;
-    println!("│ Bundle is {:.1}x faster than full compilation                  │", speedup);
+    println!(
+        "│ Bundle is {:.1}x faster than full compilation                  │",
+        speedup
+    );
 }
 
 /// Detailed startup vs execution breakdown for pre-bundled programs
@@ -475,14 +569,19 @@ fn bundle_startup_execution_breakdown(bundle_path: &str) {
 
         // 4. Get main function ID (O(1) - pre-computed in bundle)
         let t_find = Instant::now();
-        let main_id = bundle.entry_function_id()
-            .unwrap_or_else(|| {
-                // Fallback for older bundles without pre-computed ID
-                entry.functions.iter()
-                    .find(|(_, f)| f.name.ends_with("_main") || f.name == "main" || f.name == bundle.entry_function())
-                    .map(|(id, _)| *id)
-                    .unwrap()
-            });
+        let main_id = bundle.entry_function_id().unwrap_or_else(|| {
+            // Fallback for older bundles without pre-computed ID
+            entry
+                .functions
+                .iter()
+                .find(|(_, f)| {
+                    f.name.ends_with("_main")
+                        || f.name == "main"
+                        || f.name == bundle.entry_function()
+                })
+                .map(|(id, _)| *id)
+                .unwrap()
+        });
         let find_time = t_find.elapsed();
 
         let startup_total = startup_start.elapsed();
@@ -494,20 +593,56 @@ fn bundle_startup_execution_breakdown(bundle_path: &str) {
         let _ = backend.execute_function(main_id, vec![]);
         let exec_total = exec_start.elapsed();
 
-        startup_times.push((startup_total, load_time, backend_time, module_time, find_time));
+        startup_times.push((
+            startup_total,
+            load_time,
+            backend_time,
+            module_time,
+            find_time,
+        ));
         exec_times.push(exec_total);
 
-        println!("  Run {}: startup={:>10.2?}  exec={:>10.2?}  total={:>10.2?}",
-                 i + 1, startup_total, exec_total, startup_total + exec_total);
+        println!(
+            "  Run {}: startup={:>10.2?}  exec={:>10.2?}  total={:>10.2?}",
+            i + 1,
+            startup_total,
+            exec_total,
+            startup_total + exec_total
+        );
     }
 
     // Calculate medians
-    let startup_median = median(&startup_times.iter().map(|(t, _, _, _, _)| *t).collect::<Vec<_>>());
+    let startup_median = median(
+        &startup_times
+            .iter()
+            .map(|(t, _, _, _, _)| *t)
+            .collect::<Vec<_>>(),
+    );
     let exec_median = median(&exec_times);
-    let load_median = median(&startup_times.iter().map(|(_, t, _, _, _)| *t).collect::<Vec<_>>());
-    let backend_median = median(&startup_times.iter().map(|(_, _, t, _, _)| *t).collect::<Vec<_>>());
-    let module_median = median(&startup_times.iter().map(|(_, _, _, t, _)| *t).collect::<Vec<_>>());
-    let find_median = median(&startup_times.iter().map(|(_, _, _, _, t)| *t).collect::<Vec<_>>());
+    let load_median = median(
+        &startup_times
+            .iter()
+            .map(|(_, t, _, _, _)| *t)
+            .collect::<Vec<_>>(),
+    );
+    let backend_median = median(
+        &startup_times
+            .iter()
+            .map(|(_, _, t, _, _)| *t)
+            .collect::<Vec<_>>(),
+    );
+    let module_median = median(
+        &startup_times
+            .iter()
+            .map(|(_, _, _, t, _)| *t)
+            .collect::<Vec<_>>(),
+    );
+    let find_median = median(
+        &startup_times
+            .iter()
+            .map(|(_, _, _, _, t)| *t)
+            .collect::<Vec<_>>(),
+    );
 
     let total = startup_median + exec_median;
     let startup_pct = 100.0 * startup_median.as_nanos() as f64 / total.as_nanos() as f64;
@@ -520,22 +655,43 @@ fn bundle_startup_execution_breakdown(bundle_path: &str) {
     println!("│  ┌─────────────────────────────────────────────────────────┐   │");
     println!("│  │ STARTUP (time to first instruction)                    │   │");
     println!("│  ├─────────────────────────────────────────────────────────┤   │");
-    println!("│  │   Bundle load (disk → memory):     {:>10.2?}          │   │", load_median);
-    println!("│  │   Backend init (interpreter):      {:>10.2?}          │   │", backend_median);
-    println!("│  │   Module load (into interpreter):  {:>10.2?}          │   │", module_median);
-    println!("│  │   Find main function:              {:>10.2?}          │   │", find_median);
+    println!(
+        "│  │   Bundle load (disk → memory):     {:>10.2?}          │   │",
+        load_median
+    );
+    println!(
+        "│  │   Backend init (interpreter):      {:>10.2?}          │   │",
+        backend_median
+    );
+    println!(
+        "│  │   Module load (into interpreter):  {:>10.2?}          │   │",
+        module_median
+    );
+    println!(
+        "│  │   Find main function:              {:>10.2?}          │   │",
+        find_median
+    );
     println!("│  │   ───────────────────────────────────────────────────   │   │");
-    println!("│  │   TOTAL STARTUP:                   {:>10.2?} ({:.1}%)  │   │", startup_median, startup_pct);
+    println!(
+        "│  │   TOTAL STARTUP:                   {:>10.2?} ({:.1}%)  │   │",
+        startup_median, startup_pct
+    );
     println!("│  └─────────────────────────────────────────────────────────┘   │");
     println!("│                                                                │");
     println!("│  ┌─────────────────────────────────────────────────────────┐   │");
     println!("│  │ EXECUTION (running the program)                        │   │");
     println!("│  ├─────────────────────────────────────────────────────────┤   │");
-    println!("│  │   Program execution:               {:>10.2?} ({:.1}%)  │   │", exec_median, exec_pct);
+    println!(
+        "│  │   Program execution:               {:>10.2?} ({:.1}%)  │   │",
+        exec_median, exec_pct
+    );
     println!("│  └─────────────────────────────────────────────────────────┘   │");
     println!("│                                                                │");
     println!("│  ═══════════════════════════════════════════════════════════   │");
-    println!("│  TOTAL (startup + execution):         {:>10.2?}            │", total);
+    println!(
+        "│  TOTAL (startup + execution):         {:>10.2?}            │",
+        total
+    );
     println!("│  ═══════════════════════════════════════════════════════════   │");
     println!("│                                                                │");
     println!("└────────────────────────────────────────────────────────────────┘");
@@ -544,9 +700,27 @@ fn bundle_startup_execution_breakdown(bundle_path: &str) {
     println!("\n  Startup vs Execution:");
     let startup_bar = (50.0 * startup_pct / 100.0) as usize;
     let exec_bar = 50 - startup_bar;
-    println!("  [{:█<startup_bar$}{:░<exec_bar$}]", "", "", startup_bar = startup_bar, exec_bar = exec_bar);
-    println!("   {:^startup_bar$} {:^exec_bar$}", format!("{:.0}%", startup_pct), format!("{:.0}%", exec_pct), startup_bar = startup_bar, exec_bar = exec_bar);
-    println!("   {:^startup_bar$} {:^exec_bar$}", "startup", "execution", startup_bar = startup_bar, exec_bar = exec_bar);
+    println!(
+        "  [{:█<startup_bar$}{:░<exec_bar$}]",
+        "",
+        "",
+        startup_bar = startup_bar,
+        exec_bar = exec_bar
+    );
+    println!(
+        "   {:^startup_bar$} {:^exec_bar$}",
+        format!("{:.0}%", startup_pct),
+        format!("{:.0}%", exec_pct),
+        startup_bar = startup_bar,
+        exec_bar = exec_bar
+    );
+    println!(
+        "   {:^startup_bar$} {:^exec_bar$}",
+        "startup",
+        "execution",
+        startup_bar = startup_bar,
+        exec_bar = exec_bar
+    );
 }
 
 fn median(times: &[Duration]) -> Duration {

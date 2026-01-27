@@ -160,10 +160,11 @@ impl CfgBuilder {
         if self.options.collect_statistics {
             // Use relaxed validation that allows unreachable blocks
             // This is important for cases like loops with always-exiting bodies
-            cfg.validate_with_options(false)
-                .map_err(|e| GraphConstructionError::InternalError {
+            cfg.validate_with_options(false).map_err(|e| {
+                GraphConstructionError::InternalError {
                     message: format!("CFG validation failed: {}", e),
-                })?;
+                }
+            })?;
         }
 
         Ok(cfg)
@@ -310,8 +311,14 @@ impl CfgBuilder {
                 expanded_statements,
                 ..
             } => self.build_macro_expansion(expansion_info, expanded_statements, current_block),
-            
-            TypedStatement::ForIn { value_var, key_var, iterable, body, .. } => {
+
+            TypedStatement::ForIn {
+                value_var,
+                key_var,
+                iterable,
+                body,
+                ..
+            } => {
                 // Build for-in loop similar to regular for loop
                 self.build_for_in_statement(*value_var, *key_var, iterable, body, current_block)
             }
@@ -388,13 +395,13 @@ impl CfgBuilder {
         // Create all blocks first before setting any terminators
         let then_bb = BasicBlock::new(then_block, then_branch.source_location());
         self.add_block_to_cfg(then_bb);
-        
+
         let else_bb = BasicBlock::new(
             else_block,
             else_branch.map_or(condition.source_location(), |s| s.source_location()),
         );
         self.add_block_to_cfg(else_bb);
-        
+
         let merge_bb = BasicBlock::new(merge_block, condition.source_location());
         self.add_block_to_cfg(merge_bb);
 
@@ -668,14 +675,19 @@ impl CfgBuilder {
         // Add statement to current block and jump to loop header
         let statement_id = self.allocate_statement_id();
         self.add_statement_to_block(current_block, statement_id);
-        self.set_block_terminator(current_block, Terminator::Jump { target: loop_header });
+        self.set_block_terminator(
+            current_block,
+            Terminator::Jump {
+                target: loop_header,
+            },
+        );
 
         // Set up loop header - evaluate iterable and check if iteration should continue
         let loop_header_block = BasicBlock::new(loop_header, iterable.source_location());
         self.add_block_to_cfg(loop_header_block);
         let header_stmt_id = self.allocate_statement_id();
         self.add_statement_to_block(loop_header, header_stmt_id);
-        
+
         // Set loop targets for break/continue
         self.break_targets.push(loop_exit);
         self.continue_targets.push(loop_header);
@@ -684,20 +696,28 @@ impl CfgBuilder {
         let loop_body_block = BasicBlock::new(loop_body, body.source_location());
         self.add_block_to_cfg(loop_body_block);
         let body_result = self.build_statement(body, loop_body)?;
-        
+
         // If body doesn't exit, jump back to header
         if !body_result.exits {
-            self.set_block_terminator(body_result.continue_block, Terminator::Jump { target: loop_header });
+            self.set_block_terminator(
+                body_result.continue_block,
+                Terminator::Jump {
+                    target: loop_header,
+                },
+            );
         }
 
         // Set header terminator to conditionally branch to body or exit
         // For now, use a simplified condition - would need proper iterable evaluation
         let condition_expr = iterable.clone();
-        self.set_block_terminator(loop_header, Terminator::Branch {
-            condition: condition_expr,
-            true_target: loop_body,
-            false_target: loop_exit,
-        });
+        self.set_block_terminator(
+            loop_header,
+            Terminator::Branch {
+                condition: condition_expr,
+                true_target: loop_body,
+                false_target: loop_exit,
+            },
+        );
 
         // Clean up loop targets
         self.break_targets.pop();
@@ -852,7 +872,7 @@ impl CfgBuilder {
         // Now set terminators after all blocks exist
         if let Some(init_stmt) = init {
             let init_id = init_block.unwrap();
-            
+
             // Jump from current block to init
             self.set_block_terminator(current_block, Terminator::Jump { target: init_id });
 
@@ -1030,25 +1050,22 @@ impl CfgBuilder {
         }
 
         // Determine if we need a merge block
-        let any_path_continues = !try_result.exits || 
-                                 catch_results.iter().any(|result| !result.exits) ||
-                                 (finally_block.is_some() && !finally_exits);
+        let any_path_continues = !try_result.exits
+            || catch_results.iter().any(|result| !result.exits)
+            || (finally_block.is_some() && !finally_exits);
 
         let continue_block = if any_path_continues {
             // Create merge block only if needed
             let merge_block = self.allocate_block_id();
             created_blocks.push(merge_block);
-            
+
             let merge_bb = BasicBlock::new(merge_block, body.source_location());
             self.add_block_to_cfg(merge_bb);
 
             // Connect non-exiting paths to merge block
             if !try_result.exits {
                 let target = finally_block_id.unwrap_or(merge_block);
-                self.set_block_terminator(
-                    try_result.continue_block,
-                    Terminator::Jump { target },
-                );
+                self.set_block_terminator(try_result.continue_block, Terminator::Jump { target });
             }
 
             for catch_result in catch_results.iter() {
@@ -1115,9 +1132,9 @@ impl CfgBuilder {
         }
 
         // Determine if the entire try-catch-finally exits
-        let exits = try_result.exits && 
-                   catch_results.iter().all(|result| result.exits) && 
-                   (finally_block.is_none() || finally_exits);
+        let exits = try_result.exits
+            && catch_results.iter().all(|result| result.exits)
+            && (finally_block.is_none() || finally_exits);
 
         Ok(BuildResult {
             continue_block,
@@ -1385,22 +1402,54 @@ impl HasSourceLocation for TypedStatement {
     fn source_location(&self) -> SourceLocation {
         /// **REAL IMPLEMENTATION**: Extract actual source location from TAST nodes
         match self {
-            TypedStatement::Expression { source_location, .. } => *source_location,
-            TypedStatement::VarDeclaration { source_location, .. } => *source_location,
-            TypedStatement::Assignment { source_location, .. } => *source_location,
-            TypedStatement::If { source_location, .. } => *source_location,
-            TypedStatement::While { source_location, .. } => *source_location,
-            TypedStatement::For { source_location, .. } => *source_location,
-            TypedStatement::Return { source_location, .. } => *source_location,
-            TypedStatement::Throw { source_location, .. } => *source_location,
-            TypedStatement::Try { source_location, .. } => *source_location,
-            TypedStatement::Switch { source_location, .. } => *source_location,
-            TypedStatement::Break { source_location, .. } => *source_location,
-            TypedStatement::Continue { source_location, .. } => *source_location,
-            TypedStatement::Block { source_location, .. } => *source_location,
-            TypedStatement::PatternMatch { source_location, .. } => *source_location,
-            TypedStatement::MacroExpansion { source_location, .. } => *source_location,
-            TypedStatement::ForIn { source_location, .. } => *source_location,
+            TypedStatement::Expression {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::VarDeclaration {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::Assignment {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::If {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::While {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::For {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::Return {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::Throw {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::Try {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::Switch {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::Break {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::Continue {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::Block {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::PatternMatch {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::MacroExpansion {
+                source_location, ..
+            } => *source_location,
+            TypedStatement::ForIn {
+                source_location, ..
+            } => *source_location,
         }
     }
 }

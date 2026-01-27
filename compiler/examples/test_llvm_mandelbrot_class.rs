@@ -1,3 +1,34 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
+#![allow(clippy::needless_return)]
 //! Test LLVM JIT with mandelbrot (class-based version)
 //!
 //! This tests the original mandelbrot.hx which uses Complex classes
@@ -5,13 +36,17 @@
 
 #[cfg(feature = "llvm-backend")]
 use compiler::codegen::LLVMJitBackend;
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 #[cfg(feature = "llvm-backend")]
 use inkwell::context::Context;
-use compiler::compilation::{CompilationConfig, CompilationUnit};
 
 fn get_runtime_symbols() -> Vec<(&'static str, *const u8)> {
     let plugin = rayzor_runtime::plugin_impl::get_plugin();
-    plugin.runtime_symbols().iter().map(|(n, p)| (*n, *p)).collect()
+    plugin
+        .runtime_symbols()
+        .iter()
+        .map(|(n, p)| (*n, *p))
+        .collect()
 }
 
 fn main() {
@@ -25,9 +60,11 @@ fn main() {
     {
         // Use original mandelbrot.hx (class-based with heap allocations)
         // This tests drop analysis - without proper Free instructions, memory will leak
-        let source = std::fs::read_to_string(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/benchmarks/src/mandelbrot.hx")
-        ).expect("read");
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/benchmarks/src/mandelbrot.hx"
+        ))
+        .expect("read");
         let symbols = get_runtime_symbols();
 
         println!("Compiling mandelbrot (class-based) with LLVM...");

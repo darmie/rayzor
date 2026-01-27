@@ -2,8 +2,8 @@
 //!
 //! System and I/O functions
 
-use std::io::{self, Write};
 use log::debug;
+use std::io::{self, Write};
 
 // Use the canonical HaxeString definition from haxe_string module
 use crate::haxe_string::HaxeString;
@@ -172,7 +172,11 @@ pub extern "C" fn haxe_string_from_string(ptr: *const u8, len: usize) -> *mut Ha
     let new_ptr = vec.as_ptr() as *mut u8;
     std::mem::forget(vec);
 
-    Box::into_raw(Box::new(HaxeString { ptr: new_ptr, len, cap }))
+    Box::into_raw(Box::new(HaxeString {
+        ptr: new_ptr,
+        len,
+        cap,
+    }))
 }
 
 /// Convert null to String - returns heap-allocated HaxeString pointer
@@ -194,7 +198,7 @@ pub extern "C" fn haxe_string_literal(ptr: *const u8, len: usize) -> *mut HaxeSt
     Box::into_raw(Box::new(HaxeString {
         ptr: ptr as *mut u8,
         len,
-        cap: 0  // cap=0 means static/borrowed, don't free the data
+        cap: 0, // cap=0 means static/borrowed, don't free the data
     }))
 }
 
@@ -203,12 +207,20 @@ pub extern "C" fn haxe_string_literal(ptr: *const u8, len: usize) -> *mut HaxeSt
 #[no_mangle]
 pub extern "C" fn haxe_string_upper(s: *const HaxeString) -> *mut HaxeString {
     if s.is_null() {
-        return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 }));
+        return Box::into_raw(Box::new(HaxeString {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        }));
     }
     unsafe {
         let s_ref = &*s;
         if s_ref.ptr.is_null() || s_ref.len == 0 {
-            return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 }));
+            return Box::into_raw(Box::new(HaxeString {
+                ptr: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+            }));
         }
         let slice = std::slice::from_raw_parts(s_ref.ptr, s_ref.len);
         if let Ok(rust_str) = std::str::from_utf8(slice) {
@@ -236,12 +248,20 @@ pub extern "C" fn haxe_string_upper(s: *const HaxeString) -> *mut HaxeString {
 #[no_mangle]
 pub extern "C" fn haxe_string_lower(s: *const HaxeString) -> *mut HaxeString {
     if s.is_null() {
-        return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 }));
+        return Box::into_raw(Box::new(HaxeString {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        }));
     }
     unsafe {
         let s_ref = &*s;
         if s_ref.ptr.is_null() || s_ref.len == 0 {
-            return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 }));
+            return Box::into_raw(Box::new(HaxeString {
+                ptr: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+            }));
         }
         let slice = std::slice::from_raw_parts(s_ref.ptr, s_ref.len);
         if let Ok(rust_str) = std::str::from_utf8(slice) {
@@ -282,13 +302,21 @@ pub extern "C" fn haxe_string_len(s: *const HaxeString) -> i32 {
 #[no_mangle]
 pub extern "C" fn haxe_string_char_at_ptr(s: *const HaxeString, index: i64) -> *mut HaxeString {
     if s.is_null() {
-        return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 }));
+        return Box::into_raw(Box::new(HaxeString {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        }));
     }
     unsafe {
         let s_ref = &*s;
         if index < 0 || (index as usize) >= s_ref.len || s_ref.ptr.is_null() {
             // Return empty string for out of bounds
-            return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 }));
+            return Box::into_raw(Box::new(HaxeString {
+                ptr: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+            }));
         }
 
         // Get the byte at the index
@@ -320,7 +348,11 @@ pub extern "C" fn haxe_string_char_code_at_ptr(s: *const HaxeString, index: i64)
 /// Find index of substring, starting from startIndex
 /// Returns -1 if not found
 #[no_mangle]
-pub extern "C" fn haxe_string_index_of_ptr(s: *const HaxeString, needle: *const HaxeString, start_index: i32) -> i32 {
+pub extern "C" fn haxe_string_index_of_ptr(
+    s: *const HaxeString,
+    needle: *const HaxeString,
+    start_index: i32,
+) -> i32 {
     if s.is_null() || needle.is_null() {
         return -1;
     }
@@ -337,7 +369,11 @@ pub extern "C" fn haxe_string_index_of_ptr(s: *const HaxeString, needle: *const 
             return if start_index < 0 { 0 } else { start_index };
         }
 
-        let start = if start_index < 0 { 0 } else { start_index as usize };
+        let start = if start_index < 0 {
+            0
+        } else {
+            start_index as usize
+        };
         if start >= s_ref.len {
             return -1;
         }
@@ -358,7 +394,11 @@ pub extern "C" fn haxe_string_index_of_ptr(s: *const HaxeString, needle: *const 
 /// Find last index of substring, searching backwards from startIndex
 /// Returns -1 if not found
 #[no_mangle]
-pub extern "C" fn haxe_string_last_index_of_ptr(s: *const HaxeString, needle: *const HaxeString, start_index: i32) -> i32 {
+pub extern "C" fn haxe_string_last_index_of_ptr(
+    s: *const HaxeString,
+    needle: *const HaxeString,
+    start_index: i32,
+) -> i32 {
     if s.is_null() || needle.is_null() {
         return -1;
     }
@@ -373,7 +413,11 @@ pub extern "C" fn haxe_string_last_index_of_ptr(s: *const HaxeString, needle: *c
         // Empty needle - return end of string (or start_index if provided and smaller)
         if needle_ref.len == 0 {
             let len = s_ref.len as i32;
-            return if start_index < 0 || start_index >= len { len } else { start_index };
+            return if start_index < 0 || start_index >= len {
+                len
+            } else {
+                start_index
+            };
         }
 
         if needle_ref.len > s_ref.len {
@@ -405,37 +449,53 @@ pub extern "C" fn haxe_string_last_index_of_ptr(s: *const HaxeString, needle: *c
 /// If len is negative, returns empty string
 /// If pos is negative, calculated from end
 #[no_mangle]
-pub extern "C" fn haxe_string_substr_ptr(s: *const HaxeString, pos: i32, len: i32) -> *mut HaxeString {
+pub extern "C" fn haxe_string_substr_ptr(
+    s: *const HaxeString,
+    pos: i32,
+    len: i32,
+) -> *mut HaxeString {
     if s.is_null() {
-        return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 }));
+        return Box::into_raw(Box::new(HaxeString {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        }));
     }
     unsafe {
         let s_ref = &*s;
         if s_ref.ptr.is_null() || s_ref.len == 0 || len < 0 {
-            return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 }));
+            return Box::into_raw(Box::new(HaxeString {
+                ptr: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+            }));
         }
 
         // Handle negative pos (from end)
         let actual_pos = if pos < 0 {
             let from_end = (-pos) as usize;
-            if from_end > s_ref.len {
-                0
-            } else {
-                s_ref.len - from_end
-            }
+            s_ref.len.saturating_sub(from_end)
         } else {
             pos as usize
         };
 
         if actual_pos >= s_ref.len {
-            return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 }));
+            return Box::into_raw(Box::new(HaxeString {
+                ptr: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+            }));
         }
 
         let available = s_ref.len - actual_pos;
         let actual_len = (len as usize).min(available);
 
         if actual_len == 0 {
-            return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 }));
+            return Box::into_raw(Box::new(HaxeString {
+                ptr: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+            }));
         }
 
         let slice = std::slice::from_raw_parts(s_ref.ptr.add(actual_pos), actual_len);
@@ -444,7 +504,11 @@ pub extern "C" fn haxe_string_substr_ptr(s: *const HaxeString, pos: i32, len: i3
         let cap = bytes.capacity();
         let ptr = bytes.as_ptr() as *mut u8;
         std::mem::forget(bytes);
-        Box::into_raw(Box::new(HaxeString { ptr, len: new_len, cap }))
+        Box::into_raw(Box::new(HaxeString {
+            ptr,
+            len: new_len,
+            cap,
+        }))
     }
 }
 
@@ -452,18 +516,34 @@ pub extern "C" fn haxe_string_substr_ptr(s: *const HaxeString, pos: i32, len: i3
 /// Negative indices become 0
 /// If startIndex > endIndex, they are swapped
 #[no_mangle]
-pub extern "C" fn haxe_string_substring_ptr(s: *const HaxeString, start_index: i32, end_index: i32) -> *mut HaxeString {
+pub extern "C" fn haxe_string_substring_ptr(
+    s: *const HaxeString,
+    start_index: i32,
+    end_index: i32,
+) -> *mut HaxeString {
     if s.is_null() {
-        return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 }));
+        return Box::into_raw(Box::new(HaxeString {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        }));
     }
     unsafe {
         let s_ref = &*s;
         if s_ref.ptr.is_null() || s_ref.len == 0 {
-            return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 }));
+            return Box::into_raw(Box::new(HaxeString {
+                ptr: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+            }));
         }
 
         // Clamp negative values to 0
-        let mut start = if start_index < 0 { 0 } else { start_index as usize };
+        let mut start = if start_index < 0 {
+            0
+        } else {
+            start_index as usize
+        };
         let mut end = if end_index < 0 { 0 } else { end_index as usize };
 
         // Clamp to string length
@@ -476,7 +556,11 @@ pub extern "C" fn haxe_string_substring_ptr(s: *const HaxeString, start_index: i
         }
 
         if start == end {
-            return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 }));
+            return Box::into_raw(Box::new(HaxeString {
+                ptr: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+            }));
         }
 
         let slice = std::slice::from_raw_parts(s_ref.ptr.add(start), end - start);
@@ -485,16 +569,24 @@ pub extern "C" fn haxe_string_substring_ptr(s: *const HaxeString, start_index: i
         let cap = bytes.capacity();
         let ptr = bytes.as_ptr() as *mut u8;
         std::mem::forget(bytes);
-        Box::into_raw(Box::new(HaxeString { ptr, len: new_len, cap }))
+        Box::into_raw(Box::new(HaxeString {
+            ptr,
+            len: new_len,
+            cap,
+        }))
     }
 }
 
 /// Create string from character code (static method)
 #[no_mangle]
 pub extern "C" fn haxe_string_from_char_code(code: i32) -> *mut HaxeString {
-    if code < 0 || code > 0x10FFFF {
+    if !(0..=0x10FFFF).contains(&code) {
         // Invalid code point, return empty string
-        return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 }));
+        return Box::into_raw(Box::new(HaxeString {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        }));
     }
 
     // Convert to char and encode as UTF-8
@@ -508,7 +600,11 @@ pub extern "C" fn haxe_string_from_char_code(code: i32) -> *mut HaxeString {
         std::mem::forget(bytes);
         Box::into_raw(Box::new(HaxeString { ptr, len, cap }))
     } else {
-        Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 }))
+        Box::into_raw(Box::new(HaxeString {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        }))
     }
 }
 
@@ -516,12 +612,20 @@ pub extern "C" fn haxe_string_from_char_code(code: i32) -> *mut HaxeString {
 #[no_mangle]
 pub extern "C" fn haxe_string_copy(s: *const HaxeString) -> *mut HaxeString {
     if s.is_null() {
-        return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 }));
+        return Box::into_raw(Box::new(HaxeString {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        }));
     }
     unsafe {
         let s_ref = &*s;
         if s_ref.ptr.is_null() || s_ref.len == 0 {
-            return Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 }));
+            return Box::into_raw(Box::new(HaxeString {
+                ptr: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+            }));
         }
 
         let slice = std::slice::from_raw_parts(s_ref.ptr, s_ref.len);
@@ -540,7 +644,7 @@ pub extern "C" fn haxe_string_copy(s: *const HaxeString) -> *mut HaxeString {
 pub extern "C" fn haxe_string_split_ptr(
     s: *const HaxeString,
     delimiter: *const HaxeString,
-    out_len: *mut i64
+    out_len: *mut i64,
 ) -> *mut *mut HaxeString {
     unsafe {
         if out_len.is_null() {
@@ -557,7 +661,11 @@ pub extern "C" fn haxe_string_split_ptr(
         // Handle null or empty string
         if s_ref.ptr.is_null() || s_ref.len == 0 {
             // Return array with one empty string
-            let empty = Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 }));
+            let empty = Box::into_raw(Box::new(HaxeString {
+                ptr: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+            }));
             let result = Box::into_raw(vec![empty].into_boxed_slice()) as *mut *mut HaxeString;
             *out_len = 1;
             return result;
@@ -609,7 +717,11 @@ pub extern "C" fn haxe_string_split_ptr(
                         // Add substring before delimiter
                         let part_len = idx - start;
                         if part_len == 0 {
-                            parts.push(Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 })));
+                            parts.push(Box::into_raw(Box::new(HaxeString {
+                                ptr: std::ptr::null_mut(),
+                                len: 0,
+                                cap: 0,
+                            })));
                         } else {
                             let bytes = haystack[start..idx].to_vec();
                             let len = bytes.len();
@@ -624,7 +736,11 @@ pub extern "C" fn haxe_string_split_ptr(
                         // Add remaining string
                         let part_len = s_ref.len - start;
                         if part_len == 0 {
-                            parts.push(Box::into_raw(Box::new(HaxeString { ptr: std::ptr::null_mut(), len: 0, cap: 0 })));
+                            parts.push(Box::into_raw(Box::new(HaxeString {
+                                ptr: std::ptr::null_mut(),
+                                len: 0,
+                                cap: 0,
+                            })));
                         } else {
                             let bytes = haystack[start..].to_vec();
                             let len = bytes.len();
@@ -816,7 +932,10 @@ pub extern "C" fn haxe_sys_system_name() -> *mut HaxeString {
         "Mac"
     } else if cfg!(target_os = "linux") {
         "Linux"
-    } else if cfg!(target_os = "freebsd") || cfg!(target_os = "openbsd") || cfg!(target_os = "netbsd") {
+    } else if cfg!(target_os = "freebsd")
+        || cfg!(target_os = "openbsd")
+        || cfg!(target_os = "netbsd")
+    {
         "BSD"
     } else {
         "Unknown"
@@ -939,15 +1058,13 @@ fn rust_string_to_haxe(s: String) -> *mut HaxeString {
 pub extern "C" fn haxe_file_get_content(path: *const HaxeString) -> *mut HaxeString {
     unsafe {
         match haxe_string_to_rust(path) {
-            Some(path_str) => {
-                match std::fs::read_to_string(&path_str) {
-                    Ok(content) => rust_string_to_haxe(content),
-                    Err(e) => {
-                        debug!("File.getContent error: {} - {}", path_str, e);
-                        std::ptr::null_mut()
-                    }
+            Some(path_str) => match std::fs::read_to_string(&path_str) {
+                Ok(content) => rust_string_to_haxe(content),
+                Err(e) => {
+                    debug!("File.getContent error: {} - {}", path_str, e);
+                    std::ptr::null_mut()
                 }
-            }
+            },
             None => std::ptr::null_mut(),
         }
     }
@@ -962,10 +1079,7 @@ pub extern "C" fn haxe_file_save_content(path: *const HaxeString, content: *cons
             Some(s) => s,
             None => return,
         };
-        let content_str = match haxe_string_to_rust(content) {
-            Some(s) => s,
-            None => String::new(),
-        };
+        let content_str = haxe_string_to_rust(content).unwrap_or_default();
         if let Err(e) = std::fs::write(&path_str, content_str) {
             debug!("File.saveContent error: {} - {}", path_str, e);
         }
@@ -1125,7 +1239,10 @@ pub extern "C" fn haxe_filesystem_rename(path: *const HaxeString, new_path: *con
             None => return,
         };
         if let Err(e) = std::fs::rename(&path_str, &new_path_str) {
-            debug!("FileSystem.rename error: {} -> {} - {}", path_str, new_path_str, e);
+            debug!(
+                "FileSystem.rename error: {} -> {} - {}",
+                path_str, new_path_str, e
+            );
         }
     }
 }
@@ -1136,12 +1253,10 @@ pub extern "C" fn haxe_filesystem_rename(path: *const HaxeString, new_path: *con
 pub extern "C" fn haxe_filesystem_full_path(path: *const HaxeString) -> *mut HaxeString {
     unsafe {
         match haxe_string_to_rust(path) {
-            Some(path_str) => {
-                match std::fs::canonicalize(&path_str) {
-                    Ok(full_path) => rust_string_to_haxe(full_path.to_string_lossy().into_owned()),
-                    Err(_) => std::ptr::null_mut(),
-                }
-            }
+            Some(path_str) => match std::fs::canonicalize(&path_str) {
+                Ok(full_path) => rust_string_to_haxe(full_path.to_string_lossy().into_owned()),
+                Err(_) => std::ptr::null_mut(),
+            },
             None => std::ptr::null_mut(),
         }
     }
@@ -1174,17 +1289,17 @@ pub extern "C" fn haxe_filesystem_absolute_path(path: *const HaxeString) -> *mut
 /// Date fields stored as f64 timestamps (seconds since Unix epoch)
 #[repr(C)]
 pub struct HaxeFileStat {
-    pub gid: i64,    // group id
-    pub uid: i64,    // user id
-    pub atime: f64,  // access time (seconds since epoch)
-    pub mtime: f64,  // modification time (seconds since epoch)
-    pub ctime: f64,  // creation/change time (seconds since epoch)
-    pub size: i64,   // file size in bytes
-    pub dev: i64,    // device id
-    pub ino: i64,    // inode number
-    pub nlink: i64,  // number of hard links
-    pub rdev: i64,   // device type (special files)
-    pub mode: i64,   // permission bits
+    pub gid: i64,   // group id
+    pub uid: i64,   // user id
+    pub atime: f64, // access time (seconds since epoch)
+    pub mtime: f64, // modification time (seconds since epoch)
+    pub ctime: f64, // creation/change time (seconds since epoch)
+    pub size: i64,  // file size in bytes
+    pub dev: i64,   // device id
+    pub ino: i64,   // inode number
+    pub nlink: i64, // number of hard links
+    pub rdev: i64,  // device type (special files)
+    pub mode: i64,  // permission bits
 }
 
 /// Get file/directory statistics
@@ -1291,8 +1406,10 @@ pub extern "C" fn haxe_filesystem_is_file(path: *const HaxeString) -> bool {
 /// Read directory contents
 /// FileSystem.readDirectory(path: String): Array<String>
 #[no_mangle]
-pub extern "C" fn haxe_filesystem_read_directory(path: *const HaxeString) -> *mut crate::haxe_array::HaxeArray {
-    use crate::haxe_array::{HaxeArray, haxe_array_new, haxe_array_push};
+pub extern "C" fn haxe_filesystem_read_directory(
+    path: *const HaxeString,
+) -> *mut crate::haxe_array::HaxeArray {
+    use crate::haxe_array::{haxe_array_new, haxe_array_push, HaxeArray};
 
     unsafe {
         let path_str = match haxe_string_to_rust(path) {
@@ -1339,7 +1456,7 @@ pub extern "C" fn haxe_filesystem_read_directory(path: *const HaxeString) -> *mu
 // Extends haxe.io.Input which provides readByte() as the core method.
 
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
 
 /// File input handle for reading
 #[repr(C)]
@@ -1366,20 +1483,16 @@ const SEEK_END: i32 = 2;
 pub extern "C" fn haxe_file_read(path: *const HaxeString, _binary: bool) -> *mut HaxeFileInput {
     unsafe {
         match haxe_string_to_rust(path) {
-            Some(path_str) => {
-                match File::open(&path_str) {
-                    Ok(file) => {
-                        Box::into_raw(Box::new(HaxeFileInput {
-                            reader: BufReader::new(file),
-                            eof_reached: false,
-                        }))
-                    }
-                    Err(e) => {
-                        debug!("File.read error: {} - {}", path_str, e);
-                        std::ptr::null_mut()
-                    }
+            Some(path_str) => match File::open(&path_str) {
+                Ok(file) => Box::into_raw(Box::new(HaxeFileInput {
+                    reader: BufReader::new(file),
+                    eof_reached: false,
+                })),
+                Err(e) => {
+                    debug!("File.read error: {} - {}", path_str, e);
+                    std::ptr::null_mut()
                 }
-            }
+            },
             None => std::ptr::null_mut(),
         }
     }
@@ -1391,19 +1504,15 @@ pub extern "C" fn haxe_file_read(path: *const HaxeString, _binary: bool) -> *mut
 pub extern "C" fn haxe_file_write(path: *const HaxeString, _binary: bool) -> *mut HaxeFileOutput {
     unsafe {
         match haxe_string_to_rust(path) {
-            Some(path_str) => {
-                match File::create(&path_str) {
-                    Ok(file) => {
-                        Box::into_raw(Box::new(HaxeFileOutput {
-                            writer: BufWriter::new(file),
-                        }))
-                    }
-                    Err(e) => {
-                        debug!("File.write error: {} - {}", path_str, e);
-                        std::ptr::null_mut()
-                    }
+            Some(path_str) => match File::create(&path_str) {
+                Ok(file) => Box::into_raw(Box::new(HaxeFileOutput {
+                    writer: BufWriter::new(file),
+                })),
+                Err(e) => {
+                    debug!("File.write error: {} - {}", path_str, e);
+                    std::ptr::null_mut()
                 }
-            }
+            },
             None => std::ptr::null_mut(),
         }
     }
@@ -1421,11 +1530,9 @@ pub extern "C" fn haxe_file_append(path: *const HaxeString, _binary: bool) -> *m
                     .append(true)
                     .open(&path_str)
                 {
-                    Ok(file) => {
-                        Box::into_raw(Box::new(HaxeFileOutput {
-                            writer: BufWriter::new(file),
-                        }))
-                    }
+                    Ok(file) => Box::into_raw(Box::new(HaxeFileOutput {
+                        writer: BufWriter::new(file),
+                    })),
                     Err(e) => {
                         debug!("File.append error: {} - {}", path_str, e);
                         std::ptr::null_mut()
@@ -1448,13 +1555,12 @@ pub extern "C" fn haxe_file_update(path: *const HaxeString, _binary: bool) -> *m
                     .read(true)
                     .write(true)
                     .create(true)
+                    .truncate(true)
                     .open(&path_str)
                 {
-                    Ok(file) => {
-                        Box::into_raw(Box::new(HaxeFileOutput {
-                            writer: BufWriter::new(file),
-                        }))
-                    }
+                    Ok(file) => Box::into_raw(Box::new(HaxeFileOutput {
+                        writer: BufWriter::new(file),
+                    })),
                     Err(e) => {
                         debug!("File.update error: {} - {}", path_str, e);
                         std::ptr::null_mut()
@@ -1497,7 +1603,11 @@ pub extern "C" fn haxe_fileinput_read_byte(handle: *mut HaxeFileInput) -> i32 {
 /// Read multiple bytes into buffer
 /// Returns actual bytes read
 #[no_mangle]
-pub extern "C" fn haxe_fileinput_read_bytes(handle: *mut HaxeFileInput, buf: *mut u8, len: i32) -> i32 {
+pub extern "C" fn haxe_fileinput_read_bytes(
+    handle: *mut HaxeFileInput,
+    buf: *mut u8,
+    len: i32,
+) -> i32 {
     if handle.is_null() || buf.is_null() || len <= 0 {
         return 0;
     }
@@ -1561,9 +1671,7 @@ pub extern "C" fn haxe_fileinput_eof(handle: *mut HaxeFileInput) -> bool {
     if handle.is_null() {
         return true;
     }
-    unsafe {
-        (*handle).eof_reached
-    }
+    unsafe { (*handle).eof_reached }
 }
 
 /// Close FileInput
@@ -1599,7 +1707,11 @@ pub extern "C" fn haxe_fileoutput_write_byte(handle: *mut HaxeFileOutput, c: i32
 /// Write multiple bytes from buffer
 /// Returns actual bytes written
 #[no_mangle]
-pub extern "C" fn haxe_fileoutput_write_bytes(handle: *mut HaxeFileOutput, buf: *const u8, len: i32) -> i32 {
+pub extern "C" fn haxe_fileoutput_write_bytes(
+    handle: *mut HaxeFileOutput,
+    buf: *const u8,
+    len: i32,
+) -> i32 {
     if handle.is_null() || buf.is_null() || len <= 0 {
         return 0;
     }
@@ -1685,7 +1797,7 @@ pub extern "C" fn haxe_fileoutput_close(handle: *mut HaxeFileOutput) {
 // The Date class stores a timestamp in milliseconds since Unix epoch (1970-01-01).
 // All getters compute values from this timestamp.
 
-use chrono::{DateTime, Local, NaiveDateTime, TimeZone, Utc, Datelike, Timelike};
+use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeZone, Timelike, Utc};
 
 /// Haxe Date - stores milliseconds since Unix epoch
 #[repr(C)]
@@ -1697,7 +1809,14 @@ pub struct HaxeDate {
 /// Create a new Date from components (local timezone)
 /// Date.new(year, month, day, hour, min, sec)
 #[no_mangle]
-pub extern "C" fn haxe_date_new(year: i32, month: i32, day: i32, hour: i32, min: i32, sec: i32) -> *mut HaxeDate {
+pub extern "C" fn haxe_date_new(
+    year: i32,
+    month: i32,
+    day: i32,
+    hour: i32,
+    min: i32,
+    sec: i32,
+) -> *mut HaxeDate {
     // month is 0-based in Haxe, chrono expects 1-based
     let naive = NaiveDateTime::new(
         chrono::NaiveDate::from_ymd_opt(year, (month + 1) as u32, day as u32)
@@ -1707,9 +1826,10 @@ pub extern "C" fn haxe_date_new(year: i32, month: i32, day: i32, hour: i32, min:
     );
 
     // Convert to local timezone then to timestamp
-    let local: DateTime<Local> = Local.from_local_datetime(&naive)
+    let local: DateTime<Local> = Local
+        .from_local_datetime(&naive)
         .single()
-        .unwrap_or_else(|| Local::now());
+        .unwrap_or_else(Local::now);
 
     let timestamp_ms = local.timestamp_millis() as f64;
 
@@ -1743,22 +1863,34 @@ pub extern "C" fn haxe_date_from_string(s: *const HaxeString) -> *mut HaxeDate {
 
         // Try parsing "YYYY-MM-DD hh:mm:ss"
         if let Ok(dt) = NaiveDateTime::parse_from_str(&s_str, "%Y-%m-%d %H:%M:%S") {
-            let local = Local.from_local_datetime(&dt).single().unwrap_or_else(|| Local::now());
-            return Box::into_raw(Box::new(HaxeDate { timestamp_ms: local.timestamp_millis() as f64 }));
+            let local = Local
+                .from_local_datetime(&dt)
+                .single()
+                .unwrap_or_else(Local::now);
+            return Box::into_raw(Box::new(HaxeDate {
+                timestamp_ms: local.timestamp_millis() as f64,
+            }));
         }
 
         // Try parsing "YYYY-MM-DD"
         if let Ok(d) = chrono::NaiveDate::parse_from_str(&s_str, "%Y-%m-%d") {
             let dt = d.and_hms_opt(0, 0, 0).unwrap();
-            let local = Local.from_local_datetime(&dt).single().unwrap_or_else(|| Local::now());
-            return Box::into_raw(Box::new(HaxeDate { timestamp_ms: local.timestamp_millis() as f64 }));
+            let local = Local
+                .from_local_datetime(&dt)
+                .single()
+                .unwrap_or_else(Local::now);
+            return Box::into_raw(Box::new(HaxeDate {
+                timestamp_ms: local.timestamp_millis() as f64,
+            }));
         }
 
         // Try parsing "hh:mm:ss" (relative to epoch)
         if let Ok(t) = chrono::NaiveTime::parse_from_str(&s_str, "%H:%M:%S") {
             let epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
             let dt = epoch.and_time(t);
-            return Box::into_raw(Box::new(HaxeDate { timestamp_ms: dt.and_utc().timestamp_millis() as f64 }));
+            return Box::into_raw(Box::new(HaxeDate {
+                timestamp_ms: dt.and_utc().timestamp_millis() as f64,
+            }));
         }
 
         haxe_date_now() // fallback
@@ -1805,21 +1937,27 @@ pub extern "C" fn haxe_date_get_time(date: *const HaxeDate) -> f64 {
 /// date.getHours(): Int
 #[no_mangle]
 pub extern "C" fn haxe_date_get_hours(date: *const HaxeDate) -> i32 {
-    get_local_datetime(date).map(|dt| dt.hour() as i32).unwrap_or(0)
+    get_local_datetime(date)
+        .map(|dt| dt.hour() as i32)
+        .unwrap_or(0)
 }
 
 /// Get minutes (0-59) in local timezone
 /// date.getMinutes(): Int
 #[no_mangle]
 pub extern "C" fn haxe_date_get_minutes(date: *const HaxeDate) -> i32 {
-    get_local_datetime(date).map(|dt| dt.minute() as i32).unwrap_or(0)
+    get_local_datetime(date)
+        .map(|dt| dt.minute() as i32)
+        .unwrap_or(0)
 }
 
 /// Get seconds (0-59) in local timezone
 /// date.getSeconds(): Int
 #[no_mangle]
 pub extern "C" fn haxe_date_get_seconds(date: *const HaxeDate) -> i32 {
-    get_local_datetime(date).map(|dt| dt.second() as i32).unwrap_or(0)
+    get_local_datetime(date)
+        .map(|dt| dt.second() as i32)
+        .unwrap_or(0)
 }
 
 /// Get full year (4 digits) in local timezone
@@ -1833,42 +1971,54 @@ pub extern "C" fn haxe_date_get_full_year(date: *const HaxeDate) -> i32 {
 /// date.getMonth(): Int
 #[no_mangle]
 pub extern "C" fn haxe_date_get_month(date: *const HaxeDate) -> i32 {
-    get_local_datetime(date).map(|dt| (dt.month() - 1) as i32).unwrap_or(0)
+    get_local_datetime(date)
+        .map(|dt| (dt.month() - 1) as i32)
+        .unwrap_or(0)
 }
 
 /// Get day of month (1-31) in local timezone
 /// date.getDate(): Int
 #[no_mangle]
 pub extern "C" fn haxe_date_get_date(date: *const HaxeDate) -> i32 {
-    get_local_datetime(date).map(|dt| dt.day() as i32).unwrap_or(1)
+    get_local_datetime(date)
+        .map(|dt| dt.day() as i32)
+        .unwrap_or(1)
 }
 
 /// Get day of week (0-6, Sunday=0) in local timezone
 /// date.getDay(): Int
 #[no_mangle]
 pub extern "C" fn haxe_date_get_day(date: *const HaxeDate) -> i32 {
-    get_local_datetime(date).map(|dt| dt.weekday().num_days_from_sunday() as i32).unwrap_or(0)
+    get_local_datetime(date)
+        .map(|dt| dt.weekday().num_days_from_sunday() as i32)
+        .unwrap_or(0)
 }
 
 /// Get hours (0-23) in UTC
 /// date.getUTCHours(): Int
 #[no_mangle]
 pub extern "C" fn haxe_date_get_utc_hours(date: *const HaxeDate) -> i32 {
-    get_utc_datetime(date).map(|dt| dt.hour() as i32).unwrap_or(0)
+    get_utc_datetime(date)
+        .map(|dt| dt.hour() as i32)
+        .unwrap_or(0)
 }
 
 /// Get minutes (0-59) in UTC
 /// date.getUTCMinutes(): Int
 #[no_mangle]
 pub extern "C" fn haxe_date_get_utc_minutes(date: *const HaxeDate) -> i32 {
-    get_utc_datetime(date).map(|dt| dt.minute() as i32).unwrap_or(0)
+    get_utc_datetime(date)
+        .map(|dt| dt.minute() as i32)
+        .unwrap_or(0)
 }
 
 /// Get seconds (0-59) in UTC
 /// date.getUTCSeconds(): Int
 #[no_mangle]
 pub extern "C" fn haxe_date_get_utc_seconds(date: *const HaxeDate) -> i32 {
-    get_utc_datetime(date).map(|dt| dt.second() as i32).unwrap_or(0)
+    get_utc_datetime(date)
+        .map(|dt| dt.second() as i32)
+        .unwrap_or(0)
 }
 
 /// Get full year (4 digits) in UTC
@@ -1882,21 +2032,27 @@ pub extern "C" fn haxe_date_get_utc_full_year(date: *const HaxeDate) -> i32 {
 /// date.getUTCMonth(): Int
 #[no_mangle]
 pub extern "C" fn haxe_date_get_utc_month(date: *const HaxeDate) -> i32 {
-    get_utc_datetime(date).map(|dt| (dt.month() - 1) as i32).unwrap_or(0)
+    get_utc_datetime(date)
+        .map(|dt| (dt.month() - 1) as i32)
+        .unwrap_or(0)
 }
 
 /// Get day of month (1-31) in UTC
 /// date.getUTCDate(): Int
 #[no_mangle]
 pub extern "C" fn haxe_date_get_utc_date(date: *const HaxeDate) -> i32 {
-    get_utc_datetime(date).map(|dt| dt.day() as i32).unwrap_or(1)
+    get_utc_datetime(date)
+        .map(|dt| dt.day() as i32)
+        .unwrap_or(1)
 }
 
 /// Get day of week (0-6, Sunday=0) in UTC
 /// date.getUTCDay(): Int
 #[no_mangle]
 pub extern "C" fn haxe_date_get_utc_day(date: *const HaxeDate) -> i32 {
-    get_utc_datetime(date).map(|dt| dt.weekday().num_days_from_sunday() as i32).unwrap_or(0)
+    get_utc_datetime(date)
+        .map(|dt| dt.weekday().num_days_from_sunday() as i32)
+        .unwrap_or(0)
 }
 
 /// Get timezone offset in minutes (local - UTC)
@@ -1947,7 +2103,11 @@ pub extern "C" fn haxe_bytes_alloc(size: i32) -> *mut HaxeBytes {
             return std::ptr::null_mut();
         }
 
-        Box::into_raw(Box::new(HaxeBytes { ptr, len: size, cap }))
+        Box::into_raw(Box::new(HaxeBytes {
+            ptr,
+            len: size,
+            cap,
+        }))
     }
 }
 
@@ -2355,7 +2515,11 @@ pub extern "C" fn haxe_stringmap_new() -> *mut HaxeStringMap {
 /// Set a value in the StringMap
 /// Value is passed as raw u64 bits (compiler handles type conversion)
 #[no_mangle]
-pub extern "C" fn haxe_stringmap_set(map_ptr: *mut HaxeStringMap, key: *const HaxeString, value: u64) {
+pub extern "C" fn haxe_stringmap_set(
+    map_ptr: *mut HaxeStringMap,
+    key: *const HaxeString,
+    value: u64,
+) {
     if map_ptr.is_null() {
         return;
     }
@@ -2387,7 +2551,10 @@ pub extern "C" fn haxe_stringmap_get(map_ptr: *mut HaxeStringMap, key: *const Ha
 
 /// Check if a key exists in the StringMap
 #[no_mangle]
-pub extern "C" fn haxe_stringmap_exists(map_ptr: *mut HaxeStringMap, key: *const HaxeString) -> bool {
+pub extern "C" fn haxe_stringmap_exists(
+    map_ptr: *mut HaxeStringMap,
+    key: *const HaxeString,
+) -> bool {
     if map_ptr.is_null() {
         return false;
     }
@@ -2404,7 +2571,10 @@ pub extern "C" fn haxe_stringmap_exists(map_ptr: *mut HaxeStringMap, key: *const
 /// Remove a key from the StringMap
 /// Returns true if the key existed and was removed
 #[no_mangle]
-pub extern "C" fn haxe_stringmap_remove(map_ptr: *mut HaxeStringMap, key: *const HaxeString) -> bool {
+pub extern "C" fn haxe_stringmap_remove(
+    map_ptr: *mut HaxeStringMap,
+    key: *const HaxeString,
+) -> bool {
     if map_ptr.is_null() {
         return false;
     }
@@ -2445,16 +2615,23 @@ pub extern "C" fn haxe_stringmap_count(map_ptr: *mut HaxeStringMap) -> i64 {
 /// Get all keys as an array
 /// Returns pointer to array of HaxeString pointers, sets out_len to count
 #[no_mangle]
-pub extern "C" fn haxe_stringmap_keys(map_ptr: *mut HaxeStringMap, out_len: *mut i64) -> *mut *mut HaxeString {
+pub extern "C" fn haxe_stringmap_keys(
+    map_ptr: *mut HaxeStringMap,
+    out_len: *mut i64,
+) -> *mut *mut HaxeString {
     if map_ptr.is_null() || out_len.is_null() {
         if !out_len.is_null() {
-            unsafe { *out_len = 0; }
+            unsafe {
+                *out_len = 0;
+            }
         }
         return std::ptr::null_mut();
     }
     unsafe {
         let map = &*map_ptr;
-        let keys: Vec<*mut HaxeString> = map.map.keys()
+        let keys: Vec<*mut HaxeString> = map
+            .map
+            .keys()
             .map(|k| rust_string_to_haxe(k.clone()))
             .collect();
         *out_len = keys.len() as i64;
@@ -2470,7 +2647,9 @@ pub extern "C" fn haxe_stringmap_to_string(map_ptr: *mut HaxeStringMap) -> *mut 
     }
     unsafe {
         let map = &*map_ptr;
-        let entries: Vec<String> = map.map.iter()
+        let entries: Vec<String> = map
+            .map
+            .iter()
             .map(|(k, v)| format!("{} => {}", k, v))
             .collect();
         let result = format!("{{{}}}", entries.join(", "));
@@ -2580,7 +2759,9 @@ pub extern "C" fn haxe_intmap_count(map_ptr: *mut HaxeIntMap) -> i64 {
 pub extern "C" fn haxe_intmap_keys(map_ptr: *mut HaxeIntMap, out_len: *mut i64) -> *mut i64 {
     if map_ptr.is_null() || out_len.is_null() {
         if !out_len.is_null() {
-            unsafe { *out_len = 0; }
+            unsafe {
+                *out_len = 0;
+            }
         }
         return std::ptr::null_mut();
     }
@@ -2600,7 +2781,9 @@ pub extern "C" fn haxe_intmap_to_string(map_ptr: *mut HaxeIntMap) -> *mut HaxeSt
     }
     unsafe {
         let map = &*map_ptr;
-        let entries: Vec<String> = map.map.iter()
+        let entries: Vec<String> = map
+            .map
+            .iter()
             .map(|(k, v)| format!("{} => {}", k, v))
             .collect();
         let result = format!("{{{}}}", entries.join(", "));

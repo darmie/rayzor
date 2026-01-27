@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Tiered JIT Test with Loop: Demonstrating SSA Phi Nodes
 //!
 //! This test compiles a Haxe function with a while loop and demonstrates:
@@ -8,17 +38,15 @@
 //! The loop demonstrates the most complex case for SSA form, where
 //! loop variables must be represented with phi nodes in the loop header.
 
-use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig};
 use compiler::codegen::profiling::ProfileConfig;
+use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig};
+use compiler::ir::{hir_to_mir::lower_hir_to_mir, tast_to_hir::lower_tast_to_hir};
 use compiler::tast::{
-    TypeTable, StringInterner, SymbolTable,
-    ast_lowering::AstLowering,
-    scopes::ScopeTree,
+    ast_lowering::AstLowering, scopes::ScopeTree, StringInterner, SymbolTable, TypeTable,
 };
-use compiler::ir::{tast_to_hir::lower_tast_to_hir, hir_to_mir::lower_hir_to_mir};
 use parser::haxe_parser::parse_haxe_file;
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 fn main() -> Result<(), String> {
     println!("=== Tiered JIT with Loop (SSA Phi Nodes) ===\n");
@@ -54,11 +82,15 @@ class Math {
     println!("  Functions: {}", mir_module.functions.len());
 
     // Get the function
-    let func_id = *mir_module.functions.keys()
+    let func_id = *mir_module
+        .functions
+        .keys()
         .next()
         .ok_or("No functions in MIR module")?;
 
-    let func_info = mir_module.functions.get(&func_id)
+    let func_info = mir_module
+        .functions
+        .get(&func_id)
         .ok_or("Function not found")?;
 
     println!("\nMIR Function Details:");
@@ -67,8 +99,15 @@ class Math {
     println!("  Parameters: {}", func_info.signature.parameters.len());
 
     // Check for phi nodes
-    let has_phi = func_info.cfg.blocks.values().any(|b| !b.phi_nodes.is_empty());
-    println!("  Has phi nodes: {} (required for proper SSA in loops)", has_phi);
+    let has_phi = func_info
+        .cfg
+        .blocks
+        .values()
+        .any(|b| !b.phi_nodes.is_empty());
+    println!(
+        "  Has phi nodes: {} (required for proper SSA in loops)",
+        has_phi
+    );
     println!();
 
     // Set up tiered JIT
@@ -78,12 +117,15 @@ class Math {
         optimization_check_interval_ms: 50,
         max_parallel_optimizations: 2,
         profile_config: ProfileConfig {
-            warm_threshold: 10,       // Fast promotion for demo
+            interpreter_threshold: 5,
+            warm_threshold: 10, // Fast promotion for demo
             hot_threshold: 50,
             blazing_threshold: 200,
             sample_rate: 1,
         },
         verbosity: 1, // Show promotions
+        start_interpreted: false,
+        bailout_strategy: compiler::codegen::BailoutStrategy::Quick,
     };
 
     let mut backend = TieredBackend::new(config)?;
@@ -98,17 +140,18 @@ class Math {
 
     // Execute test cases
     println!("Step 4: Executing test cases...");
-    let func_ptr = backend.get_function_pointer(func_id)
+    let func_ptr = backend
+        .get_function_pointer(func_id)
         .ok_or("Failed to get function pointer")?;
     let sum_fn: fn(i64) -> i64 = unsafe { std::mem::transmute(func_ptr) };
 
     // Test: sumToN(n) = n*(n+1)/2
     let test_cases = vec![
-        (0, 0),       // sum(0) = 0
-        (1, 1),       // sum(1) = 1
-        (5, 15),      // sum(5) = 1+2+3+4+5 = 15
-        (10, 55),     // sum(10) = 55
-        (100, 5050),  // sum(100) = 5050
+        (0, 0),      // sum(0) = 0
+        (1, 1),      // sum(1) = 1
+        (5, 15),     // sum(5) = 1+2+3+4+5 = 15
+        (10, 55),    // sum(10) = 55
+        (100, 5050), // sum(100) = 5050
     ];
 
     println!("Running test cases (formula: sum = n*(n+1)/2):");
@@ -117,7 +160,10 @@ class Math {
         let result = sum_fn(*n);
         let passed = result == *expected;
         let symbol = if passed { "✓" } else { "✗" };
-        println!("  {} sumToN({:>3}) = {:>5} (expected {:>5})", symbol, n, result, expected);
+        println!(
+            "  {} sumToN({:>3}) = {:>5} (expected {:>5})",
+            symbol, n, result, expected
+        );
         all_passed &= passed;
     }
 
@@ -145,14 +191,24 @@ class Math {
         }
 
         // Report progress at milestones
-        if execution_count == 10 || execution_count == 50 || execution_count == 100 ||
-           execution_count == 200 || execution_count == 500 {
+        if execution_count == 10
+            || execution_count == 50
+            || execution_count == 100
+            || execution_count == 200
+            || execution_count == 500
+        {
             std::thread::sleep(std::time::Duration::from_millis(100));
-            println!("  After {:>3} calls: total_sum = {:>8}", execution_count, total_sum);
+            println!(
+                "  After {:>3} calls: total_sum = {:>8}",
+                execution_count, total_sum
+            );
         }
     }
 
-    println!("\n  ✓ Executed {} times with correct results", execution_count);
+    println!(
+        "\n  ✓ Executed {} times with correct results",
+        execution_count
+    );
     println!();
 
     // Show final statistics
@@ -163,9 +219,18 @@ class Math {
     let stats = backend.get_statistics();
 
     println!("\nTier Distribution:");
-    println!("  Tier 0 (Baseline):  {} functions", stats.baseline_functions);
-    println!("  Tier 1 (Standard):  {} functions", stats.standard_functions);
-    println!("  Tier 2 (Optimized): {} functions", stats.optimized_functions);
+    println!(
+        "  Tier 0 (Baseline):  {} functions",
+        stats.baseline_functions
+    );
+    println!(
+        "  Tier 1 (Standard):  {} functions",
+        stats.standard_functions
+    );
+    println!(
+        "  Tier 2 (Optimized): {} functions",
+        stats.optimized_functions
+    );
     println!("  Tier 3 (Maximum):   {} functions", stats.llvm_functions);
 
     println!("\nProfile Statistics:");
@@ -191,19 +256,23 @@ class Math {
 /// Compile Haxe source through the full pipeline to MIR
 fn compile_haxe_to_mir(source: &str) -> Result<compiler::ir::IrModule, String> {
     // Parse
-    let ast = parse_haxe_file("test.hx", source, false)
-        .map_err(|e| format!("Parse error: {}", e))?;
+    let ast =
+        parse_haxe_file("test.hx", source, false).map_err(|e| format!("Parse error: {}", e))?;
 
     // Lower AST to TAST
     let mut string_interner = StringInterner::new();
     let mut symbol_table = SymbolTable::new();
     let type_table = Rc::new(RefCell::new(TypeTable::new()));
     let mut scope_tree = ScopeTree::new(compiler::tast::ScopeId::from_raw(0));
-    let mut namespace_resolver = compiler::tast::namespace::NamespaceResolver::new(&string_interner);
+    let mut namespace_resolver =
+        compiler::tast::namespace::NamespaceResolver::new(&string_interner);
     let mut import_resolver = compiler::tast::namespace::ImportResolver::new(&namespace_resolver);
 
     let mut ast_lowering = AstLowering::new(
         &mut string_interner,
+        std::rc::Rc::new(std::cell::RefCell::new(
+            compiler::tast::StringInterner::new(),
+        )),
         &mut symbol_table,
         &type_table,
         &mut scope_tree,
@@ -211,7 +280,8 @@ fn compile_haxe_to_mir(source: &str) -> Result<compiler::ir::IrModule, String> {
         &mut import_resolver,
     );
 
-    let mut typed_file = ast_lowering.lower_file(&ast)
+    let mut typed_file = ast_lowering
+        .lower_file(&ast)
         .map_err(|e| format!("TAST lowering error: {:?}", e))?;
 
     // Lower TAST to HIR
@@ -224,17 +294,23 @@ fn compile_haxe_to_mir(source: &str) -> Result<compiler::ir::IrModule, String> {
         &type_table,
         &mut *string_interner_rc.borrow_mut(),
         None,
-    ).map_err(|errors| {
+    )
+    .map_err(|errors| {
         let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
         format!("HIR lowering errors: {}", messages.join(", "))
     })?;
 
     // Lower HIR to MIR (produces proper SSA with phi nodes!)
-    let mir_module = lower_hir_to_mir(&hir_module, &*string_interner_rc.borrow(), &type_table)
-        .map_err(|errors| {
-            let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
-            format!("MIR lowering errors: {}", messages.join(", "))
-        })?;
+    let mir_module = lower_hir_to_mir(
+        &hir_module,
+        &*string_interner_rc.borrow(),
+        &type_table,
+        &symbol_table,
+    )
+    .map_err(|errors| {
+        let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
+        format!("MIR lowering errors: {}", messages.join(", "))
+    })?;
 
     Ok(mir_module)
 }

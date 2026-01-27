@@ -39,11 +39,10 @@
 //! ```
 
 use super::{
-    IrModule, IrFunction, IrFunctionId, IrFunctionSignature, IrParameter, IrType, IrTypeParam,
-    IrInstruction, IrBasicBlock, IrBlockId, IrControlFlowGraph, IrTerminator,
-    IrId, IrValue, IrSourceLocation, CallingConvention, Linkage, FunctionAttributes, FunctionKind,
-    InlineHint, AllocationHint, IrLocal, BinaryOp, UnaryOp, CompareOp,
-    StructField, UnionVariant,
+    AllocationHint, BinaryOp, CallingConvention, CompareOp, FunctionAttributes, FunctionKind,
+    InlineHint, IrBasicBlock, IrBlockId, IrControlFlowGraph, IrFunction, IrFunctionId,
+    IrFunctionSignature, IrId, IrInstruction, IrLocal, IrModule, IrParameter, IrSourceLocation,
+    IrTerminator, IrType, IrTypeParam, IrValue, Linkage, StructField, UnaryOp, UnionVariant,
 };
 use std::collections::HashMap;
 
@@ -111,7 +110,11 @@ impl MirBuilder {
         self.current_function = Some(func_id);
         // Initialize builder's next_reg_id from the function's next_reg_id
         // (which was set to param count during build())
-        let func = self.module.functions.get(&func_id).expect("Function not found");
+        let func = self
+            .module
+            .functions
+            .get(&func_id)
+            .expect("Function not found");
         self.next_reg_id = func.next_reg_id;
     }
 
@@ -119,7 +122,11 @@ impl MirBuilder {
     /// If this is the first block created, it will use the existing entry block
     pub fn create_block(&mut self, label: impl Into<String>) -> IrBlockId {
         let func_id = self.current_function.expect("No current function");
-        let func = self.module.functions.get_mut(&func_id).expect("Function not found");
+        let func = self
+            .module
+            .functions
+            .get_mut(&func_id)
+            .expect("Function not found");
 
         // If this is the first block and the entry block exists but is unlabeled, use it
         if func.cfg.blocks.len() == 1 {
@@ -165,7 +172,11 @@ impl MirBuilder {
     /// Register the type of a register
     fn register_type(&mut self, reg: IrId, ty: IrType) {
         let func_id = self.current_function.expect("No current function");
-        let func = self.module.functions.get_mut(&func_id).expect("Function not found");
+        let func = self
+            .module
+            .functions
+            .get_mut(&func_id)
+            .expect("Function not found");
         func.register_types.insert(reg, ty);
     }
 
@@ -179,8 +190,14 @@ impl MirBuilder {
     /// Get parameter value by index
     pub fn get_param(&self, index: usize) -> IrId {
         let func_id = self.current_function.expect("No current function");
-        let func = self.module.functions.get(&func_id).expect("Function not found");
-        func.signature.parameters.get(index)
+        let func = self
+            .module
+            .functions
+            .get(&func_id)
+            .expect("Function not found");
+        func.signature
+            .parameters
+            .get(index)
             .map(|p| p.reg)
             .expect("Parameter index out of bounds")
     }
@@ -190,7 +207,11 @@ impl MirBuilder {
         let func_id = self.current_function.expect("No current function");
         let block_id = self.current_block.expect("No current block");
 
-        let func = self.module.functions.get_mut(&func_id).expect("Function not found");
+        let func = self
+            .module
+            .functions
+            .get_mut(&func_id)
+            .expect("Function not found");
         let block = func.cfg.blocks.get_mut(&block_id).expect("Block not found");
 
         block.instructions.push(inst);
@@ -201,7 +222,11 @@ impl MirBuilder {
         let func_id = self.current_function.expect("No current function");
         let block_id = self.current_block.expect("No current block");
 
-        let func = self.module.functions.get_mut(&func_id).expect("Function not found");
+        let func = self
+            .module
+            .functions
+            .get_mut(&func_id)
+            .expect("Function not found");
         let block = func.cfg.blocks.get_mut(&block_id).expect("Block not found");
 
         block.terminator = term;
@@ -263,7 +288,12 @@ impl MirBuilder {
         // Infer result type from left operand
         let ty = self.get_register_type(left).unwrap_or(IrType::I64);
         let dest = self.alloc_reg_typed(ty);
-        self.insert_inst(IrInstruction::BinOp { dest, op, left, right });
+        self.insert_inst(IrInstruction::BinOp {
+            dest,
+            op,
+            left,
+            right,
+        });
         dest
     }
 
@@ -280,7 +310,12 @@ impl MirBuilder {
     pub fn cmp(&mut self, op: CompareOp, left: IrId, right: IrId) -> IrId {
         // Comparison always returns bool
         let dest = self.alloc_reg_typed(IrType::Bool);
-        self.insert_inst(IrInstruction::Cmp { dest, op, left, right });
+        self.insert_inst(IrInstruction::Cmp {
+            dest,
+            op,
+            left,
+            right,
+        });
         dest
     }
 
@@ -288,11 +323,20 @@ impl MirBuilder {
     pub fn call(&mut self, func_id: IrFunctionId, args: Vec<IrId>) -> Option<IrId> {
         // Clone the function signature data we need before any mutable borrows
         let (return_ty, is_c_extern, param_types) = {
-            let func = self.module.functions.get(&func_id).expect("Function not found");
+            let func = self
+                .module
+                .functions
+                .get(&func_id)
+                .expect("Function not found");
             let is_extern = func.signature.calling_convention == CallingConvention::C
                 && func.attributes.linkage == Linkage::External
                 && !cfg!(target_os = "windows");
-            let params: Vec<IrType> = func.signature.parameters.iter().map(|p| p.ty.clone()).collect();
+            let params: Vec<IrType> = func
+                .signature
+                .parameters
+                .iter()
+                .map(|p| p.ty.clone())
+                .collect();
             (func.signature.return_type.clone(), is_extern, params)
         };
 
@@ -312,8 +356,18 @@ impl MirBuilder {
         let adjusted_args = args;
 
         // Default to Move ownership for all arguments
-        let arg_ownership = adjusted_args.iter().map(|_| crate::ir::instructions::OwnershipMode::Move).collect();
-        self.insert_inst(IrInstruction::CallDirect { dest, func_id, args: adjusted_args, arg_ownership, type_args: Vec::new(), is_tail_call: false });
+        let arg_ownership = adjusted_args
+            .iter()
+            .map(|_| crate::ir::instructions::OwnershipMode::Move)
+            .collect();
+        self.insert_inst(IrInstruction::CallDirect {
+            dest,
+            func_id,
+            args: adjusted_args,
+            arg_ownership,
+            type_args: Vec::new(),
+            is_tail_call: false,
+        });
         dest
     }
 
@@ -329,7 +383,12 @@ impl MirBuilder {
     /// Type cast
     pub fn cast(&mut self, src: IrId, from_ty: IrType, to_ty: IrType) -> IrId {
         let dest = self.alloc_reg_typed(to_ty.clone());
-        self.insert_inst(IrInstruction::Cast { dest, src, from_ty, to_ty });
+        self.insert_inst(IrInstruction::Cast {
+            dest,
+            src,
+            from_ty,
+            to_ty,
+        });
         dest
     }
 
@@ -337,7 +396,8 @@ impl MirBuilder {
     pub fn extract_value(&mut self, aggregate: IrId, indices: Vec<u32>) -> IrId {
         // Need to infer field type from aggregate type
         // For now, use a placeholder - this should be improved
-        let field_ty = self.get_register_type(aggregate)
+        let field_ty = self
+            .get_register_type(aggregate)
             .and_then(|ty| {
                 if let IrType::Struct { fields, .. } = ty {
                     if indices.len() == 1 {
@@ -352,7 +412,11 @@ impl MirBuilder {
             .unwrap_or(IrType::U64);
 
         let dest = self.alloc_reg_typed(field_ty);
-        self.insert_inst(IrInstruction::ExtractValue { dest, aggregate, indices });
+        self.insert_inst(IrInstruction::ExtractValue {
+            dest,
+            aggregate,
+            indices,
+        });
         dest
     }
 
@@ -366,7 +430,12 @@ impl MirBuilder {
         // Result has same type as aggregate
         let ty = self.get_register_type(aggregate).unwrap_or(IrType::U64);
         let dest = self.alloc_reg_typed(ty);
-        self.insert_inst(IrInstruction::InsertValue { dest, aggregate, value, indices });
+        self.insert_inst(IrInstruction::InsertValue {
+            dest,
+            aggregate,
+            value,
+            indices,
+        });
         dest
     }
 
@@ -375,7 +444,12 @@ impl MirBuilder {
     /// Create a union value with discriminant
     pub fn create_union(&mut self, discriminant: u32, value: IrId, ty: IrType) -> IrId {
         let dest = self.alloc_reg_typed(ty.clone());
-        self.insert_inst(IrInstruction::CreateUnion { dest, discriminant, value, ty });
+        self.insert_inst(IrInstruction::CreateUnion {
+            dest,
+            discriminant,
+            value,
+            ty,
+        });
         dest
     }
 
@@ -388,9 +462,19 @@ impl MirBuilder {
     }
 
     /// Extract value from union variant
-    pub fn extract_union_value(&mut self, union_val: IrId, discriminant: u32, value_ty: IrType) -> IrId {
+    pub fn extract_union_value(
+        &mut self,
+        union_val: IrId,
+        discriminant: u32,
+        value_ty: IrType,
+    ) -> IrId {
         let dest = self.alloc_reg_typed(value_ty.clone());
-        self.insert_inst(IrInstruction::ExtractUnionValue { dest, union_val, discriminant, value_ty });
+        self.insert_inst(IrInstruction::ExtractUnionValue {
+            dest,
+            union_val,
+            discriminant,
+            value_ty,
+        });
         dest
     }
 
@@ -409,7 +493,12 @@ impl MirBuilder {
     pub fn ptr_add(&mut self, ptr: IrId, offset: IrId, ty: IrType) -> IrId {
         // Result is same pointer type
         let dest = self.alloc_reg_typed(ty.clone());
-        self.insert_inst(IrInstruction::PtrAdd { dest, ptr, offset, ty });
+        self.insert_inst(IrInstruction::PtrAdd {
+            dest,
+            ptr,
+            offset,
+            ty,
+        });
         dest
     }
 
@@ -497,7 +586,9 @@ impl MirBuilder {
 
     /// Create a struct type
     pub fn struct_type(&self, name: Option<impl Into<String>>, fields: Vec<IrType>) -> IrType {
-        let struct_fields = fields.into_iter().enumerate()
+        let struct_fields = fields
+            .into_iter()
+            .enumerate()
             .map(|(i, ty)| StructField {
                 name: format!("field_{}", i),
                 ty,
@@ -506,15 +597,23 @@ impl MirBuilder {
             .collect();
 
         IrType::Struct {
-            name: name.map(|n| n.into()).unwrap_or_else(|| String::from("anon")),
+            name: name
+                .map(|n| n.into())
+                .unwrap_or_else(|| String::from("anon")),
             fields: struct_fields,
         }
     }
 
     /// Create a union type
-    pub fn union_type(&self, name: Option<impl Into<String>>, variants: Vec<super::UnionVariant>) -> IrType {
+    pub fn union_type(
+        &self,
+        name: Option<impl Into<String>>,
+        variants: Vec<super::UnionVariant>,
+    ) -> IrType {
         IrType::Union {
-            name: name.map(|n| n.into()).unwrap_or_else(|| String::from("anon")),
+            name: name
+                .map(|n| n.into())
+                .unwrap_or_else(|| String::from("anon")),
             variants,
         }
     }
@@ -570,7 +669,9 @@ impl MirBuilder {
 
     /// Get a function by name (for calling)
     pub fn get_function_by_name(&self, name: &str) -> Option<IrFunctionId> {
-        self.module.functions.iter()
+        self.module
+            .functions
+            .iter()
             .find(|(_, f)| f.name == name)
             .map(|(id, _)| *id)
     }
@@ -700,7 +801,8 @@ mod tests {
         let mut builder = MirBuilder::new("test");
 
         // fn add(a: i32, b: i32) -> i32
-        let func_id = builder.begin_function("add")
+        let func_id = builder
+            .begin_function("add")
             .param("a", IrType::I32)
             .param("b", IrType::I32)
             .returns(IrType::I32)

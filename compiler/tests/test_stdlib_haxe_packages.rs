@@ -1,4 +1,4 @@
-use compiler::compilation::{CompilationUnit, CompilationConfig};
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 
 #[test]
 fn test_haxe_macro_type_parses() {
@@ -7,7 +7,10 @@ fn test_haxe_macro_type_parses() {
     match unit.load_stdlib() {
         Ok(_) => {
             // Check if haxe/macro/Type.hx was loaded successfully
-            let found = unit.stdlib_files.iter().any(|f| f.filename.contains("haxe/macro/Type.hx"));
+            let found = unit
+                .stdlib_files
+                .iter()
+                .any(|f| f.filename.contains("haxe/macro/Type.hx"));
             assert!(found, "haxe/macro/Type.hx should be loaded from stdlib");
         }
         Err(e) => panic!("Failed to load stdlib: {}", e),
@@ -20,7 +23,10 @@ fn test_haxe_macro_tools_parses() {
 
     match unit.load_stdlib() {
         Ok(_) => {
-            let found = unit.stdlib_files.iter().any(|f| f.filename.contains("haxe/macro/Tools.hx"));
+            let found = unit
+                .stdlib_files
+                .iter()
+                .any(|f| f.filename.contains("haxe/macro/Tools.hx"));
             assert!(found, "haxe/macro/Tools.hx should be loaded from stdlib");
         }
         Err(e) => panic!("Failed to load stdlib: {}", e),
@@ -33,8 +39,14 @@ fn test_haxe_extern_eithertype_parses() {
 
     match unit.load_stdlib() {
         Ok(_) => {
-            let found = unit.stdlib_files.iter().any(|f| f.filename.contains("haxe/extern/EitherType.hx"));
-            assert!(found, "haxe/extern/EitherType.hx should be loaded from stdlib");
+            let found = unit
+                .stdlib_files
+                .iter()
+                .any(|f| f.filename.contains("haxe/extern/EitherType.hx"));
+            assert!(
+                found,
+                "haxe/extern/EitherType.hx should be loaded from stdlib"
+            );
         }
         Err(e) => panic!("Failed to load stdlib: {}", e),
     }
@@ -46,7 +58,9 @@ fn test_all_haxe_macro_files_parse() {
 
     match unit.load_stdlib() {
         Ok(_) => {
-            let haxe_macro_files: Vec<_> = unit.stdlib_files.iter()
+            let haxe_macro_files: Vec<_> = unit
+                .stdlib_files
+                .iter()
                 .filter(|f| f.filename.contains("haxe/macro/"))
                 .collect();
 
@@ -55,8 +69,10 @@ fn test_all_haxe_macro_files_parse() {
                 println!("  - {}", file.filename);
             }
 
-            assert!(haxe_macro_files.len() >= 3,
-                   "Should have at least 3 haxe.macro files (Type, Tools, MacroType)");
+            assert!(
+                haxe_macro_files.len() >= 3,
+                "Should have at least 3 haxe.macro files (Type, Tools, MacroType)"
+            );
         }
         Err(e) => panic!("Failed to load stdlib: {}", e),
     }
@@ -68,7 +84,9 @@ fn test_all_haxe_extern_files_parse() {
 
     match unit.load_stdlib() {
         Ok(_) => {
-            let haxe_extern_files: Vec<_> = unit.stdlib_files.iter()
+            let haxe_extern_files: Vec<_> = unit
+                .stdlib_files
+                .iter()
                 .filter(|f| f.filename.contains("haxe/extern/"))
                 .collect();
 
@@ -77,8 +95,10 @@ fn test_all_haxe_extern_files_parse() {
                 println!("  - {}", file.filename);
             }
 
-            assert!(haxe_extern_files.len() >= 3,
-                   "Should have at least 3 haxe.extern files (EitherType, AsVar, Rest)");
+            assert!(
+                haxe_extern_files.len() >= 3,
+                "Should have at least 3 haxe.extern files (EitherType, AsVar, Rest)"
+            );
         }
         Err(e) => panic!("Failed to load stdlib: {}", e),
     }

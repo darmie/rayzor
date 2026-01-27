@@ -1,3 +1,34 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
+#![allow(clippy::manual_is_variant_and, clippy::unnecessary_map_or)]
 //! Real-world abstract types examples
 //!
 //! This demonstrates practical uses of abstract types:
@@ -6,7 +37,7 @@
 //! 3. Unit conversions
 //! 4. Smart constructors with validation
 
-use compiler::compilation::{CompilationUnit, CompilationConfig};
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 
 fn main() {
     println!("=== Real-World Abstract Types Examples ===\n");
@@ -92,7 +123,8 @@ fn test_time_units() {
         }
     "#;
 
-    unit.add_file(source, "time/Timer.hx").expect("Failed to add file");
+    unit.add_file(source, "time/Timer.hx")
+        .expect("Failed to add file");
 
     match unit.lower_to_tast() {
         Ok(typed_files) => {
@@ -102,14 +134,20 @@ fn test_time_units() {
             println!("  Abstract types: {}", abstract_count);
 
             // Check that we have both Milliseconds and Seconds
-            let has_ms = typed_files.iter().any(|f|
+            let has_ms = typed_files.iter().any(|f| {
                 f.abstracts.iter().any(|a| {
-                    unit.string_interner.get(a.name).map_or(false, |s| s.contains("Milliseconds"))
-                }));
-            let has_sec = typed_files.iter().any(|f|
+                    unit.string_interner
+                        .get(a.name)
+                        .map_or(false, |s| s.contains("Milliseconds"))
+                })
+            });
+            let has_sec = typed_files.iter().any(|f| {
                 f.abstracts.iter().any(|a| {
-                    unit.string_interner.get(a.name).map_or(false, |s| s.contains("Seconds"))
-                }));
+                    unit.string_interner
+                        .get(a.name)
+                        .map_or(false, |s| s.contains("Seconds"))
+                })
+            });
 
             if has_ms && has_sec {
                 println!("✓ Both time units defined");
@@ -120,7 +158,7 @@ fn test_time_units() {
             }
         }
         Err(e) => {
-            println!("❌ FAILED: {}\n", e);
+            println!("❌ FAILED: {:?}\n", e);
         }
     }
 }
@@ -191,7 +229,8 @@ fn test_branded_ids() {
         }
     "#;
 
-    unit.add_file(source, "domain/Ids.hx").expect("Failed to add file");
+    unit.add_file(source, "domain/Ids.hx")
+        .expect("Failed to add file");
 
     match unit.lower_to_tast() {
         Ok(typed_files) => {
@@ -209,7 +248,7 @@ fn test_branded_ids() {
             }
         }
         Err(e) => {
-            println!("❌ FAILED: {}\n", e);
+            println!("❌ FAILED: {:?}\n", e);
         }
     }
 }
@@ -269,35 +308,35 @@ fn test_validated_string() {
         }
     "#;
 
-    unit.add_file(source, "validation/Email.hx").expect("Failed to add file");
+    unit.add_file(source, "validation/Email.hx")
+        .expect("Failed to add file");
 
     match unit.lower_to_tast() {
         Ok(typed_files) => {
             println!("✓ Validated string compiled successfully");
 
             // Need to use string_interner to resolve InternedString names
-            let has_email = typed_files.iter().any(|f|
+            let has_email = typed_files.iter().any(|f| {
                 f.abstracts.iter().any(|a| {
                     if let Some(name_str) = unit.string_interner.get(a.name) {
                         name_str.contains("Email")
                     } else {
                         false
                     }
-                }));
+                })
+            });
 
             if has_email {
                 println!("✓ Email abstract type found");
 
                 // Check for static methods (validate, create)
-                let email_abstract = typed_files.iter()
-                    .flat_map(|f| &f.abstracts)
-                    .find(|a| {
-                        if let Some(name_str) = unit.string_interner.get(a.name) {
-                            name_str.contains("Email")
-                        } else {
-                            false
-                        }
-                    });
+                let email_abstract = typed_files.iter().flat_map(|f| &f.abstracts).find(|a| {
+                    if let Some(name_str) = unit.string_interner.get(a.name) {
+                        name_str.contains("Email")
+                    } else {
+                        false
+                    }
+                });
 
                 if let Some(email) = email_abstract {
                     println!("  Methods: {}", email.methods.len());
@@ -307,7 +346,10 @@ fn test_validated_string() {
                 }
             } else {
                 println!("❌ FAILED: Email abstract not found");
-                println!("  Found {} abstract(s) in total", typed_files.iter().map(|f| f.abstracts.len()).sum::<usize>());
+                println!(
+                    "  Found {} abstract(s) in total",
+                    typed_files.iter().map(|f| f.abstracts.len()).sum::<usize>()
+                );
                 // Debug: print all abstract names
                 for f in &typed_files {
                     for a in &f.abstracts {
@@ -320,7 +362,7 @@ fn test_validated_string() {
             }
         }
         Err(e) => {
-            println!("❌ FAILED: {}\n", e);
+            println!("❌ FAILED: {:?}\n", e);
         }
     }
 }

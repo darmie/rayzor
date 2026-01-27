@@ -9,10 +9,10 @@
 //! - Sample-based profiling to reduce overhead
 //! - Per-function execution tracking
 
+use crate::ir::IrFunctionId;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
-use crate::ir::IrFunctionId;
 
 /// Runtime profiling data collector
 #[derive(Clone)]
@@ -62,11 +62,11 @@ impl ProfileConfig {
     /// Development configuration (aggressive optimization, low thresholds)
     pub fn development() -> Self {
         Self {
-            interpreter_threshold: 3,  // JIT quickly for testing
-            warm_threshold: 10,        // Quickly promote for testing
-            hot_threshold: 100,        // P3 after 100 calls
-            blazing_threshold: 500,    // P4/LLVM after 500 calls
-            sample_rate: 1,            // Profile every call for accuracy
+            interpreter_threshold: 3, // JIT quickly for testing
+            warm_threshold: 10,       // Quickly promote for testing
+            hot_threshold: 100,       // P3 after 100 calls
+            blazing_threshold: 500,   // P4/LLVM after 500 calls
+            sample_rate: 1,           // Profile every call for accuracy
         }
     }
 
@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn test_profile_data_basic() {
         let profile = ProfileData::new(ProfileConfig {
-            interpreter_threshold: 3,  // JIT after 3 calls
+            interpreter_threshold: 3, // JIT after 3 calls
             warm_threshold: 5,
             hot_threshold: 10,
             blazing_threshold: 100,
@@ -369,8 +369,8 @@ mod tests {
 
         let stats = profile.get_statistics();
         assert_eq!(stats.total_functions, 2);
-        assert_eq!(stats.cold_functions, 1);  // func1 is cold (< 100)
-        assert_eq!(stats.warm_functions, 1);  // func2 is warm (>= 100, < 1000)
+        assert_eq!(stats.cold_functions, 1); // func1 is cold (< 100)
+        assert_eq!(stats.warm_functions, 1); // func2 is warm (>= 100, < 1000)
         assert_eq!(stats.hot_functions, 0);
         assert_eq!(stats.total_executions, 550);
     }

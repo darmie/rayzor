@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests {
     use parser::incremental_parser::{parse_incrementally, ParsedElement};
-    
+
     #[test]
     fn test_module_field_parsing() {
         // Test content with module-level fields
@@ -25,15 +25,15 @@ function moduleFunction():String {
 class TestClass {
     public function new() {}
 }"#;
-        
+
         let result = parse_incrementally("test.hx", test_content);
-        
+
         println!("Parse complete: {}", result.complete);
         println!("Parsed elements: {}", result.parsed_elements.len());
         println!("Errors: {}", result.errors.len());
-        
+
         let mut module_field_count = 0;
-        
+
         // Print and count parsed elements
         for (i, element) in result.parsed_elements.iter().enumerate() {
             match element {
@@ -55,21 +55,27 @@ class TestClass {
                 }
             }
         }
-        
+
         println!("Module fields found: {}", module_field_count);
-        
+
         // Print errors if any
         for (i, error) in result.errors.iter().enumerate() {
             println!("\n❌ Error [{}] at line {}:{}", i, error.line, error.column);
             println!("   Message: {}", error.message);
-            println!("   Remaining input (first 100 chars): {:?}", 
-                &error.remaining_input[..100.min(error.remaining_input.len())]);
+            println!(
+                "   Remaining input (first 100 chars): {:?}",
+                &error.remaining_input[..100.min(error.remaining_input.len())]
+            );
         }
-        
+
         // We should have parsed at least 3 module fields (var, final, function)
-        assert!(module_field_count >= 3, "Expected at least 3 module fields but found {}", module_field_count);
+        assert!(
+            module_field_count >= 3,
+            "Expected at least 3 module fields but found {}",
+            module_field_count
+        );
     }
-    
+
     #[test]
     fn test_simple_module_field() {
         let test_content = r#"package test;
@@ -77,27 +83,32 @@ class TestClass {
 var x:Int = 10;
 
 class Test {}"#;
-        
+
         let result = parse_incrementally("test.hx", test_content);
-        
+
         println!("\n=== Simple Module Field Test ===");
         println!("Complete: {}", result.complete);
         println!("Elements: {}", result.parsed_elements.len());
         println!("Errors: {}", result.errors.len());
-        
+
         for (i, element) in result.parsed_elements.iter().enumerate() {
             println!("  [{}] {:?}", i, element);
         }
-        
-        let module_fields = result.parsed_elements.iter()
+
+        let module_fields = result
+            .parsed_elements
+            .iter()
             .filter(|e| matches!(e, ParsedElement::ModuleField(_)))
             .count();
-        
+
         println!("Module fields: {}", module_fields);
-        
+
         if !result.errors.is_empty() {
             for error in &result.errors {
-                println!("Error: {} at {}:{}", error.message, error.line, error.column);
+                println!(
+                    "Error: {} at {}:{}",
+                    error.message, error.line, error.column
+                );
             }
         }
     }

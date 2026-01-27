@@ -3,9 +3,9 @@
 //! This module provides infrastructure for managing package hierarchies,
 //! namespace resolution, and import tracking for proper type path resolution.
 
+use super::{InternedString, ScopeId, StringInterner, SymbolId};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use super::{InternedString, SymbolId, ScopeId, StringInterner};
 
 /// Unique identifier for a package
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -33,16 +33,16 @@ impl PackageId {
 pub struct PackageInfo {
     /// Full package path (e.g., ["com", "example", "game"])
     pub full_path: Vec<InternedString>,
-    
+
     /// Parent package (None for root)
     pub parent: Option<PackageId>,
-    
+
     /// Symbols defined directly in this package
     pub symbols: HashMap<InternedString, SymbolId>,
-    
+
     /// Sub-packages
     pub sub_packages: HashMap<InternedString, PackageId>,
-    
+
     /// Package visibility (for internal packages)
     pub is_internal: bool,
 }
@@ -79,7 +79,7 @@ impl PackageInfo {
 pub struct QualifiedPath {
     /// Package path segments (e.g., ["com", "example"])
     pub package: Vec<InternedString>,
-    
+
     /// Type name
     pub name: InternedString,
 }
@@ -121,16 +121,16 @@ impl QualifiedPath {
 pub struct ImportEntry {
     /// Full package path being imported
     pub package_path: QualifiedPath,
-    
+
     /// Alias for the import (if any)
     pub alias: Option<InternedString>,
-    
+
     /// For wildcard imports, specific exclusions
     pub exclusions: Vec<InternedString>,
-    
-    /// Whether this is a wildcard import (*) 
+
+    /// Whether this is a wildcard import (*)
     pub is_wildcard: bool,
-    
+
     /// Source location for error reporting
     pub location: super::SourceLocation,
 }
@@ -250,7 +250,11 @@ impl NamespaceResolver {
     }
 
     /// Resolve a QualifiedPath to a filesystem path
-    pub fn resolve_to_file(&self, path: &QualifiedPath, interner: &StringInterner) -> Option<PathBuf> {
+    pub fn resolve_to_file(
+        &self,
+        path: &QualifiedPath,
+        interner: &StringInterner,
+    ) -> Option<PathBuf> {
         let qualified_str = path.to_string(interner);
         self.resolve_qualified_path_to_file(&qualified_str)
     }
@@ -274,7 +278,7 @@ impl NamespaceResolver {
         self.next_package_id += 1;
 
         let mut package = PackageInfo::new(path.clone(), parent_id);
-        
+
         // Register in parent
         if let Some(parent_id) = parent_id {
             if let Some(parent) = self.packages.get_mut(&parent_id) {
@@ -286,7 +290,7 @@ impl NamespaceResolver {
 
         self.packages.insert(id, package);
         self.package_paths.insert(path, id);
-        
+
         id
     }
 
@@ -301,7 +305,12 @@ impl NamespaceResolver {
     }
 
     /// Register a symbol in a package
-    pub fn register_symbol(&mut self, package_id: PackageId, name: InternedString, symbol_id: SymbolId) {
+    pub fn register_symbol(
+        &mut self,
+        package_id: PackageId,
+        name: InternedString,
+        symbol_id: SymbolId,
+    ) {
         if let Some(package) = self.packages.get_mut(&package_id) {
             package.symbols.insert(name, symbol_id);
         }
@@ -323,9 +332,13 @@ impl NamespaceResolver {
     }
 
     /// Find all symbols matching a name in the package hierarchy
-    pub fn find_symbols_by_name(&self, name: InternedString, from_package: PackageId) -> Vec<(PackageId, SymbolId)> {
+    pub fn find_symbols_by_name(
+        &self,
+        name: InternedString,
+        from_package: PackageId,
+    ) -> Vec<(PackageId, SymbolId)> {
         let mut results = Vec::new();
-        
+
         // Check current package and parents
         let mut current = Some(from_package);
         while let Some(package_id) = current {
@@ -338,7 +351,7 @@ impl NamespaceResolver {
                 break;
             }
         }
-        
+
         results
     }
 
@@ -388,10 +401,10 @@ impl NamespaceResolver {
 pub struct ImportResolver {
     /// Imports organized by scope
     imports_by_scope: HashMap<ScopeId, Vec<ImportEntry>>,
-    
+
     /// Type aliases by scope and name
     aliases: HashMap<(ScopeId, InternedString), QualifiedPath>,
-    
+
     /// Namespace resolver reference
     namespace_resolver: *const NamespaceResolver,
 }
@@ -410,7 +423,8 @@ impl ImportResolver {
     pub fn add_import(&mut self, scope: ScopeId, import: ImportEntry) {
         // Register alias if present
         if let Some(alias) = import.alias {
-            self.aliases.insert((scope, alias), import.package_path.clone());
+            self.aliases
+                .insert((scope, alias), import.package_path.clone());
         }
 
         self.imports_by_scope
@@ -486,7 +500,10 @@ impl ImportResolver {
 
     /// Get all imports for a scope
     pub fn get_imports(&self, scope: ScopeId) -> &[ImportEntry] {
-        self.imports_by_scope.get(&scope).map(|v| v.as_slice()).unwrap_or(&[])
+        self.imports_by_scope
+            .get(&scope)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 }
 
@@ -499,13 +516,13 @@ mod tests {
     fn test_package_hierarchy() {
         let mut interner = StringInterner::new();
         let mut resolver = NamespaceResolver::new(&interner);
-        
+
         let com = interner.intern("com");
         let example = interner.intern("example");
         let game = interner.intern("game");
-        
+
         let package_id = resolver.get_or_create_package(vec![com, example, game]);
-        
+
         let package = resolver.get_package(package_id).unwrap();
         assert_eq!(package.full_path.len(), 3);
         assert_eq!(package.qualified_path(&interner), "com.example.game");
@@ -515,16 +532,16 @@ mod tests {
     fn test_symbol_registration() {
         let mut interner = StringInterner::new();
         let mut resolver = NamespaceResolver::new(&interner);
-        
+
         let com = interner.intern("com");
         let example = interner.intern("example");
         let player = interner.intern("Player");
-        
+
         let package_id = resolver.get_or_create_package(vec![com, example]);
         let symbol_id = SymbolId::from_raw(42);
-        
+
         resolver.register_symbol(package_id, player, symbol_id);
-        
+
         let path = QualifiedPath::new(vec![com, example], player);
         let found = resolver.lookup_symbol(&path);
         assert_eq!(found, Some(symbol_id));

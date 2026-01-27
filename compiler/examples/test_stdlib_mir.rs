@@ -1,10 +1,40 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test MIR-based standard library
 //!
 //! This example demonstrates that the MIR builder successfully constructs
 //! a standard library with extern functions that can be lowered to Cranelift.
 
-use compiler::stdlib::build_stdlib;
 use compiler::ir::IrModule;
+use compiler::stdlib::build_stdlib;
 
 fn main() {
     println!("🔧 Building MIR-based standard library...\n");
@@ -34,7 +64,9 @@ fn main() {
             "defined"
         };
 
-        let params: Vec<String> = func.signature.parameters
+        let params: Vec<String> = func
+            .signature
+            .parameters
             .iter()
             .map(|p| format!("{}: {:?}", p.name, p.ty))
             .collect();
@@ -54,11 +86,16 @@ fn main() {
     // Check for trace function
     if let Some(trace_func) = stdlib.functions.values().find(|f| f.name == "trace") {
         println!("   ✓ trace() - Haxe's standard output function");
-        println!("     Calling convention: {:?}", trace_func.signature.calling_convention);
+        println!(
+            "     Calling convention: {:?}",
+            trace_func.signature.calling_convention
+        );
     }
 
     // Check for string functions
-    let string_funcs: Vec<_> = stdlib.functions.values()
+    let string_funcs: Vec<_> = stdlib
+        .functions
+        .values()
         .filter(|f| f.name.starts_with("string_"))
         .map(|f| &f.name)
         .collect();
@@ -71,7 +108,9 @@ fn main() {
     }
 
     // Check for array functions
-    let array_funcs: Vec<_> = stdlib.functions.values()
+    let array_funcs: Vec<_> = stdlib
+        .functions
+        .values()
         .filter(|f| f.name.starts_with("array_"))
         .map(|f| &f.name)
         .collect();

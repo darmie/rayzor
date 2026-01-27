@@ -45,8 +45,8 @@
 //! ```
 
 use crate::ir::mir_builder::MirBuilder;
+use crate::stdlib::{array, channel, memory, stdtypes, string, sync, thread, vec, vec_u8};
 use crate::stdlib::{MethodSignature, RuntimeFunctionCall, StdlibMapping};
-use crate::stdlib::{memory, vec_u8, string, array, stdtypes, thread, channel, sync, vec};
 
 /// Trait for compiler plugins that provide stdlib method mappings.
 ///
@@ -325,11 +325,17 @@ mod tests {
 
         // BuiltinPlugin should have many mappings from StdlibMapping
         let mappings = plugin.method_mappings();
-        assert!(!mappings.is_empty(), "BuiltinPlugin should have method mappings");
+        assert!(
+            !mappings.is_empty(),
+            "BuiltinPlugin should have method mappings"
+        );
 
         // Verify some known mappings exist
         let has_string_method = mappings.iter().any(|(sig, _)| sig.class == "String");
-        assert!(has_string_method, "BuiltinPlugin should have String methods");
+        assert!(
+            has_string_method,
+            "BuiltinPlugin should have String methods"
+        );
 
         let has_array_method = mappings.iter().any(|(sig, _)| sig.class == "Array");
         assert!(has_array_method, "BuiltinPlugin should have Array methods");
@@ -345,7 +351,13 @@ mod tests {
 
         // Build combined mapping should work
         let mapping = registry.build_combined_mapping();
-        assert!(mapping.is_stdlib_class("String"), "Combined mapping should have String class");
-        assert!(mapping.is_stdlib_class("Array"), "Combined mapping should have Array class");
+        assert!(
+            mapping.is_stdlib_class("String"),
+            "Combined mapping should have String class"
+        );
+        assert!(
+            mapping.is_stdlib_class("Array"),
+            "Combined mapping should have Array class"
+        );
     }
 }

@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Simple heap allocation test - isolate where crash occurs
 
 use compiler::codegen::CraneliftBackend;
@@ -8,16 +38,19 @@ fn test_case(name: &str, source: &str, symbols: &[(&str, *const u8)]) -> Result<
 
     let mut unit = CompilationUnit::new(CompilationConfig::fast());
     unit.load_stdlib().map_err(|e| format!("stdlib: {}", e))?;
-    unit.add_file(source, &format!("{}.hx", name)).map_err(|e| format!("parse: {}", e))?;
+    unit.add_file(source, &format!("{}.hx", name))
+        .map_err(|e| format!("parse: {}", e))?;
     unit.lower_to_tast().map_err(|e| format!("tast: {:?}", e))?;
 
     let mir_modules = unit.get_mir_modules();
 
-    let mut backend = CraneliftBackend::with_symbols(symbols)
-        .map_err(|e| format!("backend: {}", e))?;
+    let mut backend =
+        CraneliftBackend::with_symbols(symbols).map_err(|e| format!("backend: {}", e))?;
 
     for module in &mir_modules {
-        backend.compile_module(module).map_err(|e| format!("compile: {}", e))?;
+        backend
+            .compile_module(module)
+            .map_err(|e| format!("compile: {}", e))?;
     }
 
     for module in mir_modules.iter().rev() {
@@ -37,13 +70,16 @@ fn test_case(name: &str, source: &str, symbols: &[(&str, *const u8)]) -> Result<
 
 fn main() {
     let plugin = rayzor_runtime::plugin_impl::get_plugin();
-    let symbols: Vec<(&str, *const u8)> = plugin.runtime_symbols()
+    let symbols: Vec<(&str, *const u8)> = plugin
+        .runtime_symbols()
         .iter()
         .map(|(n, p)| (*n, *p))
         .collect();
 
     // Test 1: Simple constructor without returning
-    let _ = test_case("simple_construct", r#"
+    let _ = test_case(
+        "simple_construct",
+        r#"
 package test;
 class Point {
     public var x:Float;
@@ -59,10 +95,14 @@ class Main {
         trace(p.x);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 2: Instance method call without return
-    let _ = test_case("method_call", r#"
+    let _ = test_case(
+        "method_call",
+        r#"
 package test;
 class Point {
     public var x:Float;
@@ -82,10 +122,14 @@ class Main {
         trace(sum);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 3: Instance method returning new object
-    let _ = test_case("method_return_object", r#"
+    let _ = test_case(
+        "method_return_object",
+        r#"
 package test;
 class Point {
     public var x:Float;
@@ -106,10 +150,14 @@ class Main {
         trace(p3.x);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 4: Loop with object allocation
-    let _ = test_case("loop_allocation", r#"
+    let _ = test_case(
+        "loop_allocation",
+        r#"
 package test;
 class Point {
     public var x:Float;
@@ -127,10 +175,14 @@ class Main {
         trace(999);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 5: Math.sqrt call (relevant to mandelbrot)
-    let _ = test_case("math_sqrt", r#"
+    let _ = test_case(
+        "math_sqrt",
+        r#"
 package test;
 class Main {
     public static function main() {
@@ -139,10 +191,14 @@ class Main {
         trace(y);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 6: Complex-like class with mul/add/abs
-    let _ = test_case("complex_like", r#"
+    let _ = test_case(
+        "complex_like",
+        r#"
 package test;
 class Complex {
     public var re:Float;
@@ -168,10 +224,14 @@ class Main {
         trace(a);  // Should be 5.0
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 7: Loop with Complex operations (like mandelbrot)
-    let _ = test_case("complex_loop", r#"
+    let _ = test_case(
+        "complex_loop",
+        r#"
 package test;
 class Complex {
     public var re:Float;
@@ -204,7 +264,9 @@ class Main {
         trace(10);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     println!("\n=== All tests completed ===");
 }

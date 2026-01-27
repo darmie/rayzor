@@ -4,11 +4,13 @@
 //! which adds type information, symbol resolution, and ownership tracking
 //! to the syntax tree for advanced static analysis.
 
-use crate::tast::{InternedString, ScopeId, SourceLocation, StringInterner, SymbolId, TypeId, Visibility};
 use crate::tast::symbols::Mutability;
-use std::rc::Rc;
+use crate::tast::{
+    InternedString, ScopeId, SourceLocation, StringInterner, SymbolId, TypeId, Visibility,
+};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Ownership and usage information for variables and expressions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,7 +19,7 @@ pub enum VariableUsage {
     Move,
     /// Immutable reference/borrow
     Borrow,
-    /// Mutable reference/borrow  
+    /// Mutable reference/borrow
     BorrowMut,
     /// Copy for Copy types (primitives)
     Copy,
@@ -69,7 +71,7 @@ pub struct TypedFile {
 pub struct FileMetadata {
     /// File path
     pub file_path: String,
-    
+
     /// File name (interned)
     pub file_name: Option<InternedString>,
 
@@ -114,7 +116,10 @@ impl TypedFile {
 
     /// Get a string from an interned string using the file's string interner
     pub fn get_string(&self, interned: InternedString) -> Option<String> {
-        self.string_interner.borrow().get(interned).map(|s| s.to_string())
+        self.string_interner
+            .borrow()
+            .get(interned)
+            .map(|s| s.to_string())
     }
 
     /// Detect and set the program-level safety mode by checking for a Main class with @:safety annotation
@@ -122,11 +127,11 @@ impl TypedFile {
     pub fn detect_program_safety_mode(&mut self) -> Option<SafetyMode> {
         // SIMPLIFIED APPROACH: Just find the first class with @:safety annotation
         // In practice, this should only be on the Main class anyway
-        let safety_mode = self.classes.iter()
-            .find_map(|c| {
-                c.memory_annotations.iter()
-                    .find_map(|annotation| annotation.safety_mode())
-            });
+        let safety_mode = self.classes.iter().find_map(|c| {
+            c.memory_annotations
+                .iter()
+                .find_map(|annotation| annotation.safety_mode())
+        });
 
         self.program_safety_mode = safety_mode;
         safety_mode
@@ -169,7 +174,7 @@ pub struct TypedFunction {
 
     /// Generic type parameters
     pub type_parameters: Vec<TypedTypeParameter>,
-    
+
     /// Whether function is static
     pub is_static: bool,
 
@@ -219,13 +224,13 @@ pub struct FunctionEffects {
 
     /// Is inline function
     pub is_inline: bool,
-    
+
     /// Types of exceptions that can be thrown (if any)
     pub exception_types: Vec<TypeId>,
-    
+
     /// Memory effects (mutations, borrows, etc.)
     pub memory_effects: MemoryEffects,
-    
+
     /// Resource effects (I/O, network, etc.)
     pub resource_effects: ResourceEffects,
 }
@@ -236,13 +241,13 @@ pub enum AsyncKind {
     /// Synchronous function
     #[default]
     Sync,
-    
+
     /// Async function (returns Promise/Future)
     Async,
-    
+
     /// Generator function
     Generator,
-    
+
     /// Async generator function
     AsyncGenerator,
 }
@@ -252,13 +257,13 @@ pub enum AsyncKind {
 pub struct MemoryEffects {
     /// Variables that are mutated
     pub mutations: Vec<SymbolId>,
-    
+
     /// Objects that are moved/consumed
     pub moves: Vec<SymbolId>,
-    
+
     /// Whether the function can escape references
     pub escapes_references: bool,
-    
+
     /// Global state access
     pub accesses_global_state: bool,
 }
@@ -268,16 +273,16 @@ pub struct MemoryEffects {
 pub struct ResourceEffects {
     /// File I/O operations
     pub performs_file_io: bool,
-    
+
     /// Network I/O operations
     pub performs_network_io: bool,
-    
+
     /// Database operations
     pub performs_database_ops: bool,
-    
+
     /// System calls
     pub performs_system_calls: bool,
-    
+
     /// Other I/O operations
     pub performs_other_io: bool,
 }
@@ -391,13 +396,12 @@ impl MemoryAnnotation {
     pub fn from_metadata_with_params(name: &str, params: &[String]) -> Option<Self> {
         if name == "safety" {
             // First positional parameter indicates strict mode
-            let mode = params.first()
-                .and_then(|value| {
-                    match value.as_str() {
-                        "true" => Some(SafetyMode::Strict),
-                        "false" => Some(SafetyMode::NonStrict),
-                        _ => None
-                    }
+            let mode = params
+                .first()
+                .and_then(|value| match value.as_str() {
+                    "true" => Some(SafetyMode::Strict),
+                    "false" => Some(SafetyMode::NonStrict),
+                    _ => None,
                 })
                 .unwrap_or(SafetyMode::NonStrict); // Default to non-strict if no params
 
@@ -422,9 +426,14 @@ impl MemoryAnnotation {
 
     /// Returns true if this annotation implies move semantics
     pub fn implies_move_semantics(&self) -> bool {
-        matches!(self, MemoryAnnotation::Move | MemoryAnnotation::Unique |
-                      MemoryAnnotation::Box | MemoryAnnotation::Linear |
-                      MemoryAnnotation::Affine)
+        matches!(
+            self,
+            MemoryAnnotation::Move
+                | MemoryAnnotation::Unique
+                | MemoryAnnotation::Box
+                | MemoryAnnotation::Linear
+                | MemoryAnnotation::Affine
+        )
     }
 
     /// Returns true if this annotation implies shared ownership
@@ -545,9 +554,7 @@ impl DerivedTrait {
         match self {
             DerivedTrait::Copy => {
                 if has_non_copy_fields {
-                    return Err(
-                        "Cannot derive Copy for types with non-Copy fields".to_string()
-                    );
+                    return Err("Cannot derive Copy for types with non-Copy fields".to_string());
                 }
                 Ok(())
             }
@@ -1021,7 +1028,7 @@ pub enum TypedExpressionKind {
         object: Box<TypedExpression>,
         field_symbol: SymbolId,
     },
-    
+
     /// Static field access: Class.field
     StaticFieldAccess {
         class_symbol: SymbolId,
@@ -1048,7 +1055,7 @@ pub enum TypedExpressionKind {
         arguments: Vec<TypedExpression>,
         type_arguments: Vec<TypeId>,
     },
-    
+
     /// Static method call
     StaticMethodCall {
         class_symbol: SymbolId,
@@ -1235,14 +1242,14 @@ pub enum TypedExpressionKind {
         pattern: parser::Pattern,
         source_location: SourceLocation,
     },
-    
+
     /// Array comprehension: [for (i in 0...10) i * 2]
     ArrayComprehension {
         for_parts: Vec<TypedComprehensionFor>,
         expression: Box<TypedExpression>,
         element_type: TypeId,
     },
-    
+
     /// Map comprehension: [for (i in 0...10) i => i * 2]
     MapComprehension {
         for_parts: Vec<TypedComprehensionFor>,
@@ -1251,14 +1258,13 @@ pub enum TypedExpressionKind {
         key_type: TypeId,
         value_type: TypeId,
     },
-    
+
     /// Await expression: `await someAsyncFunction()`
     Await {
         expression: Box<TypedExpression>,
         await_type: TypeId,
     },
 }
-
 
 /// Literal values
 #[derive(Debug, Clone)]
@@ -1282,10 +1288,7 @@ pub enum LiteralValue {
     Regex(String),
 
     /// Regex literal with flags
-    RegexWithFlags {
-        pattern: String,
-        flags: String,
-    },
+    RegexWithFlags { pattern: String, flags: String },
 }
 
 /// Object field in object literal
@@ -1319,22 +1322,22 @@ pub struct TypedMapEntry {
 pub struct TypedComprehensionFor {
     /// Loop variable binding
     pub var_symbol: SymbolId,
-    
+
     /// Optional key variable (for key => value iteration)
     pub key_var_symbol: Option<SymbolId>,
-    
+
     /// Iterator expression (what we're iterating over)
     pub iterator: TypedExpression,
-    
+
     /// Type of the loop variable
     pub var_type: TypeId,
-    
+
     /// Type of the key variable (if present)
     pub key_type: Option<TypeId>,
-    
+
     /// Scope for the comprehension variables
     pub scope_id: ScopeId,
-    
+
     /// Source location
     pub source_location: SourceLocation,
 }
@@ -1484,7 +1487,9 @@ pub struct TypedClass {
 impl TypedClass {
     /// Check if this class has @:safety annotation (opts into manual memory management)
     pub fn has_safety_annotation(&self) -> bool {
-        self.memory_annotations.iter().any(|a| a.is_manual_memory_management())
+        self.memory_annotations
+            .iter()
+            .any(|a| a.is_manual_memory_management())
     }
 
     /// Check if this class is explicitly marked as @:managed (garbage collected)
@@ -1821,7 +1826,7 @@ mod tests {
             async_kind: AsyncKind::Async,
             is_pure: false,
             is_inline: true,
-            exception_types:vec![],
+            exception_types: vec![],
             memory_effects: MemoryEffects::default(),
             resource_effects: ResourceEffects::default(),
         };

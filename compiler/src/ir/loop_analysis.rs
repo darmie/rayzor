@@ -5,7 +5,7 @@
 //! - Natural loop detection via back-edge identification
 //! - Loop nesting info and metadata
 
-use super::{IrFunction, IrBlockId, IrControlFlowGraph};
+use super::{IrBlockId, IrControlFlowGraph, IrFunction};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Dominator tree for a function's control flow graph.
@@ -38,10 +38,8 @@ impl DominatorTree {
 
         // Get blocks in reverse postorder for efficient iteration
         let rpo = Self::reverse_postorder(cfg, entry);
-        let rpo_index: HashMap<IrBlockId, usize> = rpo.iter()
-            .enumerate()
-            .map(|(i, &b)| (b, i))
-            .collect();
+        let rpo_index: HashMap<IrBlockId, usize> =
+            rpo.iter().enumerate().map(|(i, &b)| (b, i)).collect();
 
         // Initialize idom: entry dominates itself, others undefined
         let mut idom: HashMap<IrBlockId, Option<IrBlockId>> = HashMap::new();
@@ -61,7 +59,8 @@ impl DominatorTree {
                 }
 
                 // Find first processed predecessor
-                let predecessors: Vec<IrBlockId> = cfg.get_block(block)
+                let predecessors: Vec<IrBlockId> = cfg
+                    .get_block(block)
                     .map(|b| b.predecessors.clone())
                     .unwrap_or_default();
 
@@ -73,12 +72,8 @@ impl DominatorTree {
                             new_idom = Some(pred);
                         } else {
                             // Intersect: find common dominator
-                            new_idom = Some(Self::intersect(
-                                new_idom.unwrap(),
-                                pred,
-                                &idom,
-                                &rpo_index,
-                            ));
+                            new_idom =
+                                Some(Self::intersect(new_idom.unwrap(), pred, &idom, &rpo_index));
                         }
                     }
                 }
@@ -202,7 +197,10 @@ impl DominatorTree {
 
     /// Get children of a block in the dominator tree.
     pub fn children(&self, block: IrBlockId) -> &[IrBlockId] {
-        self.children.get(&block).map(|v| v.as_slice()).unwrap_or(&[])
+        self.children
+            .get(&block)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Get the depth of a block in the dominator tree.
@@ -351,7 +349,9 @@ impl LoopNestInfo {
                     let other_loop = &loops[&other_header];
 
                     // header's loop is nested in other's loop if header is in other's blocks
-                    if other_loop.blocks.contains(&header) && !header_loop.blocks.contains(&other_header) {
+                    if other_loop.blocks.contains(&header)
+                        && !header_loop.blocks.contains(&other_header)
+                    {
                         // header is nested in other_header
                         // We'll set parent to the innermost containing loop
                         if let Some(current_parent) = loops[&header].parent {
@@ -376,7 +376,8 @@ impl LoopNestInfo {
         }
 
         // Compute nesting depths
-        let top_level_loops: Vec<IrBlockId> = loop_headers.iter()
+        let top_level_loops: Vec<IrBlockId> = loop_headers
+            .iter()
             .filter(|&&h| loops[&h].parent.is_none())
             .copied()
             .collect();
@@ -450,7 +451,10 @@ impl LoopNestInfo {
     }
 
     /// Find exit blocks (blocks in loop with successors outside loop).
-    fn find_exit_blocks(cfg: &IrControlFlowGraph, loop_blocks: &HashSet<IrBlockId>) -> Vec<IrBlockId> {
+    fn find_exit_blocks(
+        cfg: &IrControlFlowGraph,
+        loop_blocks: &HashSet<IrBlockId>,
+    ) -> Vec<IrBlockId> {
         let mut exits = Vec::new();
 
         for &block in loop_blocks {
@@ -476,7 +480,9 @@ impl LoopNestInfo {
         let header_block = cfg.get_block(header)?;
 
         // Find predecessors outside the loop
-        let outside_preds: Vec<IrBlockId> = header_block.predecessors.iter()
+        let outside_preds: Vec<IrBlockId> = header_block
+            .predecessors
+            .iter()
             .filter(|p| !loop_blocks.contains(p))
             .copied()
             .collect();
@@ -497,12 +503,16 @@ impl LoopNestInfo {
 
     /// Get the loop containing a block, if any.
     pub fn get_loop(&self, block: IrBlockId) -> Option<&NaturalLoop> {
-        self.block_to_loop.get(&block).and_then(|h| self.loops.get(h))
+        self.block_to_loop
+            .get(&block)
+            .and_then(|h| self.loops.get(h))
     }
 
     /// Get loop depth for a block (0 if not in any loop).
     pub fn loop_depth(&self, block: IrBlockId) -> usize {
-        self.get_loop(block).map(|l| l.nesting_depth + 1).unwrap_or(0)
+        self.get_loop(block)
+            .map(|l| l.nesting_depth + 1)
+            .unwrap_or(0)
     }
 
     /// Check if a block is a loop header.
@@ -538,7 +548,7 @@ pub fn annotate_loop_headers(function: &mut IrFunction, loop_info: &LoopNestInfo
 mod tests {
     use super::*;
     use crate::ir::builder::*;
-    use crate::ir::{IrType, IrBlockId};
+    use crate::ir::{IrBlockId, IrType};
     use crate::tast::SymbolId;
 
     #[test]
@@ -553,7 +563,9 @@ mod tests {
         //      bb3
 
         let mut builder = IrBuilder::new("test".to_string(), "test.hx".to_string());
-        let sig = FunctionSignatureBuilder::new().returns(IrType::Void).build();
+        let sig = FunctionSignatureBuilder::new()
+            .returns(IrType::Void)
+            .build();
         builder.start_function(SymbolId::from_raw(1), "test".to_string(), sig);
 
         // Entry block
@@ -608,7 +620,9 @@ mod tests {
         //     exit
 
         let mut builder = IrBuilder::new("test".to_string(), "test.hx".to_string());
-        let sig = FunctionSignatureBuilder::new().returns(IrType::Void).build();
+        let sig = FunctionSignatureBuilder::new()
+            .returns(IrType::Void)
+            .build();
         builder.start_function(SymbolId::from_raw(1), "loop_test".to_string(), sig);
 
         // Entry -> header

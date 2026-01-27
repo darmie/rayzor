@@ -507,11 +507,7 @@ impl LoopVectorizationPass {
     }
 
     /// Find reduction patterns in the loop
-    fn find_reductions(
-        &self,
-        function: &IrFunction,
-        loop_info: &NaturalLoop,
-    ) -> Vec<Reduction> {
+    fn find_reductions(&self, function: &IrFunction, loop_info: &NaturalLoop) -> Vec<Reduction> {
         let mut reductions = Vec::new();
         let header = loop_info.header;
 
@@ -519,12 +515,9 @@ impl LoopVectorizationPass {
             for inst in &header_block.instructions {
                 if let IrInstruction::Phi { dest, incoming } = inst {
                     // Check if this phi accumulates via associative op
-                    if let Some(reduction) = self.check_reduction_phi(
-                        function,
-                        loop_info,
-                        *dest,
-                        incoming,
-                    ) {
+                    if let Some(reduction) =
+                        self.check_reduction_phi(function, loop_info, *dest, incoming)
+                    {
                         reductions.push(reduction);
                     }
                 }
@@ -608,8 +601,7 @@ impl LoopVectorizationPass {
                 for inst in &block.instructions {
                     match inst {
                         // Function calls might have side effects
-                        IrInstruction::CallDirect { .. }
-                        | IrInstruction::CallIndirect { .. } => {
+                        IrInstruction::CallDirect { .. } | IrInstruction::CallIndirect { .. } => {
                             return Some("Loop contains function calls".to_string());
                         }
                         // Exceptions break vectorization
@@ -706,8 +698,8 @@ impl LoopVectorizationPass {
             }
             Some(TripCount::Bounded { .. }) => return false, // Too small
             Some(TripCount::Symbolic { .. }) => return false, // Would need runtime iteration count
-            Some(TripCount::Unknown) => return false, // Cannot vectorize without trip count
-            None => return false, // No trip count analysis available
+            Some(TripCount::Unknown) => return false,        // Cannot vectorize without trip count
+            None => return false,                            // No trip count analysis available
         };
 
         let vector_iterations = trip_count / vf as u64;
@@ -786,17 +778,18 @@ impl LoopVectorizationPass {
             }
 
             // Transform vectorizable binary operations
-            IrInstruction::BinOp { dest, op, left, right }
-                if Self::is_vectorizable_binop(*op) =>
-            {
-                IrInstruction::VectorBinOp {
-                    dest: *dest,
-                    op: *op,
-                    left: *left,
-                    right: *right,
-                    vec_ty: vec_type.to_ir_type(),
-                }
-            }
+            IrInstruction::BinOp {
+                dest,
+                op,
+                left,
+                right,
+            } if Self::is_vectorizable_binop(*op) => IrInstruction::VectorBinOp {
+                dest: *dest,
+                op: *op,
+                left: *left,
+                right: *right,
+                vec_ty: vec_type.to_ir_type(),
+            },
 
             // Keep non-vectorizable instructions unchanged
             other => other.clone(),
@@ -920,9 +913,17 @@ impl LoopVectorizationPass {
     fn is_vectorizable_binop(op: BinaryOp) -> bool {
         matches!(
             op,
-            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div |
-            BinaryOp::FAdd | BinaryOp::FSub | BinaryOp::FMul | BinaryOp::FDiv |
-            BinaryOp::And | BinaryOp::Or | BinaryOp::Xor
+            BinaryOp::Add
+                | BinaryOp::Sub
+                | BinaryOp::Mul
+                | BinaryOp::Div
+                | BinaryOp::FAdd
+                | BinaryOp::FSub
+                | BinaryOp::FMul
+                | BinaryOp::FDiv
+                | BinaryOp::And
+                | BinaryOp::Or
+                | BinaryOp::Xor
         )
     }
 }

@@ -2,9 +2,8 @@
 ///
 /// Provides type conversion functions (int/float/bool to string)
 /// These are MIR wrappers that call extern runtime functions
-
 use crate::ir::mir_builder::MirBuilder;
-use crate::ir::{IrType, CallingConvention, BinaryOp};
+use crate::ir::{BinaryOp, CallingConvention, IrType};
 
 /// Build all standard type conversion functions
 pub fn build_std_types(builder: &mut MirBuilder) {
@@ -30,7 +29,8 @@ pub fn build_std_types(builder: &mut MirBuilder) {
 /// Declare extern runtime functions for string conversions
 fn declare_string_conversion_externs(builder: &mut MirBuilder) {
     // extern fn haxe_string_from_int(value: i64) -> String
-    let func_id = builder.begin_function("haxe_string_from_int")
+    let func_id = builder
+        .begin_function("haxe_string_from_int")
         .param("value", IrType::I64)
         .returns(IrType::String)
         .calling_convention(CallingConvention::C)
@@ -38,7 +38,8 @@ fn declare_string_conversion_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn haxe_string_from_float(value: f64) -> String
-    let func_id = builder.begin_function("haxe_string_from_float")
+    let func_id = builder
+        .begin_function("haxe_string_from_float")
         .param("value", IrType::F64)
         .returns(IrType::String)
         .calling_convention(CallingConvention::C)
@@ -46,7 +47,8 @@ fn declare_string_conversion_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn haxe_string_from_bool(value: bool) -> String
-    let func_id = builder.begin_function("haxe_string_from_bool")
+    let func_id = builder
+        .begin_function("haxe_string_from_bool")
         .param("value", IrType::Bool)
         .returns(IrType::String)
         .calling_convention(CallingConvention::C)
@@ -56,7 +58,8 @@ fn declare_string_conversion_externs(builder: &mut MirBuilder) {
     // extern fn haxe_string_from_string(ptr: *u8, len: usize) -> String
     // Identity function for String type (normalizes representation)
     let ptr_u8 = builder.ptr_type(builder.u8_type());
-    let func_id = builder.begin_function("haxe_string_from_string")
+    let func_id = builder
+        .begin_function("haxe_string_from_string")
         .param("ptr", ptr_u8)
         .param("len", IrType::I64)
         .returns(IrType::String)
@@ -68,7 +71,8 @@ fn declare_string_conversion_externs(builder: &mut MirBuilder) {
 /// Build: fn int_to_string(value: i32) -> String
 /// Converts an integer to its string representation by calling runtime
 fn build_int_to_string(builder: &mut MirBuilder) {
-    let func_id = builder.begin_function("int_to_string")
+    let func_id = builder
+        .begin_function("int_to_string")
         .param("value", IrType::I32)
         .returns(IrType::String)
         .calling_convention(CallingConvention::C)
@@ -85,7 +89,8 @@ fn build_int_to_string(builder: &mut MirBuilder) {
     let value_i64 = builder.cast(value, IrType::I32, IrType::I64);
 
     // Call extern runtime function
-    let extern_id = builder.get_function_by_name("haxe_string_from_int")
+    let extern_id = builder
+        .get_function_by_name("haxe_string_from_int")
         .expect("haxe_string_from_int not found");
     let result = builder.call(extern_id, vec![value_i64]).unwrap();
 
@@ -95,7 +100,8 @@ fn build_int_to_string(builder: &mut MirBuilder) {
 /// Build: fn float_to_string(value: f64) -> String
 /// Converts a float to its string representation by calling runtime
 fn build_float_to_string(builder: &mut MirBuilder) {
-    let func_id = builder.begin_function("float_to_string")
+    let func_id = builder
+        .begin_function("float_to_string")
         .param("value", IrType::F64)
         .returns(IrType::String)
         .calling_convention(CallingConvention::C)
@@ -109,7 +115,8 @@ fn build_float_to_string(builder: &mut MirBuilder) {
     let value = builder.get_param(0);
 
     // Call extern runtime function
-    let extern_id = builder.get_function_by_name("haxe_string_from_float")
+    let extern_id = builder
+        .get_function_by_name("haxe_string_from_float")
         .expect("haxe_string_from_float not found");
     let result = builder.call(extern_id, vec![value]).unwrap();
 
@@ -119,7 +126,8 @@ fn build_float_to_string(builder: &mut MirBuilder) {
 /// Build: fn bool_to_string(value: bool) -> String
 /// Converts a boolean to "true" or "false" by calling runtime
 fn build_bool_to_string(builder: &mut MirBuilder) {
-    let func_id = builder.begin_function("bool_to_string")
+    let func_id = builder
+        .begin_function("bool_to_string")
         .param("value", IrType::Bool)
         .returns(IrType::String)
         .calling_convention(CallingConvention::C)
@@ -133,7 +141,8 @@ fn build_bool_to_string(builder: &mut MirBuilder) {
     let value = builder.get_param(0);
 
     // Call extern runtime function
-    let extern_id = builder.get_function_by_name("haxe_string_from_bool")
+    let extern_id = builder
+        .get_function_by_name("haxe_string_from_bool")
         .expect("haxe_string_from_bool not found");
     let result = builder.call(extern_id, vec![value]).unwrap();
 
@@ -143,7 +152,8 @@ fn build_bool_to_string(builder: &mut MirBuilder) {
 /// Build: fn string_to_string(s: String) -> String
 /// Identity function for String type (normalizes representation)
 fn build_string_to_string(builder: &mut MirBuilder) {
-    let func_id = builder.begin_function("string_to_string")
+    let func_id = builder
+        .begin_function("string_to_string")
         .param("s", IrType::String)
         .returns(IrType::String)
         .calling_convention(CallingConvention::C)
@@ -176,7 +186,8 @@ fn declare_boxing_externs(builder: &mut MirBuilder) {
 
     // Boxing functions: concrete type -> Dynamic (*u8 pointer to DynamicValue)
     // extern fn haxe_box_int_ptr(value: i64) -> *u8
-    let func_id = builder.begin_function("haxe_box_int_ptr")
+    let func_id = builder
+        .begin_function("haxe_box_int_ptr")
         .param("value", IrType::I64)
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -184,7 +195,8 @@ fn declare_boxing_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn haxe_box_float_ptr(value: f64) -> *u8
-    let func_id = builder.begin_function("haxe_box_float_ptr")
+    let func_id = builder
+        .begin_function("haxe_box_float_ptr")
         .param("value", IrType::F64)
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -192,7 +204,8 @@ fn declare_boxing_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn haxe_box_bool_ptr(value: bool) -> *u8
-    let func_id = builder.begin_function("haxe_box_bool_ptr")
+    let func_id = builder
+        .begin_function("haxe_box_bool_ptr")
         .param("value", IrType::Bool)
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -201,7 +214,8 @@ fn declare_boxing_externs(builder: &mut MirBuilder) {
 
     // Unboxing functions: Dynamic -> concrete type
     // extern fn haxe_unbox_int_ptr(dynamic: *u8) -> i64
-    let func_id = builder.begin_function("haxe_unbox_int_ptr")
+    let func_id = builder
+        .begin_function("haxe_unbox_int_ptr")
         .param("dynamic", ptr_u8.clone())
         .returns(IrType::I64)
         .calling_convention(CallingConvention::C)
@@ -209,7 +223,8 @@ fn declare_boxing_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn haxe_unbox_float_ptr(dynamic: *u8) -> f64
-    let func_id = builder.begin_function("haxe_unbox_float_ptr")
+    let func_id = builder
+        .begin_function("haxe_unbox_float_ptr")
         .param("dynamic", ptr_u8.clone())
         .returns(IrType::F64)
         .calling_convention(CallingConvention::C)
@@ -217,7 +232,8 @@ fn declare_boxing_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn haxe_unbox_bool_ptr(dynamic: *u8) -> bool
-    let func_id = builder.begin_function("haxe_unbox_bool_ptr")
+    let func_id = builder
+        .begin_function("haxe_unbox_bool_ptr")
         .param("dynamic", ptr_u8.clone())
         .returns(IrType::Bool)
         .calling_convention(CallingConvention::C)
@@ -229,8 +245,9 @@ fn declare_boxing_externs(builder: &mut MirBuilder) {
 /// Boxes an integer into a Dynamic value
 fn build_box_int(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
-    
-    let func_id = builder.begin_function("box_int")
+
+    let func_id = builder
+        .begin_function("box_int")
         .param("value", IrType::I32)
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -247,7 +264,8 @@ fn build_box_int(builder: &mut MirBuilder) {
     let value_i64 = builder.cast(value, IrType::I32, IrType::I64);
 
     // Call extern runtime function
-    let extern_id = builder.get_function_by_name("haxe_box_int_ptr")
+    let extern_id = builder
+        .get_function_by_name("haxe_box_int_ptr")
         .expect("haxe_box_int_ptr not found");
     let result = builder.call(extern_id, vec![value_i64]).unwrap();
 
@@ -258,8 +276,9 @@ fn build_box_int(builder: &mut MirBuilder) {
 /// Boxes a float into a Dynamic value
 fn build_box_float(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
-    
-    let func_id = builder.begin_function("box_float")
+
+    let func_id = builder
+        .begin_function("box_float")
         .param("value", IrType::F64)
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -273,7 +292,8 @@ fn build_box_float(builder: &mut MirBuilder) {
     let value = builder.get_param(0);
 
     // Call extern runtime function
-    let extern_id = builder.get_function_by_name("haxe_box_float_ptr")
+    let extern_id = builder
+        .get_function_by_name("haxe_box_float_ptr")
         .expect("haxe_box_float_ptr not found");
     let result = builder.call(extern_id, vec![value]).unwrap();
 
@@ -284,8 +304,9 @@ fn build_box_float(builder: &mut MirBuilder) {
 /// Boxes a boolean into a Dynamic value
 fn build_box_bool(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
-    
-    let func_id = builder.begin_function("box_bool")
+
+    let func_id = builder
+        .begin_function("box_bool")
         .param("value", IrType::Bool)
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -299,7 +320,8 @@ fn build_box_bool(builder: &mut MirBuilder) {
     let value = builder.get_param(0);
 
     // Call extern runtime function
-    let extern_id = builder.get_function_by_name("haxe_box_bool_ptr")
+    let extern_id = builder
+        .get_function_by_name("haxe_box_bool_ptr")
         .expect("haxe_box_bool_ptr not found");
     let result = builder.call(extern_id, vec![value]).unwrap();
 
@@ -310,8 +332,9 @@ fn build_box_bool(builder: &mut MirBuilder) {
 /// Unboxes an integer from a Dynamic value
 fn build_unbox_int(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
-    
-    let func_id = builder.begin_function("unbox_int")
+
+    let func_id = builder
+        .begin_function("unbox_int")
         .param("dynamic", ptr_u8.clone())
         .returns(IrType::I32)
         .calling_convention(CallingConvention::C)
@@ -325,7 +348,8 @@ fn build_unbox_int(builder: &mut MirBuilder) {
     let dynamic = builder.get_param(0);
 
     // Call extern runtime function
-    let extern_id = builder.get_function_by_name("haxe_unbox_int_ptr")
+    let extern_id = builder
+        .get_function_by_name("haxe_unbox_int_ptr")
         .expect("haxe_unbox_int_ptr not found");
     let result_i64 = builder.call(extern_id, vec![dynamic]).unwrap();
 
@@ -339,8 +363,9 @@ fn build_unbox_int(builder: &mut MirBuilder) {
 /// Unboxes a float from a Dynamic value
 fn build_unbox_float(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
-    
-    let func_id = builder.begin_function("unbox_float")
+
+    let func_id = builder
+        .begin_function("unbox_float")
         .param("dynamic", ptr_u8.clone())
         .returns(IrType::F64)
         .calling_convention(CallingConvention::C)
@@ -354,7 +379,8 @@ fn build_unbox_float(builder: &mut MirBuilder) {
     let dynamic = builder.get_param(0);
 
     // Call extern runtime function
-    let extern_id = builder.get_function_by_name("haxe_unbox_float_ptr")
+    let extern_id = builder
+        .get_function_by_name("haxe_unbox_float_ptr")
         .expect("haxe_unbox_float_ptr not found");
     let result = builder.call(extern_id, vec![dynamic]).unwrap();
 
@@ -365,8 +391,9 @@ fn build_unbox_float(builder: &mut MirBuilder) {
 /// Unboxes a boolean from a Dynamic value
 fn build_unbox_bool(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
-    
-    let func_id = builder.begin_function("unbox_bool")
+
+    let func_id = builder
+        .begin_function("unbox_bool")
         .param("dynamic", ptr_u8.clone())
         .returns(IrType::Bool)
         .calling_convention(CallingConvention::C)
@@ -380,7 +407,8 @@ fn build_unbox_bool(builder: &mut MirBuilder) {
     let dynamic = builder.get_param(0);
 
     // Call extern runtime function
-    let extern_id = builder.get_function_by_name("haxe_unbox_bool_ptr")
+    let extern_id = builder
+        .get_function_by_name("haxe_unbox_bool_ptr")
         .expect("haxe_unbox_bool_ptr not found");
     let result = builder.call(extern_id, vec![dynamic]).unwrap();
 

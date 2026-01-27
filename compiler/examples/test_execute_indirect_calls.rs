@@ -1,12 +1,41 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
+use compiler::codegen::CraneliftBackend;
 /// Test executable indirect function calls through full pipeline
 ///
 /// This test:
 /// 1. Compiles Haxe code with function pointers (TAST → HIR → MIR)
 /// 2. JIT compiles with Cranelift
 /// 3. Executes the code and verifies indirect calls work correctly
-
-use compiler::compilation::{CompilationUnit, CompilationConfig};
-use compiler::codegen::CraneliftBackend;
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 use compiler::ir::hir_to_mir::lower_hir_to_mir;
 use compiler::ir::tast_to_hir::lower_tast_to_hir;
 use std::cell::RefCell;
@@ -88,8 +117,8 @@ fn main() -> Result<(), String> {
             files
         }
         Err(e) => {
-            eprintln!("   ✗ TAST failed: {}", e);
-            return Err(e);
+            eprintln!("   ✗ TAST failed: {:?}", e);
+            return Err(format!("{:?}", e));
         }
     };
 
@@ -114,7 +143,8 @@ fn main() -> Result<(), String> {
                 Ok(hir) => {
                     println!(
                         "   ✓ Lowered {} to HIR ({} types)",
-                        &typed_file.metadata.file_path, hir.types.len()
+                        &typed_file.metadata.file_path,
+                        hir.types.len()
                     );
                     Some(hir)
                 }
@@ -142,11 +172,17 @@ fn main() -> Result<(), String> {
     println!("5. Lowering HIR to MIR...");
     let mut all_mir_modules = Vec::new();
     for hir_module in &all_hir_modules {
-        let mir_module = match lower_hir_to_mir(hir_module, &*string_interner_rc.borrow(), &unit.type_table) {
+        let mir_module = match lower_hir_to_mir(
+            hir_module,
+            &*string_interner_rc.borrow(),
+            &unit.type_table,
+            &unit.symbol_table,
+        ) {
             Ok(mir) => {
                 println!(
                     "   ✓ Lowered {} to MIR ({} functions)",
-                    hir_module.name, mir.functions.len()
+                    hir_module.name,
+                    mir.functions.len()
                 );
                 mir
             }
@@ -169,7 +205,11 @@ fn main() -> Result<(), String> {
     // Find the test module with our functions
     let test_module = all_mir_modules
         .iter()
-        .find(|m| m.functions.values().any(|f| f.name.contains("testIndirectCalls")))
+        .find(|m| {
+            m.functions
+                .values()
+                .any(|f| f.name.contains("testIndirectCalls"))
+        })
         .ok_or("Could not find test module")?;
 
     // Find the testIndirectCalls function

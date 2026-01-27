@@ -249,21 +249,54 @@ mod tests {
 
     #[test]
     fn test_scalar_type_mapping() {
-        assert_eq!(HlTypeKind::HVoid.to_ir_type_descriptor(), IrTypeDescriptor::Void);
-        assert_eq!(HlTypeKind::HI32.to_ir_type_descriptor(), IrTypeDescriptor::I32);
-        assert_eq!(HlTypeKind::HI64.to_ir_type_descriptor(), IrTypeDescriptor::I64);
-        assert_eq!(HlTypeKind::HF32.to_ir_type_descriptor(), IrTypeDescriptor::F32);
-        assert_eq!(HlTypeKind::HF64.to_ir_type_descriptor(), IrTypeDescriptor::F64);
-        assert_eq!(HlTypeKind::HBool.to_ir_type_descriptor(), IrTypeDescriptor::Bool);
-        assert_eq!(HlTypeKind::HUI8.to_ir_type_descriptor(), IrTypeDescriptor::U8);
+        assert_eq!(
+            HlTypeKind::HVoid.to_ir_type_descriptor(),
+            IrTypeDescriptor::Void
+        );
+        assert_eq!(
+            HlTypeKind::HI32.to_ir_type_descriptor(),
+            IrTypeDescriptor::I32
+        );
+        assert_eq!(
+            HlTypeKind::HI64.to_ir_type_descriptor(),
+            IrTypeDescriptor::I64
+        );
+        assert_eq!(
+            HlTypeKind::HF32.to_ir_type_descriptor(),
+            IrTypeDescriptor::F32
+        );
+        assert_eq!(
+            HlTypeKind::HF64.to_ir_type_descriptor(),
+            IrTypeDescriptor::F64
+        );
+        assert_eq!(
+            HlTypeKind::HBool.to_ir_type_descriptor(),
+            IrTypeDescriptor::Bool
+        );
+        assert_eq!(
+            HlTypeKind::HUI8.to_ir_type_descriptor(),
+            IrTypeDescriptor::U8
+        );
     }
 
     #[test]
     fn test_pointer_type_mapping() {
-        assert_eq!(HlTypeKind::HBytes.to_ir_type_descriptor(), IrTypeDescriptor::PtrU8);
-        assert_eq!(HlTypeKind::HDyn.to_ir_type_descriptor(), IrTypeDescriptor::PtrVoid);
-        assert_eq!(HlTypeKind::HObj.to_ir_type_descriptor(), IrTypeDescriptor::PtrVoid);
-        assert_eq!(HlTypeKind::HArray.to_ir_type_descriptor(), IrTypeDescriptor::PtrVoid);
+        assert_eq!(
+            HlTypeKind::HBytes.to_ir_type_descriptor(),
+            IrTypeDescriptor::PtrU8
+        );
+        assert_eq!(
+            HlTypeKind::HDyn.to_ir_type_descriptor(),
+            IrTypeDescriptor::PtrVoid
+        );
+        assert_eq!(
+            HlTypeKind::HObj.to_ir_type_descriptor(),
+            IrTypeDescriptor::PtrVoid
+        );
+        assert_eq!(
+            HlTypeKind::HArray.to_ir_type_descriptor(),
+            IrTypeDescriptor::PtrVoid
+        );
     }
 
     #[test]
@@ -271,19 +304,40 @@ mod tests {
         assert_eq!(HlTypeKind::from_manifest_str("i32"), Some(HlTypeKind::HI32));
         assert_eq!(HlTypeKind::from_manifest_str("int"), Some(HlTypeKind::HI32));
         assert_eq!(HlTypeKind::from_manifest_str("f64"), Some(HlTypeKind::HF64));
-        assert_eq!(HlTypeKind::from_manifest_str("float"), Some(HlTypeKind::HF64));
-        assert_eq!(HlTypeKind::from_manifest_str("bool"), Some(HlTypeKind::HBool));
-        assert_eq!(HlTypeKind::from_manifest_str("void"), Some(HlTypeKind::HVoid));
+        assert_eq!(
+            HlTypeKind::from_manifest_str("float"),
+            Some(HlTypeKind::HF64)
+        );
+        assert_eq!(
+            HlTypeKind::from_manifest_str("bool"),
+            Some(HlTypeKind::HBool)
+        );
+        assert_eq!(
+            HlTypeKind::from_manifest_str("void"),
+            Some(HlTypeKind::HVoid)
+        );
         assert_eq!(HlTypeKind::from_manifest_str("dyn"), Some(HlTypeKind::HDyn));
-        assert_eq!(HlTypeKind::from_manifest_str("dynamic"), Some(HlTypeKind::HDyn));
-        assert_eq!(HlTypeKind::from_manifest_str("bytes"), Some(HlTypeKind::HBytes));
+        assert_eq!(
+            HlTypeKind::from_manifest_str("dynamic"),
+            Some(HlTypeKind::HDyn)
+        );
+        assert_eq!(
+            HlTypeKind::from_manifest_str("bytes"),
+            Some(HlTypeKind::HBytes)
+        );
     }
 
     #[test]
     fn test_manifest_case_insensitive() {
         assert_eq!(HlTypeKind::from_manifest_str("I32"), Some(HlTypeKind::HI32));
-        assert_eq!(HlTypeKind::from_manifest_str("BOOL"), Some(HlTypeKind::HBool));
-        assert_eq!(HlTypeKind::from_manifest_str("Void"), Some(HlTypeKind::HVoid));
+        assert_eq!(
+            HlTypeKind::from_manifest_str("BOOL"),
+            Some(HlTypeKind::HBool)
+        );
+        assert_eq!(
+            HlTypeKind::from_manifest_str("Void"),
+            Some(HlTypeKind::HVoid)
+        );
     }
 
     #[test]
@@ -359,7 +413,10 @@ mod tests {
     fn test_parse_hl_signature_mixed_types() {
         // fn(bytes, i32, bytes) -> bytes
         let (params, ret) = parse_hl_signature("BiB_B").unwrap();
-        assert_eq!(params, vec![HlTypeKind::HBytes, HlTypeKind::HI32, HlTypeKind::HBytes]);
+        assert_eq!(
+            params,
+            vec![HlTypeKind::HBytes, HlTypeKind::HI32, HlTypeKind::HBytes]
+        );
         assert_eq!(ret, HlTypeKind::HBytes);
     }
 

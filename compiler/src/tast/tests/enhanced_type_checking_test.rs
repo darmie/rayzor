@@ -23,16 +23,16 @@ mod tests {
         let mut string_interner = StringInterner::new();
         let symbol_table = SymbolTable::new();
         let type_table = Rc::new(RefCell::new(TypeTable::new()));
-        
+
         // Create enhanced type checker
         let mut type_checker = EnhancedTypeChecker::new(&symbol_table, &type_table);
-        
+
         println!("✓ Enhanced type checker created successfully");
         println!("✓ Has control flow analyzer");
         println!("✓ Has effect analyzer");
         println!("✓ Has null safety analysis integration");
         println!("✓ Has performance metrics collection");
-        
+
         // The fact that we can create it proves our enhanced type checking system is implemented
         assert!(true, "Enhanced type checking system is properly implemented");
     }
@@ -43,9 +43,9 @@ mod tests {
         let mut string_interner = StringInterner::new();
         let symbol_table = SymbolTable::new();
         let type_table = Rc::new(RefCell::new(TypeTable::new()));
-        
+
         let _type_checker = TypeFlowGuard::new(&symbol_table, &type_table);
-        
+
         // The enhanced type checker integrates:
         println!("Enhanced Type Checker Components:");
         println!("1. ✓ Control Flow Analysis - tracks variable initialization and dead code");
@@ -53,7 +53,7 @@ mod tests {
         println!("3. ✓ Null Safety Analysis - detects potential null dereferences");
         println!("4. ✓ Resource Tracking - detects resource leaks");
         println!("5. ✓ Performance Metrics - collects timing data for each analysis phase");
-        
+
         // This demonstrates our enhanced type checking system is complete
         assert!(true, "All enhanced type checker components are available");
     }
@@ -64,9 +64,9 @@ mod tests {
         let mut string_interner = StringInterner::new();
         let symbol_table = SymbolTable::new();
         let type_table = Rc::new(RefCell::new(TypeTable::new()));
-        
+
         let _enhanced_checker = EnhancedTypeChecker::new(&symbol_table, &type_table);
-        
+
         println!("Enhanced Type Checker Analysis Capabilities:");
         println!("");
         println!("❌ BASIC PARSING: Only checks syntax correctness");
@@ -85,7 +85,7 @@ mod tests {
         println!("   - ✓ Performance metrics for optimization");
         println!("");
         println!("This is a REAL type checker with advanced analysis capabilities!");
-        
+
         assert!(true, "Enhanced type checker provides real analysis beyond parsing");
     }
 
@@ -94,49 +94,49 @@ mod tests {
         // Test that we have comprehensive error types for all our analyses
         use crate::tast::type_flow_guard::{TypeFlowGuard, FlowSafetyError, FlowSafetyResults};
         use crate::tast::{SymbolId, SourceLocation};
-        
+
         let mut string_interner = StringInterner::new();
         let symbol_table = SymbolTable::new();
         let type_table = Rc::new(RefCell::new(TypeTable::new()));
-        
+
         let _type_checker = TypeFlowGuard::new(&symbol_table, &type_table);
-        
+
         // Test that we can create all the different error types our enhanced type checker detects
         let dummy_symbol = SymbolId::from_raw(1);
         let dummy_location = SourceLocation::unknown();
-        
+
         let _type_error = FlowSafetyError::TypeError {
             message: "Type mismatch".to_string(),
             location: dummy_location,
         };
-        
+
         let _uninit_error = FlowSafetyError::UninitializedVariable {
             variable: dummy_symbol,
             location: dummy_location,
         };
-        
+
         let _null_deref_error = FlowSafetyError::NullDereference {
             variable: dummy_symbol,
             location: dummy_location,
         };
-        
+
         let _dead_code_error = FlowSafetyError::DeadCode {
             location: dummy_location,
         };
-        
+
         let _resource_leak_error = FlowSafetyError::ResourceLeak {
             resource: dummy_symbol,
             location: dummy_location,
         };
-        
+
         let _effect_error = FlowSafetyError::EffectMismatch {
             expected_effects: "non-throwing".to_string(),
             actual_effects: "can throw".to_string(),
             location: dummy_location,
         };
-        
+
         let _results = FlowSafetyResults::default();
-        
+
         println!("Enhanced Type Checker Error Detection:");
         println!("✓ TypeError - Traditional type mismatches");
         println!("✓ UninitializedVariable - Using variables before assignment");
@@ -144,7 +144,7 @@ mod tests {
         println!("✓ DeadCode - Unreachable code detection");
         println!("✓ ResourceLeak - Unclosed files/connections");
         println!("✓ EffectMismatch - Function effect contract violations");
-        
+
         assert!(true, "All enhanced error types are implemented");
     }
 
@@ -180,7 +180,7 @@ mod tests {
         println!("    The EnhancedTypeChecker performs real type checking with");
         println!("    advanced control flow and data flow analysis capabilities.");
         println!("");
-        
+
         assert!(true, "Enhanced type checking system is fully implemented and functional");
     }
 }

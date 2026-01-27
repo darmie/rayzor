@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Haxe Standard Library Test Suite
 //!
 //! Tests parsing, compilation and execution of Haxe stdlib files.
@@ -80,108 +110,148 @@ fn main() -> Result<(), String> {
         }
     }
 
-    println!("\n  Parse Results: {}/{} passed\n", parse_pass, ROOT_STDLIB_FILES.len());
+    println!(
+        "\n  Parse Results: {}/{} passed\n",
+        parse_pass,
+        ROOT_STDLIB_FILES.len()
+    );
 
     // Phase 2: Functional tests - compile and run simple programs using stdlib
     println!("Phase 2: Functional stdlib tests...\n");
 
     let functional_tests: Vec<(&str, &str)> = vec![
         // Math tests
-        ("math_abs", r#"
+        (
+            "math_abs",
+            r#"
 class Main {
     static function main() {
         trace(Math.abs(-5));
     }
 }
-"#),
-        ("math_floor", r#"
+"#,
+        ),
+        (
+            "math_floor",
+            r#"
 class Main {
     static function main() {
         trace(Math.floor(3.7));
     }
 }
-"#),
-        ("math_ceil", r#"
+"#,
+        ),
+        (
+            "math_ceil",
+            r#"
 class Main {
     static function main() {
         trace(Math.ceil(3.2));
     }
 }
-"#),
-        ("math_max", r#"
+"#,
+        ),
+        (
+            "math_max",
+            r#"
 class Main {
     static function main() {
         trace(Math.max(10, 20));
     }
 }
-"#),
-        ("math_min", r#"
+"#,
+        ),
+        (
+            "math_min",
+            r#"
 class Main {
     static function main() {
         trace(Math.min(10, 20));
     }
 }
-"#),
-        ("math_sqrt", r#"
+"#,
+        ),
+        (
+            "math_sqrt",
+            r#"
 class Main {
     static function main() {
         trace(Math.sqrt(16));
     }
 }
-"#),
-
+"#,
+        ),
         // String tests
-        ("string_length", r#"
+        (
+            "string_length",
+            r#"
 class Main {
     static function main() {
         var s = "hello";
         trace(s.length);
     }
 }
-"#),
-        ("string_charat", r#"
+"#,
+        ),
+        (
+            "string_charat",
+            r#"
 class Main {
     static function main() {
         var s = "hello";
         trace(s.charAt(1));
     }
 }
-"#),
-        ("string_indexof", r#"
+"#,
+        ),
+        (
+            "string_indexof",
+            r#"
 class Main {
     static function main() {
         var s = "hello world";
         trace(s.indexOf("world"));
     }
 }
-"#),
-        ("string_substr", r#"
+"#,
+        ),
+        (
+            "string_substr",
+            r#"
 class Main {
     static function main() {
         var s = "hello world";
         trace(s.substr(0, 5));
     }
 }
-"#),
-        ("string_touppercase", r#"
+"#,
+        ),
+        (
+            "string_touppercase",
+            r#"
 class Main {
     static function main() {
         var s = "hello";
         trace(s.toUpperCase());
     }
 }
-"#),
-        ("string_tolowercase", r#"
+"#,
+        ),
+        (
+            "string_tolowercase",
+            r#"
 class Main {
     static function main() {
         var s = "HELLO";
         trace(s.toLowerCase());
     }
 }
-"#),
-
+"#,
+        ),
         // Array tests
-        ("array_push", r#"
+        (
+            "array_push",
+            r#"
 class Main {
     static function main() {
         var arr = new Array<Int>();
@@ -190,16 +260,22 @@ class Main {
         trace(arr.length);
     }
 }
-"#),
-        ("array_pop", r#"
+"#,
+        ),
+        (
+            "array_pop",
+            r#"
 class Main {
     static function main() {
         var arr = [1, 2, 3];
         trace(arr.pop());
     }
 }
-"#),
-        ("array_iteration", r#"
+"#,
+        ),
+        (
+            "array_iteration",
+            r#"
 class Main {
     static function main() {
         var arr = [1, 2, 3];
@@ -210,41 +286,54 @@ class Main {
         trace(sum);
     }
 }
-"#),
-
+"#,
+        ),
         // Std tests
-        ("std_int", r#"
+        (
+            "std_int",
+            r#"
 class Main {
     static function main() {
         trace(Std.int(3.7));
     }
 }
-"#),
-        ("std_parseint", r#"
+"#,
+        ),
+        (
+            "std_parseint",
+            r#"
 class Main {
     static function main() {
         trace(Std.parseInt("42"));
     }
 }
-"#),
-        ("std_parsefloat", r#"
+"#,
+        ),
+        (
+            "std_parsefloat",
+            r#"
 class Main {
     static function main() {
         trace(Std.parseFloat("3.14"));
     }
 }
-"#),
-        ("std_random", r#"
+"#,
+        ),
+        (
+            "std_random",
+            r#"
 class Main {
     static function main() {
         var r = Std.random(100);
         trace(r >= 0 && r < 100);
     }
 }
-"#),
-
+"#,
+        ),
         // IntIterator tests
-        ("intiterator_basic", r#"
+        (
+            "intiterator_basic",
+            r#"
 class Main {
     static function main() {
         var sum = 0;
@@ -254,21 +343,25 @@ class Main {
         trace(sum);
     }
 }
-"#),
-
+"#,
+        ),
         // Date tests
-        ("date_now", r#"
+        (
+            "date_now",
+            r#"
 class Main {
     static function main() {
         var d = Date.now();
         trace(d.getFullYear() >= 2024);
     }
 }
-"#),
-
+"#,
+        ),
         // StringTools tests (direct static call - using syntax has a bug, see TODO)
         // TODO: Fix `using StringTools;` + s.startsWith() syntax - causes Cranelift return type mismatch
-        ("stringtools_startswith", r#"
+        (
+            "stringtools_startswith",
+            r#"
 using StringTools;       
 class Main {
     static function main() {
@@ -276,15 +369,19 @@ class Main {
         trace(s.startsWith("hello"));
     }
 }
-"#),
-        ("stringtools_contains", r#"
+"#,
+        ),
+        (
+            "stringtools_contains",
+            r#"
 class Main {
     static function main() {
         var s = "hello world";
         trace(StringTools.contains(s, "world"));
     }
 }
-"#),
+"#,
+        ),
     ];
 
     let mut func_pass = 0;
@@ -314,11 +411,19 @@ class Main {
         }
     }
 
-    println!("\n  Functional Results: {}/{} passed\n", func_pass, functional_tests.len());
+    println!(
+        "\n  Functional Results: {}/{} passed\n",
+        func_pass,
+        functional_tests.len()
+    );
 
     // Summary
     println!("=== Summary ===");
-    println!("Parse tests:      {}/{}", parse_pass, ROOT_STDLIB_FILES.len());
+    println!(
+        "Parse tests:      {}/{}",
+        parse_pass,
+        ROOT_STDLIB_FILES.len()
+    );
     println!("Functional tests: {}/{}", func_pass, functional_tests.len());
 
     let total = ROOT_STDLIB_FILES.len() + functional_tests.len();
@@ -375,12 +480,13 @@ fn run_functional_test(code: &str) -> Result<String, String> {
     let symbols = plugin.runtime_symbols();
     let symbols_ref: Vec<(&str, *const u8)> = symbols.iter().map(|(n, p)| (*n, *p)).collect();
 
-    let mut backend = CraneliftBackend::with_symbols(&symbols_ref)
-        .map_err(|e| format!("Backend: {}", e))?;
+    let mut backend =
+        CraneliftBackend::with_symbols(&symbols_ref).map_err(|e| format!("Backend: {}", e))?;
 
     // Compile modules
     for module in &mir_modules {
-        backend.compile_module(module)
+        backend
+            .compile_module(module)
             .map_err(|e| format!("Compile: {}", e))?;
     }
 

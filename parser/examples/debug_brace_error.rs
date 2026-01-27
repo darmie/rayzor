@@ -14,9 +14,9 @@ class Test {
 "#;
 
     let result = parse_incrementally_enhanced("test.hx", test_code);
-    
+
     println!("Diagnostics count: {}", result.diagnostics.len());
-    
+
     for (i, diag) in result.diagnostics.diagnostics.iter().enumerate() {
         println!("\nDiagnostic {}:", i + 1);
         println!("  Code: {:?}", diag.code);

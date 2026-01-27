@@ -1,12 +1,12 @@
 //! Span tracking tests for the new Haxe parser
 
+use parser::haxe_ast::{Span, TypeDeclaration};
 use parser::parse_haxe_file;
-use parser::haxe_ast::{TypeDeclaration, Span};
 
 #[test]
 fn test_file_span_tracking() {
     let input = "package com.example;\nclass Test {}";
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(haxe_file) => {
             // File span should cover the entire input
@@ -20,14 +20,14 @@ fn test_file_span_tracking() {
 #[test]
 fn test_package_span() {
     let input = "package com.example.test;";
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(haxe_file) => {
             let package = haxe_file.package.unwrap();
             assert!(package.span.start < package.span.end);
             assert_eq!(package.span.start, 0);
             assert_eq!(package.span.end, input.len());
-            
+
             // Extract the package text using span
             let package_text = &input[package.span.start..package.span.end];
             assert_eq!(package_text, "package com.example.test;");
@@ -40,11 +40,11 @@ fn test_package_span() {
 fn test_import_spans() {
     let input = r#"import haxe.Json;
 import sys.io.File;"#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(haxe_file) => {
             assert_eq!(haxe_file.imports.len(), 2);
-            
+
             for import in &haxe_file.imports {
                 assert!(import.span.start < import.span.end);
                 let import_text = &input[import.span.start..import.span.end];
@@ -62,7 +62,7 @@ fn test_class_span() {
     var field: String;
     function method() {}
 }"#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(haxe_file) => {
             if let TypeDeclaration::Class(class) = &haxe_file.declarations[0] {
@@ -85,14 +85,14 @@ fn test_field_spans() {
     public var field2: Int = 42;
     function method(): Void {}
 }"#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(haxe_file) => {
             if let TypeDeclaration::Class(class) = &haxe_file.declarations[0] {
                 for field in &class.fields {
                     assert!(field.span.start < field.span.end);
                     let field_text = &input[field.span.start..field.span.end];
-                    
+
                     // Each field should contain its name based on kind
                     let field_name = match &field.kind {
                         parser::haxe_ast::ClassFieldKind::Var { name, .. } => name,
@@ -119,7 +119,7 @@ fn test_expression_spans() {
         var z = x + y.length;
     }
 }"#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(haxe_file) => {
             if let TypeDeclaration::Class(class) = &haxe_file.declarations[0] {
@@ -133,7 +133,7 @@ fn test_expression_spans() {
                     if let parser::haxe_ast::ClassFieldKind::Function(func) = &method.kind {
                         if let Some(body) = &func.body {
                             assert!(body.span.start < body.span.end);
-                            
+
                             // The body span should be within the input
                             assert!(body.span.end <= input.len());
                         }
@@ -156,18 +156,18 @@ fn test_nested_spans() {
         }
     }
 }"#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(haxe_file) => {
             if let TypeDeclaration::Class(class) = &haxe_file.declarations[0] {
                 assert!(class.span.start < class.span.end);
-                
+
                 // Verify all spans are within bounds
                 fn check_span_bounds(span: &Span, input_len: usize) {
                     assert!(span.start <= span.end);
                     assert!(span.end <= input_len);
                 }
-                
+
                 check_span_bounds(&class.span, input.len());
                 for field in &class.fields {
                     check_span_bounds(&field.span, input.len());
@@ -186,7 +186,7 @@ class Test {
     @:optional
     var field: String;
 }"#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(haxe_file) => {
             if let TypeDeclaration::Class(class) = &haxe_file.declarations[0] {
@@ -209,23 +209,23 @@ import haxe.Json;
 class Test {
     var field: String;
 }"#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(haxe_file) => {
             let mut last_end = 0;
-            
+
             // Package should come first
             if let Some(package) = &haxe_file.package {
                 assert!(package.span.start >= last_end);
                 last_end = package.span.end;
             }
-            
+
             // Imports should come after package
             for import in &haxe_file.imports {
                 assert!(import.span.start >= last_end);
                 last_end = import.span.end;
             }
-            
+
             // Declarations should come after imports
             for decl in &haxe_file.declarations {
                 let decl_span = match decl {
@@ -246,7 +246,7 @@ class Test {
 #[test]
 fn test_empty_spans() {
     let input = "";
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(haxe_file) => {
             assert_eq!(haxe_file.span.start, 0);
@@ -267,12 +267,12 @@ class   Test   {
 }
 
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(haxe_file) => {
             if let TypeDeclaration::Class(class) = &haxe_file.declarations[0] {
                 assert!(class.span.start < class.span.end);
-                
+
                 // The span should include the actual content, not just whitespace
                 let class_text = &input[class.span.start..class.span.end];
                 assert!(class_text.contains("class"));

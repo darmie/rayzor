@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test nested loops with Complex class
 
 use compiler::codegen::CraneliftBackend;
@@ -8,16 +38,19 @@ fn test_case(name: &str, source: &str, symbols: &[(&str, *const u8)]) -> Result<
 
     let mut unit = CompilationUnit::new(CompilationConfig::fast());
     unit.load_stdlib().map_err(|e| format!("stdlib: {}", e))?;
-    unit.add_file(source, &format!("{}.hx", name)).map_err(|e| format!("parse: {}", e))?;
+    unit.add_file(source, &format!("{}.hx", name))
+        .map_err(|e| format!("parse: {}", e))?;
     unit.lower_to_tast().map_err(|e| format!("tast: {:?}", e))?;
 
     let mir_modules = unit.get_mir_modules();
 
-    let mut backend = CraneliftBackend::with_symbols(symbols)
-        .map_err(|e| format!("backend: {}", e))?;
+    let mut backend =
+        CraneliftBackend::with_symbols(symbols).map_err(|e| format!("backend: {}", e))?;
 
     for module in &mir_modules {
-        backend.compile_module(module).map_err(|e| format!("compile: {}", e))?;
+        backend
+            .compile_module(module)
+            .map_err(|e| format!("compile: {}", e))?;
     }
 
     for module in mir_modules.iter().rev() {
@@ -37,13 +70,16 @@ fn test_case(name: &str, source: &str, symbols: &[(&str, *const u8)]) -> Result<
 
 fn main() {
     let plugin = rayzor_runtime::plugin_impl::get_plugin();
-    let symbols: Vec<(&str, *const u8)> = plugin.runtime_symbols()
+    let symbols: Vec<(&str, *const u8)> = plugin
+        .runtime_symbols()
         .iter()
         .map(|(n, p)| (*n, *p))
         .collect();
 
     // Test 1: Nested for loops without objects
-    let _ = test_case("nested_loops_simple", r#"
+    let _ = test_case(
+        "nested_loops_simple",
+        r#"
 package test;
 class Main {
     public static function main() {
@@ -56,10 +92,14 @@ class Main {
         trace(sum);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 2: Nested for loops with object creation
-    let _ = test_case("nested_loops_objects", r#"
+    let _ = test_case(
+        "nested_loops_objects",
+        r#"
 package test;
 class Point {
     public var x:Float;
@@ -79,10 +119,14 @@ class Main {
         trace(25);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 3: Nested loops with static function call
-    let _ = test_case("nested_loops_static_call", r#"
+    let _ = test_case(
+        "nested_loops_static_call",
+        r#"
 package test;
 class Helper {
     static function compute(x:Int, y:Int):Int {
@@ -100,10 +144,14 @@ class Main {
         trace(sum);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 4: Nested loops with instance method call returning object
-    let _ = test_case("nested_loops_instance_method", r#"
+    let _ = test_case(
+        "nested_loops_instance_method",
+        r#"
 package test;
 class Complex {
     public var re:Float;
@@ -130,10 +178,14 @@ class Main {
         trace(sum);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 5: Mandelbrot-style iterate function
-    let _ = test_case("iterate_function", r#"
+    let _ = test_case(
+        "iterate_function",
+        r#"
 package test;
 class Complex {
     public var re:Float;
@@ -168,10 +220,14 @@ class Main {
         return 50;
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     // Test 6: Nested loops calling iterate (like mandelbrot)
-    let _ = test_case("nested_with_iterate", r#"
+    let _ = test_case(
+        "nested_with_iterate",
+        r#"
 package test;
 class Complex {
     public var re:Float;
@@ -214,7 +270,9 @@ class Main {
         return 50;
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     println!("\n=== All tests completed ===");
 }

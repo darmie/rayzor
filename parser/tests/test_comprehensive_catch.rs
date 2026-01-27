@@ -27,27 +27,36 @@ class Test {
     match parse_haxe_file("test.hx", input, false) {
         Ok(result) => {
             println!("Multiple catch blocks with different types parsed successfully");
-            
+
             // Verify we have the expected number of catch blocks
-            if let Some(class_decl) = result.declarations.first() {
-                if let parser::haxe_ast::TypeDeclaration::Class(class) = class_decl {
-                    if let Some(method) = class.fields.first() {
-                        if let parser::haxe_ast::ClassFieldKind::Function(func) = &method.kind {
-                            if let Some(body) = &func.body {
-                                if let parser::haxe_ast::ExprKind::Block(block) = &body.kind {
-                                    if let Some(parser::haxe_ast::BlockElement::Expr(try_expr)) = block.first() {
-                                        if let parser::haxe_ast::ExprKind::Try { catches, .. } = &try_expr.kind {
-                                            assert_eq!(catches.len(), 5, "Should have 5 catch blocks");
-                                            
-                                            // Verify the types are correct
-                                            let expected_types = vec!["String", "Int", "Float", "Bool", "Dynamic"];
-                                            for (i, catch_block) in catches.iter().enumerate() {
-                                                if let Some(type_hint) = &catch_block.type_hint {
-                                                    if let parser::haxe_ast::Type::Path { path, .. } = type_hint {
-                                                        assert_eq!(path.name, expected_types[i], 
-                                                            "Catch block {} should have type {}", i, expected_types[i]);
-                                                    }
-                                                }
+            if let Some(parser::haxe_ast::TypeDeclaration::Class(class)) =
+                result.declarations.first()
+            {
+                if let Some(method) = class.fields.first() {
+                    if let parser::haxe_ast::ClassFieldKind::Function(func) = &method.kind {
+                        if let Some(body) = &func.body {
+                            if let parser::haxe_ast::ExprKind::Block(block) = &body.kind {
+                                if let Some(parser::haxe_ast::BlockElement::Expr(try_expr)) =
+                                    block.first()
+                                {
+                                    if let parser::haxe_ast::ExprKind::Try { catches, .. } =
+                                        &try_expr.kind
+                                    {
+                                        assert_eq!(catches.len(), 5, "Should have 5 catch blocks");
+
+                                        // Verify the types are correct
+                                        let expected_types =
+                                            ["String", "Int", "Float", "Bool", "Dynamic"];
+                                        for (i, catch_block) in catches.iter().enumerate() {
+                                            if let Some(parser::haxe_ast::Type::Path {
+                                                path, ..
+                                            }) = &catch_block.type_hint
+                                            {
+                                                assert_eq!(
+                                                    path.name, expected_types[i],
+                                                    "Catch block {} should have type {}",
+                                                    i, expected_types[i]
+                                                );
                                             }
                                         }
                                     }
@@ -57,9 +66,12 @@ class Test {
                     }
                 }
             }
-        },
+        }
         Err(e) => {
-            panic!("Multiple catch blocks with different types should parse, got: {}", e);
+            panic!(
+                "Multiple catch blocks with different types should parse, got: {}",
+                e
+            );
         }
     }
 }
@@ -89,7 +101,7 @@ class Test {
     match parse_haxe_file("test.hx", input, false) {
         Ok(_) => {
             println!("Nested try-catch parsed successfully");
-        },
+        }
         Err(e) => {
             panic!("Nested try-catch should parse, got: {}", e);
         }
@@ -119,7 +131,7 @@ class Test {
     match parse_haxe_file("test.hx", input, false) {
         Ok(_) => {
             println!("Complex types in catch blocks parsed successfully");
-        },
+        }
         Err(e) => {
             panic!("Complex types in catch blocks should parse, got: {}", e);
         }
@@ -145,9 +157,12 @@ class Test {
     match parse_haxe_file("test.hx", input, false) {
         Ok(_) => {
             println!("Mixed typed and untyped catch blocks parsed successfully");
-        },
+        }
         Err(e) => {
-            panic!("Mixed typed and untyped catch blocks should parse, got: {}", e);
+            panic!(
+                "Mixed typed and untyped catch blocks should parse, got: {}",
+                e
+            );
         }
     }
 }
@@ -182,9 +197,12 @@ class Test {
     match parse_haxe_file("test.hx", input, false) {
         Ok(_) => {
             println!("Catch blocks with complex expressions parsed successfully");
-        },
+        }
         Err(e) => {
-            panic!("Catch blocks with complex expressions should parse, got: {}", e);
+            panic!(
+                "Catch blocks with complex expressions should parse, got: {}",
+                e
+            );
         }
     }
 }
@@ -212,7 +230,7 @@ class Test {
     match parse_haxe_file("test.hx", input, false) {
         Ok(_) => {
             println!("Try-catch as expression parsed successfully");
-        },
+        }
         Err(e) => {
             panic!("Try-catch as expression should parse, got: {}", e);
         }
@@ -240,9 +258,12 @@ class Test {
     match parse_haxe_file("test.hx", input, false) {
         Ok(_) => {
             println!("Catch blocks with return statements parsed successfully");
-        },
+        }
         Err(e) => {
-            panic!("Catch blocks with return statements should parse, got: {}", e);
+            panic!(
+                "Catch blocks with return statements should parse, got: {}",
+                e
+            );
         }
     }
 }

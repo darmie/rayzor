@@ -10,9 +10,8 @@
 ///     capacity: i32,  // Buffer capacity (0 = unbounded)
 /// }
 /// ```
-
 use crate::ir::mir_builder::MirBuilder;
-use crate::ir::{IrType, CallingConvention};
+use crate::ir::{CallingConvention, IrType};
 
 /// Build all Channel functions
 pub fn build_channel_type(builder: &mut MirBuilder) {
@@ -41,7 +40,8 @@ fn declare_channel_externs(builder: &mut MirBuilder) {
     let void_ty = builder.void_type();
 
     // extern fn rayzor_channel_init(capacity: i32) -> *u8
-    let func_id = builder.begin_function("rayzor_channel_init")
+    let func_id = builder
+        .begin_function("rayzor_channel_init")
         .param("capacity", i32_ty.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -49,7 +49,8 @@ fn declare_channel_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn rayzor_channel_send(channel: *u8, value: *u8)
-    let func_id = builder.begin_function("rayzor_channel_send")
+    let func_id = builder
+        .begin_function("rayzor_channel_send")
         .param("channel", ptr_u8.clone())
         .param("value", ptr_u8.clone())
         .returns(void_ty.clone())
@@ -58,7 +59,8 @@ fn declare_channel_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn rayzor_channel_try_send(channel: *u8, value: *u8) -> bool
-    let func_id = builder.begin_function("rayzor_channel_try_send")
+    let func_id = builder
+        .begin_function("rayzor_channel_try_send")
         .param("channel", ptr_u8.clone())
         .param("value", ptr_u8.clone())
         .returns(bool_ty.clone())
@@ -67,7 +69,8 @@ fn declare_channel_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn rayzor_channel_receive(channel: *u8) -> *u8
-    let func_id = builder.begin_function("rayzor_channel_receive")
+    let func_id = builder
+        .begin_function("rayzor_channel_receive")
         .param("channel", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -75,7 +78,8 @@ fn declare_channel_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn rayzor_channel_try_receive(channel: *u8) -> *u8 (null if empty)
-    let func_id = builder.begin_function("rayzor_channel_try_receive")
+    let func_id = builder
+        .begin_function("rayzor_channel_try_receive")
         .param("channel", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -83,7 +87,8 @@ fn declare_channel_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn rayzor_channel_close(channel: *u8)
-    let func_id = builder.begin_function("rayzor_channel_close")
+    let func_id = builder
+        .begin_function("rayzor_channel_close")
         .param("channel", ptr_u8.clone())
         .returns(void_ty.clone())
         .calling_convention(CallingConvention::C)
@@ -91,7 +96,8 @@ fn declare_channel_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn rayzor_channel_is_closed(channel: *u8) -> bool
-    let func_id = builder.begin_function("rayzor_channel_is_closed")
+    let func_id = builder
+        .begin_function("rayzor_channel_is_closed")
         .param("channel", ptr_u8.clone())
         .returns(bool_ty.clone())
         .calling_convention(CallingConvention::C)
@@ -99,7 +105,8 @@ fn declare_channel_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn rayzor_channel_len(channel: *u8) -> i32
-    let func_id = builder.begin_function("rayzor_channel_len")
+    let func_id = builder
+        .begin_function("rayzor_channel_len")
         .param("channel", ptr_u8.clone())
         .returns(i32_ty.clone())
         .calling_convention(CallingConvention::C)
@@ -107,7 +114,8 @@ fn declare_channel_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn rayzor_channel_capacity(channel: *u8) -> i32
-    let func_id = builder.begin_function("rayzor_channel_capacity")
+    let func_id = builder
+        .begin_function("rayzor_channel_capacity")
         .param("channel", ptr_u8.clone())
         .returns(i32_ty.clone())
         .calling_convention(CallingConvention::C)
@@ -115,7 +123,8 @@ fn declare_channel_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn rayzor_channel_is_empty(channel: *u8) -> bool
-    let func_id = builder.begin_function("rayzor_channel_is_empty")
+    let func_id = builder
+        .begin_function("rayzor_channel_is_empty")
         .param("channel", ptr_u8.clone())
         .returns(bool_ty.clone())
         .calling_convention(CallingConvention::C)
@@ -123,7 +132,8 @@ fn declare_channel_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn rayzor_channel_is_full(channel: *u8) -> bool
-    let func_id = builder.begin_function("rayzor_channel_is_full")
+    let func_id = builder
+        .begin_function("rayzor_channel_is_full")
         .param("channel", ptr_u8.clone())
         .returns(bool_ty)
         .calling_convention(CallingConvention::C)
@@ -136,7 +146,8 @@ fn build_channel_init(builder: &mut MirBuilder) {
     let i32_ty = builder.i32_type();
     let ptr_u8 = builder.ptr_type(builder.u8_type());
 
-    let func_id = builder.begin_function("Channel_init")
+    let func_id = builder
+        .begin_function("Channel_init")
         .param("capacity", i32_ty)
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -149,7 +160,8 @@ fn build_channel_init(builder: &mut MirBuilder) {
 
     let capacity = builder.get_param(0);
 
-    let new_id = builder.get_function_by_name("rayzor_channel_init")
+    let new_id = builder
+        .get_function_by_name("rayzor_channel_init")
         .expect("rayzor_channel_init not found");
     let handle = builder.call(new_id, vec![capacity]).unwrap();
 
@@ -161,7 +173,8 @@ fn build_channel_send(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
     let void_ty = builder.void_type();
 
-    let func_id = builder.begin_function("Channel_send")
+    let func_id = builder
+        .begin_function("Channel_send")
         .param("channel", ptr_u8.clone())
         .param("value", ptr_u8)
         .returns(void_ty)
@@ -176,7 +189,8 @@ fn build_channel_send(builder: &mut MirBuilder) {
     let channel = builder.get_param(0);
     let value = builder.get_param(1);
 
-    let send_id = builder.get_function_by_name("rayzor_channel_send")
+    let send_id = builder
+        .get_function_by_name("rayzor_channel_send")
         .expect("rayzor_channel_send not found");
     let _result = builder.call(send_id, vec![channel, value]);
 
@@ -188,7 +202,8 @@ fn build_channel_try_send(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
     let bool_ty = builder.bool_type();
 
-    let func_id = builder.begin_function("Channel_trySend")
+    let func_id = builder
+        .begin_function("Channel_trySend")
         .param("channel", ptr_u8.clone())
         .param("value", ptr_u8)
         .returns(bool_ty)
@@ -203,7 +218,8 @@ fn build_channel_try_send(builder: &mut MirBuilder) {
     let channel = builder.get_param(0);
     let value = builder.get_param(1);
 
-    let try_send_id = builder.get_function_by_name("rayzor_channel_try_send")
+    let try_send_id = builder
+        .get_function_by_name("rayzor_channel_try_send")
         .expect("rayzor_channel_try_send not found");
     let result = builder.call(try_send_id, vec![channel, value]).unwrap();
 
@@ -214,7 +230,8 @@ fn build_channel_try_send(builder: &mut MirBuilder) {
 fn build_channel_receive(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
 
-    let func_id = builder.begin_function("Channel_receive")
+    let func_id = builder
+        .begin_function("Channel_receive")
         .param("channel", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -227,7 +244,8 @@ fn build_channel_receive(builder: &mut MirBuilder) {
 
     let channel = builder.get_param(0);
 
-    let receive_id = builder.get_function_by_name("rayzor_channel_receive")
+    let receive_id = builder
+        .get_function_by_name("rayzor_channel_receive")
         .expect("rayzor_channel_receive not found");
     let result = builder.call(receive_id, vec![channel]).unwrap();
 
@@ -238,7 +256,8 @@ fn build_channel_receive(builder: &mut MirBuilder) {
 fn build_channel_try_receive(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
 
-    let func_id = builder.begin_function("Channel_tryReceive")
+    let func_id = builder
+        .begin_function("Channel_tryReceive")
         .param("channel", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -251,7 +270,8 @@ fn build_channel_try_receive(builder: &mut MirBuilder) {
 
     let channel = builder.get_param(0);
 
-    let try_receive_id = builder.get_function_by_name("rayzor_channel_try_receive")
+    let try_receive_id = builder
+        .get_function_by_name("rayzor_channel_try_receive")
         .expect("rayzor_channel_try_receive not found");
     let result = builder.call(try_receive_id, vec![channel]).unwrap();
 
@@ -263,7 +283,8 @@ fn build_channel_close(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
     let void_ty = builder.void_type();
 
-    let func_id = builder.begin_function("Channel_close")
+    let func_id = builder
+        .begin_function("Channel_close")
         .param("channel", ptr_u8)
         .returns(void_ty)
         .calling_convention(CallingConvention::C)
@@ -276,7 +297,8 @@ fn build_channel_close(builder: &mut MirBuilder) {
 
     let channel = builder.get_param(0);
 
-    let close_id = builder.get_function_by_name("rayzor_channel_close")
+    let close_id = builder
+        .get_function_by_name("rayzor_channel_close")
         .expect("rayzor_channel_close not found");
     let _result = builder.call(close_id, vec![channel]);
 
@@ -288,7 +310,8 @@ fn build_channel_is_closed(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
     let bool_ty = builder.bool_type();
 
-    let func_id = builder.begin_function("Channel_isClosed")
+    let func_id = builder
+        .begin_function("Channel_isClosed")
         .param("channel", ptr_u8)
         .returns(bool_ty)
         .calling_convention(CallingConvention::C)
@@ -301,7 +324,8 @@ fn build_channel_is_closed(builder: &mut MirBuilder) {
 
     let channel = builder.get_param(0);
 
-    let is_closed_id = builder.get_function_by_name("rayzor_channel_is_closed")
+    let is_closed_id = builder
+        .get_function_by_name("rayzor_channel_is_closed")
         .expect("rayzor_channel_is_closed not found");
     let result = builder.call(is_closed_id, vec![channel]).unwrap();
 
@@ -313,7 +337,8 @@ fn build_channel_len(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
     let i32_ty = builder.i32_type();
 
-    let func_id = builder.begin_function("Channel_len")
+    let func_id = builder
+        .begin_function("Channel_len")
         .param("channel", ptr_u8)
         .returns(i32_ty)
         .calling_convention(CallingConvention::C)
@@ -326,7 +351,8 @@ fn build_channel_len(builder: &mut MirBuilder) {
 
     let channel = builder.get_param(0);
 
-    let len_id = builder.get_function_by_name("rayzor_channel_len")
+    let len_id = builder
+        .get_function_by_name("rayzor_channel_len")
         .expect("rayzor_channel_len not found");
     let result = builder.call(len_id, vec![channel]).unwrap();
 
@@ -338,7 +364,8 @@ fn build_channel_capacity(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
     let i32_ty = builder.i32_type();
 
-    let func_id = builder.begin_function("Channel_capacity")
+    let func_id = builder
+        .begin_function("Channel_capacity")
         .param("channel", ptr_u8)
         .returns(i32_ty)
         .calling_convention(CallingConvention::C)
@@ -351,7 +378,8 @@ fn build_channel_capacity(builder: &mut MirBuilder) {
 
     let channel = builder.get_param(0);
 
-    let capacity_id = builder.get_function_by_name("rayzor_channel_capacity")
+    let capacity_id = builder
+        .get_function_by_name("rayzor_channel_capacity")
         .expect("rayzor_channel_capacity not found");
     let result = builder.call(capacity_id, vec![channel]).unwrap();
 
@@ -363,7 +391,8 @@ fn build_channel_is_empty(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
     let bool_ty = builder.bool_type();
 
-    let func_id = builder.begin_function("Channel_isEmpty")
+    let func_id = builder
+        .begin_function("Channel_isEmpty")
         .param("channel", ptr_u8)
         .returns(bool_ty)
         .calling_convention(CallingConvention::C)
@@ -376,7 +405,8 @@ fn build_channel_is_empty(builder: &mut MirBuilder) {
 
     let channel = builder.get_param(0);
 
-    let is_empty_id = builder.get_function_by_name("rayzor_channel_is_empty")
+    let is_empty_id = builder
+        .get_function_by_name("rayzor_channel_is_empty")
         .expect("rayzor_channel_is_empty not found");
     let result = builder.call(is_empty_id, vec![channel]).unwrap();
 
@@ -388,7 +418,8 @@ fn build_channel_is_full(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
     let bool_ty = builder.bool_type();
 
-    let func_id = builder.begin_function("Channel_isFull")
+    let func_id = builder
+        .begin_function("Channel_isFull")
         .param("channel", ptr_u8)
         .returns(bool_ty)
         .calling_convention(CallingConvention::C)
@@ -401,7 +432,8 @@ fn build_channel_is_full(builder: &mut MirBuilder) {
 
     let channel = builder.get_param(0);
 
-    let is_full_id = builder.get_function_by_name("rayzor_channel_is_full")
+    let is_full_id = builder
+        .get_function_by_name("rayzor_channel_is_full")
         .expect("rayzor_channel_is_full not found");
     let result = builder.call(is_full_id, vec![channel]).unwrap();
 

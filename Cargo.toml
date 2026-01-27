@@ -15,6 +15,9 @@ name = "rayzor"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+llvm-backend = []
+
 [dependencies]
 parser = { path = "parser" }
 compiler = { path = "compiler" }

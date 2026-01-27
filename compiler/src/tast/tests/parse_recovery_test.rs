@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests {
     use parser::parse_haxe_file;
-    
+
     #[test]
     fn test_parse_with_recovery() {
         // Test content with switch that fails
@@ -14,12 +14,12 @@ class TestClass {
         var x = 1;
         var result = switch (x) {
             case 0: "zero";
-            case 1: "one"; 
+            case 1: "one";
             case _: "other";
         }
     }
 }"#;
-        
+
         println!("=== Testing with recovery mode ===");
         match parse_haxe_file("test.hx", test_content, true) {
             Ok(_) => println!("✅ Parsed successfully with recovery"),
@@ -28,7 +28,7 @@ class TestClass {
                 println!("{}", e);
             }
         }
-        
+
         println!("\n=== Testing without recovery mode ===");
         match parse_haxe_file("test.hx", test_content, false) {
             Ok(_) => println!("✅ Parsed successfully without recovery"),
@@ -38,7 +38,7 @@ class TestClass {
             }
         }
     }
-    
+
     #[test]
     fn test_comprehensive_parse_errors() {
         let test_content = r#"package com.example;
@@ -46,7 +46,7 @@ class TestClass {
 // This should parse fine
 class Container<T> {
     public var items:Array<T>;
-    
+
     public function new() {
         items = [];
     }
@@ -61,15 +61,15 @@ class TestProblems {
             case 1: "one";
             case _: "other";
         }
-        
+
         // Arrow function (not supported)
         var add = (a, b) -> a + b;
-        
+
         // Nested function (not supported)
         function inner() {
             return 42;
         }
-        
+
         // Pattern match with null (not supported)
         var y = switch (nullable) {
             case null: "null";
@@ -77,7 +77,7 @@ class TestProblems {
         }
     }
 }"#;
-        
+
         println!("=== Testing comprehensive parse with recovery ===");
         match parse_haxe_file("test.hx", test_content, true) {
             Ok(_) => println!("✅ Parsed successfully with recovery"),

@@ -27,32 +27,34 @@
 //! - Type conversions (toString, parseInt)
 //! - I/O operations (print, trace)
 
-pub mod string;
 pub mod array;
-pub mod stdtypes;
 pub mod memory;
-pub mod vec_u8;
 pub mod runtime_mapping;
+pub mod stdtypes;
+pub mod string;
 pub mod vec;
+pub mod vec_u8;
 
 // Rayzor concurrent primitives
-pub mod thread;
 pub mod channel;
 pub mod sync;
+pub mod thread;
 
 // Hashlink compatibility
-pub mod hl_types;
 pub mod hdll_plugin;
+pub mod hl_types;
 
-use crate::ir::{IrModule, mir_builder::MirBuilder};
 use crate::compiler_plugin::CompilerPluginRegistry;
+use crate::ir::{mir_builder::MirBuilder, IrModule};
 
 // Re-export runtime mapping types
-pub use runtime_mapping::{StdlibMapping, MethodSignature, RuntimeFunctionCall, FunctionSource, IrTypeDescriptor};
+pub use runtime_mapping::{
+    FunctionSource, IrTypeDescriptor, MethodSignature, RuntimeFunctionCall, StdlibMapping,
+};
 
 // Re-export Hashlink compatibility types
+pub use hdll_plugin::{HdllError, HdllManifest, HdllPlugin};
 pub use hl_types::HlTypeKind;
-pub use hdll_plugin::{HdllPlugin, HdllError, HdllManifest};
 
 /// Build the complete standard library as an MIR module
 ///
@@ -142,7 +144,9 @@ mod tests {
         let stdlib = build_stdlib();
 
         // Should have string functions
-        let has_string_concat = stdlib.functions.iter()
+        let has_string_concat = stdlib
+            .functions
+            .iter()
             .any(|(_, f)| f.name.contains("string"));
 
         assert!(has_string_concat, "Should have string functions");

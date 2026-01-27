@@ -3,8 +3,8 @@
 //! Defines the instruction set for the intermediate representation.
 //! Instructions are low-level operations that map directly to machine operations.
 
-use super::{IrId, IrType, IrValue, IrSourceLocation, IrFunctionId, IrGlobalId};
-use serde::{Serialize, Deserialize};
+use super::{IrFunctionId, IrGlobalId, IrId, IrSourceLocation, IrType, IrValue};
+use serde::{Deserialize, Serialize};
 
 /// Ownership transfer semantics for values
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,24 +39,14 @@ impl LifetimeId {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum IrInstruction {
     // === Value Operations ===
-    
     /// Load constant value
-    Const {
-        dest: IrId,
-        value: IrValue,
-    },
-    
+    Const { dest: IrId, value: IrValue },
+
     /// Copy value from one register to another (for Copy types)
-    Copy {
-        dest: IrId,
-        src: IrId,
-    },
+    Copy { dest: IrId, src: IrId },
 
     /// Move value (transfer ownership)
-    Move {
-        dest: IrId,
-        src: IrId,
-    },
+    Move { dest: IrId, src: IrId },
 
     /// Create immutable borrow/reference
     BorrowImmutable {
@@ -73,28 +63,16 @@ pub enum IrInstruction {
     },
 
     /// Clone value (explicit deep copy)
-    Clone {
-        dest: IrId,
-        src: IrId,
-    },
+    Clone { dest: IrId, src: IrId },
 
     /// End borrow/drop reference (for explicit lifetime management)
-    EndBorrow {
-        borrow: IrId,
-    },
-    
+    EndBorrow { borrow: IrId },
+
     /// Load value from memory
-    Load {
-        dest: IrId,
-        ptr: IrId,
-        ty: IrType,
-    },
-    
+    Load { dest: IrId, ptr: IrId, ty: IrType },
+
     /// Store value to memory
-    Store {
-        ptr: IrId,
-        value: IrId,
-    },
+    Store { ptr: IrId, value: IrId },
 
     /// Load value from a global variable
     LoadGlobal {
@@ -104,13 +82,9 @@ pub enum IrInstruction {
     },
 
     /// Store value to a global variable
-    StoreGlobal {
-        global_id: IrGlobalId,
-        value: IrId,
-    },
+    StoreGlobal { global_id: IrGlobalId, value: IrId },
 
     // === Arithmetic Operations ===
-    
     /// Binary arithmetic operation
     BinOp {
         dest: IrId,
@@ -118,14 +92,14 @@ pub enum IrInstruction {
         left: IrId,
         right: IrId,
     },
-    
+
     /// Unary operation
     UnOp {
         dest: IrId,
         op: UnaryOp,
         operand: IrId,
     },
-    
+
     /// Compare operation
     Cmp {
         dest: IrId,
@@ -133,28 +107,25 @@ pub enum IrInstruction {
         left: IrId,
         right: IrId,
     },
-    
+
     // === Control Flow ===
-    
     /// Unconditional jump
-    Jump {
-        target: IrId,
-    },
-    
+    Jump { target: IrId },
+
     /// Conditional branch
     Branch {
         condition: IrId,
         true_target: IrId,
         false_target: IrId,
     },
-    
+
     /// Switch/jump table
     Switch {
         value: IrId,
         default_target: IrId,
         cases: Vec<(IrValue, IrId)>,
     },
-    
+
     /// Direct function call (callee known at compile time)
     CallDirect {
         dest: Option<IrId>,
@@ -181,26 +152,21 @@ pub enum IrInstruction {
         #[serde(default)]
         is_tail_call: bool,
     },
-    
+
     /// Return from function
-    Return {
-        value: Option<IrId>,
-    },
-    
+    Return { value: Option<IrId> },
+
     // === Memory Operations ===
-    
     /// Allocate memory
     Alloc {
         dest: IrId,
         ty: IrType,
         count: Option<IrId>,
     },
-    
+
     /// Free memory
-    Free {
-        ptr: IrId,
-    },
-    
+    Free { ptr: IrId },
+
     /// Get element pointer (GEP)
     GetElementPtr {
         dest: IrId,
@@ -208,23 +174,14 @@ pub enum IrInstruction {
         indices: Vec<IrId>,
         ty: IrType,
     },
-    
+
     /// Memory copy
-    MemCopy {
-        dest: IrId,
-        src: IrId,
-        size: IrId,
-    },
-    
+    MemCopy { dest: IrId, src: IrId, size: IrId },
+
     /// Memory set
-    MemSet {
-        dest: IrId,
-        value: IrId,
-        size: IrId,
-    },
-    
+    MemSet { dest: IrId, value: IrId, size: IrId },
+
     // === Type Operations ===
-    
     /// Type cast
     Cast {
         dest: IrId,
@@ -232,41 +189,31 @@ pub enum IrInstruction {
         from_ty: IrType,
         to_ty: IrType,
     },
-    
+
     /// Bitcast (reinterpret bits)
-    BitCast {
-        dest: IrId,
-        src: IrId,
-        ty: IrType,
-    },
-    
+    BitCast { dest: IrId, src: IrId, ty: IrType },
+
     // === Exception Handling ===
-    
     /// Throw exception
-    Throw {
-        exception: IrId,
-    },
-    
+    Throw { exception: IrId },
+
     /// Begin exception handler
     LandingPad {
         dest: IrId,
         ty: IrType,
         clauses: Vec<LandingPadClause>,
     },
-    
+
     /// Resume exception propagation
-    Resume {
-        exception: IrId,
-    },
-    
+    Resume { exception: IrId },
+
     // === Special Operations ===
-    
     /// Phi node for SSA form
     Phi {
         dest: IrId,
         incoming: Vec<(IrId, IrId)>, // (value, predecessor block)
     },
-    
+
     /// Select (ternary) operation
     Select {
         dest: IrId,
@@ -274,14 +221,14 @@ pub enum IrInstruction {
         true_val: IrId,
         false_val: IrId,
     },
-    
+
     /// Extract value from aggregate
     ExtractValue {
         dest: IrId,
         aggregate: IrId,
         indices: Vec<u32>,
     },
-    
+
     /// Insert value into aggregate
     InsertValue {
         dest: IrId,
@@ -298,19 +245,12 @@ pub enum IrInstruction {
     },
 
     /// Extract the function pointer from a closure
-    ClosureFunc {
-        dest: IrId,
-        closure: IrId,
-    },
+    ClosureFunc { dest: IrId, closure: IrId },
 
     /// Extract the environment pointer from a closure
-    ClosureEnv {
-        dest: IrId,
-        closure: IrId,
-    },
+    ClosureEnv { dest: IrId, closure: IrId },
 
     // === Union/Sum Type Operations ===
-
     /// Create a union value with discriminant
     CreateUnion {
         dest: IrId,
@@ -320,10 +260,7 @@ pub enum IrInstruction {
     },
 
     /// Extract discriminant from union
-    ExtractDiscriminant {
-        dest: IrId,
-        union_val: IrId,
-    },
+    ExtractDiscriminant { dest: IrId, union_val: IrId },
 
     /// Extract value from union variant
     ExtractUnionValue {
@@ -334,7 +271,6 @@ pub enum IrInstruction {
     },
 
     // === Struct Operations ===
-
     /// Create struct from field values
     CreateStruct {
         dest: IrId,
@@ -343,7 +279,6 @@ pub enum IrInstruction {
     },
 
     // === Pointer Operations ===
-
     /// Pointer arithmetic: ptr + offset
     PtrAdd {
         dest: IrId,
@@ -353,28 +288,17 @@ pub enum IrInstruction {
     },
 
     // === Special Values ===
-
     /// Undefined value (uninitialized)
-    Undef {
-        dest: IrId,
-        ty: IrType,
-    },
+    Undef { dest: IrId, ty: IrType },
 
     /// Function reference (for function pointers)
-    FunctionRef {
-        dest: IrId,
-        func_id: IrFunctionId,
-    },
+    FunctionRef { dest: IrId, func_id: IrFunctionId },
 
     /// Panic/abort execution
-    Panic {
-        message: Option<String>,
-    },
+    Panic { message: Option<String> },
 
     /// Debug location marker
-    DebugLoc {
-        location: IrSourceLocation,
-    },
+    DebugLoc { location: IrSourceLocation },
 
     /// Inline assembly
     InlineAsm {
@@ -386,12 +310,11 @@ pub enum IrInstruction {
     },
 
     // === SIMD Vector Operations ===
-
     /// Load contiguous elements into a SIMD vector
     VectorLoad {
         dest: IrId,
         ptr: IrId,
-        vec_ty: IrType,  // Must be IrType::Vector
+        vec_ty: IrType, // Must be IrType::Vector
     },
 
     /// Store SIMD vector to contiguous memory
@@ -421,7 +344,7 @@ pub enum IrInstruction {
     VectorExtract {
         dest: IrId,
         vector: IrId,
-        index: u8,  // Lane index (0-15 for 16-element vectors)
+        index: u8, // Lane index (0-15 for 16-element vectors)
     },
 
     /// Insert scalar into vector lane
@@ -435,7 +358,7 @@ pub enum IrInstruction {
     /// Horizontal reduction (e.g., sum all elements)
     VectorReduce {
         dest: IrId,
-        op: BinaryOp,  // Add, Mul, And, Or, Xor for reductions
+        op: BinaryOp, // Add, Mul, And, Or, Xor for reductions
         vector: IrId,
     },
 }
@@ -449,14 +372,14 @@ pub enum BinaryOp {
     Mul,
     Div,
     Rem,
-    
+
     // Bitwise
     And,
     Or,
     Xor,
     Shl,
     Shr,
-    
+
     // Floating point
     FAdd,
     FSub,
@@ -470,10 +393,10 @@ pub enum BinaryOp {
 pub enum UnaryOp {
     // Arithmetic
     Neg,
-    
+
     // Bitwise
     Not,
-    
+
     // Floating point
     FNeg,
 }
@@ -488,13 +411,13 @@ pub enum CompareOp {
     Le,
     Gt,
     Ge,
-    
+
     // Unsigned comparisons
     ULt,
     ULe,
     UGt,
     UGe,
-    
+
     // Floating point comparisons
     FEq,
     FNe,
@@ -502,7 +425,7 @@ pub enum CompareOp {
     FLe,
     FGt,
     FGe,
-    
+
     // Floating point ordered/unordered
     FOrd,
     FUno,
@@ -550,15 +473,15 @@ impl IrInstruction {
             IrInstruction::VectorExtract { dest, .. } |
             IrInstruction::VectorInsert { dest, .. } |
             IrInstruction::VectorReduce { dest, .. } => Some(*dest),
-            
+
             IrInstruction::CallDirect { dest, .. } |
             IrInstruction::CallIndirect { dest, .. } |
             IrInstruction::InlineAsm { dest, .. } => *dest,
-            
+
             _ => None,
         }
     }
-    
+
     /// Get all registers used by this instruction
     pub fn uses(&self) -> Vec<IrId> {
         match self {
@@ -579,12 +502,8 @@ impl IrInstruction {
                 uses.extend(args);
                 uses
             }
-            IrInstruction::Return { value } => {
-                value.map(|v| vec![v]).unwrap_or_default()
-            }
-            IrInstruction::Alloc { count, .. } => {
-                count.map(|c| vec![c]).unwrap_or_default()
-            }
+            IrInstruction::Return { value } => value.map(|v| vec![v]).unwrap_or_default(),
+            IrInstruction::Alloc { count, .. } => count.map(|c| vec![c]).unwrap_or_default(),
             IrInstruction::Free { ptr } => vec![*ptr],
             IrInstruction::GetElementPtr { ptr, indices, .. } => {
                 let mut uses = vec![*ptr];
@@ -593,21 +512,23 @@ impl IrInstruction {
             }
             IrInstruction::MemCopy { dest, src, size } => vec![*dest, *src, *size],
             IrInstruction::MemSet { dest, value, size } => vec![*dest, *value, *size],
-            IrInstruction::Cast { src, .. } |
-            IrInstruction::BitCast { src, .. } => vec![*src],
+            IrInstruction::Cast { src, .. } | IrInstruction::BitCast { src, .. } => vec![*src],
             IrInstruction::Throw { exception } => vec![*exception],
             IrInstruction::Resume { exception } => vec![*exception],
-            IrInstruction::Phi { incoming, .. } => {
-                incoming.iter().map(|(val, _)| *val).collect()
-            }
-            IrInstruction::Select { condition, true_val, false_val, .. } => {
+            IrInstruction::Phi { incoming, .. } => incoming.iter().map(|(val, _)| *val).collect(),
+            IrInstruction::Select {
+                condition,
+                true_val,
+                false_val,
+                ..
+            } => {
                 vec![*condition, *true_val, *false_val]
             }
             IrInstruction::ExtractValue { aggregate, .. } => vec![*aggregate],
-            IrInstruction::InsertValue { aggregate, value, .. } => vec![*aggregate, *value],
-            IrInstruction::InlineAsm { inputs, .. } => {
-                inputs.iter().map(|(_, id)| *id).collect()
-            }
+            IrInstruction::InsertValue {
+                aggregate, value, ..
+            } => vec![*aggregate, *value],
+            IrInstruction::InlineAsm { inputs, .. } => inputs.iter().map(|(_, id)| *id).collect(),
             // Vector instructions
             IrInstruction::VectorLoad { ptr, .. } => vec![*ptr],
             IrInstruction::VectorStore { ptr, value, .. } => vec![*ptr, *value],
@@ -623,7 +544,9 @@ impl IrInstruction {
             IrInstruction::Clone { src, .. } => vec![*src],
             IrInstruction::EndBorrow { borrow } => vec![*borrow],
             // Closure instructions
-            IrInstruction::MakeClosure { captured_values, .. } => captured_values.clone(),
+            IrInstruction::MakeClosure {
+                captured_values, ..
+            } => captured_values.clone(),
             IrInstruction::ClosureFunc { closure, .. } => vec![*closure],
             IrInstruction::ClosureEnv { closure, .. } => vec![*closure],
             // Union/struct instructions
@@ -637,40 +560,42 @@ impl IrInstruction {
             IrInstruction::LoadGlobal { .. } => vec![], // No register uses, just global_id
             IrInstruction::StoreGlobal { value, .. } => vec![*value],
             // No uses for these
-            IrInstruction::Const { .. } |
-            IrInstruction::Jump { .. } |
-            IrInstruction::LandingPad { .. } |
-            IrInstruction::Undef { .. } |
-            IrInstruction::FunctionRef { .. } |
-            IrInstruction::Panic { .. } |
-            IrInstruction::DebugLoc { .. } => vec![],
+            IrInstruction::Const { .. }
+            | IrInstruction::Jump { .. }
+            | IrInstruction::LandingPad { .. }
+            | IrInstruction::Undef { .. }
+            | IrInstruction::FunctionRef { .. }
+            | IrInstruction::Panic { .. }
+            | IrInstruction::DebugLoc { .. } => vec![],
         }
     }
-    
+
     /// Check if this is a terminator instruction
     pub fn is_terminator(&self) -> bool {
-        matches!(self,
-            IrInstruction::Jump { .. } |
-            IrInstruction::Branch { .. } |
-            IrInstruction::Switch { .. } |
-            IrInstruction::Return { .. } |
-            IrInstruction::Throw { .. } |
-            IrInstruction::Resume { .. }
+        matches!(
+            self,
+            IrInstruction::Jump { .. }
+                | IrInstruction::Branch { .. }
+                | IrInstruction::Switch { .. }
+                | IrInstruction::Return { .. }
+                | IrInstruction::Throw { .. }
+                | IrInstruction::Resume { .. }
         )
     }
-    
+
     /// Check if this instruction has side effects
     pub fn has_side_effects(&self) -> bool {
-        matches!(self,
-            IrInstruction::Store { .. } |
-            IrInstruction::StoreGlobal { .. } |
-            IrInstruction::CallDirect { .. } |
-            IrInstruction::CallIndirect { .. } |
-            IrInstruction::Free { .. } |
-            IrInstruction::MemCopy { .. } |
-            IrInstruction::MemSet { .. } |
-            IrInstruction::Throw { .. } |
-            IrInstruction::InlineAsm { .. }
+        matches!(
+            self,
+            IrInstruction::Store { .. }
+                | IrInstruction::StoreGlobal { .. }
+                | IrInstruction::CallDirect { .. }
+                | IrInstruction::CallIndirect { .. }
+                | IrInstruction::Free { .. }
+                | IrInstruction::MemCopy { .. }
+                | IrInstruction::MemSet { .. }
+                | IrInstruction::Throw { .. }
+                | IrInstruction::InlineAsm { .. }
         )
     }
 }
@@ -678,7 +603,7 @@ impl IrInstruction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_instruction_properties() {
         let add = IrInstruction::BinOp {
@@ -687,16 +612,16 @@ mod tests {
             left: IrId::new(2),
             right: IrId::new(3),
         };
-        
+
         assert_eq!(add.dest(), Some(IrId::new(1)));
         assert_eq!(add.uses(), vec![IrId::new(2), IrId::new(3)]);
         assert!(!add.is_terminator());
         assert!(!add.has_side_effects());
-        
+
         let ret = IrInstruction::Return {
             value: Some(IrId::new(1)),
         };
-        
+
         assert!(ret.is_terminator());
         assert_eq!(ret.uses(), vec![IrId::new(1)]);
     }

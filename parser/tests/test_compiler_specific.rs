@@ -1,6 +1,9 @@
 //! Tests for compiler-specific code blocks
 
-use parser::{parse_haxe_file, haxe_ast::{HaxeFile, TypeDeclaration, ClassDecl, ClassField, ClassFieldKind, Function, Expr, ExprKind, BlockElement}};
+use parser::{
+    haxe_ast::{BlockElement, ClassFieldKind, ExprKind, TypeDeclaration},
+    parse_haxe_file,
+};
 
 #[test]
 fn test_js_code_block() {
@@ -11,14 +14,14 @@ fn test_js_code_block() {
             }
         }
     "#;
-    
+
     let result = parse_haxe_file("test.hx", input, false);
-    
+
     assert!(result.is_ok(), "Failed to parse: {:?}", result);
-    
+
     let file = result.unwrap();
     assert_eq!(file.declarations.len(), 1);
-    
+
     // Verify the compiler-specific code block was parsed correctly
     if let TypeDeclaration::Class(class) = &file.declarations[0] {
         assert_eq!(class.fields.len(), 1);
@@ -35,7 +38,9 @@ fn test_js_code_block() {
                                     panic!("Expected string literal for code");
                                 }
                             }
-                            _ => panic!("Expected CompilerSpecific expression, got {:?}", expr.kind),
+                            _ => {
+                                panic!("Expected CompilerSpecific expression, got {:?}", expr.kind)
+                            }
                         }
                     }
                 }
@@ -53,9 +58,9 @@ fn test_cpp_code_block() {
             }
         }
     "#;
-    
+
     let result = parse_haxe_file("test.hx", input, false);
-    
+
     assert!(result.is_ok(), "Failed to parse: {:?}", result);
 }
 
@@ -72,9 +77,9 @@ fn test_multiple_platform_blocks() {
             }
         }
     "#;
-    
+
     let result = parse_haxe_file("test.hx", input, false);
-    
+
     assert!(result.is_ok(), "Failed to parse: {:?}", result);
 }
 
@@ -88,9 +93,9 @@ fn test_compiler_specific_with_interpolation() {
             }
         }
     "#;
-    
+
     let result = parse_haxe_file("test.hx", input, false);
-    
+
     assert!(result.is_ok(), "Failed to parse: {:?}", result);
 }
 
@@ -103,23 +108,27 @@ fn test_compiler_specific_in_expression() {
             }
         }
     "#;
-    
+
     let result = parse_haxe_file("test.hx", input, false);
-    
+
     assert!(result.is_ok(), "Failed to parse: {:?}", result);
 }
 
 #[test]
 fn test_direct_compiler_specific() {
     use parser::haxe_parser_expr::expression;
-    
+
     // Test just the expression parsing
     let expr_input = r#"__js__("console.log('test')")"#;
     let full = expr_input;
     let expr_result = expression(full, expr_input);
-    
-    assert!(expr_result.is_ok(), "Failed to parse expression: {:?}", expr_result);
-    
+
+    assert!(
+        expr_result.is_ok(),
+        "Failed to parse expression: {:?}",
+        expr_result
+    );
+
     if let Ok((_, expr)) = expr_result {
         match &expr.kind {
             ExprKind::CompilerSpecific { target, code } => {

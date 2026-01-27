@@ -1,7 +1,37 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
+use compiler::codegen::CraneliftBackend;
 /// Test lambdas in isolation without threads or native calls
 /// This helps debug lambda signature and codegen issues
-use compiler::compilation::{CompilationUnit, CompilationConfig};
-use compiler::codegen::CraneliftBackend;
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 
 fn compile_and_run(name: &str, source: &str) {
     println!("\n{}", "=".repeat(70));
@@ -10,7 +40,7 @@ fn compile_and_run(name: &str, source: &str) {
 
     // Create compilation unit WITHOUT stdlib for pure lambda tests
     let mut config = CompilationConfig::default();
-    config.load_stdlib = false;  // Don't load concurrency stdlib - we only need basic types
+    config.load_stdlib = false; // Don't load concurrency stdlib - we only need basic types
     let mut unit = CompilationUnit::new(config);
 
     // Add source file
@@ -53,18 +83,24 @@ fn compile_and_run(name: &str, source: &str) {
     println!("  📋 MIR Functions:");
     for (func_id, func) in &mir_module.functions {
         // Skip stdlib functions for clarity
-        if func.name.starts_with("string_") ||
-           func.name.starts_with("array_") ||
-           func.name.starts_with("haxe_array_") ||
-           func.name.starts_with("int_") ||
-           func.name.starts_with("float_") ||
-           func.name.starts_with("bool_") ||
-           func.name == "trace" {
+        if func.name.starts_with("string_")
+            || func.name.starts_with("array_")
+            || func.name.starts_with("haxe_array_")
+            || func.name.starts_with("int_")
+            || func.name.starts_with("float_")
+            || func.name.starts_with("bool_")
+            || func.name == "trace"
+        {
             continue;
         }
 
-        println!("    {:?}: {} (params: {}, returns: {:?})",
-                 func_id, func.name, func.signature.parameters.len(), func.signature.return_type);
+        println!(
+            "    {:?}: {} (params: {}, returns: {:?})",
+            func_id,
+            func.name,
+            func.signature.parameters.len(),
+            func.signature.return_type
+        );
         for (i, param) in func.signature.parameters.iter().enumerate() {
             println!("      param[{}]: {} ({:?})", i, param.name, param.ty);
         }
@@ -81,7 +117,7 @@ fn compile_and_run(name: &str, source: &str) {
     let mut backend = match CraneliftBackend::with_symbols(&symbols_ref) {
         Ok(b) => b,
         Err(e) => {
-            println!("  ❌ Backend creation failed: {}", e);
+            println!("  ❌ Backend creation failed: {:?}", e);
             return;
         }
     };
@@ -89,7 +125,7 @@ fn compile_and_run(name: &str, source: &str) {
     // Compile all modules
     for module in &mir_modules {
         if let Err(e) = backend.compile_module(module) {
-            println!("  ❌ Codegen failed: {}", e);
+            println!("  ❌ Codegen failed: {:?}", e);
             return;
         }
     }
@@ -98,7 +134,7 @@ fn compile_and_run(name: &str, source: &str) {
     // Execute main
     println!("  🚀 Executing main()...");
     if let Err(e) = backend.call_main(mir_module) {
-        println!("  ❌ Execution failed: {}", e);
+        println!("  ❌ Execution failed: {:?}", e);
         return;
     }
     println!("  ✅ Execution succeeded");

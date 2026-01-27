@@ -197,29 +197,23 @@ mod tests {
         assert_eq!(vec.len, 0);
         assert_eq!(vec.cap, 16);
 
-        unsafe {
-            haxe_vec_free(&mut vec.clone());
-        }
+        haxe_vec_free(&mut vec.clone());
     }
 
     #[test]
     fn test_vec_push_and_get() {
         let mut vec = haxe_vec_new();
 
-        unsafe {
-            haxe_vec_push(&mut vec, 42);
-            haxe_vec_push(&mut vec, 100);
-            haxe_vec_push(&mut vec, 200);
-        }
+        haxe_vec_push(&mut vec, 42);
+        haxe_vec_push(&mut vec, 100);
+        haxe_vec_push(&mut vec, 200);
 
         assert_eq!(haxe_vec_len(&vec), 3);
         assert_eq!(haxe_vec_get(&vec, 0), 42);
         assert_eq!(haxe_vec_get(&vec, 1), 100);
         assert_eq!(haxe_vec_get(&vec, 2), 200);
 
-        unsafe {
-            haxe_vec_free(&mut vec);
-        }
+        haxe_vec_free(&mut vec);
     }
 
     #[test]
@@ -227,10 +221,8 @@ mod tests {
         let mut vec = haxe_vec_new();
 
         // Push more than initial capacity
-        unsafe {
-            for i in 0..20 {
-                haxe_vec_push(&mut vec, i as u8);
-            }
+        for i in 0..20 {
+            haxe_vec_push(&mut vec, i as u8);
         }
 
         assert_eq!(haxe_vec_len(&vec), 20);
@@ -241,8 +233,6 @@ mod tests {
             assert_eq!(haxe_vec_get(&vec, i), i as u8);
         }
 
-        unsafe {
-            haxe_vec_free(&mut vec);
-        }
+        haxe_vec_free(&mut vec);
     }
 }

@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 use compiler::compilation::{CompilationConfig, CompilationUnit};
 
 fn main() {
@@ -38,7 +68,10 @@ class TestPoint {
     // Find and print the Point.add function MIR
     for module in &mir_modules {
         for (_id, func) in &module.functions {
-            if func.name.contains("Point") && func.name.contains("add") && !func.name.contains("main") {
+            if func.name.contains("Point")
+                && func.name.contains("add")
+                && !func.name.contains("main")
+            {
                 println!("\n=== MIR for {} ===", func.name);
                 println!("Parameters: {:?}", func.signature.parameters);
                 println!("Return type: {:?}", func.signature.return_type);

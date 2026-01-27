@@ -1,22 +1,21 @@
 //! Complete Haxe parser with full span tracking
-//! 
+//!
 //! This parser handles 100% of Haxe syntax with proper whitespace/comment handling
 //! and tracks spans for every AST node.
 
 use nom::{
-    IResult,
     branch::alt,
-    bytes::complete::{tag, take_until, take_while, take_while1, is_not},
-    character::complete::{char, digit1, alpha1, alphanumeric1, multispace0, multispace1, none_of, one_of},
-    combinator::{map, opt, recognize, value, verify, not, peek, cut, all_consuming},
-    error::{context, ParseError},
-    multi::{many0, many1, separated_list0, separated_list1, fold_many0},
-    sequence::{pair, tuple, preceded, terminated, delimited},
-    Parser,
+    bytes::complete::{tag, take_until, take_while},
+    character::complete::{alpha1, alphanumeric1, char, multispace1},
+    combinator::{map, not, opt, peek, recognize, value, verify},
+    error::context,
+    multi::{many0, many1, separated_list0, separated_list1},
+    sequence::{delimited, pair, preceded, tuple},
+    IResult, Parser,
 };
 
-use crate::haxe_ast::*;
 use crate::custom_error::ContextualError;
+use crate::haxe_ast::*;
 use diagnostics;
 
 /// Parser result type with contextual errors to capture context strings
@@ -46,28 +45,43 @@ enum ImportUsingOrConditional {
 }
 
 /// Parse a complete Haxe file
-pub fn parse_haxe_file(file_name:&str, input: &str, recovery:bool) -> Result<HaxeFile, String> {
+pub fn parse_haxe_file(file_name: &str, input: &str, recovery: bool) -> Result<HaxeFile, String> {
     parse_haxe_file_with_debug(file_name, input, recovery, false)
 }
 
 /// Parse a complete Haxe file with debug flag for preserving source input
-pub fn parse_haxe_file_with_debug(file_name:&str, input: &str, recovery:bool, debug: bool) -> Result<HaxeFile, String> {
-   // Check if this is an import.hx file
-   let is_import_file = file_name.ends_with("import.hx") || file_name.ends_with("/import.hx") || file_name == "import.hx";
-   
-   if recovery {
-    parse_haxe_file_with_enhanced_errors(input, file_name, is_import_file)
-        .map_err(|(diagnostics, source_map)| {
-            let formatter = diagnostics::ErrorFormatter::with_colors();
-            formatter.format_diagnostics(&diagnostics, &source_map)
-        })
-   }else {
-    // Use enhanced incremental parser with diagnostics for better error reporting
-    let incremental_result = crate::incremental_parser_enhanced::parse_incrementally_enhanced(file_name, input);
-    
-    // Convert enhanced result to HaxeFile
-    convert_enhanced_incremental_to_haxe_file(incremental_result, file_name, input, is_import_file, debug)
-   }
+pub fn parse_haxe_file_with_debug(
+    file_name: &str,
+    input: &str,
+    recovery: bool,
+    debug: bool,
+) -> Result<HaxeFile, String> {
+    // Check if this is an import.hx file
+    let is_import_file = file_name.ends_with("import.hx")
+        || file_name.ends_with("/import.hx")
+        || file_name == "import.hx";
+
+    if recovery {
+        parse_haxe_file_with_enhanced_errors(input, file_name, is_import_file).map_err(
+            |(diagnostics, source_map)| {
+                let formatter = diagnostics::ErrorFormatter::with_colors();
+                formatter.format_diagnostics(&diagnostics, &source_map)
+            },
+        )
+    } else {
+        // Use enhanced incremental parser with diagnostics for better error reporting
+        let incremental_result =
+            crate::incremental_parser_enhanced::parse_incrementally_enhanced(file_name, input);
+
+        // Convert enhanced result to HaxeFile
+        convert_enhanced_incremental_to_haxe_file(
+            incremental_result,
+            file_name,
+            input,
+            is_import_file,
+            debug,
+        )
+    }
 }
 
 /// Convert enhanced incremental parse result to HaxeFile
@@ -76,10 +90,10 @@ fn convert_enhanced_incremental_to_haxe_file(
     file_name: &str,
     input: &str,
     is_import_file: bool,
-    debug: bool
+    debug: bool,
 ) -> Result<HaxeFile, String> {
-    use crate::incremental_parser_enhanced::ParsedElement;
     use crate::haxe_ast::{HaxeFile, Span};
+    use crate::incremental_parser_enhanced::ParsedElement;
 
     // If there are errors but no parsed elements, format and return all errors
     if result.parsed_elements.is_empty() && result.has_errors() {
@@ -94,8 +108,6 @@ fn convert_enhanced_incremental_to_haxe_file(
     let mut module_fields = Vec::new();
     let mut declarations = Vec::new();
 
-    
-
     for element in result.parsed_elements {
         match element {
             ParsedElement::Package(pkg) => package = Some(pkg),
@@ -104,15 +116,12 @@ fn convert_enhanced_incremental_to_haxe_file(
             ParsedElement::ModuleField(field) => module_fields.push(field),
             ParsedElement::TypeDeclaration(decl) => {
                 declarations.push(decl);
-               
             }
             ParsedElement::ConditionalBlock(_) => {
                 // Skip conditional blocks for now
             }
         }
     }
-
-   
 
     // For import.hx files, only imports are relevant
     if is_import_file {
@@ -143,33 +152,40 @@ fn convert_enhanced_incremental_to_haxe_file(
 }
 
 /// Convert old incremental parse result to HaxeFile (for backward compatibility)
+#[allow(dead_code)]
 fn convert_incremental_to_haxe_file(
-    result: crate::incremental_parser::IncrementalParseResult, 
-    file_name: &str, 
+    result: crate::incremental_parser::IncrementalParseResult,
+    file_name: &str,
     input: &str,
     is_import_file: bool,
-    debug: bool
+    debug: bool,
 ) -> Result<HaxeFile, String> {
-    use crate::incremental_parser::ParsedElement;
     use crate::haxe_ast::{HaxeFile, Span};
-    
+    use crate::incremental_parser::ParsedElement;
+
     // If there are errors but no parsed elements, format and return all errors
     if result.parsed_elements.is_empty() && !result.errors.is_empty() {
-        let formatted_errors = result.errors.iter()
+        let formatted_errors = result
+            .errors
+            .iter()
             .map(|error| format!("{}:{} - {}", error.line, error.column, error.message))
             .collect::<Vec<_>>()
             .join("\n");
-        
-        return Err(format!("Parse failed with {} errors:\n{}", result.errors.len(), formatted_errors));
+
+        return Err(format!(
+            "Parse failed with {} errors:\n{}",
+            result.errors.len(),
+            formatted_errors
+        ));
     }
-    
+
     // Extract components from parsed elements
     let mut package = None;
     let mut imports = Vec::new();
     let mut using = Vec::new();
     let mut module_fields = Vec::new();
     let mut declarations = Vec::new();
-    
+
     for element in result.parsed_elements {
         match element {
             ParsedElement::Package(pkg) => package = Some(pkg),
@@ -182,7 +198,7 @@ fn convert_incremental_to_haxe_file(
             }
         }
     }
-    
+
     // For import.hx files, only imports are relevant
     if is_import_file {
         Ok(HaxeFile {
@@ -211,16 +227,27 @@ fn convert_incremental_to_haxe_file(
 }
 
 /// Parse a Haxe file with enhanced error reporting
-pub fn parse_haxe_file_with_enhanced_errors(input: &str, file_name:&str, is_import_file: bool) -> Result<HaxeFile, (diagnostics::Diagnostics, diagnostics::SourceMap)> {
+pub fn parse_haxe_file_with_enhanced_errors(
+    input: &str,
+    file_name: &str,
+    is_import_file: bool,
+) -> Result<HaxeFile, (diagnostics::Diagnostics, diagnostics::SourceMap)> {
     // Use enhanced incremental parser for better error recovery with diagnostics
-    let incremental_result = crate::incremental_parser_enhanced::parse_incrementally_enhanced(file_name, input);
+    let incremental_result =
+        crate::incremental_parser_enhanced::parse_incrementally_enhanced(file_name, input);
 
     // Extract the diagnostics and source map from the result
     let diagnostics = incremental_result.diagnostics.clone();
     let source_map = incremental_result.source_map.clone();
 
     // If parsing succeeded, return the file (preserve source with debug=true)
-    if let Ok(file) = convert_enhanced_incremental_to_haxe_file(incremental_result, file_name, input, is_import_file, true) {
+    if let Ok(file) = convert_enhanced_incremental_to_haxe_file(
+        incremental_result,
+        file_name,
+        input,
+        is_import_file,
+        true,
+    ) {
         return Ok(file);
     }
 
@@ -229,39 +256,51 @@ pub fn parse_haxe_file_with_enhanced_errors(input: &str, file_name:&str, is_impo
 }
 
 /// Parse a Haxe file and always return diagnostics along with the result
-pub fn parse_haxe_file_with_diagnostics(file_name: &str, input: &str) -> Result<ParseResult, String> {
+pub fn parse_haxe_file_with_diagnostics(
+    file_name: &str,
+    input: &str,
+) -> Result<ParseResult, String> {
     // Preprocess to handle conditional compilation directives
     let preprocessor_config = crate::preprocessor::PreprocessorConfig::default();
     let preprocessed_source = crate::preprocessor::preprocess(input, &preprocessor_config);
 
     // Check if this is an import.hx file
-    let is_import_file = file_name.ends_with("import.hx") || file_name.ends_with("/import.hx") || file_name == "import.hx";
+    let is_import_file = file_name.ends_with("import.hx")
+        || file_name.ends_with("/import.hx")
+        || file_name == "import.hx";
 
     // Use enhanced incremental parser for better error recovery with diagnostics
     // Parse the preprocessed source instead of the original
-    let incremental_result = crate::incremental_parser_enhanced::parse_incrementally_enhanced(file_name, &preprocessed_source);
-    
+    let incremental_result = crate::incremental_parser_enhanced::parse_incrementally_enhanced(
+        file_name,
+        &preprocessed_source,
+    );
+
     // Extract the diagnostics and source map
     let diagnostics = incremental_result.diagnostics.clone();
     let source_map = incremental_result.source_map.clone();
-    
+
     // Try to convert to HaxeFile
     // Use preprocessed source so the file has the correct content
-    match convert_enhanced_incremental_to_haxe_file(incremental_result, file_name, &preprocessed_source, is_import_file, false) {
-        Ok(file) => {
-            Ok(ParseResult {
-                file,
-                diagnostics,
-                source_map,
-            })
-        }
+    match convert_enhanced_incremental_to_haxe_file(
+        incremental_result,
+        file_name,
+        &preprocessed_source,
+        is_import_file,
+        false,
+    ) {
+        Ok(file) => Ok(ParseResult {
+            file,
+            diagnostics,
+            source_map,
+        }),
         Err(e) => {
             // If we have diagnostics, format them nicely
             // if !diagnostics.is_empty() {
             //     let formatter = diagnostics::ErrorFormatter::with_colors();
             //     Err(formatter.format_diagnostics(&diagnostics, &source_map))
             // } else {
-                
+
             // }
             Err(e)
         }
@@ -282,7 +321,7 @@ fn flatten_conditional_imports_using(
             ImportOrUsing::Using(use_) => using.push(use_.clone()),
         }
     }
-    
+
     // Flatten elseif branches
     for elseif_branch in &cond.elseif_branches {
         for item in &elseif_branch.content {
@@ -292,7 +331,7 @@ fn flatten_conditional_imports_using(
             }
         }
     }
-    
+
     // Flatten else branch if present
     if let Some(else_content) = &cond.else_branch {
         for item in else_content {
@@ -309,79 +348,99 @@ pub fn import_hx_file<'a>(file_name: &str, full: &'a str, input: &'a str) -> PRe
     import_hx_file_with_debug(file_name, full, input, false)
 }
 
-pub fn import_hx_file_with_debug<'a>(file_name: &str, full: &'a str, input: &'a str, debug: bool) -> PResult<'a, HaxeFile> {
-    context("import.hx file", |input: &'a str| -> PResult<'a, HaxeFile> {
-    let start = position(full, input);
-    
-    // Skip leading whitespace/comments
-    let (input, _) = ws(input)?;
-    
-    // import.hx files cannot have package declarations
-    // They can only contain imports and using statements
-    
-    // Parse imports and using statements
-    let (input, imports_using_conditional) = many0(|i| {
-        // Skip any metadata first
-        let (i, _) = metadata_list(full, i)?;
-        
-        // Try to parse conditional compilation containing imports, or regular imports/using
-        alt((
-            // Conditional compilation with imports/using
-            map(
-                |i| conditional_compilation(full, i, |full, input| {
-                    alt((
-                        map(|i| import_decl(full, i), ImportOrUsing::Import),
-                        map(|i| using_decl(full, i), ImportOrUsing::Using),
-                    )).parse(input)
-                }),
-                ImportUsingOrConditional::Conditional
-            ),
-            // Regular import
-            map(|i| import_decl(full, i), ImportUsingOrConditional::Import),
-            // Regular using
-            map(|i| using_decl(full, i), ImportUsingOrConditional::Using),
-        )).parse(i)
-    }).parse(input)?;
-    
-    // Extract imports and using from the mixed results
-    let mut imports = Vec::new();
-    let mut using = Vec::new();
-    let mut conditional_imports_using = Vec::new();
-    
-    for item in imports_using_conditional {
-        match item {
-            ImportUsingOrConditional::Import(imp) => imports.push(imp),
-            ImportUsingOrConditional::Using(use_) => using.push(use_),
-            ImportUsingOrConditional::Conditional(cond) => {
-                // For now, we'll flatten conditional imports/using into regular ones
-                flatten_conditional_imports_using(&cond, &mut imports, &mut using);
-                conditional_imports_using.push(cond);
+pub fn import_hx_file_with_debug<'a>(
+    file_name: &str,
+    full: &'a str,
+    input: &'a str,
+    debug: bool,
+) -> PResult<'a, HaxeFile> {
+    context(
+        "import.hx file",
+        |input: &'a str| -> PResult<'a, HaxeFile> {
+            let start = position(full, input);
+
+            // Skip leading whitespace/comments
+            let (input, _) = ws(input)?;
+
+            // import.hx files cannot have package declarations
+            // They can only contain imports and using statements
+
+            // Parse imports and using statements
+            let (input, imports_using_conditional) = many0(|i| {
+                // Skip any metadata first
+                let (i, _) = metadata_list(full, i)?;
+
+                // Try to parse conditional compilation containing imports, or regular imports/using
+                alt((
+                    // Conditional compilation with imports/using
+                    map(
+                        |i| {
+                            conditional_compilation(full, i, |full, input| {
+                                alt((
+                                    map(|i| import_decl(full, i), ImportOrUsing::Import),
+                                    map(|i| using_decl(full, i), ImportOrUsing::Using),
+                                ))
+                                .parse(input)
+                            })
+                        },
+                        ImportUsingOrConditional::Conditional,
+                    ),
+                    // Regular import
+                    map(|i| import_decl(full, i), ImportUsingOrConditional::Import),
+                    // Regular using
+                    map(|i| using_decl(full, i), ImportUsingOrConditional::Using),
+                ))
+                .parse(i)
+            })
+            .parse(input)?;
+
+            // Extract imports and using from the mixed results
+            let mut imports = Vec::new();
+            let mut using = Vec::new();
+            let mut conditional_imports_using = Vec::new();
+
+            for item in imports_using_conditional {
+                match item {
+                    ImportUsingOrConditional::Import(imp) => imports.push(imp),
+                    ImportUsingOrConditional::Using(use_) => using.push(use_),
+                    ImportUsingOrConditional::Conditional(cond) => {
+                        // For now, we'll flatten conditional imports/using into regular ones
+                        flatten_conditional_imports_using(&cond, &mut imports, &mut using);
+                        conditional_imports_using.push(cond);
+                    }
+                }
             }
-        }
-    }
-    
-    // Skip trailing whitespace/comments
-    let (input, _) = ws(input)?;
-    
-    // import.hx files should not have any other content
-    // If there's remaining content, it's an error
-    if !input.is_empty() {
-        return Err(nom::Err::Error(ContextualError::new(input, nom::error::ErrorKind::Tag)));
-    }
-    
-    let end = position(full, input);
-    
-    Ok((input, HaxeFile {
-        filename: file_name.to_string(),
-        input: if debug { Some(full.to_string()) } else { None },
-        package: None,  // import.hx files don't have package declarations
-        imports,
-        using,
-        module_fields: Vec::new(),  // import.hx files don't have module fields
-        declarations: Vec::new(),    // import.hx files don't have type declarations
-        span: Span::new(start, end),
-    }))
-    }).parse(input)
+
+            // Skip trailing whitespace/comments
+            let (input, _) = ws(input)?;
+
+            // import.hx files should not have any other content
+            // If there's remaining content, it's an error
+            if !input.is_empty() {
+                return Err(nom::Err::Error(ContextualError::new(
+                    input,
+                    nom::error::ErrorKind::Tag,
+                )));
+            }
+
+            let end = position(full, input);
+
+            Ok((
+                input,
+                HaxeFile {
+                    filename: file_name.to_string(),
+                    input: if debug { Some(full.to_string()) } else { None },
+                    package: None, // import.hx files don't have package declarations
+                    imports,
+                    using,
+                    module_fields: Vec::new(), // import.hx files don't have module fields
+                    declarations: Vec::new(),  // import.hx files don't have type declarations
+                    span: Span::new(start, end),
+                },
+            ))
+        },
+    )
+    .parse(input)
 }
 
 /// Main file parser
@@ -389,117 +448,140 @@ pub fn haxe_file<'a>(file_name: &str, full: &'a str, input: &'a str) -> PResult<
     haxe_file_with_debug(file_name, full, input, false)
 }
 
-pub fn haxe_file_with_debug<'a>(file_name: &str, full: &'a str, input: &'a str, debug: bool) -> PResult<'a, HaxeFile> {
+pub fn haxe_file_with_debug<'a>(
+    file_name: &str,
+    full: &'a str,
+    input: &'a str,
+    debug: bool,
+) -> PResult<'a, HaxeFile> {
     context("haxe file", |input| {
-    let start = position(full, input);
-    
-    // Skip leading whitespace/comments
-    let (input, _) = ws(input)?;
-    
-    // Optional package declaration
-    let (input, package) = opt(|i| package_decl(full, i)).parse(input)?;
-    
-    // Imports and using statements
-    let (input, imports_using_conditional) = many0(|i| {
-        // Skip any metadata first
-        let (i, _) = metadata_list(full, i)?;
-        
-        // Check if we've hit a type declaration OR module field keywords
-        let peek_result: Result<_, nom::Err<nom::error::Error<_>>> = peek(alt((
-            tag("class"),
-            tag("interface"),
-            tag("enum"),
-            tag("typedef"),
-            tag("abstract"),
-            tag("var"),
-            tag("final"),
-            tag("function"),
-        ))).parse(i);
-        
-        if peek_result.is_ok() {
-            // Stop parsing imports/using
-            Err(nom::Err::Error(ContextualError::new(i, nom::error::ErrorKind::Eof)))
-        } else {
-            // Try to parse conditional compilation containing imports, or regular imports/using
-            alt((
-                // Conditional compilation with imports/using
-                map(
-                    |i| conditional_compilation(full, i, |full, input| {
-                        alt((
-                            map(|i| import_decl(full, i), ImportOrUsing::Import),
-                            map(|i| using_decl(full, i), ImportOrUsing::Using),
-                        )).parse(input)
-                    }),
-                    ImportUsingOrConditional::Conditional
-                ),
-                // Regular import
-                map(|i| import_decl(full, i), ImportUsingOrConditional::Import),
-                // Regular using
-                map(|i| using_decl(full, i), ImportUsingOrConditional::Using),
-            )).parse(i)
-        }
-    }).parse(input)?;
-    
-    // Extract imports and using from the mixed results
-    let mut imports = Vec::new();
-    let mut using = Vec::new();
-    let mut conditional_imports_using = Vec::new();
-    
-    for item in imports_using_conditional {
-        match item {
-            ImportUsingOrConditional::Import(imp) => imports.push(imp),
-            ImportUsingOrConditional::Using(use_) => using.push(use_),
-            ImportUsingOrConditional::Conditional(cond) => {
-                // For now, we'll flatten conditional imports/using into regular ones
-                // This is a simplification - in a full implementation you might want to preserve the conditional structure
-                flatten_conditional_imports_using(&cond, &mut imports, &mut using);
-                conditional_imports_using.push(cond);
+        let start = position(full, input);
+
+        // Skip leading whitespace/comments
+        let (input, _) = ws(input)?;
+
+        // Optional package declaration
+        let (input, package) = opt(|i| package_decl(full, i)).parse(input)?;
+
+        // Imports and using statements
+        let (input, imports_using_conditional) = many0(|i| {
+            // Skip any metadata first
+            let (i, _) = metadata_list(full, i)?;
+
+            // Check if we've hit a type declaration OR module field keywords
+            let peek_result: Result<_, nom::Err<nom::error::Error<_>>> = peek(alt((
+                tag("class"),
+                tag("interface"),
+                tag("enum"),
+                tag("typedef"),
+                tag("abstract"),
+                tag("var"),
+                tag("final"),
+                tag("function"),
+            )))
+            .parse(i);
+
+            if peek_result.is_ok() {
+                // Stop parsing imports/using
+                Err(nom::Err::Error(ContextualError::new(
+                    i,
+                    nom::error::ErrorKind::Eof,
+                )))
+            } else {
+                // Try to parse conditional compilation containing imports, or regular imports/using
+                alt((
+                    // Conditional compilation with imports/using
+                    map(
+                        |i| {
+                            conditional_compilation(full, i, |full, input| {
+                                alt((
+                                    map(|i| import_decl(full, i), ImportOrUsing::Import),
+                                    map(|i| using_decl(full, i), ImportOrUsing::Using),
+                                ))
+                                .parse(input)
+                            })
+                        },
+                        ImportUsingOrConditional::Conditional,
+                    ),
+                    // Regular import
+                    map(|i| import_decl(full, i), ImportUsingOrConditional::Import),
+                    // Regular using
+                    map(|i| using_decl(full, i), ImportUsingOrConditional::Using),
+                ))
+                .parse(i)
+            }
+        })
+        .parse(input)?;
+
+        // Extract imports and using from the mixed results
+        let mut imports = Vec::new();
+        let mut using = Vec::new();
+        let mut conditional_imports_using = Vec::new();
+
+        for item in imports_using_conditional {
+            match item {
+                ImportUsingOrConditional::Import(imp) => imports.push(imp),
+                ImportUsingOrConditional::Using(use_) => using.push(use_),
+                ImportUsingOrConditional::Conditional(cond) => {
+                    // For now, we'll flatten conditional imports/using into regular ones
+                    // This is a simplification - in a full implementation you might want to preserve the conditional structure
+                    flatten_conditional_imports_using(&cond, &mut imports, &mut using);
+                    conditional_imports_using.push(cond);
+                }
             }
         }
-    }
-    
-    // Module-level fields
-    let (input, module_fields) = many0(|i| {
-        // Skip any metadata first
-        let (i, _) = metadata_list(full, i)?;
-        
-        // Check if we've hit a type declaration (but NOT metadata or conditional compilation)
-        let peek_result: Result<_, nom::Err<nom::error::Error<_>>> = peek(alt((
-            tag("class"),
-            tag("interface"),
-            tag("enum"),
-            tag("typedef"),
-            tag("abstract"),
-        ))).parse(i);
-        
-        if peek_result.is_ok() {
-            // Stop parsing module fields
-            Err(nom::Err::Error(ContextualError::new(i, nom::error::ErrorKind::Eof)))
-        } else {
-            // Try to parse module field
-            module_field(full, i)
-        }
-    }).parse(input)?;
-    
-    // Type declarations
-    let (input, declarations) = many0(|i| type_declaration(full, i)).parse(input)?;
-    
-    // Skip trailing whitespace/comments
-    let (input, _) = ws(input)?;
-    
-    let end = position(full, input);
-    
-    Ok((input, HaxeFile {
-        filename: file_name.to_string(),
-        input: if debug { Some(full.to_string()) } else { None },
-        package,
-        imports,
-        using,
-        module_fields,
-        declarations,
-        span: Span::new(start, end),
-    }))
-    }).parse(input)
+
+        // Module-level fields
+        let (input, module_fields) = many0(|i| {
+            // Skip any metadata first
+            let (i, _) = metadata_list(full, i)?;
+
+            // Check if we've hit a type declaration (but NOT metadata or conditional compilation)
+            let peek_result: Result<_, nom::Err<nom::error::Error<_>>> = peek(alt((
+                tag("class"),
+                tag("interface"),
+                tag("enum"),
+                tag("typedef"),
+                tag("abstract"),
+            )))
+            .parse(i);
+
+            if peek_result.is_ok() {
+                // Stop parsing module fields
+                Err(nom::Err::Error(ContextualError::new(
+                    i,
+                    nom::error::ErrorKind::Eof,
+                )))
+            } else {
+                // Try to parse module field
+                module_field(full, i)
+            }
+        })
+        .parse(input)?;
+
+        // Type declarations
+        let (input, declarations) = many0(|i| type_declaration(full, i)).parse(input)?;
+
+        // Skip trailing whitespace/comments
+        let (input, _) = ws(input)?;
+
+        let end = position(full, input);
+
+        Ok((
+            input,
+            HaxeFile {
+                filename: file_name.to_string(),
+                input: if debug { Some(full.to_string()) } else { None },
+                package,
+                imports,
+                using,
+                module_fields,
+                declarations,
+                span: Span::new(start, end),
+            },
+        ))
+    })
+    .parse(input)
 }
 
 /// Get current position in the original input
@@ -520,28 +602,32 @@ pub fn make_span(full: &str, start_pos: usize, current: &str) -> Span {
 /// Parse a module-level field (variable or function)
 pub fn module_field<'a>(full: &'a str, input: &'a str) -> PResult<'a, ModuleField> {
     let start = position(full, input);
-    
+
     let (input, meta) = metadata_list(full, input)?;
     let (input, (access, modifiers)) = parse_access_and_modifiers(input)?;
-    
+
     // Check if final was parsed as a modifier
     let has_final_modifier = modifiers.iter().any(|m| matches!(m, Modifier::Final));
-    
+
     // Field kind
     let (input, kind) = alt((
         |i| module_field_function(full, i),
         |i| module_field_var_or_final(full, i, has_final_modifier),
-    )).parse(input)?;
-    
+    ))
+    .parse(input)?;
+
     let end = position(full, input);
-    
-    Ok((input, ModuleField {
-        meta,
-        access,
-        modifiers,
-        kind,
-        span: Span::new(start, end),
-    }))
+
+    Ok((
+        input,
+        ModuleField {
+            meta,
+            access,
+            modifiers,
+            kind,
+            span: Span::new(start, end),
+        },
+    ))
 }
 
 /// Parse module-level function
@@ -549,28 +635,40 @@ fn module_field_function<'a>(full: &'a str, input: &'a str) -> PResult<'a, Modul
     let (input, _) = context("expected 'function' keyword", keyword("function")).parse(input)?;
     let (input, name) = context("expected function name", function_name).parse(input)?;
     let (input, type_params) = type_params(full, input)?;
-    
+
     let (input, _) = context("[E0082] expected '(' to start parameter list | help: function parameters must be enclosed in parentheses", symbol("(")).parse(input)?;
     let (input, params) = context("[E0083] expected function parameters | help: provide parameter list or leave empty for no parameters", separated_list0(symbol(","), |i| function_param(full, i))).parse(input)?;
     let (input, _) = opt(symbol(",")).parse(input)?; // Trailing comma
-    let (input, _) = context("[E0084] expected ')' to close parameter list", symbol(")")).parse(input)?;
-    
-    let (input, return_type) = opt(preceded(context("expected ':' before return type", symbol(":")), |i| type_expr(full, i))).parse(input)?;
-    
+    let (input, _) =
+        context("[E0084] expected ')' to close parameter list", symbol(")")).parse(input)?;
+
+    let (input, return_type) = opt(preceded(
+        context("expected ':' before return type", symbol(":")),
+        |i| type_expr(full, i),
+    ))
+    .parse(input)?;
+
     let (input, body) = opt(|i| block_expr(full, i)).parse(input)?;
-    
-    Ok((input, ModuleFieldKind::Function(Function {
-        name,
-        type_params,
-        params,
-        return_type,
-        body: body.map(Box::new),
-        span: Span::new(0, 0), // Will be set by the caller
-    })))
+
+    Ok((
+        input,
+        ModuleFieldKind::Function(Function {
+            name,
+            type_params,
+            params,
+            return_type,
+            body: body.map(Box::new),
+            span: Span::new(0, 0), // Will be set by the caller
+        }),
+    ))
 }
 
 /// Parse module-level variable or final field
-fn module_field_var_or_final<'a>(full: &'a str, input: &'a str, has_final_modifier: bool) -> PResult<'a, ModuleFieldKind> {
+fn module_field_var_or_final<'a>(
+    full: &'a str,
+    input: &'a str,
+    has_final_modifier: bool,
+) -> PResult<'a, ModuleFieldKind> {
     let (input, is_final) = if has_final_modifier {
         // If final was already parsed as a modifier, don't parse keywords again
         (input, true)
@@ -579,18 +677,42 @@ fn module_field_var_or_final<'a>(full: &'a str, input: &'a str, has_final_modifi
         alt((
             value(true, context("expected 'final' keyword", keyword("final"))),
             value(false, context("expected 'var' keyword", keyword("var"))),
-        )).parse(input)?
+        ))
+        .parse(input)?
     };
-    
+
     let (input, name) = context("expected variable name", identifier).parse(input)?;
-    let (input, type_hint) = opt(preceded(context("expected ':' before type annotation", symbol(":")), |i| type_expr(full, i))).parse(input)?;
-    let (input, expr) = opt(preceded(context("expected '=' before initializer", symbol("=")), |i| expression(full, i))).parse(input)?;
-    let (input, _) = context("expected ';' after variable declaration", symbol(";")).parse(input)?;
-    
+    let (input, type_hint) = opt(preceded(
+        context("expected ':' before type annotation", symbol(":")),
+        |i| type_expr(full, i),
+    ))
+    .parse(input)?;
+    let (input, expr) = opt(preceded(
+        context("expected '=' before initializer", symbol("=")),
+        |i| expression(full, i),
+    ))
+    .parse(input)?;
+    let (input, _) =
+        context("expected ';' after variable declaration", symbol(";")).parse(input)?;
+
     if is_final || has_final_modifier {
-        Ok((input, ModuleFieldKind::Final { name, type_hint, expr }))
+        Ok((
+            input,
+            ModuleFieldKind::Final {
+                name,
+                type_hint,
+                expr,
+            },
+        ))
     } else {
-        Ok((input, ModuleFieldKind::Var { name, type_hint, expr }))
+        Ok((
+            input,
+            ModuleFieldKind::Var {
+                name,
+                type_hint,
+                expr,
+            },
+        ))
     }
 }
 
@@ -607,8 +729,9 @@ pub fn ws(input: &str) -> PResult<()> {
             value((), line_comment),
             value((), block_comment),
             value((), preprocessor_directive),
-        )))
-    ).parse(input)
+        ))),
+    )
+    .parse(input)
 }
 
 /// Skip whitespace and comments, require at least some
@@ -620,8 +743,9 @@ pub fn ws1(input: &str) -> PResult<()> {
             value((), line_comment),
             value((), block_comment),
             value((), preprocessor_directive),
-        )))
-    ).parse(input)
+        ))),
+    )
+    .parse(input)
 }
 
 /// Preprocessor directive: #if condition ... #else ... #end
@@ -644,17 +768,30 @@ fn preprocessor_directive(input: &str) -> PResult<&str> {
             if let Some(end_pos) = input.find("#end") {
                 if end_pos < newline_pos {
                     // This is an inline preprocessor directive - don't handle it here
-                    return Err(nom::Err::Error(ContextualError::new(input, nom::error::ErrorKind::Tag)));
+                    return Err(nom::Err::Error(ContextualError::new(
+                        input,
+                        nom::error::ErrorKind::Tag,
+                    )));
                 }
             }
-        } else if input.find("#end").is_some() {
+        } else if input.contains("#end") {
             // No newline found but #end exists - entire thing is on one line
-            return Err(nom::Err::Error(ContextualError::new(input, nom::error::ErrorKind::Tag)));
+            return Err(nom::Err::Error(ContextualError::new(
+                input,
+                nom::error::ErrorKind::Tag,
+            )));
         }
     }
 
     // Handle standalone #end (from a previous #else that we returned)
-    if input.starts_with("#end") && (input.len() == 4 || !input.chars().nth(4).map(|c| c.is_alphanumeric()).unwrap_or(false)) {
+    if input.starts_with("#end")
+        && (input.len() == 4
+            || !input
+                .chars()
+                .nth(4)
+                .map(|c| c.is_alphanumeric())
+                .unwrap_or(false))
+    {
         let mut rest = &input[4..];
         // Skip to end of line
         while !rest.is_empty() && !rest.starts_with('\n') {
@@ -668,15 +805,36 @@ fn preprocessor_directive(input: &str) -> PResult<&str> {
 
     // Handle standalone #else (when we took the #if branch due to negation)
     // We need to skip from #else to #end
-    if input.starts_with("#else") && (input.len() == 5 || !input.chars().nth(5).map(|c| c.is_alphanumeric()).unwrap_or(false)) {
+    if input.starts_with("#else")
+        && (input.len() == 5
+            || !input
+                .chars()
+                .nth(5)
+                .map(|c| c.is_alphanumeric())
+                .unwrap_or(false))
+    {
         let mut current = &input[5..];
         let mut depth = 1;
 
         while depth > 0 && !current.is_empty() {
-            if current.starts_with("#if") && (current.len() == 3 || !current.chars().nth(3).map(|c| c.is_alphanumeric()).unwrap_or(false)) {
+            if current.starts_with("#if")
+                && (current.len() == 3
+                    || !current
+                        .chars()
+                        .nth(3)
+                        .map(|c| c.is_alphanumeric())
+                        .unwrap_or(false))
+            {
                 depth += 1;
                 current = &current[3..];
-            } else if current.starts_with("#end") && (current.len() == 4 || !current.chars().nth(4).map(|c| c.is_alphanumeric()).unwrap_or(false)) {
+            } else if current.starts_with("#end")
+                && (current.len() == 4
+                    || !current
+                        .chars()
+                        .nth(4)
+                        .map(|c| c.is_alphanumeric())
+                        .unwrap_or(false))
+            {
                 depth -= 1;
                 if depth == 0 {
                     current = &current[4..];
@@ -742,7 +900,7 @@ fn preprocessor_directive(input: &str) -> PResult<&str> {
     if is_negated {
         // Skip to end of line
         let (input, _) = take_while(|c: char| c != '\n')(input)?;
-        let input = if input.starts_with('\n') { &input[1..] } else { input };
+        let input = input.strip_prefix('\n').unwrap_or(input);
         // Return - the #if branch content will be parsed normally
         // We'll handle #else and #end when we encounter them
         return Ok((input, ""));
@@ -750,17 +908,24 @@ fn preprocessor_directive(input: &str) -> PResult<&str> {
 
     // Skip to end of line
     let (input, _) = take_while(|c: char| c != '\n')(input)?;
-    let input = if input.starts_with('\n') { &input[1..] } else { input };
+    let input = input.strip_prefix('\n').unwrap_or(input);
 
     // Now we need to find the matching #end, handling nesting
     // We skip the #if branch content and take #else content if present
     let start = input;
     let mut current = input;
     let mut depth = 1;
-    let mut else_start: Option<&str> = None;
+    let mut _else_start: Option<&str> = None;
 
     while depth > 0 && !current.is_empty() {
-        if current.starts_with("#if") && (current.len() == 3 || !current.chars().nth(3).map(|c| c.is_alphanumeric()).unwrap_or(false)) {
+        if current.starts_with("#if")
+            && (current.len() == 3
+                || !current
+                    .chars()
+                    .nth(3)
+                    .map(|c| c.is_alphanumeric())
+                    .unwrap_or(false))
+        {
             depth += 1;
             current = &current[3..];
         } else if current.starts_with("#elseif") && depth == 1 {
@@ -777,7 +942,15 @@ fn preprocessor_directive(input: &str) -> PResult<&str> {
             // Return here - the content after #elseif will be parsed normally
             // until we hit the next preprocessor directive
             break;
-        } else if current.starts_with("#else") && depth == 1 && (current.len() == 5 || !current.chars().nth(5).map(|c| c.is_alphanumeric()).unwrap_or(false)) {
+        } else if current.starts_with("#else")
+            && depth == 1
+            && (current.len() == 5
+                || !current
+                    .chars()
+                    .nth(5)
+                    .map(|c| c.is_alphanumeric())
+                    .unwrap_or(false))
+        {
             // Found #else at our level - skip the #else keyword and newline
             // The content after it will be parsed normally
             current = &current[5..];
@@ -789,7 +962,14 @@ fn preprocessor_directive(input: &str) -> PResult<&str> {
             }
             // Return here - the #else content will be parsed normally
             break;
-        } else if current.starts_with("#end") && (current.len() == 4 || !current.chars().nth(4).map(|c| c.is_alphanumeric()).unwrap_or(false)) {
+        } else if current.starts_with("#end")
+            && (current.len() == 4
+                || !current
+                    .chars()
+                    .nth(4)
+                    .map(|c| c.is_alphanumeric())
+                    .unwrap_or(false))
+        {
             depth -= 1;
             if depth == 0 {
                 // Skip #end and rest of line
@@ -824,20 +1004,18 @@ fn line_comment(input: &str) -> PResult<&str> {
     recognize(tuple((
         tag("//"),
         take_while(|c| c != '\n'),
-        opt(char('\n'))
-    ))).parse(input)
+        opt(char('\n')),
+    )))
+    .parse(input)
 }
 
 /// Block comment: /* comment */
 fn block_comment(input: &str) -> PResult<&str> {
-    recognize(tuple((
-        tag("/*"),
-        take_until("*/"),
-        tag("*/")
-    ))).parse(input)
+    recognize(tuple((tag("/*"), take_until("*/"), tag("*/")))).parse(input)
 }
 
 /// Parse T with optional leading whitespace
+#[allow(dead_code)]
 fn ws_before<'a, T, F>(mut parser: F) -> impl FnMut(&'a str) -> PResult<'a, T>
 where
     F: FnMut(&'a str) -> PResult<'a, T>,
@@ -854,14 +1032,52 @@ where
 
 /// Reserved keywords
 fn is_keyword(s: &str) -> bool {
-    matches!(s,
-        "abstract" | "break" | "case" | "cast" | "catch" | "class" | "continue" |
-        "default" | "do" | "dynamic" | "else" | "enum" | "extends" | "extern" |
-        "false" | "final" | "for" | "function" | "if" | "implements" | "import" |
-        "in" | "inline" | "interface" | "macro" | "new" | "null" | "override" |
-        "package" | "private" | "public" | "return" | "static" | "super" | 
-        "switch" | "this" | "throw" | "true" | "try" | "typedef" | "untyped" |
-        "using" | "var" | "while"
+    matches!(
+        s,
+        "abstract"
+            | "break"
+            | "case"
+            | "cast"
+            | "catch"
+            | "class"
+            | "continue"
+            | "default"
+            | "do"
+            | "dynamic"
+            | "else"
+            | "enum"
+            | "extends"
+            | "extern"
+            | "false"
+            | "final"
+            | "for"
+            | "function"
+            | "if"
+            | "implements"
+            | "import"
+            | "in"
+            | "inline"
+            | "interface"
+            | "macro"
+            | "new"
+            | "null"
+            | "override"
+            | "package"
+            | "private"
+            | "public"
+            | "return"
+            | "static"
+            | "super"
+            | "switch"
+            | "this"
+            | "throw"
+            | "true"
+            | "try"
+            | "typedef"
+            | "untyped"
+            | "using"
+            | "var"
+            | "while"
     )
 }
 
@@ -870,12 +1086,10 @@ pub fn keyword<'a>(kw: &'static str) -> impl FnMut(&'a str) -> PResult<'a, &'a s
     move |input| {
         let (input, _) = ws(input)?;
         let (input, word) = verify(
-            recognize(pair(
-                tag(kw),
-                peek(not(alphanumeric1))
-            )),
-            |s: &str| s == kw
-        ).parse(input)?;
+            recognize(pair(tag(kw), peek(not(alphanumeric1)))),
+            |s: &str| s == kw,
+        )
+        .parse(input)?;
         Ok((input, word))
     }
 }
@@ -886,10 +1100,11 @@ pub fn identifier(input: &str) -> PResult<String> {
     let (input, id) = verify(
         recognize(pair(
             alt((alpha1, tag("_"))),
-            many0(alt((alphanumeric1, tag("_"))))
+            many0(alt((alphanumeric1, tag("_")))),
         )),
-        |s: &str| !is_keyword(s)
-    ).parse(input)?;
+        |s: &str| !is_keyword(s),
+    )
+    .parse(input)?;
     Ok((input, id.to_string()))
 }
 
@@ -899,10 +1114,11 @@ pub fn function_name(input: &str) -> PResult<String> {
     let (input, id) = verify(
         recognize(pair(
             alt((alpha1, tag("_"))),
-            many0(alt((alphanumeric1, tag("_"))))
+            many0(alt((alphanumeric1, tag("_")))),
         )),
-        |s: &str| !is_keyword(s) || s == "new"
-    ).parse(input)?;
+        |s: &str| !is_keyword(s) || s == "new",
+    )
+    .parse(input)?;
     Ok((input, id.to_string()))
 }
 
@@ -917,13 +1133,10 @@ pub fn compiler_specific_identifier(input: &str) -> PResult<String> {
     let (rest, _suffix) = many0(alphanumeric1).parse(rest)?;
     // Then check for trailing __
     let (rest, _) = tag("__")(rest)?;
-    
+
     // Reconstruct the full identifier
-    let full_id = format!("__{}{}__", 
-        middle, 
-        _suffix.join("")
-    );
-    
+    let full_id = format!("__{}{}__", middle, _suffix.join(""));
+
     Ok((rest, full_id))
 }
 
@@ -942,17 +1155,23 @@ pub fn symbol<'a>(sym: &'static str) -> impl FnMut(&'a str) -> PResult<'a, &'a s
 /// Package declaration: `package com.example;`
 pub fn package_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, Package> {
     context("package declaration", |input| {
-    let start = position(full, input);
-    let (input, _) = context("expected 'package' keyword", keyword("package")).parse(input)?;
-    let (input, path) = context("expected package path (e.g., 'com.example')", dot_path).parse(input)?;
-    let (input, _) = context("expected ';' after package declaration", symbol(";")).parse(input)?;
-    let end = position(full, input);
-    
-    Ok((input, Package {
-        path,
-        span: Span::new(start, end),
-    }))
-    }).parse(input)
+        let start = position(full, input);
+        let (input, _) = context("expected 'package' keyword", keyword("package")).parse(input)?;
+        let (input, path) =
+            context("expected package path (e.g., 'com.example')", dot_path).parse(input)?;
+        let (input, _) =
+            context("expected ';' after package declaration", symbol(";")).parse(input)?;
+        let end = position(full, input);
+
+        Ok((
+            input,
+            Package {
+                path,
+                span: Span::new(start, end),
+            },
+        ))
+    })
+    .parse(input)
 }
 
 /// Import declaration
@@ -960,14 +1179,14 @@ pub fn import_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, Import> {
     context("import declaration", |input| {
     let start = position(full, input);
     let (input, _) = context("[E0095] expected 'import' keyword", keyword("import")).parse(input)?;
-    
+
     // Parse the import path and mode
     let (input, (path, mode)) = context("[E0096] expected import path | help: provide a valid import path like 'haxe.ds.StringMap'", alt((
         // import path.* or import path.* except ...
         |input| {
             let (input, path) = import_path_until_wildcard(input)?;
             let (input, _) = context("[E0097] expected '.*' for wildcard import | help: use '.*' to import all items from a module", symbol(".*")).parse(input)?;
-            
+
             // Check if there's an "except" clause
             if let Ok((input_after_except, _)) = keyword("except")(input) {
                 // Parse the exclusion list
@@ -984,13 +1203,13 @@ pub fn import_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, Import> {
         |input| {
             // Try to parse the full path first
             let (input_after_path, full_path) = import_path(input)?;
-            
+
             // Check what comes after the path
             if let Ok((input_after_as, _)) = keyword("as")(input_after_path) {
                 // This is an alias import
                 let (input, alias) = context("[E0099] expected alias identifier after 'as' | help: provide an alias name for the import", identifier).parse(input_after_as)?;
                 Ok((input, (full_path, ImportMode::Alias(alias))))
-            } else if let Ok((input_before_semicolon, _)) = symbol(";")(input_after_path) {
+            } else if let Ok((_input_before_semicolon, _)) = symbol(";")(input_after_path) {
                 // If we can see a semicolon, check if the last part might be a field
                 if full_path.len() >= 2 {
                     // Check if the last identifier starts with lowercase (likely a field)
@@ -1014,10 +1233,10 @@ pub fn import_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, Import> {
             }
         }
     ))).parse(input)?;
-    
+
     let (input, _) = context("[E0100] expected ';' after import statement | help: import statements must end with semicolon", symbol(";")).parse(input)?;
     let end = position(full, input);
-    
+
     Ok((input, Import {
         path,
         mode,
@@ -1034,7 +1253,7 @@ pub fn using_decl<'a>(full: &'a str, input: &'a str) -> PResult<'a, Using> {
     let (input, path) = context("[E0102] expected type path | help: provide a type to use, like 'StringTools'", import_path).parse(input)?;
     let (input, _) = context("[E0103] expected ';' after using statement | help: using statements must end with semicolon", symbol(";")).parse(input)?;
     let end = position(full, input);
-    
+
     Ok((input, Using {
         path,
         span: Span::new(start, end),
@@ -1047,60 +1266,53 @@ fn identifier_or_keyword(input: &str) -> PResult<String> {
     let (input, _) = ws(input)?;
     let (input, id) = recognize(pair(
         alt((alpha1, tag("_"))),
-        many0(alt((alphanumeric1, tag("_"))))
-    )).parse(input)?;
+        many0(alt((alphanumeric1, tag("_")))),
+    ))
+    .parse(input)?;
     Ok((input, id.to_string()))
 }
 
 /// Dot-separated path: `com.example.Class`
 /// Note: Allows keywords in path segments (e.g., haxe.macro, haxe.extern)
 pub fn dot_path(input: &str) -> PResult<Vec<String>> {
-    separated_list1(
-        symbol("."),
-        identifier_or_keyword
-    ).parse(input)
+    separated_list1(symbol("."), identifier_or_keyword).parse(input)
 }
 
 /// Import path that allows keywords (e.g., `haxe.macro.Context`)
 fn import_path(input: &str) -> PResult<Vec<String>> {
-    separated_list1(
-        symbol("."),
-        identifier_or_keyword
-    ).parse(input)
+    separated_list1(symbol("."), identifier_or_keyword).parse(input)
 }
 
 /// Import path until wildcard (stops before .*)
 fn import_path_until_wildcard(input: &str) -> PResult<Vec<String>> {
     let mut path = Vec::new();
     let mut current = input;
-    
+
     // Parse first identifier
     let (next, first) = identifier_or_keyword(current)?;
     path.push(first);
     current = next;
-    
+
     // Continue parsing dot-separated identifiers until we hit .* or end
     loop {
         // Check if next is .*
         if symbol(".*")(current).is_ok() {
             break;
         }
-        
+
         // Try to parse another .identifier
         match symbol(".")(current) {
-            Ok((after_dot, _)) => {
-                match identifier_or_keyword(after_dot) {
-                    Ok((next, id)) => {
-                        path.push(id);
-                        current = next;
-                    }
-                    Err(_) => break,
+            Ok((after_dot, _)) => match identifier_or_keyword(after_dot) {
+                Ok((next, id)) => {
+                    path.push(id);
+                    current = next;
                 }
-            }
+                Err(_) => break,
+            },
             Err(_) => break,
         }
     }
-    
+
     Ok((current, path))
 }
 
@@ -1116,39 +1328,80 @@ pub fn type_declaration<'a>(full: &'a str, input: &'a str) -> PResult<'a, TypeDe
         alt((
             // Check for conditional compilation first
             |i| {
-                let peek_result: Result<_, nom::Err<nom::error::Error<_>>> = peek(tag("#if")).parse(i);
+                let peek_result: Result<_, nom::Err<nom::error::Error<_>>> =
+                    peek(tag("#if")).parse(i);
                 if peek_result.is_ok() {
                     map(
                         |i| conditional_compilation(full, i, type_declaration),
-                        TypeDeclaration::Conditional
-                    ).parse(i)
+                        TypeDeclaration::Conditional,
+                    )
+                    .parse(i)
                 } else {
-                    Err(nom::Err::Error(ContextualError::new(i, nom::error::ErrorKind::Tag)))
+                    Err(nom::Err::Error(ContextualError::new(
+                        i,
+                        nom::error::ErrorKind::Tag,
+                    )))
                 }
             },
             // Check for metadata-prefixed declarations
             |i| {
-                let peek_result: Result<_, nom::Err<nom::error::Error<_>>> = peek(tag("@")).parse(i);
+                let peek_result: Result<_, nom::Err<nom::error::Error<_>>> =
+                    peek(tag("@")).parse(i);
                 if peek_result.is_ok() {
                     // Try parsing each type with metadata
                     alt((
-                        context("class declaration", map(|i| class_decl(full, i), TypeDeclaration::Class)),
-                        context("interface declaration", map(|i| interface_decl(full, i), TypeDeclaration::Interface)),
-                        context("enum declaration", map(|i| enum_decl(full, i), TypeDeclaration::Enum)),
-                        context("typedef declaration", map(|i| typedef_decl(full, i), TypeDeclaration::Typedef)),
-                        context("abstract declaration", map(|i| abstract_decl(full, i), TypeDeclaration::Abstract)),
-                    )).parse(i)
+                        context(
+                            "class declaration",
+                            map(|i| class_decl(full, i), TypeDeclaration::Class),
+                        ),
+                        context(
+                            "interface declaration",
+                            map(|i| interface_decl(full, i), TypeDeclaration::Interface),
+                        ),
+                        context(
+                            "enum declaration",
+                            map(|i| enum_decl(full, i), TypeDeclaration::Enum),
+                        ),
+                        context(
+                            "typedef declaration",
+                            map(|i| typedef_decl(full, i), TypeDeclaration::Typedef),
+                        ),
+                        context(
+                            "abstract declaration",
+                            map(|i| abstract_decl(full, i), TypeDeclaration::Abstract),
+                        ),
+                    ))
+                    .parse(i)
                 } else {
-                    Err(nom::Err::Error(ContextualError::new(i, nom::error::ErrorKind::Tag)))
+                    Err(nom::Err::Error(ContextualError::new(
+                        i,
+                        nom::error::ErrorKind::Tag,
+                    )))
                 }
             },
-            context("class declaration", map(|i| class_decl(full, i), TypeDeclaration::Class)),
-            context("interface declaration", map(|i| interface_decl(full, i), TypeDeclaration::Interface)),
-            context("enum declaration", map(|i| enum_decl(full, i), TypeDeclaration::Enum)),
-            context("typedef declaration", map(|i| typedef_decl(full, i), TypeDeclaration::Typedef)),
-            context("abstract declaration", map(|i| abstract_decl(full, i), TypeDeclaration::Abstract)),
-        ))
-    ).parse(input)
+            context(
+                "class declaration",
+                map(|i| class_decl(full, i), TypeDeclaration::Class),
+            ),
+            context(
+                "interface declaration",
+                map(|i| interface_decl(full, i), TypeDeclaration::Interface),
+            ),
+            context(
+                "enum declaration",
+                map(|i| enum_decl(full, i), TypeDeclaration::Enum),
+            ),
+            context(
+                "typedef declaration",
+                map(|i| typedef_decl(full, i), TypeDeclaration::Typedef),
+            ),
+            context(
+                "abstract declaration",
+                map(|i| abstract_decl(full, i), TypeDeclaration::Abstract),
+            ),
+        )),
+    )
+    .parse(input)
 }
 
 /// Parse metadata attributes
@@ -1169,21 +1422,25 @@ fn metadata<'a>(full: &'a str, input: &'a str) -> PResult<'a, Metadata> {
         // @metadata format
         identifier(input)?
     };
-    
+
     // Optional parameters
     let (input, params) = opt(delimited(
         symbol("("),
         separated_list0(symbol(","), |i| expression(full, i)),
-        symbol(")")
-    )).parse(input)?;
-    
+        symbol(")"),
+    ))
+    .parse(input)?;
+
     let end = position(full, input);
-    
-    Ok((input, Metadata {
-        name,
-        params: params.unwrap_or_default(),
-        span: Span::new(start, end),
-    }))
+
+    Ok((
+        input,
+        Metadata {
+            name,
+            params: params.unwrap_or_default(),
+            span: Span::new(start, end),
+        },
+    ))
 }
 
 /// Parse access modifier
@@ -1191,7 +1448,8 @@ pub fn access(input: &str) -> PResult<Access> {
     alt((
         value(Access::Public, keyword("public")),
         value(Access::Private, keyword("private")),
-    )).parse(input)
+    ))
+    .parse(input)
 }
 
 /// Parse function modifiers
@@ -1204,14 +1462,15 @@ pub fn modifiers(input: &str) -> PResult<Vec<Modifier>> {
         value(Modifier::Override, keyword("override")),
         value(Modifier::Final, keyword("final")),
         value(Modifier::Extern, keyword("extern")),
-    ))).parse(input)
+    )))
+    .parse(input)
 }
 
 /// Import declarations from other parser modules
 pub use crate::haxe_parser_decls::*;
-pub use crate::haxe_parser_types::*;
 pub use crate::haxe_parser_expr::*;
 use crate::haxe_parser_expr2::block_expr;
+pub use crate::haxe_parser_types::*;
 
 // =============================================================================
 // Conditional Compilation
@@ -1219,46 +1478,52 @@ use crate::haxe_parser_expr2::block_expr;
 
 /// Parse conditional compilation directive
 pub fn conditional_compilation<'a, T, F>(
-    full: &'a str, 
+    full: &'a str,
     input: &'a str,
-    content_parser: F
+    content_parser: F,
 ) -> PResult<'a, ConditionalCompilation<T>>
 where
     F: Fn(&'a str, &'a str) -> PResult<'a, T> + Copy,
 {
     context("conditional compilation", |input| {
-    let start = position(full, input);
-    
-    // Parse #if branch
-    let (input, if_branch) = conditional_if_branch(full, input, content_parser)?;
-    
-    // Parse #elseif branches
-    let (input, elseif_branches) = many0(|i| conditional_elseif_branch(full, i, content_parser)).parse(input)?;
-    
-    // Parse optional #else branch
-    let (input, else_branch) = opt(|i| conditional_else_branch(full, i, content_parser)).parse(input)?;
-    
-    // Parse #end
-    let (input, _) = ws(input)?;
-    let (input, _) = tag("#end")(input)?;
-    let (input, _) = ws(input)?; // Consume trailing whitespace after #end
-    
-    let end = position(full, input);
-    
-    Ok((input, ConditionalCompilation {
-        if_branch,
-        elseif_branches,
-        else_branch,
-        span: Span::new(start, end),
-    }))
-    }).parse(input)
+        let start = position(full, input);
+
+        // Parse #if branch
+        let (input, if_branch) = conditional_if_branch(full, input, content_parser)?;
+
+        // Parse #elseif branches
+        let (input, elseif_branches) =
+            many0(|i| conditional_elseif_branch(full, i, content_parser)).parse(input)?;
+
+        // Parse optional #else branch
+        let (input, else_branch) =
+            opt(|i| conditional_else_branch(full, i, content_parser)).parse(input)?;
+
+        // Parse #end
+        let (input, _) = ws(input)?;
+        let (input, _) = tag("#end")(input)?;
+        let (input, _) = ws(input)?; // Consume trailing whitespace after #end
+
+        let end = position(full, input);
+
+        Ok((
+            input,
+            ConditionalCompilation {
+                if_branch,
+                elseif_branches,
+                else_branch,
+                span: Span::new(start, end),
+            },
+        ))
+    })
+    .parse(input)
 }
 
 /// Parse #if branch
 fn conditional_if_branch<'a, T, F>(
     full: &'a str,
     input: &'a str,
-    content_parser: F
+    content_parser: F,
 ) -> PResult<'a, ConditionalBlock<Vec<T>>>
 where
     F: Fn(&'a str, &'a str) -> PResult<'a, T> + Copy,
@@ -1269,33 +1534,41 @@ where
     let (input, _) = ws1(input)?;
     let (input, condition) = conditional_expr(input)?;
     let (input, _) = ws(input)?;
-    
+
     // Parse content until #elseif, #else, or #end
     let (input, content) = many0(|i| {
         // Look ahead for conditional directives
-        let peek_result: Result<_, nom::Err<nom::error::Error<_>>> = peek(alt((tag("#elseif"), tag("#else"), tag("#end")))).parse(i);
+        let peek_result: Result<_, nom::Err<nom::error::Error<_>>> =
+            peek(alt((tag("#elseif"), tag("#else"), tag("#end")))).parse(i);
         if peek_result.is_ok() {
             // Stop parsing content
-            Err(nom::Err::Error(ContextualError::new(i, nom::error::ErrorKind::Eof)))
+            Err(nom::Err::Error(ContextualError::new(
+                i,
+                nom::error::ErrorKind::Eof,
+            )))
         } else {
             content_parser(full, i)
         }
-    }).parse(input)?;
-    
+    })
+    .parse(input)?;
+
     let end = position(full, input);
-    
-    Ok((input, ConditionalBlock {
-        condition,
-        content,
-        span: Span::new(start, end),
-    }))
+
+    Ok((
+        input,
+        ConditionalBlock {
+            condition,
+            content,
+            span: Span::new(start, end),
+        },
+    ))
 }
 
 /// Parse #elseif branch
 fn conditional_elseif_branch<'a, T, F>(
     full: &'a str,
     input: &'a str,
-    content_parser: F
+    content_parser: F,
 ) -> PResult<'a, ConditionalBlock<Vec<T>>>
 where
     F: Fn(&'a str, &'a str) -> PResult<'a, T> + Copy,
@@ -1306,30 +1579,38 @@ where
     let (input, _) = ws1(input)?;
     let (input, condition) = conditional_expr(input)?;
     let (input, _) = ws(input)?;
-    
+
     let (input, content) = many0(|i| {
-        let peek_result: Result<_, nom::Err<nom::error::Error<_>>> = peek(alt((tag("#elseif"), tag("#else"), tag("#end")))).parse(i);
+        let peek_result: Result<_, nom::Err<nom::error::Error<_>>> =
+            peek(alt((tag("#elseif"), tag("#else"), tag("#end")))).parse(i);
         if peek_result.is_ok() {
-            Err(nom::Err::Error(ContextualError::new(i, nom::error::ErrorKind::Eof)))
+            Err(nom::Err::Error(ContextualError::new(
+                i,
+                nom::error::ErrorKind::Eof,
+            )))
         } else {
             content_parser(full, i)
         }
-    }).parse(input)?;
-    
+    })
+    .parse(input)?;
+
     let end = position(full, input);
-    
-    Ok((input, ConditionalBlock {
-        condition,
-        content,
-        span: Span::new(start, end),
-    }))
+
+    Ok((
+        input,
+        ConditionalBlock {
+            condition,
+            content,
+            span: Span::new(start, end),
+        },
+    ))
 }
 
 /// Parse #else branch
 fn conditional_else_branch<'a, T, F>(
     full: &'a str,
     input: &'a str,
-    content_parser: F
+    content_parser: F,
 ) -> PResult<'a, Vec<T>>
 where
     F: Fn(&'a str, &'a str) -> PResult<'a, T> + Copy,
@@ -1337,15 +1618,19 @@ where
     let (input, _) = ws(input)?;
     let (input, _) = tag("#else")(input)?;
     let (input, _) = ws(input)?;
-    
+
     many0(|i| {
         let peek_result: Result<_, nom::Err<nom::error::Error<_>>> = peek(tag("#end")).parse(i);
         if peek_result.is_ok() {
-            Err(nom::Err::Error(ContextualError::new(i, nom::error::ErrorKind::Eof)))
+            Err(nom::Err::Error(ContextualError::new(
+                i,
+                nom::error::ErrorKind::Eof,
+            )))
         } else {
             content_parser(full, i)
         }
-    }).parse(input)
+    })
+    .parse(input)
 }
 
 /// Parse conditional expression
@@ -1356,29 +1641,31 @@ fn conditional_expr(input: &str) -> PResult<ConditionalExpr> {
 /// Parse OR expression
 fn conditional_or_expr(input: &str) -> PResult<ConditionalExpr> {
     let (input, left) = conditional_and_expr(input)?;
-    
-    let (input, rights) = many0(preceded(
-        tuple((ws, tag("||"), ws)),
-        conditional_and_expr
-    )).parse(input)?;
-    
-    Ok((input, rights.into_iter().fold(left, |acc, right| {
-        ConditionalExpr::Or(Box::new(acc), Box::new(right))
-    })))
+
+    let (input, rights) =
+        many0(preceded(tuple((ws, tag("||"), ws)), conditional_and_expr)).parse(input)?;
+
+    Ok((
+        input,
+        rights.into_iter().fold(left, |acc, right| {
+            ConditionalExpr::Or(Box::new(acc), Box::new(right))
+        }),
+    ))
 }
 
 /// Parse AND expression
 fn conditional_and_expr(input: &str) -> PResult<ConditionalExpr> {
     let (input, left) = conditional_not_expr(input)?;
-    
-    let (input, rights) = many0(preceded(
-        tuple((ws, tag("&&"), ws)),
-        conditional_not_expr
-    )).parse(input)?;
-    
-    Ok((input, rights.into_iter().fold(left, |acc, right| {
-        ConditionalExpr::And(Box::new(acc), Box::new(right))
-    })))
+
+    let (input, rights) =
+        many0(preceded(tuple((ws, tag("&&"), ws)), conditional_not_expr)).parse(input)?;
+
+    Ok((
+        input,
+        rights.into_iter().fold(left, |acc, right| {
+            ConditionalExpr::And(Box::new(acc), Box::new(right))
+        }),
+    ))
 }
 
 /// Parse NOT expression
@@ -1387,8 +1674,9 @@ fn conditional_not_expr(input: &str) -> PResult<ConditionalExpr> {
         map(preceded(char('!'), conditional_primary_expr), |e| {
             ConditionalExpr::Not(Box::new(e))
         }),
-        conditional_primary_expr
-    )).parse(input)
+        conditional_primary_expr,
+    ))
+    .parse(input)
 }
 
 /// Parse primary expression (identifier or parenthesized)
@@ -1399,11 +1687,12 @@ fn conditional_primary_expr(input: &str) -> PResult<ConditionalExpr> {
             delimited(
                 char('('),
                 preceded(ws, conditional_expr),
-                preceded(ws, char(')'))
+                preceded(ws, char(')')),
             ),
-            |e| ConditionalExpr::Paren(Box::new(e))
+            |e| ConditionalExpr::Paren(Box::new(e)),
         ),
         // Identifier
-        map(identifier, ConditionalExpr::Ident)
-    )).parse(input)
+        map(identifier, ConditionalExpr::Ident),
+    ))
+    .parse(input)
 }

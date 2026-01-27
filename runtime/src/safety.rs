@@ -4,8 +4,8 @@
 //! for the Rayzor runtime. It helps identify memory safety issues during
 //! development and can be optionally enabled in production.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use log::debug;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Global counter for safety violations
 static SAFETY_VIOLATION_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -69,7 +69,7 @@ pub unsafe fn validate_heap_pointer(ptr: *const u8, name: &str) -> Result<(), &'
     }
 
     // Check alignment (heap pointers should be at least 8-byte aligned on 64-bit)
-    if ptr as usize % 8 != 0 {
+    if !((ptr as usize).is_multiple_of(8)) {
         report_violation(
             SafetyViolation::MisalignedPointer,
             "validate_heap_pointer",
@@ -88,7 +88,7 @@ pub unsafe fn validate_heap_pointer(ptr: *const u8, name: &str) -> Result<(), &'
 pub unsafe fn validate_alignment<T>(ptr: *const u8, name: &str) -> Result<(), &'static str> {
     let align = std::mem::align_of::<T>();
 
-    if ptr as usize % align != 0 {
+    if !((ptr as usize).is_multiple_of(align)) {
         report_violation(
             SafetyViolation::MisalignedPointer,
             "validate_alignment",

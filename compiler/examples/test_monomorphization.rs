@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test monomorphization infrastructure
 //!
 //! This test verifies that:
@@ -5,7 +35,7 @@
 //! 2. Type substitution works for various types
 //! 3. The monomorphization pass detects generic functions
 
-use compiler::ir::{IrType, MonoKey, Monomorphizer, IrFunctionId};
+use compiler::ir::{IrFunctionId, IrType, MonoKey, Monomorphizer};
 
 fn main() {
     println!("=== Monomorphization Infrastructure Test ===\n");
@@ -70,8 +100,11 @@ fn test_nested_type_substitution() {
 
     // Test creating generic types
     let container_int = IrType::generic(
-        IrType::Struct { name: "Container".to_string(), fields: vec![] },
-        vec![IrType::I32]
+        IrType::Struct {
+            name: "Container".to_string(),
+            fields: vec![],
+        },
+        vec![IrType::I32],
     );
 
     match &container_int {

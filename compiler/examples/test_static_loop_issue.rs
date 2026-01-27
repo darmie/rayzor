@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Isolate static var + loop issue
 
 use compiler::codegen::CraneliftBackend;
@@ -9,16 +39,19 @@ fn run_test(name: &str, source: &str, symbols: &[(&str, *const u8)]) -> bool {
     let result: Result<(), String> = (|| {
         let mut unit = CompilationUnit::new(CompilationConfig::fast());
         unit.load_stdlib().map_err(|e| format!("stdlib: {}", e))?;
-        unit.add_file(source, &format!("{}.hx", name)).map_err(|e| format!("parse: {}", e))?;
+        unit.add_file(source, &format!("{}.hx", name))
+            .map_err(|e| format!("parse: {}", e))?;
         unit.lower_to_tast().map_err(|e| format!("tast: {:?}", e))?;
 
         let mir_modules = unit.get_mir_modules();
 
-        let mut backend = CraneliftBackend::with_symbols(symbols)
-            .map_err(|e| format!("backend: {}", e))?;
+        let mut backend =
+            CraneliftBackend::with_symbols(symbols).map_err(|e| format!("backend: {}", e))?;
 
         for module in &mir_modules {
-            backend.compile_module(module).map_err(|e| format!("compile: {}", e))?;
+            backend
+                .compile_module(module)
+                .map_err(|e| format!("compile: {}", e))?;
         }
 
         for module in mir_modules.iter().rev() {
@@ -40,7 +73,8 @@ fn run_test(name: &str, source: &str, symbols: &[(&str, *const u8)]) -> bool {
 
 fn main() {
     let plugin = rayzor_runtime::plugin_impl::get_plugin();
-    let symbols: Vec<(&str, *const u8)> = plugin.runtime_symbols()
+    let symbols: Vec<(&str, *const u8)> = plugin
+        .runtime_symbols()
         .iter()
         .map(|(n, p)| (*n, *p))
         .collect();
@@ -49,7 +83,9 @@ fn main() {
     println!("\n=== Running isolated tests ===\n");
 
     // Test A: Works - local var with literal, used in loop
-    run_test("literal_to_local_loop", r#"
+    run_test(
+        "literal_to_local_loop",
+        r#"
 package test;
 class Main {
     public static function main() {
@@ -58,12 +94,16 @@ class Main {
         trace(1);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     println!("");
 
     // Test B: Check - static var read only (no loop)
-    run_test("static_read_no_loop", r#"
+    run_test(
+        "static_read_no_loop",
+        r#"
 package test;
 class Main {
     static var SIZE = 5;
@@ -72,12 +112,16 @@ class Main {
         trace(n);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     println!("");
 
     // Test C: Check - static var and separate loop
-    run_test("static_read_separate_loop", r#"
+    run_test(
+        "static_read_separate_loop",
+        r#"
 package test;
 class Main {
     static var SIZE = 5;
@@ -88,12 +132,16 @@ class Main {
         trace(2);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     println!("");
 
     // Test D: The problematic case - static var to local, used in loop
-    run_test("static_to_local_used_in_loop", r#"
+    run_test(
+        "static_to_local_used_in_loop",
+        r#"
 package test;
 class Main {
     static var SIZE = 5;
@@ -103,7 +151,9 @@ class Main {
         trace(3);
     }
 }
-"#, &symbols);
+"#,
+        &symbols,
+    );
 
     println!("\n=== Done ===");
 }

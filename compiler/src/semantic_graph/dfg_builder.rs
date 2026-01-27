@@ -6,7 +6,7 @@
 
 use crate::semantic_graph::free_variables::{CapturedVariable, FreeVariableVisitor};
 use crate::semantic_graph::phi_type::{DfgBuilderPhiTypeUnification, PhiTypeUnifier};
-use crate::semantic_graph::tast_cfg_mapping::{StatementLocation, TastCfgMapping, BranchContext};
+use crate::semantic_graph::tast_cfg_mapping::{BranchContext, StatementLocation, TastCfgMapping};
 use crate::tast::collections::{new_id_map, new_id_set, IdMap, IdSet};
 use crate::tast::core::{TypeKind, TypeTable};
 use crate::tast::node::{
@@ -326,29 +326,36 @@ impl DfgBuilder {
         if current_depth == location.nesting_depth {
             // Adjust index if it's out of bounds - this handles cases where the mapping
             // might have created incorrect indices for nested statements
-            let adjusted_index = if location.statement_index >= statements.len() && statements.len() > 0 {
-                // If we're looking for index 1 but there's only 1 statement, use index 0
-                0
-            } else {
-                location.statement_index
-            };
-            
-            statements.get(adjusted_index).ok_or_else(|| {
-                GraphConstructionError::InternalError {
-                    message: format!("Invalid statement index: {} (adjusted to {}), statements available: {}", 
-                                   location.statement_index, adjusted_index, statements.len()),
-                }
-            })
+            let adjusted_index =
+                if location.statement_index >= statements.len() && statements.len() > 0 {
+                    // If we're looking for index 1 but there's only 1 statement, use index 0
+                    0
+                } else {
+                    location.statement_index
+                };
+
+            statements
+                .get(adjusted_index)
+                .ok_or_else(|| GraphConstructionError::InternalError {
+                    message: format!(
+                        "Invalid statement index: {} (adjusted to {}), statements available: {}",
+                        location.statement_index,
+                        adjusted_index,
+                        statements.len()
+                    ),
+                })
         } else {
             // Need to go deeper - find the containing statement
             // At depth 0, we look for the specific statement at location.statement_index
             // At deeper depths, we need to traverse into the correct branch
-            
+
             if current_depth == 0 {
                 // At the top level, find the statement at the specified index
                 if let Some(statement) = statements.get(location.statement_index) {
                     // Now navigate into this statement based on branch context
-                    if let Some(nested) = Self::get_nested_statements_for_branch(statement, location.branch_context) {
+                    if let Some(nested) =
+                        Self::get_nested_statements_for_branch(statement, location.branch_context)
+                    {
                         return Self::navigate_to_statement(nested, location, current_depth + 1);
                     }
                 }
@@ -356,12 +363,16 @@ impl DfgBuilder {
                 // At deeper levels, we need to check each statement to find nested content
                 for statement in statements {
                     // Check if this statement contains nested statements
-                    if let Some(nested) = Self::get_nested_statements_for_branch(statement, location.branch_context) {
-                        if let Ok(found) = Self::navigate_to_statement(nested, location, current_depth + 1) {
+                    if let Some(nested) =
+                        Self::get_nested_statements_for_branch(statement, location.branch_context)
+                    {
+                        if let Ok(found) =
+                            Self::navigate_to_statement(nested, location, current_depth + 1)
+                        {
                             return Ok(found);
                         }
                     }
-                    
+
                     // Also check if this IS the statement we're looking for (e.g., a non-block in a branch)
                     if current_depth == location.nesting_depth - 1 {
                         // This might be a single statement (not a block) at the target depth
@@ -369,9 +380,9 @@ impl DfgBuilder {
                     }
                 }
             }
-            
+
             Err(GraphConstructionError::InternalError {
-                message: format!("Statement not found at location: {:?}. Current depth: {}, statements at this level: {}", 
+                message: format!("Statement not found at location: {:?}. Current depth: {}, statements at this level: {}",
                                 location, current_depth, statements.len()),
             })
         }
@@ -394,7 +405,7 @@ impl DfgBuilder {
                         // Return the then branch as a single-element slice
                         // The caller will handle unpacking it if it's a Block
                         Some(std::slice::from_ref(then_branch))
-                    },
+                    }
                     BranchContext::IfElse => {
                         if let Some(else_stmt) = else_branch {
                             // Return the else branch as a single-element slice
@@ -413,56 +424,55 @@ impl DfgBuilder {
                     _ => Some(std::slice::from_ref(body)),
                 }
             }
-            TypedStatement::Try { body, catch_clauses, finally_block, .. } => {
-                match branch_context {
-                    BranchContext::None => match body.as_ref() {
-                        TypedStatement::Block { statements, .. } => Some(statements),
-                        _ => Some(std::slice::from_ref(body)),
-                    },
-                    BranchContext::CatchClause(index) => {
-                        catch_clauses.get(index).and_then(|catch| {
-                            match &catch.body {
-                                TypedStatement::Block { statements, .. } => Some(statements.as_slice()),
-                                _ => Some(std::slice::from_ref(&catch.body)),
-                            }
+            TypedStatement::Try {
+                body,
+                catch_clauses,
+                finally_block,
+                ..
+            } => match branch_context {
+                BranchContext::None => match body.as_ref() {
+                    TypedStatement::Block { statements, .. } => Some(statements),
+                    _ => Some(std::slice::from_ref(body)),
+                },
+                BranchContext::CatchClause(index) => {
+                    catch_clauses
+                        .get(index)
+                        .and_then(|catch| match &catch.body {
+                            TypedStatement::Block { statements, .. } => Some(statements.as_slice()),
+                            _ => Some(std::slice::from_ref(&catch.body)),
                         })
-                    }
-                    BranchContext::Finally => {
-                        finally_block.as_ref().and_then(|finally| {
-                            match finally.as_ref() {
-                                TypedStatement::Block { statements, .. } => Some(statements.as_slice()),
-                                _ => Some(std::slice::from_ref(finally)),
-                            }
-                        })
-                    }
-                    _ => None,
                 }
-            }
-            TypedStatement::Switch { cases, default_case, .. } => {
-                match branch_context {
-                    BranchContext::SwitchCase(index) => {
-                        cases.get(index).map(|case| {
-                            match &case.body {
-                                TypedStatement::Block { statements, .. } => statements.as_slice(),
-                                _ => std::slice::from_ref(&case.body),
-                            }
+                BranchContext::Finally => finally_block.as_ref().and_then(|finally| match finally
+                    .as_ref()
+                {
+                    TypedStatement::Block { statements, .. } => Some(statements.as_slice()),
+                    _ => Some(std::slice::from_ref(finally)),
+                }),
+                _ => None,
+            },
+            TypedStatement::Switch {
+                cases,
+                default_case,
+                ..
+            } => match branch_context {
+                BranchContext::SwitchCase(index) => cases.get(index).map(|case| match &case.body {
+                    TypedStatement::Block { statements, .. } => statements.as_slice(),
+                    _ => std::slice::from_ref(&case.body),
+                }),
+                BranchContext::SwitchDefault => {
+                    default_case
+                        .as_ref()
+                        .and_then(|default| match default.as_ref() {
+                            TypedStatement::Block { statements, .. } => Some(statements.as_slice()),
+                            _ => Some(std::slice::from_ref(default.as_ref())),
                         })
-                    }
-                    BranchContext::SwitchDefault => {
-                        default_case.as_ref().and_then(|default| {
-                            match default.as_ref() {
-                                TypedStatement::Block { statements, .. } => Some(statements.as_slice()),
-                                _ => Some(std::slice::from_ref(default.as_ref())),
-                            }
-                        })
-                    }
-                    _ => None,
                 }
-            }
+                _ => None,
+            },
             _ => None,
         }
     }
-    
+
     /// **Get nested statements from a parent statement**
     /// For backward compatibility, defaults to the first available branch
     fn get_nested_statements<'a>(statement: &'a TypedStatement) -> Option<&'a [TypedStatement]> {
@@ -3275,14 +3285,11 @@ impl DfgBuilder {
                 message: format!("No SSA variable found for symbol {:?}", symbol_id),
             })
     }
-    
+
     /// **Get or create SSA variable for a symbol**
     /// This is more lenient than get_current_ssa_variable and will create a placeholder
     /// for undefined symbols (like external functions)
-    fn get_or_create_ssa_variable(
-        &mut self,
-        symbol_id: SymbolId,
-    ) -> SsaVariableId {
+    fn get_or_create_ssa_variable(&mut self, symbol_id: SymbolId) -> SsaVariableId {
         if let Ok(ssa_var) = self.get_current_ssa_variable(symbol_id) {
             ssa_var
         } else {
@@ -3757,7 +3764,8 @@ mod tests {
     use crate::{
         semantic_graph::{dfg_builder, CfgBuilder},
         tast::{
-            node::{FunctionEffects, FunctionMetadata}, MemoryEffects, Mutability, ResourceEffects, StringInterner, Visibility
+            node::{FunctionEffects, FunctionMetadata},
+            MemoryEffects, Mutability, ResourceEffects, StringInterner, Visibility,
         },
     };
 
@@ -3830,11 +3838,11 @@ mod tests {
                 memory_effects: MemoryEffects {
                     mutations: vec![],
                     moves: vec![],
-                    escapes_references:false,
-                    accesses_global_state:false,
+                    escapes_references: false,
+                    accesses_global_state: false,
                 },
-                resource_effects:ResourceEffects{
-                   ..Default::default() 
+                resource_effects: ResourceEffects {
+                    ..Default::default()
                 },
             },
             metadata: FunctionMetadata::default(),

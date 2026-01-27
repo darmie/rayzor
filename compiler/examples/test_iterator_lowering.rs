@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test for-in loop and iterator lowering
 //!
 //! Tests:
@@ -44,7 +74,7 @@ class RangeTest {
 
     match compile_and_check(source, "RangeTest.hx") {
         Ok(()) => println!("✅ Range operator test PASSED\n"),
-        Err(e) => println!("❌ Range operator test FAILED: {}\n", e),
+        Err(e) => println!("❌ Range operator test FAILED: {:?}\n", e),
     }
 }
 
@@ -71,7 +101,10 @@ class ArrayIterTest {
             if e.contains("Generic for-in iterator") {
                 println!("✅ Generic iterator correctly returns IncompleteImplementation error\n");
             } else {
-                println!("❌ Generic iterator test FAILED with unexpected error: {}\n", e);
+                println!(
+                    "❌ Generic iterator test FAILED with unexpected error: {}\n",
+                    e
+                );
             }
         }
     }
@@ -99,7 +132,7 @@ class RangeFuncTest {
 
     match compile_and_check(source, "RangeFuncTest.hx") {
         Ok(()) => println!("✅ Range in function test PASSED\n"),
-        Err(e) => println!("❌ Range in function test FAILED: {}\n", e),
+        Err(e) => println!("❌ Range in function test FAILED: {:?}\n", e),
     }
 }
 
@@ -123,7 +156,7 @@ class NestedRangeTest {
 
     match compile_and_check(source, "NestedRangeTest.hx") {
         Ok(()) => println!("✅ Nested ranges test PASSED\n"),
-        Err(e) => println!("❌ Nested ranges test FAILED: {}\n", e),
+        Err(e) => println!("❌ Nested ranges test FAILED: {:?}\n", e),
     }
 }
 
@@ -137,15 +170,16 @@ fn compile_and_check(source: &str, filename: &str) -> Result<(), String> {
 
         // Print some info about the generated MIR
         for module in &result.mir_modules {
-            println!("  Module '{}' has {} function(s)", module.name, module.functions.len());
+            println!(
+                "  Module '{}' has {} function(s)",
+                module.name,
+                module.functions.len()
+            );
         }
 
         Ok(())
     } else {
-        let error_messages: Vec<String> = result.errors
-            .iter()
-            .map(|e| e.message.clone())
-            .collect();
+        let error_messages: Vec<String> = result.errors.iter().map(|e| e.message.clone()).collect();
         Err(error_messages.join("; "))
     }
 }

@@ -7,20 +7,19 @@ fn test_generic_metadata_simple() {
 class GenericClass<T> {
 }
 "#;
-    
+
     println!("Parsing: {}", input);
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(ast) => {
             println!("Success: {:?}", ast);
-            
+
             // Check if the class has @:generic metadata
-            if let Some(decl) = ast.declarations.first() {
-                if let parser::haxe_ast::TypeDeclaration::Class(class) = decl {
-                    let has_generic = class.meta.iter().any(|meta| meta.name == "generic");
-                    println!("Has @:generic metadata: {}", has_generic);
-                    assert!(has_generic, "Should have @:generic metadata");
-                }
+            if let Some(parser::haxe_ast::TypeDeclaration::Class(class)) = ast.declarations.first()
+            {
+                let has_generic = class.meta.iter().any(|meta| meta.name == "generic");
+                println!("Has @:generic metadata: {}", has_generic);
+                assert!(has_generic, "Should have @:generic metadata");
             }
         }
         Err(e) => {
@@ -40,25 +39,24 @@ class GenericClass<T, U> {
     }
 }
 "#;
-    
+
     println!("Parsing: {}", input);
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(ast) => {
             println!("Success: {:?}", ast);
-            
+
             // Check if the class has @:generic metadata
-            if let Some(decl) = ast.declarations.first() {
-                if let parser::haxe_ast::TypeDeclaration::Class(class) = decl {
-                    let has_generic = class.meta.iter().any(|meta| meta.name == "generic");
-                    println!("Has @:generic metadata: {}", has_generic);
-                    assert!(has_generic, "Should have @:generic metadata");
-                    
-                    // Check type parameters
-                    assert_eq!(class.type_params.len(), 2);
-                    assert_eq!(class.type_params[0].name, "T");
-                    assert_eq!(class.type_params[1].name, "U");
-                }
+            if let Some(parser::haxe_ast::TypeDeclaration::Class(class)) = ast.declarations.first()
+            {
+                let has_generic = class.meta.iter().any(|meta| meta.name == "generic");
+                println!("Has @:generic metadata: {}", has_generic);
+                assert!(has_generic, "Should have @:generic metadata");
+
+                // Check type parameters
+                assert_eq!(class.type_params.len(), 2);
+                assert_eq!(class.type_params[0].name, "T");
+                assert_eq!(class.type_params[1].name, "U");
             }
         }
         Err(e) => {
@@ -76,20 +74,20 @@ interface GenericInterface<T> {
     function process(item: T): T;
 }
 "#;
-    
+
     println!("Parsing: {}", input);
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(ast) => {
             println!("Success: {:?}", ast);
-            
+
             // Check if the interface has @:generic metadata
-            if let Some(decl) = ast.declarations.first() {
-                if let parser::haxe_ast::TypeDeclaration::Interface(interface) = decl {
-                    let has_generic = interface.meta.iter().any(|meta| meta.name == "generic");
-                    println!("Has @:generic metadata: {}", has_generic);
-                    assert!(has_generic, "Should have @:generic metadata");
-                }
+            if let Some(parser::haxe_ast::TypeDeclaration::Interface(interface)) =
+                ast.declarations.first()
+            {
+                let has_generic = interface.meta.iter().any(|meta| meta.name == "generic");
+                println!("Has @:generic metadata: {}", has_generic);
+                assert!(has_generic, "Should have @:generic metadata");
             }
         }
         Err(e) => {
@@ -109,20 +107,20 @@ abstract GenericAbstract<T>(T) {
     }
 }
 "#;
-    
+
     println!("Parsing: {}", input);
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(ast) => {
             println!("Success: {:?}", ast);
-            
+
             // Check if the abstract has @:generic metadata
-            if let Some(decl) = ast.declarations.first() {
-                if let parser::haxe_ast::TypeDeclaration::Abstract(abstract_decl) = decl {
-                    let has_generic = abstract_decl.meta.iter().any(|meta| meta.name == "generic");
-                    println!("Has @:generic metadata: {}", has_generic);
-                    assert!(has_generic, "Should have @:generic metadata");
-                }
+            if let Some(parser::haxe_ast::TypeDeclaration::Abstract(abstract_decl)) =
+                ast.declarations.first()
+            {
+                let has_generic = abstract_decl.meta.iter().any(|meta| meta.name == "generic");
+                println!("Has @:generic metadata: {}", has_generic);
+                assert!(has_generic, "Should have @:generic metadata");
             }
         }
         Err(e) => {
@@ -140,23 +138,22 @@ fn test_generic_metadata_combined_with_other_metadata() {
 class GenericClass<T> {
 }
 "#;
-    
+
     println!("Parsing: {}", input);
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(ast) => {
             println!("Success: {:?}", ast);
-            
+
             // Check if the class has both metadata
-            if let Some(decl) = ast.declarations.first() {
-                if let parser::haxe_ast::TypeDeclaration::Class(class) = decl {
-                    let has_generic = class.meta.iter().any(|meta| meta.name == "generic");
-                    let has_native = class.meta.iter().any(|meta| meta.name == "native");
-                    println!("Has @:generic metadata: {}", has_generic);
-                    println!("Has @:native metadata: {}", has_native);
-                    assert!(has_generic, "Should have @:generic metadata");
-                    assert!(has_native, "Should have @:native metadata");
-                }
+            if let Some(parser::haxe_ast::TypeDeclaration::Class(class)) = ast.declarations.first()
+            {
+                let has_generic = class.meta.iter().any(|meta| meta.name == "generic");
+                let has_native = class.meta.iter().any(|meta| meta.name == "native");
+                println!("Has @:generic metadata: {}", has_generic);
+                println!("Has @:native metadata: {}", has_native);
+                assert!(has_generic, "Should have @:generic metadata");
+                assert!(has_native, "Should have @:native metadata");
             }
         }
         Err(e) => {

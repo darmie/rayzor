@@ -1,11 +1,41 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Direct MIR construction to isolate thread_multiple bug
 //!
 //! This test builds the MIR for a loop with lambda capture directly,
 //! bypassing HIR/TAST to identify where the incorrect function call is generated.
 
-use compiler::ir::mir_builder::MirBuilder;
-use compiler::ir::{IrType, IrFunctionId, BinaryOp, CompareOp};
 use compiler::codegen::cranelift_backend::CraneliftBackend;
+use compiler::ir::mir_builder::MirBuilder;
+use compiler::ir::{BinaryOp, CompareOp, IrFunctionId, IrType};
 
 fn main() {
     println!("=== Building MIR directly for loop-with-lambda scenario ===\n");
@@ -21,8 +51,9 @@ fn main() {
 
     // Step 1: Create lambda function: fn lambda_0(env: i64) -> i32
     println!("Step 1: Creating lambda function...");
-    let lambda_id = builder.begin_function("lambda_0")
-        .param("env", IrType::I64)  // Environment pointer
+    let lambda_id = builder
+        .begin_function("lambda_0")
+        .param("env", IrType::I64) // Environment pointer
         .returns(IrType::I32)
         .build();
 
@@ -32,7 +63,7 @@ fn main() {
 
     // Lambda body: load i from env, multiply by 2, return
     let env_ptr = builder.get_param(0);
-    let i_loaded = builder.load(env_ptr, IrType::I32);  // Load captured i
+    let i_loaded = builder.load(env_ptr, IrType::I32); // Load captured i
     let two = builder.const_i32(2);
     let result = builder.mul(i_loaded, two, IrType::I32);
     builder.ret(Some(result));
@@ -42,9 +73,10 @@ fn main() {
 
     // Step 2: Create Thread.spawn mock
     println!("Step 2: Creating Thread.spawn mock...");
-    let thread_spawn_id = builder.begin_function("Thread_spawn")
-        .param("closure_ptr", IrType::I64)  // Closure (lambda + env)
-        .returns(IrType::I64)  // Thread handle
+    let thread_spawn_id = builder
+        .begin_function("Thread_spawn")
+        .param("closure_ptr", IrType::I64) // Closure (lambda + env)
+        .returns(IrType::I64) // Thread handle
         .extern_func()
         .build();
     builder.mark_as_extern(thread_spawn_id);
@@ -53,7 +85,8 @@ fn main() {
 
     // Step 3: Create Array.push mock
     println!("Step 3: Creating Array.push mock...");
-    let array_push_id = builder.begin_function("Array_push")
+    let array_push_id = builder
+        .begin_function("Array_push")
         .param("array_ptr", IrType::I64)
         .param("element", IrType::I64)
         .returns(IrType::Void)
@@ -65,9 +98,7 @@ fn main() {
 
     // Step 4: Create main function
     println!("Step 4: Creating main function with loop...");
-    let main_id = builder.begin_function("main")
-        .returns(IrType::I32)
-        .build();
+    let main_id = builder.begin_function("main").returns(IrType::I32).build();
 
     builder.set_current_function(main_id);
 
@@ -80,10 +111,10 @@ fn main() {
     // Entry block: initialize i = 0, create array
     builder.set_insert_point(entry_block);
     let i_init = builder.const_i32(0);
-    let i_ptr = builder.alloc(IrType::I32, None);  // Stack slot for i
+    let i_ptr = builder.alloc(IrType::I32, None); // Stack slot for i
     builder.store(i_ptr, i_init);
 
-    let array_ptr = builder.const_i64(0x1000);  // Mock array pointer
+    let array_ptr = builder.const_i64(0x1000); // Mock array pointer
     builder.br(loop_header);
 
     // Loop header: check i < 5
@@ -103,16 +134,14 @@ fn main() {
     println!("    - Load i from stack: v{}", i_for_capture.as_u32());
 
     // Create environment for lambda (single i32 value)
-    let env_alloc = builder.alloc(IrType::I32, None);  // 4 bytes for i32
+    let env_alloc = builder.alloc(IrType::I32, None); // 4 bytes for i32
     println!("    - Allocate environment: v{}", env_alloc.as_u32());
 
     builder.store(env_alloc, i_for_capture);
     println!("    - Store i into environment");
 
     // Cast env pointer to i64 (expected by lambda)
-    let env_i64 = builder.cast(env_alloc,
-                                IrType::Ptr(Box::new(IrType::I32)),
-                                IrType::I64);
+    let env_i64 = builder.cast(env_alloc, IrType::Ptr(Box::new(IrType::I32)), IrType::I64);
     println!("    - Cast env pointer to i64: v{}", env_i64.as_u32());
 
     // THIS IS THE CRITICAL CALL - Call Thread.spawn with lambda + env
@@ -150,14 +179,18 @@ fn main() {
     println!("MIR Module: {}", module.name);
     println!("Functions:");
     for (id, func) in &module.functions {
-        println!("  {} (u0:{}): {} -> {:?}",
-                 func.name,
-                 id.0,
-                 func.signature.parameters.iter()
-                     .map(|p| format!("{:?}", p.ty))
-                     .collect::<Vec<_>>()
-                     .join(", "),
-                 func.signature.return_type);
+        println!(
+            "  {} (u0:{}): {} -> {:?}",
+            func.name,
+            id.0,
+            func.signature
+                .parameters
+                .iter()
+                .map(|p| format!("{:?}", p.ty))
+                .collect::<Vec<_>>()
+                .join(", "),
+            func.signature.return_type
+        );
     }
     println!();
 
@@ -178,7 +211,7 @@ fn main() {
             println!("The bug must be in HIR → MIR lowering for Thread.spawn calls.");
         }
         Err(e) => {
-            println!("❌ Cranelift compilation failed: {}", e);
+            println!("❌ Cranelift compilation failed: {:?}", e);
             println!("\n=== ANALYSIS ===");
             println!("If this failed, the bug reproduces in direct MIR construction.");
             println!("Check the Cranelift IR above for function signature mismatches.");

@@ -1,5 +1,5 @@
 //! High-Level Intermediate Representation (HIR)
-//! 
+//!
 //! HIR is the first IR level, close to Haxe source syntax but with:
 //! - Fully resolved types
 //! - Desugared syntax (e.g., for-in loops to iterators)
@@ -9,20 +9,17 @@
 //! This matches the architecture plan where HIR preserves high-level
 //! language features before lowering to MIR (SSA form).
 
-use crate::tast::{
-    SymbolId, TypeId, SourceLocation, InternedString,
-    LifetimeId, ScopeId,
-};
-use std::collections::HashMap;
+use crate::tast::{InternedString, LifetimeId, ScopeId, SourceLocation, SymbolId, TypeId};
 use indexmap::IndexMap;
+use std::collections::HashMap;
 
 /// HIR Module - top-level container
 #[derive(Debug, Clone)]
 pub struct HirModule {
     pub name: String,
     pub imports: Vec<HirImport>,
-    pub types: IndexMap<TypeId, HirTypeDecl>,  // IndexMap for deterministic ordering
-    pub functions: IndexMap<SymbolId, HirFunction>,  // IndexMap for deterministic ordering
+    pub types: IndexMap<TypeId, HirTypeDecl>, // IndexMap for deterministic ordering
+    pub functions: IndexMap<SymbolId, HirFunction>, // IndexMap for deterministic ordering
     pub globals: HashMap<SymbolId, HirGlobal>,
     pub metadata: HirMetadata,
 }
@@ -178,56 +175,56 @@ pub enum HirStatement {
         init: Option<HirExpr>,
         is_mutable: bool,
     },
-    
+
     /// Expression statement
     Expr(HirExpr),
-    
+
     /// Assignment
     Assign {
         lhs: HirLValue,
         rhs: HirExpr,
         op: Option<HirBinaryOp>, // For compound assignments
     },
-    
+
     /// Return statement
     Return(Option<HirExpr>),
-    
+
     /// Break statement with optional target loop symbol
     Break(Option<SymbolId>), // Optional loop symbol
-    
+
     /// Continue statement with optional target loop symbol
     Continue(Option<SymbolId>), // Optional loop symbol
-    
+
     /// Throw statement
     Throw(HirExpr),
-    
+
     /// If statement
     If {
         condition: HirExpr,
         then_branch: HirBlock,
         else_branch: Option<HirBlock>,
     },
-    
+
     /// Switch statement with pattern matching
     Switch {
         scrutinee: HirExpr,
         cases: Vec<HirMatchCase>,
     },
-    
+
     /// While loop
     While {
         label: Option<SymbolId>,
         condition: HirExpr,
         body: HirBlock,
     },
-    
-    /// Do-while loop  
+
+    /// Do-while loop
     DoWhile {
         label: Option<SymbolId>,
         body: HirBlock,
         condition: HirExpr,
     },
-    
+
     /// For-in loop (desugared to iterator)
     ForIn {
         label: Option<SymbolId>,
@@ -235,19 +232,16 @@ pub enum HirStatement {
         iterator: HirExpr,
         body: HirBlock,
     },
-    
+
     /// Try-catch statement
     TryCatch {
         try_block: HirBlock,
         catches: Vec<HirCatchClause>,
         finally_block: Option<HirBlock>,
     },
-    
+
     /// Labeled block
-    Label {
-        symbol: SymbolId,
-        block: HirBlock,
-    },
+    Label { symbol: SymbolId, block: HirBlock },
 }
 
 /// HIR Expression
@@ -264,25 +258,25 @@ pub struct HirExpr {
 pub enum HirExprKind {
     // === Literals ===
     Literal(HirLiteral),
-    
+
     // === Variables ===
     Variable {
         symbol: SymbolId,
         capture_mode: Option<HirCaptureMode>,
     },
-    
+
     // === Member access ===
     Field {
         object: Box<HirExpr>,
         field: SymbolId,
     },
-    
+
     // === Array/Map access ===
     Index {
         object: Box<HirExpr>,
         index: Box<HirExpr>,
     },
-    
+
     // === Function call ===
     Call {
         callee: Box<HirExpr>,
@@ -290,7 +284,7 @@ pub enum HirExprKind {
         args: Vec<HirExpr>,
         is_method: bool,
     },
-    
+
     // === Constructor call ===
     New {
         class_type: TypeId,
@@ -300,104 +294,104 @@ pub enum HirExprKind {
         /// This preserves the class name for proper constructor resolution during MIR lowering
         class_name: Option<InternedString>,
     },
-    
+
     // === Operators ===
     Unary {
         op: HirUnaryOp,
         operand: Box<HirExpr>,
     },
-    
+
     Binary {
         op: HirBinaryOp,
         lhs: Box<HirExpr>,
         rhs: Box<HirExpr>,
     },
-    
+
     // === Type operations ===
     Cast {
         expr: Box<HirExpr>,
         target: TypeId,
         is_safe: bool,
     },
-    
+
     TypeCheck {
         expr: Box<HirExpr>,
         expected: TypeId,
     },
-    
+
     // === Control flow ===
     If {
         condition: Box<HirExpr>,
         then_expr: Box<HirExpr>,
         else_expr: Box<HirExpr>,
     },
-    
+
     Block(HirBlock),
-    
+
     // === Closures ===
     Lambda {
         params: Vec<HirParam>,
         body: Box<HirExpr>,
         captures: Vec<HirCapture>,
     },
-    
+
     // === Arrays ===
     Array {
         elements: Vec<HirExpr>,
     },
-    
+
     // === Maps/Objects ===
     Map {
         entries: Vec<(HirExpr, HirExpr)>,
     },
-    
+
     ObjectLiteral {
         fields: Vec<(InternedString, HirExpr)>,
     },
-    
+
     // === Comprehensions ===
     ArrayComprehension {
         element: Box<HirExpr>,
         iterators: Vec<HirComprehensionIterator>,
         filter: Option<Box<HirExpr>>,
     },
-    
+
     MapComprehension {
         key: Box<HirExpr>,
         value: Box<HirExpr>,
         iterators: Vec<HirComprehensionIterator>,
         filter: Option<Box<HirExpr>>,
     },
-    
+
     // === String interpolation ===
     StringInterpolation {
         parts: Vec<HirStringPart>,
     },
-    
+
     // === Macro expressions ===
     MacroExpansion {
         macro_name: SymbolId,
         args: Vec<HirExpr>,
     },
-    
+
     Reification {
         expr: Box<HirExpr>,
     },
-    
+
     // === Special forms ===
     This,
     Super,
     Null,
-    
+
     // === Unsafe/Untyped ===
     Untyped(Box<HirExpr>),
-    
+
     // === Inline code ===
     InlineCode {
         target: String, // js, cpp, etc.
         code: String,
     },
-    
+
     // === Exception handling ===
     TryCatch {
         try_expr: Box<HirExpr>,
@@ -423,44 +417,44 @@ pub enum HirPattern {
         name: InternedString,
         symbol: SymbolId,
     },
-    
+
     /// Wildcard: `_`
     Wildcard,
-    
+
     /// Literal pattern: `42`, `"hello"`
     Literal(HirLiteral),
-    
+
     /// Constructor pattern: `Some(x)`, `Point(x, y)`
     Constructor {
         enum_type: TypeId,
         variant: InternedString,
         fields: Vec<HirPattern>,
     },
-    
+
     /// Tuple pattern: `(x, y, z)`
     Tuple(Vec<HirPattern>),
-    
+
     /// Array pattern: `[head, ...tail]`
     Array {
         elements: Vec<HirPattern>,
         rest: Option<Box<HirPattern>>,
     },
-    
+
     /// Object pattern: `{x: px, y: py}`
     Object {
         fields: Vec<(InternedString, HirPattern)>,
         rest: bool, // allows additional fields
     },
-    
+
     /// Type annotation: `(x: String)`
     Typed {
         pattern: Box<HirPattern>,
         ty: TypeId,
     },
-    
+
     /// Or pattern: `1 | 2 | 3`
     Or(Vec<HirPattern>),
-    
+
     /// Guard pattern: `x if x > 0`
     Guard {
         pattern: Box<HirPattern>,
@@ -527,21 +521,35 @@ pub enum HirUnaryOp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HirBinaryOp {
     // Arithmetic
-    Add, Sub, Mul, Div, Mod,
-    
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+
     // Comparison
-    Eq, Ne, Lt, Le, Gt, Ge,
-    
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+
     // Logical
-    And, Or,
-    
+    And,
+    Or,
+
     // Bitwise
-    BitAnd, BitOr, BitXor, Shl, Shr,
-    
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+
     // Range
     Range,     // ...
     RangeExcl, // ..
-    
+
     // Null coalescing
     NullCoalesce, // ??
 }
@@ -588,14 +596,14 @@ pub struct HirParam {
 
 #[derive(Debug, Clone)]
 pub struct HirClassField {
-    pub symbol_id: SymbolId,  // Symbol ID from TAST (needed for field access lowering)
+    pub symbol_id: SymbolId, // Symbol ID from TAST (needed for field access lowering)
     pub name: InternedString,
     pub ty: TypeId,
     pub init: Option<HirExpr>,
     pub visibility: HirVisibility,
     pub is_static: bool,
     pub is_final: bool,
-    pub property_access: Option<crate::tast::PropertyAccessInfo>,  // Property accessor info from TAST
+    pub property_access: Option<crate::tast::PropertyAccessInfo>, // Property accessor info from TAST
 }
 
 #[derive(Debug, Clone)]
@@ -736,7 +744,7 @@ impl HirBlock {
             scope,
         }
     }
-    
+
     /// Create a block with a trailing expression
     pub fn with_expr(statements: Vec<HirStatement>, expr: HirExpr, scope: ScopeId) -> Self {
         Self {

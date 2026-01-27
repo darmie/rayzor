@@ -26,9 +26,9 @@
 //!    let s = dynamic_to_string(dynamic);  // Dispatches based on type_id
 //!    ```
 
-use std::sync::{RwLock, Once};
-use std::collections::HashMap;
 use log::debug;
+use std::collections::HashMap;
+use std::sync::{Once, RwLock};
 
 /// Ensures primitive types are registered exactly once
 static INIT_PRIMITIVES: Once = Once::new();
@@ -122,53 +122,71 @@ pub fn init_type_system() {
     let mut registry = HashMap::new();
 
     // Register primitive types
-    registry.insert(TYPE_VOID, TypeInfo {
-        name: "Void",
-        size: 0,
-        align: 1,
-        to_string: void_to_string,
-        enum_info: None,
-    });
+    registry.insert(
+        TYPE_VOID,
+        TypeInfo {
+            name: "Void",
+            size: 0,
+            align: 1,
+            to_string: void_to_string,
+            enum_info: None,
+        },
+    );
 
-    registry.insert(TYPE_NULL, TypeInfo {
-        name: "Null",
-        size: 0,
-        align: 1,
-        to_string: null_to_string,
-        enum_info: None,
-    });
+    registry.insert(
+        TYPE_NULL,
+        TypeInfo {
+            name: "Null",
+            size: 0,
+            align: 1,
+            to_string: null_to_string,
+            enum_info: None,
+        },
+    );
 
-    registry.insert(TYPE_BOOL, TypeInfo {
-        name: "Bool",
-        size: std::mem::size_of::<bool>(),
-        align: std::mem::align_of::<bool>(),
-        to_string: bool_to_string,
-        enum_info: None,
-    });
+    registry.insert(
+        TYPE_BOOL,
+        TypeInfo {
+            name: "Bool",
+            size: std::mem::size_of::<bool>(),
+            align: std::mem::align_of::<bool>(),
+            to_string: bool_to_string,
+            enum_info: None,
+        },
+    );
 
-    registry.insert(TYPE_INT, TypeInfo {
-        name: "Int",
-        size: std::mem::size_of::<i64>(),
-        align: std::mem::align_of::<i64>(),
-        to_string: int_to_string,
-        enum_info: None,
-    });
+    registry.insert(
+        TYPE_INT,
+        TypeInfo {
+            name: "Int",
+            size: std::mem::size_of::<i64>(),
+            align: std::mem::align_of::<i64>(),
+            to_string: int_to_string,
+            enum_info: None,
+        },
+    );
 
-    registry.insert(TYPE_FLOAT, TypeInfo {
-        name: "Float",
-        size: std::mem::size_of::<f64>(),
-        align: std::mem::align_of::<f64>(),
-        to_string: float_to_string,
-        enum_info: None,
-    });
+    registry.insert(
+        TYPE_FLOAT,
+        TypeInfo {
+            name: "Float",
+            size: std::mem::size_of::<f64>(),
+            align: std::mem::align_of::<f64>(),
+            to_string: float_to_string,
+            enum_info: None,
+        },
+    );
 
-    registry.insert(TYPE_STRING, TypeInfo {
-        name: "String",
-        size: std::mem::size_of::<StringPtr>(),
-        align: std::mem::align_of::<StringPtr>(),
-        to_string: string_to_string,
-        enum_info: None,
-    });
+    registry.insert(
+        TYPE_STRING,
+        TypeInfo {
+            name: "String",
+            size: std::mem::size_of::<StringPtr>(),
+            align: std::mem::align_of::<StringPtr>(),
+            to_string: string_to_string,
+            enum_info: None,
+        },
+    );
 
     *TYPE_REGISTRY.write().unwrap() = Some(registry);
 }
@@ -219,7 +237,10 @@ pub fn get_enum_variant_name(type_id: TypeId, discriminant: i64) -> Option<&'sta
 }
 
 /// Get enum variant info by type ID and discriminant
-pub fn get_enum_variant_info(type_id: TypeId, discriminant: i64) -> Option<&'static EnumVariantInfo> {
+pub fn get_enum_variant_info(
+    type_id: TypeId,
+    discriminant: i64,
+) -> Option<&'static EnumVariantInfo> {
     let registry = TYPE_REGISTRY.read().unwrap();
     let type_info = registry.as_ref()?.get(&type_id)?;
     let enum_info = type_info.enum_info?;
@@ -248,10 +269,7 @@ pub extern "C" fn haxe_register_enum(
             std::slice::from_raw_parts(variants_ptr, variants_len);
 
         // Create a static EnumInfo - we need to leak it since TypeInfo expects &'static
-        let enum_info = Box::leak(Box::new(EnumInfo {
-            name,
-            variants,
-        }));
+        let enum_info = Box::leak(Box::new(EnumInfo { name, variants }));
 
         let type_info = TypeInfo {
             name,
@@ -286,7 +304,10 @@ unsafe extern "C" fn enum_to_string(value_ptr: *const u8) -> StringPtr {
 /// Returns the variant name for the given type_id and discriminant
 /// Returns null if not an enum or discriminant is out of range
 #[no_mangle]
-pub extern "C" fn haxe_enum_variant_name(type_id: u32, discriminant: i64) -> *mut crate::haxe_string::HaxeString {
+pub extern "C" fn haxe_enum_variant_name(
+    type_id: u32,
+    discriminant: i64,
+) -> *mut crate::haxe_string::HaxeString {
     use crate::haxe_string::HaxeString;
 
     if let Some(name) = get_enum_variant_name(TypeId(type_id), discriminant) {
@@ -604,8 +625,6 @@ pub extern "C" fn haxe_std_int(x: f64) -> i64 {
 /// (caller should check for this and convert to null)
 #[no_mangle]
 pub extern "C" fn haxe_std_parse_int(str_ptr: *const crate::haxe_string::HaxeString) -> i64 {
-    use crate::haxe_string::HaxeString;
-
     if str_ptr.is_null() {
         return i64::MIN; // Sentinel for null
     }
@@ -628,10 +647,10 @@ pub extern "C" fn haxe_std_parse_int(str_ptr: *const crate::haxe_string::HaxeStr
     }
 
     // Handle optional sign
-    let (sign, s) = if s.starts_with('-') {
-        (-1i64, &s[1..])
-    } else if s.starts_with('+') {
-        (1i64, &s[1..])
+    let (sign, s) = if let Some(rest) = s.strip_prefix('-') {
+        (-1i64, rest)
+    } else if let Some(rest) = s.strip_prefix('+') {
+        (1i64, rest)
     } else {
         (1i64, s)
     };
@@ -668,8 +687,6 @@ pub extern "C" fn haxe_std_parse_int(str_ptr: *const crate::haxe_string::HaxeStr
 /// Returns NaN if parsing fails
 #[no_mangle]
 pub extern "C" fn haxe_std_parse_float(str_ptr: *const crate::haxe_string::HaxeString) -> f64 {
-    use crate::haxe_string::HaxeString;
-
     if str_ptr.is_null() {
         return f64::NAN;
     }
@@ -694,8 +711,8 @@ pub extern "C" fn haxe_std_parse_float(str_ptr: *const crate::haxe_string::HaxeS
     // Try to parse as much as possible
     // Rust's parse is strict, so we need to find the valid prefix
     let mut end_idx = 0;
-    let mut has_dot = false;
-    let mut has_exp = false;
+    let mut _has_dot = false;
+    let mut _has_exp = false;
     let chars: Vec<char> = s.chars().collect();
 
     // Handle optional sign
@@ -710,7 +727,7 @@ pub extern "C" fn haxe_std_parse_float(str_ptr: *const crate::haxe_string::HaxeS
 
     // Parse decimal part
     if end_idx < chars.len() && chars[end_idx] == '.' {
-        has_dot = true;
+        _has_dot = true;
         end_idx += 1;
         while end_idx < chars.len() && chars[end_idx].is_ascii_digit() {
             end_idx += 1;
@@ -732,7 +749,7 @@ pub extern "C" fn haxe_std_parse_float(str_ptr: *const crate::haxe_string::HaxeS
         if end_idx == exp_digits_start {
             end_idx = exp_start; // Revert to before 'e'
         } else {
-            has_exp = true;
+            _has_exp = true;
         }
     }
 
@@ -870,7 +887,10 @@ pub extern "C" fn haxe_unbox_reference_ptr(ptr: *mut u8) -> *mut u8 {
     // Debug: Check for suspicious pointer values (like boolean 1 being passed as pointer)
     let ptr_val = ptr as usize;
     if ptr_val < 0x1000 {
-        debug!("WARNING: haxe_unbox_reference_ptr received suspicious pointer: {:p} (value={})", ptr, ptr_val);
+        debug!(
+            "WARNING: haxe_unbox_reference_ptr received suspicious pointer: {:p} (value={})",
+            ptr, ptr_val
+        );
         return std::ptr::null_mut();
     }
     unsafe {

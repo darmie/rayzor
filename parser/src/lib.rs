@@ -1,15 +1,17 @@
+#![allow(elided_lifetimes_in_paths)]
+#![allow(mismatched_lifetime_syntaxes)]
+#![allow(deprecated)]
+
 use nom::IResult;
-
-
 
 // New complete Haxe AST and parser
 pub mod haxe_ast;
 pub mod haxe_parser;
-pub mod haxe_parser_types;
 pub mod haxe_parser_decls;
 pub mod haxe_parser_expr;
 pub mod haxe_parser_expr2;
 pub mod haxe_parser_expr3;
+pub mod haxe_parser_types;
 pub mod incremental_parser;
 pub mod incremental_parser_enhanced;
 pub mod preprocessor;
@@ -30,15 +32,17 @@ pub mod enhanced_incremental_parser;
 // Re-export diagnostics from the diagnostics crate
 pub use diagnostics::*;
 
-
-
 // Haxe-specific diagnostics
 pub use diagnostics::haxe::HaxeDiagnostics;
 
 // Export new Haxe parser
 pub use haxe_ast::*;
-pub use haxe_parser::{parse_haxe_file, parse_haxe_file_with_debug, parse_haxe_file_with_diagnostics, ParseResult};
-pub use incremental_parser_enhanced::{parse_incrementally_enhanced, IncrementalParseResult as EnhancedParseResult};
+pub use haxe_parser::{
+    parse_haxe_file, parse_haxe_file_with_debug, parse_haxe_file_with_diagnostics, ParseResult,
+};
+pub use incremental_parser_enhanced::{
+    parse_incrementally_enhanced, IncrementalParseResult as EnhancedParseResult,
+};
 
 // #[cfg(test)]
 // mod test_dollar_simple;
@@ -46,13 +50,11 @@ pub use incremental_parser_enhanced::{parse_incrementally_enhanced, IncrementalP
 // #[cfg(test)]
 // mod test_macro_quick;
 
-
 // Legacy nom result type for compatibility
 pub type NomParseResult<'a, T> = IResult<&'a str, T, nom::error::Error<&'a str>>;
 
 // use ast::{Span, HaxeFile, PackageDecl, ImportDecl, Declaration};
 // pub use ast::*;
-
 
 // Removed duplicate type definitions to avoid conflicts with ast.rs
 

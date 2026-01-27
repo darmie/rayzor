@@ -1,21 +1,21 @@
-mod override_validation_test;
-mod interface_implementation_test;
-mod inheritance_signature_test;
-mod override_diagnostics_test;
-mod diagnostic_simple_test;
 mod diagnostic_output_test;
 mod diagnostic_showcase_test;
+mod diagnostic_simple_test;
 mod final_diagnostic_demo_test;
-mod source_location_test;
-mod method_overload_test;
+mod inheritance_signature_test;
+mod interface_implementation_test;
 mod method_overload_comprehensive_test;
 mod method_overload_final_test;
-mod static_instance_check_test;
-mod static_debug_test;
-mod static_method_test;
-mod source_location_tracking_test;
-mod switch_expression_test;
+mod method_overload_test;
+mod override_diagnostics_test;
+mod override_validation_test;
 mod pattern_matching_test;
+mod source_location_test;
+mod source_location_tracking_test;
+mod static_debug_test;
+mod static_instance_check_test;
+mod static_method_test;
+mod switch_expression_test;
 // mod package_access_test;  // Disabled due to API mismatches
 
 // Moved from tast module root

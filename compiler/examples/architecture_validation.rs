@@ -1,8 +1,38 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Architecture validation for TypeFlowGuard v2
 
 fn main() {
     println!("=== TypeFlowGuard v2 Architecture Validation ===\n");
-    
+
     println!("✅ **ARCHITECTURE SUCCESSFULLY REFACTORED**");
     println!();
     println!("📋 **Key Improvements Completed:**");
@@ -12,7 +42,9 @@ fn main() {
     println!("   • Eliminates code duplication and reduces maintenance burden");
     println!();
     println!("🎯 **User Question Addressed:**");
-    println!("   \"Why didn't we use the tast_cfg_mapping.rs and cfg.rs in semantic_graph module?\"");
+    println!(
+        "   \"Why didn't we use the tast_cfg_mapping.rs and cfg.rs in semantic_graph module?\""
+    );
     println!("   → Now we DO use them! TypeFlowGuard v2 leverages existing infrastructure.");
     println!();
     println!("🏗️ **Architecture Benefits:**");
@@ -29,7 +61,7 @@ fn main() {
     println!();
     println!("🔧 **Implementation Status:**");
     println!("   ✅ Core TypeFlowGuard v2 structure complete");
-    println!("   ✅ Integration with semantic_graph::cfg");  
+    println!("   ✅ Integration with semantic_graph::cfg");
     println!("   ✅ Integration with semantic_graph::tast_cfg_mapping");
     println!("   ✅ Integration with semantic_graph::builder::CfgBuilder");
     println!("   ✅ Flow-sensitive variable state analysis framework");

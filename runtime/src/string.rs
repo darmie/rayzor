@@ -4,8 +4,6 @@
 
 use std::alloc::{alloc, dealloc, Layout};
 use std::ptr;
-use std::slice;
-use std::str;
 
 /// Haxe String representation: { ptr: *mut u8, len: usize, cap: usize }
 /// Same as HaxeVec but guarantees valid UTF-8
@@ -38,6 +36,7 @@ pub fn haxe_string_new() -> HaxeString {
 }
 
 /// Create a string from a C string (null-terminated) - internal helper
+#[allow(dead_code)]
 fn haxe_string_from_cstr(cstr: *const u8) -> HaxeString {
     unsafe {
         if cstr.is_null() {
@@ -90,6 +89,7 @@ fn haxe_string_from_bytes(bytes: *const u8, len: usize) -> HaxeString {
 }
 
 /// Get the length of the string in bytes - internal helper
+#[allow(dead_code)]
 fn haxe_string_len(s: *const HaxeString) -> usize {
     unsafe {
         if s.is_null() {
@@ -100,6 +100,7 @@ fn haxe_string_len(s: *const HaxeString) -> usize {
 }
 
 /// Get a byte at index - internal helper
+#[allow(dead_code)]
 fn haxe_string_char_at(s: *const HaxeString, index: usize) -> u8 {
     unsafe {
         if s.is_null() {
@@ -118,7 +119,10 @@ fn haxe_string_char_at(s: *const HaxeString, index: usize) -> u8 {
 /// Concatenate two strings and return a heap-allocated result pointer
 /// This avoids struct return ABI issues
 #[no_mangle]
-pub extern "C" fn haxe_string_concat_ptr(a: *const HaxeString, b: *const HaxeString) -> *mut HaxeString {
+pub extern "C" fn haxe_string_concat_ptr(
+    a: *const HaxeString,
+    b: *const HaxeString,
+) -> *mut HaxeString {
     let result = haxe_string_concat_impl(a, b);
     // Allocate on heap and return pointer
     let boxed = Box::new(result);
@@ -179,6 +183,7 @@ fn haxe_string_concat_impl(a: *const HaxeString, b: *const HaxeString) -> HaxeSt
 }
 
 /// Get a substring - internal helper
+#[allow(dead_code)]
 fn haxe_string_substr(s: *const HaxeString, start: usize, len: usize) -> HaxeString {
     unsafe {
         if s.is_null() {
@@ -210,11 +215,11 @@ fn haxe_string_to_lower(s: *const HaxeString) -> HaxeString {
         }
 
         let str_ref = &*s;
-        let mut result = haxe_string_from_bytes(str_ref.ptr, str_ref.len);
+        let result = haxe_string_from_bytes(str_ref.ptr, str_ref.len);
 
         for i in 0..result.len {
             let byte = *result.ptr.add(i);
-            if byte >= b'A' && byte <= b'Z' {
+            if byte.is_ascii_uppercase() {
                 *result.ptr.add(i) = byte + 32; // Convert to lowercase
             }
         }
@@ -232,11 +237,11 @@ fn haxe_string_to_upper(s: *const HaxeString) -> HaxeString {
         }
 
         let str_ref = &*s;
-        let mut result = haxe_string_from_bytes(str_ref.ptr, str_ref.len);
+        let result = haxe_string_from_bytes(str_ref.ptr, str_ref.len);
 
         for i in 0..result.len {
             let byte = *result.ptr.add(i);
-            if byte >= b'a' && byte <= b'z' {
+            if byte.is_ascii_lowercase() {
                 *result.ptr.add(i) = byte - 32; // Convert to uppercase
             }
         }
@@ -388,6 +393,7 @@ pub extern "C" fn haxe_string_contains(s: *const HaxeString, needle: *const Haxe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::slice;
 
     /// Safe concat wrapper for testing
     fn haxe_string_concat(a: &HaxeString, b: &HaxeString) -> HaxeString {
@@ -401,9 +407,7 @@ mod tests {
         assert_eq!(s.len, 0);
         assert_eq!(s.cap, 16);
 
-        unsafe {
-            haxe_string_free(&mut s.clone());
-        }
+        haxe_string_free(&mut s.clone());
     }
 
     #[test]

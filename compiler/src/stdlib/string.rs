@@ -1,9 +1,8 @@
 /// String type implementation using MIR Builder
 ///
 /// Provides string operations with actual MIR function bodies
-
 use crate::ir::mir_builder::MirBuilder;
-use crate::ir::{IrType, CallingConvention, CompareOp};
+use crate::ir::{CallingConvention, CompareOp, IrType};
 
 /// Build all string type functions
 pub fn build_string_type(builder: &mut MirBuilder) {
@@ -45,7 +44,8 @@ fn declare_string_externs(builder: &mut MirBuilder) {
 
     // extern fn haxe_string_concat(a: *String, b: *String) -> *String
     // Returns a pointer to avoid struct return ABI issues
-    let func_id = builder.begin_function("haxe_string_concat")
+    let func_id = builder
+        .begin_function("haxe_string_concat")
         .param("a", string_ptr_ty.clone())
         .param("b", string_ptr_ty.clone())
         .returns(string_ptr_ty.clone())
@@ -55,7 +55,8 @@ fn declare_string_externs(builder: &mut MirBuilder) {
 
     // extern fn haxe_string_split_array(s: *String, delim: *String) -> *HaxeArray
     // Returns a proper HaxeArray structure containing string pointers
-    let func_id = builder.begin_function("haxe_string_split_array")
+    let func_id = builder
+        .begin_function("haxe_string_split_array")
         .param("s", string_ptr_ty.clone())
         .param("delimiter", string_ptr_ty.clone())
         .returns(ptr_void.clone()) // Returns *HaxeArray
@@ -64,7 +65,8 @@ fn declare_string_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn haxe_string_index_of_ptr(s: *String, needle: *String, startIndex: i32) -> i32
-    let func_id = builder.begin_function("haxe_string_index_of_ptr")
+    let func_id = builder
+        .begin_function("haxe_string_index_of_ptr")
         .param("s", string_ptr_ty.clone())
         .param("needle", string_ptr_ty.clone())
         .param("start_index", i32_ty.clone())
@@ -74,7 +76,8 @@ fn declare_string_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn haxe_string_last_index_of_ptr(s: *String, needle: *String, startIndex: i32) -> i32
-    let func_id = builder.begin_function("haxe_string_last_index_of_ptr")
+    let func_id = builder
+        .begin_function("haxe_string_last_index_of_ptr")
         .param("s", string_ptr_ty.clone())
         .param("needle", string_ptr_ty.clone())
         .param("start_index", i32_ty.clone())
@@ -85,7 +88,8 @@ fn declare_string_externs(builder: &mut MirBuilder) {
 
     // extern fn haxe_string_char_at_ptr(s: *String, index: i32) -> *String
     // Returns a single-character string at the given index
-    let func_id = builder.begin_function("haxe_string_char_at_ptr")
+    let func_id = builder
+        .begin_function("haxe_string_char_at_ptr")
         .param("s", string_ptr_ty.clone())
         .param("index", i32_ty.clone())
         .returns(string_ptr_ty.clone())
@@ -95,7 +99,8 @@ fn declare_string_externs(builder: &mut MirBuilder) {
 
     // extern fn haxe_string_substring_ptr(s: *String, startIndex: i32, endIndex: i32) -> *String
     // Returns a substring from startIndex to endIndex (exclusive)
-    let func_id = builder.begin_function("haxe_string_substring_ptr")
+    let func_id = builder
+        .begin_function("haxe_string_substring_ptr")
         .param("s", string_ptr_ty.clone())
         .param("start_index", i32_ty.clone())
         .param("end_index", i32_ty.clone())
@@ -106,7 +111,8 @@ fn declare_string_externs(builder: &mut MirBuilder) {
 
     // extern fn haxe_string_substr_ptr(s: *String, startIndex: i32, length: i32) -> *String
     // Returns a substring starting at startIndex with given length
-    let func_id = builder.begin_function("haxe_string_substr_ptr")
+    let func_id = builder
+        .begin_function("haxe_string_substr_ptr")
         .param("s", string_ptr_ty.clone())
         .param("start_index", i32_ty.clone())
         .param("length", i32_ty.clone())
@@ -119,7 +125,8 @@ fn declare_string_externs(builder: &mut MirBuilder) {
 /// Build: fn string_new() -> String
 /// Creates an empty string
 fn build_string_new(builder: &mut MirBuilder) {
-    let func_id = builder.begin_function("string_new")
+    let func_id = builder
+        .begin_function("string_new")
         .returns(IrType::String)
         .calling_convention(CallingConvention::C)
         .build();
@@ -140,7 +147,8 @@ fn build_string_new(builder: &mut MirBuilder) {
 fn build_string_concat(builder: &mut MirBuilder) {
     let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
 
-    let func_id = builder.begin_function("string_concat")
+    let func_id = builder
+        .begin_function("string_concat")
         .param("s1", string_ptr_ty.clone())
         .param("s2", string_ptr_ty.clone())
         .returns(string_ptr_ty.clone())
@@ -156,7 +164,8 @@ fn build_string_concat(builder: &mut MirBuilder) {
     let s2_ptr = builder.get_param(1);
 
     // Call extern runtime function directly
-    let extern_id = builder.get_function_by_name("haxe_string_concat")
+    let extern_id = builder
+        .get_function_by_name("haxe_string_concat")
         .expect("haxe_string_concat not found");
     let result = builder.call(extern_id, vec![s1_ptr, s2_ptr]).unwrap();
 
@@ -168,7 +177,8 @@ fn build_string_concat(builder: &mut MirBuilder) {
 fn build_string_length(builder: &mut MirBuilder) {
     let string_ref_ty = IrType::Ref(Box::new(IrType::String));
 
-    let func_id = builder.begin_function("string_length")
+    let func_id = builder
+        .begin_function("string_length")
         .param("s", string_ref_ty.clone())
         .returns(IrType::I32)
         .calling_convention(CallingConvention::C)
@@ -194,7 +204,8 @@ fn build_string_length(builder: &mut MirBuilder) {
 fn build_string_char_at(builder: &mut MirBuilder) {
     let string_ref_ty = IrType::Ref(Box::new(IrType::String));
 
-    let func_id = builder.begin_function("string_char_at")
+    let func_id = builder
+        .begin_function("string_char_at")
         .param("s", string_ref_ty.clone())
         .param("index", IrType::I32)
         .returns(IrType::String)
@@ -220,7 +231,8 @@ fn build_string_char_at(builder: &mut MirBuilder) {
 fn build_string_char_code_at(builder: &mut MirBuilder) {
     let string_ref_ty = IrType::Ref(Box::new(IrType::String));
 
-    let func_id = builder.begin_function("string_char_code_at")
+    let func_id = builder
+        .begin_function("string_char_code_at")
         .param("s", string_ref_ty.clone())
         .param("index", IrType::I32)
         .returns(IrType::I32)
@@ -246,7 +258,8 @@ fn build_string_char_code_at(builder: &mut MirBuilder) {
 fn build_string_substring(builder: &mut MirBuilder) {
     let string_ref_ty = IrType::Ref(Box::new(IrType::String));
 
-    let func_id = builder.begin_function("string_substring")
+    let func_id = builder
+        .begin_function("string_substring")
         .param("s", string_ref_ty.clone())
         .param("start", IrType::I32)
         .param("end", IrType::I32)
@@ -274,7 +287,8 @@ fn build_string_substring(builder: &mut MirBuilder) {
 fn build_string_index_of(builder: &mut MirBuilder) {
     let string_ref_ty = IrType::Ref(Box::new(IrType::String));
 
-    let func_id = builder.begin_function("string_index_of")
+    let func_id = builder
+        .begin_function("string_index_of")
         .param("s", string_ref_ty.clone())
         .param("substr", string_ref_ty.clone())
         .param("start", IrType::I32)
@@ -302,7 +316,8 @@ fn build_string_index_of(builder: &mut MirBuilder) {
 fn build_string_to_upper(builder: &mut MirBuilder) {
     let string_ref_ty = IrType::Ref(Box::new(IrType::String));
 
-    let func_id = builder.begin_function("string_to_upper")
+    let func_id = builder
+        .begin_function("string_to_upper")
         .param("s", string_ref_ty.clone())
         .returns(IrType::String)
         .calling_convention(CallingConvention::C)
@@ -326,7 +341,8 @@ fn build_string_to_upper(builder: &mut MirBuilder) {
 fn build_string_to_lower(builder: &mut MirBuilder) {
     let string_ref_ty = IrType::Ref(Box::new(IrType::String));
 
-    let func_id = builder.begin_function("string_to_lower")
+    let func_id = builder
+        .begin_function("string_to_lower")
         .param("s", string_ref_ty.clone())
         .returns(IrType::String)
         .calling_convention(CallingConvention::C)
@@ -348,7 +364,8 @@ fn build_string_to_lower(builder: &mut MirBuilder) {
 /// Build: fn string_to_int(s: String) -> i32
 /// Parses an integer from a string
 fn build_string_to_int(builder: &mut MirBuilder) {
-    let func_id = builder.begin_function("string_to_int")
+    let func_id = builder
+        .begin_function("string_to_int")
         .param("s", IrType::String)
         .returns(IrType::I32)
         .calling_convention(CallingConvention::C)
@@ -370,7 +387,8 @@ fn build_string_to_int(builder: &mut MirBuilder) {
 /// Build: fn string_to_float(s: String) -> f64
 /// Parses a float from a string
 fn build_string_to_float(builder: &mut MirBuilder) {
-    let func_id = builder.begin_function("string_to_float")
+    let func_id = builder
+        .begin_function("string_to_float")
         .param("s", IrType::String)
         .returns(IrType::F64)
         .calling_convention(CallingConvention::C)
@@ -394,7 +412,8 @@ fn build_string_to_float(builder: &mut MirBuilder) {
 fn build_string_from_chars(builder: &mut MirBuilder) {
     let ptr_u8_ty = IrType::Ptr(Box::new(IrType::U8));
 
-    let func_id = builder.begin_function("string_from_chars")
+    let func_id = builder
+        .begin_function("string_from_chars")
         .param("chars", ptr_u8_ty.clone())
         .param("len", IrType::I32)
         .returns(IrType::String)
@@ -420,7 +439,8 @@ fn build_string_from_chars(builder: &mut MirBuilder) {
 fn build_trace(builder: &mut MirBuilder) {
     let string_ref_ty = IrType::Ref(Box::new(IrType::String));
 
-    let func_id = builder.begin_function("trace")
+    let func_id = builder
+        .begin_function("trace")
         .param("value", string_ref_ty.clone())
         .returns(IrType::Void)
         .calling_convention(CallingConvention::C)
@@ -447,7 +467,8 @@ fn build_string_indexof_wrapper(builder: &mut MirBuilder) {
     let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
     let i32_ty = IrType::I32;
 
-    let func_id = builder.begin_function("String_indexOf")
+    let func_id = builder
+        .begin_function("String_indexOf")
         .param("s", string_ptr_ty.clone())
         .param("needle", string_ptr_ty.clone())
         .returns(i32_ty.clone())
@@ -466,9 +487,12 @@ fn build_string_indexof_wrapper(builder: &mut MirBuilder) {
     let start_index = builder.const_i32(0);
 
     // Call the runtime function with default startIndex
-    let extern_id = builder.get_function_by_name("haxe_string_index_of_ptr")
+    let extern_id = builder
+        .get_function_by_name("haxe_string_index_of_ptr")
         .expect("haxe_string_index_of_ptr not found");
-    let result = builder.call(extern_id, vec![s, needle, start_index]).unwrap();
+    let result = builder
+        .call(extern_id, vec![s, needle, start_index])
+        .unwrap();
 
     builder.ret(Some(result));
 }
@@ -480,7 +504,8 @@ fn build_string_lastindexof_wrapper(builder: &mut MirBuilder) {
     let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
     let i32_ty = IrType::I32;
 
-    let func_id = builder.begin_function("String_lastIndexOf")
+    let func_id = builder
+        .begin_function("String_lastIndexOf")
         .param("s", string_ptr_ty.clone())
         .param("needle", string_ptr_ty.clone())
         .returns(i32_ty.clone())
@@ -501,9 +526,12 @@ fn build_string_lastindexof_wrapper(builder: &mut MirBuilder) {
     let start_index = builder.const_i32(-1);
 
     // Call the runtime function with default startIndex
-    let extern_id = builder.get_function_by_name("haxe_string_last_index_of_ptr")
+    let extern_id = builder
+        .get_function_by_name("haxe_string_last_index_of_ptr")
         .expect("haxe_string_last_index_of_ptr not found");
-    let result = builder.call(extern_id, vec![s, needle, start_index]).unwrap();
+    let result = builder
+        .call(extern_id, vec![s, needle, start_index])
+        .unwrap();
 
     builder.ret(Some(result));
 }
@@ -515,7 +543,8 @@ fn build_string_indexof_2_wrapper(builder: &mut MirBuilder) {
     let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
     let i32_ty = IrType::I32;
 
-    let func_id = builder.begin_function("String_indexOf_2")
+    let func_id = builder
+        .begin_function("String_indexOf_2")
         .param("s", string_ptr_ty.clone())
         .param("needle", string_ptr_ty.clone())
         .param("start_index", i32_ty.clone())
@@ -533,9 +562,12 @@ fn build_string_indexof_2_wrapper(builder: &mut MirBuilder) {
     let start_index = builder.get_param(2);
 
     // Forward to the runtime function
-    let extern_id = builder.get_function_by_name("haxe_string_index_of_ptr")
+    let extern_id = builder
+        .get_function_by_name("haxe_string_index_of_ptr")
         .expect("haxe_string_index_of_ptr not found");
-    let result = builder.call(extern_id, vec![s, needle, start_index]).unwrap();
+    let result = builder
+        .call(extern_id, vec![s, needle, start_index])
+        .unwrap();
 
     builder.ret(Some(result));
 }
@@ -547,7 +579,8 @@ fn build_string_lastindexof_2_wrapper(builder: &mut MirBuilder) {
     let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
     let i32_ty = IrType::I32;
 
-    let func_id = builder.begin_function("String_lastIndexOf_2")
+    let func_id = builder
+        .begin_function("String_lastIndexOf_2")
         .param("s", string_ptr_ty.clone())
         .param("needle", string_ptr_ty.clone())
         .param("start_index", i32_ty.clone())
@@ -565,9 +598,12 @@ fn build_string_lastindexof_2_wrapper(builder: &mut MirBuilder) {
     let start_index = builder.get_param(2);
 
     // Forward to the runtime function
-    let extern_id = builder.get_function_by_name("haxe_string_last_index_of_ptr")
+    let extern_id = builder
+        .get_function_by_name("haxe_string_last_index_of_ptr")
         .expect("haxe_string_last_index_of_ptr not found");
-    let result = builder.call(extern_id, vec![s, needle, start_index]).unwrap();
+    let result = builder
+        .call(extern_id, vec![s, needle, start_index])
+        .unwrap();
 
     builder.ret(Some(result));
 }
@@ -578,7 +614,8 @@ fn build_string_charat_wrapper(builder: &mut MirBuilder) {
     let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
     let i32_ty = IrType::I32;
 
-    let func_id = builder.begin_function("String_charAt")
+    let func_id = builder
+        .begin_function("String_charAt")
         .param("s", string_ptr_ty.clone())
         .param("index", i32_ty.clone())
         .returns(string_ptr_ty.clone())
@@ -594,7 +631,8 @@ fn build_string_charat_wrapper(builder: &mut MirBuilder) {
     let index = builder.get_param(1);
 
     // Forward to the runtime function
-    let extern_id = builder.get_function_by_name("haxe_string_char_at_ptr")
+    let extern_id = builder
+        .get_function_by_name("haxe_string_char_at_ptr")
         .expect("haxe_string_char_at_ptr not found");
     let result = builder.call(extern_id, vec![s, index]).unwrap();
 
@@ -607,7 +645,8 @@ fn build_string_substring_wrapper(builder: &mut MirBuilder) {
     let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
     let i32_ty = IrType::I32;
 
-    let func_id = builder.begin_function("String_substring")
+    let func_id = builder
+        .begin_function("String_substring")
         .param("s", string_ptr_ty.clone())
         .param("start_index", i32_ty.clone())
         .param("end_index", i32_ty.clone())
@@ -625,9 +664,12 @@ fn build_string_substring_wrapper(builder: &mut MirBuilder) {
     let end_index = builder.get_param(2);
 
     // Forward to the runtime function
-    let extern_id = builder.get_function_by_name("haxe_string_substring_ptr")
+    let extern_id = builder
+        .get_function_by_name("haxe_string_substring_ptr")
         .expect("haxe_string_substring_ptr not found");
-    let result = builder.call(extern_id, vec![s, start_index, end_index]).unwrap();
+    let result = builder
+        .call(extern_id, vec![s, start_index, end_index])
+        .unwrap();
 
     builder.ret(Some(result));
 }

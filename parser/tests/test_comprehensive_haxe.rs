@@ -1,8 +1,8 @@
 //! Comprehensive test covering all Haxe language features
 //! This test ensures the parser can handle the full range of Haxe syntax
 
-use parser::parse_haxe_file;
 use parser::haxe_ast::*;
+use parser::parse_haxe_file;
 
 #[test]
 fn test_comprehensive_haxe_features() {
@@ -534,32 +534,46 @@ interface IComparable { function compareTo(other:Dynamic):Int; }
             assert!(file.imports.len() >= 5);
             assert!(file.using.len() >= 2);
             assert!(file.declarations.len() > 10);
-            
+
             // Find main class
-            let complex_class = file.declarations.iter().find_map(|decl| {
-                match decl {
+            let complex_class = file
+                .declarations
+                .iter()
+                .find_map(|decl| match decl {
                     TypeDeclaration::Class(c) if c.name == "ComplexClass" => Some(c),
-                    _ => None
-                }
-            }).expect("Should find ComplexClass");
-            
+                    _ => None,
+                })
+                .expect("Should find ComplexClass");
+
             // Test class features
             assert_eq!(complex_class.type_params.len(), 2);
             assert!(complex_class.extends.is_some());
             assert_eq!(complex_class.implements.len(), 2);
             assert!(complex_class.has_constructor());
-            
+
             // Test various declaration types exist
-            let has_interface = file.declarations.iter().any(|d| matches!(d, TypeDeclaration::Interface(_)));
-            let has_enum = file.declarations.iter().any(|d| matches!(d, TypeDeclaration::Enum(_)));
-            let has_abstract = file.declarations.iter().any(|d| matches!(d, TypeDeclaration::Abstract(_)));
-            let has_typedef = file.declarations.iter().any(|d| matches!(d, TypeDeclaration::Typedef(_)));
-            
+            let has_interface = file
+                .declarations
+                .iter()
+                .any(|d| matches!(d, TypeDeclaration::Interface(_)));
+            let has_enum = file
+                .declarations
+                .iter()
+                .any(|d| matches!(d, TypeDeclaration::Enum(_)));
+            let has_abstract = file
+                .declarations
+                .iter()
+                .any(|d| matches!(d, TypeDeclaration::Abstract(_)));
+            let has_typedef = file
+                .declarations
+                .iter()
+                .any(|d| matches!(d, TypeDeclaration::Typedef(_)));
+
             assert!(has_interface, "Should have interface declarations");
             assert!(has_enum, "Should have enum declarations");
             assert!(has_abstract, "Should have abstract declarations");
             assert!(has_typedef, "Should have typedef declarations");
-            
+
             println!("✓ Comprehensive Haxe parsing test passed!");
         }
         Err(e) => {
@@ -571,7 +585,7 @@ interface IComparable { function compareTo(other:Dynamic):Int; }
 #[test]
 fn test_error_recovery_scenarios() {
     // Test various error scenarios to ensure parser can recover
-    let error_cases = vec![
+    let error_cases = [
         // Missing semicolons
         r#"
         class Test {
@@ -579,7 +593,6 @@ fn test_error_recovery_scenarios() {
             var y:Int = 10;
         }
         "#,
-        
         // Unclosed block
         r#"
         class Test {
@@ -589,7 +602,6 @@ fn test_error_recovery_scenarios() {
             }
         }
         "#,
-        
         // Invalid syntax in method
         r#"
         class Test {
@@ -599,14 +611,12 @@ fn test_error_recovery_scenarios() {
             }
         }
         "#,
-        
         // Missing type annotation
         r#"
         class Test {
             var field: = "value";
         }
         "#,
-        
         // Malformed expression
         r#"
         class Test {
@@ -616,11 +626,14 @@ fn test_error_recovery_scenarios() {
         }
         "#,
     ];
-    
+
     for (i, case) in error_cases.iter().enumerate() {
         match parse_haxe_file("test.hx", case, false) {
             Ok(_) => {
-                println!("Warning: Error case {} parsed successfully (might have error recovery)", i);
+                println!(
+                    "Warning: Error case {} parsed successfully (might have error recovery)",
+                    i
+                );
             }
             Err(e) => {
                 println!("Error case {} failed as expected: {}", i, e);

@@ -20,8 +20,11 @@ fn main() {
 
     match parse_haxe_file("test.hx", content1, false) {
         Ok(file) => {
-            println!("✅ SUCCESS! Parsed {} declarations", file.declarations.len());
-        },
+            println!(
+                "✅ SUCCESS! Parsed {} declarations",
+                file.declarations.len()
+            );
+        }
         Err(e) => {
             println!("❌ FAILED to parse:");
             println!("{:?}", e);
@@ -36,14 +39,17 @@ fn main() {
             println!("Parsing Math.hx ({} bytes)...", content2.len());
             match parse_haxe_file("Math.hx", &content2, false) {
                 Ok(file) => {
-                    println!("✅ SUCCESS! Parsed {} declarations from Math.hx", file.declarations.len());
-                },
+                    println!(
+                        "✅ SUCCESS! Parsed {} declarations from Math.hx",
+                        file.declarations.len()
+                    );
+                }
                 Err(e) => {
                     println!("❌ FAILED to parse Math.hx:");
                     println!("{:?}", e);
                 }
             }
-        },
+        }
         Err(e) => {
             println!("❌ Failed to read Math.hx: {}", e);
         }

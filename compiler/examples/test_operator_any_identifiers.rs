@@ -1,6 +1,36 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test that operator overloading works with any identifiers (not just A and B)
 
-use compiler::compilation::{CompilationUnit, CompilationConfig};
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 
 fn main() -> Result<(), String> {
     println!("\n=== Testing Operator Overloading with Custom Identifiers ===\n");
@@ -52,7 +82,8 @@ fn main() -> Result<(), String> {
         Ok(typed_files) => {
             println!("✅ Code with custom identifiers compiled successfully!");
 
-            let vec2 = typed_files.iter()
+            let vec2 = typed_files
+                .iter()
                 .flat_map(|f| &f.abstracts)
                 .find(|a| unit.string_interner.get(a.name) == Some("Vec2"))
                 .ok_or("Vec2 abstract not found")?;
@@ -68,7 +99,9 @@ fn main() -> Result<(), String> {
             }
 
             // Check if identifiers were preserved or converted to standard format
-            let add_method = vec2.methods.iter()
+            let add_method = vec2
+                .methods
+                .iter()
                 .find(|m| unit.string_interner.get(m.name) == Some("add"))
                 .ok_or("add method not found")?;
 
@@ -91,8 +124,6 @@ fn main() -> Result<(), String> {
                 Err("No operator metadata found for add method".to_string())
             }
         }
-        Err(e) => {
-            Err(format!("❌ FAILED: {}", e))
-        }
+        Err(e) => Err(format!("❌ FAILED: {:?}", e)),
     }
 }

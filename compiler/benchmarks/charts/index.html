@@ -13,15 +13,15 @@
 </head>
 <body>
     <h1>Rayzor Benchmark Results</h1>
-    <p style="text-align: center">Generated: 2026-01-26</p>
+    <p style="text-align: center">Generated: 2026-01-27</p>
     <div class="summary">
         <h3>Summary</h3>
         <ul>
-            <li><strong>nbody</strong>: 4 targets measured</li>
+            <li><strong>mandelbrot</strong>: 4 targets measured</li>
         </ul>
     </div>
 
-    <h2>nbody</h2>
+    <h2>mandelbrot</h2>
     <div class="chart-container">
         <canvas id="chart_0"></canvas>
     </div>
@@ -33,12 +33,12 @@
                 datasets: [
                     {
                         label: 'Compile (ms)',
-                        data: [183.31, 0.67, 1.09, 177.63],
+                        data: [93.88, 0.68, 1.61, 78.89],
                         backgroundColor: 'rgba(54, 162, 235, 0.8)'
                     },
                     {
                         label: 'Execute (ms)',
-                        data: [318.20, 353.93, 345.47, 316.26],
+                        data: [2835.80, 2856.71, 897.66, 868.92],
                         backgroundColor: 'rgba(255, 99, 132, 0.8)'
                     }
                 ]
@@ -50,7 +50,7 @@
                     y: { stacked: true, title: { display: true, text: 'Time (ms)' } }
                 },
                 plugins: {
-                    title: { display: true, text: 'nbody' }
+                    title: { display: true, text: 'mandelbrot' }
                 }
             }
         });

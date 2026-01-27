@@ -9,29 +9,24 @@ fn parse_simple_expr(expr: &str) -> ExprKind {
         Ok(haxe_file) => {
             if let TypeDeclaration::Class(class) = &haxe_file.declarations[0] {
                 for field in &class.fields {
-                    match &field.kind {
-                        ClassFieldKind::Function(func) => {
-                            if func.name == "test" && field.modifiers.is_empty() {
-                                if let Some(body) = &func.body {
-                                    if let ExprKind::Block(elements) = &body.kind {
-                                        if let Some(element) = elements.first() {
-                                            if let parser::haxe_ast::BlockElement::Expr(expr) =
-                                                element
-                                            {
-                                                if let ExprKind::Var {
-                                                    expr: Some(var_expr),
-                                                    ..
-                                                } = &expr.kind
-                                                {
-                                                    return var_expr.kind.clone();
-                                                }
-                                            }
+                    if let ClassFieldKind::Function(func) = &field.kind {
+                        if func.name == "test" && field.modifiers.is_empty() {
+                            if let Some(body) = &func.body {
+                                if let ExprKind::Block(elements) = &body.kind {
+                                    if let Some(parser::haxe_ast::BlockElement::Expr(expr)) =
+                                        elements.first()
+                                    {
+                                        if let ExprKind::Var {
+                                            expr: Some(var_expr),
+                                            ..
+                                        } = &expr.kind
+                                        {
+                                            return var_expr.kind.clone();
                                         }
                                     }
                                 }
                             }
                         }
-                        _ => {}
                     }
                 }
             }
@@ -63,9 +58,10 @@ fn test_integer_literals() {
 }
 
 #[test]
+#[allow(clippy::approx_constant)]
 fn test_float_literals() {
     match parse_simple_expr("3.14") {
-        ExprKind::Float(f) if (f - 3.14).abs() < 0.001 => {}
+        ExprKind::Float(f) if (f - 3.14_f64).abs() < 0.001 => {}
         other => panic!("Expected Float(3.14), got {:?}", other),
     }
 

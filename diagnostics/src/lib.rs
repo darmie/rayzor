@@ -10,7 +10,7 @@
 use std::fmt;
 
 // Re-export source mapping types from the source_map crate
-pub use source_map::{SourcePosition, SourceSpan, SourceMap, SourceFile, FileId};
+pub use source_map::{FileId, SourceFile, SourceMap, SourcePosition, SourceSpan};
 
 /// Severity level for diagnostics
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -55,7 +55,7 @@ impl Label {
             style: LabelStyle::Primary,
         }
     }
-    
+
     pub fn secondary(span: SourceSpan, message: impl Into<String>) -> Self {
         Self {
             span,
@@ -106,41 +106,51 @@ impl Diagnostics {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     pub fn push(&mut self, diagnostic: Diagnostic) {
         self.diagnostics.push(diagnostic);
     }
-    
+
     pub fn extend(&mut self, other: Diagnostics) {
         self.diagnostics.extend(other.diagnostics);
     }
-    
+
     pub fn is_empty(&self) -> bool {
         self.diagnostics.is_empty()
     }
-    
+
     pub fn len(&self) -> usize {
         self.diagnostics.len()
     }
-    
+
     pub fn has_errors(&self) -> bool {
-        self.diagnostics.iter().any(|d| d.severity == DiagnosticSeverity::Error)
+        self.diagnostics
+            .iter()
+            .any(|d| d.severity == DiagnosticSeverity::Error)
     }
-    
+
     pub fn errors(&self) -> impl Iterator<Item = &Diagnostic> {
-        self.diagnostics.iter().filter(|d| d.severity == DiagnosticSeverity::Error)
+        self.diagnostics
+            .iter()
+            .filter(|d| d.severity == DiagnosticSeverity::Error)
     }
-    
+
     pub fn warnings(&self) -> impl Iterator<Item = &Diagnostic> {
-        self.diagnostics.iter().filter(|d| d.severity == DiagnosticSeverity::Warning)
+        self.diagnostics
+            .iter()
+            .filter(|d| d.severity == DiagnosticSeverity::Warning)
     }
-    
+
     pub fn infos(&self) -> impl Iterator<Item = &Diagnostic> {
-        self.diagnostics.iter().filter(|d| d.severity == DiagnosticSeverity::Info)
+        self.diagnostics
+            .iter()
+            .filter(|d| d.severity == DiagnosticSeverity::Info)
     }
-    
+
     pub fn hints(&self) -> impl Iterator<Item = &Diagnostic> {
-        self.diagnostics.iter().filter(|d| d.severity == DiagnosticSeverity::Hint)
+        self.diagnostics
+            .iter()
+            .filter(|d| d.severity == DiagnosticSeverity::Hint)
     }
 }
 
@@ -169,7 +179,7 @@ impl DiagnosticBuilder {
             help: vec![],
         }
     }
-    
+
     pub fn warning(message: impl Into<String>, span: SourceSpan) -> Self {
         Self {
             severity: DiagnosticSeverity::Warning,
@@ -182,7 +192,7 @@ impl DiagnosticBuilder {
             help: vec![],
         }
     }
-    
+
     pub fn info(message: impl Into<String>, span: SourceSpan) -> Self {
         Self {
             severity: DiagnosticSeverity::Info,
@@ -195,7 +205,7 @@ impl DiagnosticBuilder {
             help: vec![],
         }
     }
-    
+
     pub fn hint(message: impl Into<String>, span: SourceSpan) -> Self {
         Self {
             severity: DiagnosticSeverity::Hint,
@@ -208,23 +218,28 @@ impl DiagnosticBuilder {
             help: vec![],
         }
     }
-    
+
     pub fn code(mut self, code: impl Into<String>) -> Self {
         self.code = Some(code.into());
         self
     }
-    
+
     pub fn label(mut self, span: SourceSpan, message: impl Into<String>) -> Self {
         self.labels.push(Label::primary(span, message));
         self
     }
-    
+
     pub fn secondary_label(mut self, span: SourceSpan, message: impl Into<String>) -> Self {
         self.labels.push(Label::secondary(span, message));
         self
     }
-    
-    pub fn suggestion(mut self, message: impl Into<String>, span: SourceSpan, replacement: impl Into<String>) -> Self {
+
+    pub fn suggestion(
+        mut self,
+        message: impl Into<String>,
+        span: SourceSpan,
+        replacement: impl Into<String>,
+    ) -> Self {
         self.suggestions.push(Suggestion {
             message: message.into(),
             span,
@@ -233,7 +248,7 @@ impl DiagnosticBuilder {
         });
         self
     }
-    
+
     pub fn suggestion_with_applicability(
         mut self,
         message: impl Into<String>,
@@ -249,17 +264,17 @@ impl DiagnosticBuilder {
         });
         self
     }
-    
+
     pub fn note(mut self, note: impl Into<String>) -> Self {
         self.notes.push(note.into());
         self
     }
-    
+
     pub fn help(mut self, help_msg: impl Into<String>) -> Self {
         self.help.push(help_msg.into());
         self
     }
-    
+
     pub fn build(self) -> Diagnostic {
         Diagnostic {
             severity: self.severity,
@@ -283,24 +298,24 @@ impl ErrorFormatter {
     pub fn new() -> Self {
         Self { use_colors: false }
     }
-    
+
     pub fn with_colors() -> Self {
         Self { use_colors: true }
     }
-    
+
     pub fn format_diagnostics(&self, diagnostics: &Diagnostics, source_map: &SourceMap) -> String {
         let mut output = String::new();
-        
+
         for (i, diagnostic) in diagnostics.diagnostics.iter().enumerate() {
             if i > 0 {
-                output.push_str("\n");
+                output.push('\n');
             }
             output.push_str(&self.format_diagnostic(diagnostic, source_map));
         }
-        
+
         output
     }
-    
+
     pub fn format_diagnostic(&self, diagnostic: &Diagnostic, source_map: &SourceMap) -> String {
         let mut output = String::new();
 
@@ -335,49 +350,56 @@ impl ErrorFormatter {
 
             output.push_str(&format!(": {}\n", diagnostic.message));
         }
-        
+
         // Source location
         if let Some(file) = source_map.get_file(diagnostic.span.file_id) {
             if self.use_colors {
-                output.push_str(&format!("  \x1b[96m-->\x1b[0m {}:{}:{}\n",
-                    file.name,
-                    diagnostic.span.start.line,
-                    diagnostic.span.start.column
+                output.push_str(&format!(
+                    "  \x1b[96m-->\x1b[0m {}:{}:{}\n",
+                    file.name, diagnostic.span.start.line, diagnostic.span.start.column
                 ));
             } else {
-                output.push_str(&format!("  --> {}:{}:{}\n",
-                    file.name,
-                    diagnostic.span.start.line,
-                    diagnostic.span.start.column
+                output.push_str(&format!(
+                    "  --> {}:{}:{}\n",
+                    file.name, diagnostic.span.start.line, diagnostic.span.start.column
                 ));
             }
-            
+
             // Source snippet
             let line_num = diagnostic.span.start.line;
             let line_num_width = line_num.to_string().len();
-            
+
             // Blank line
             if self.use_colors {
-                output.push_str(&format!("{:width$} \x1b[96m|\x1b[0m\n", "", width = line_num_width));
+                output.push_str(&format!(
+                    "{:width$} \x1b[96m|\x1b[0m\n",
+                    "",
+                    width = line_num_width
+                ));
             } else {
                 output.push_str(&format!("{:width$} |\n", "", width = line_num_width));
             }
-            
+
             // Source line
             if let Some(line) = source_map.get_line(diagnostic.span.file_id, line_num) {
                 if self.use_colors {
-                    output.push_str(&format!("\x1b[96m{}\x1b[0m \x1b[96m|\x1b[0m {}\n", line_num, line));
+                    output.push_str(&format!(
+                        "\x1b[96m{}\x1b[0m \x1b[96m|\x1b[0m {}\n",
+                        line_num, line
+                    ));
                 } else {
                     output.push_str(&format!("{} | {}\n", line_num, line));
                 }
-                
+
                 // Underline
                 let padding = " ".repeat(diagnostic.span.start.column - 1);
                 let mut underline_len = if diagnostic.span.start.line == diagnostic.span.end.line {
                     diagnostic.span.end.column - diagnostic.span.start.column
                 } else {
                     // For multi-line spans, underline from start column to end of line
-                    if diagnostic.span.start.column > 0 && line.len() >= diagnostic.span.start.column - 1 {
+                    if diagnostic.span.start.column > 0
+                        && line.len() >= diagnostic.span.start.column - 1
+                    {
                         line.len() - (diagnostic.span.start.column - 1)
                     } else {
                         1
@@ -390,10 +412,12 @@ impl ErrorFormatter {
                     if start_col < line.len() {
                         let remaining = &line[start_col..];
                         // Find the length of the identifier (alphanumeric + underscore)
-                        let detected_len = remaining.chars()
+                        let detected_len = remaining
+                            .chars()
                             .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
                             .count();
-                        if detected_len >= 1 {  // Changed from > 1 to >= 1
+                        if detected_len >= 1 {
+                            // Changed from > 1 to >= 1
                             underline_len = detected_len;
                         }
                     }
@@ -404,18 +428,31 @@ impl ErrorFormatter {
                 } else {
                     "^".repeat(underline_len.max(1))
                 };
-                
+
                 if self.use_colors {
-                    output.push_str(&format!("{:width$} \x1b[96m|\x1b[0m {}{}", 
-                        "", padding, underline, width = line_num_width));
+                    output.push_str(&format!(
+                        "{:width$} \x1b[96m|\x1b[0m {}{}",
+                        "",
+                        padding,
+                        underline,
+                        width = line_num_width
+                    ));
                 } else {
-                    output.push_str(&format!("{:width$} | {}{}", 
-                        "", padding, underline, width = line_num_width));
+                    output.push_str(&format!(
+                        "{:width$} | {}{}",
+                        "",
+                        padding,
+                        underline,
+                        width = line_num_width
+                    ));
                 }
-                
+
                 // Primary label message - underlined and bold for visibility
-                if let Some(label) = diagnostic.labels.iter()
-                    .find(|l| l.style == LabelStyle::Primary) {
+                if let Some(label) = diagnostic
+                    .labels
+                    .iter()
+                    .find(|l| l.style == LabelStyle::Primary)
+                {
                     if self.use_colors {
                         // Bold + underlined red text for the error message
                         output.push_str(&format!(" \x1b[1;4;31m{}\x1b[0m", label.message));
@@ -426,42 +463,38 @@ impl ErrorFormatter {
                 output.push('\n');
             }
         }
-        
+
         // Additional labels
         for label in &diagnostic.labels {
-            if label.style == LabelStyle::Secondary {
-                if let Some(file) = source_map.get_file(label.span.file_id) {
-                    if self.use_colors {
-                        output.push_str(&format!("  \x1b[96m-->\x1b[0m {}:{}:{}: {}\n",
-                            file.name,
-                            label.span.start.line,
-                            label.span.start.column,
-                            label.message
-                        ));
-                    } else {
-                        output.push_str(&format!("  --> {}:{}:{}: {}\n",
-                            file.name,
-                            label.span.start.line,
-                            label.span.start.column,
-                            label.message
-                        ));
-                    }
+            if label.style == LabelStyle::Secondary
+                && let Some(file) = source_map.get_file(label.span.file_id)
+            {
+                if self.use_colors {
+                    output.push_str(&format!(
+                        "  \x1b[96m-->\x1b[0m {}:{}:{}: {}\n",
+                        file.name, label.span.start.line, label.span.start.column, label.message
+                    ));
+                } else {
+                    output.push_str(&format!(
+                        "  --> {}:{}:{}: {}\n",
+                        file.name, label.span.start.line, label.span.start.column, label.message
+                    ));
                 }
             }
         }
-        
+
         // Suggestions
         for suggestion in &diagnostic.suggestions {
-            output.push_str("\n");
+            output.push('\n');
             if self.use_colors {
                 output.push_str("\x1b[38;5;208msuggestion\x1b[0m: ");
             } else {
                 output.push_str("suggestion: ");
             }
             output.push_str(&suggestion.message);
-            output.push_str("\n");
+            output.push('\n');
         }
-        
+
         // Help messages - indented for better readability with yellow/golden color
         for help_msg in &diagnostic.help {
             if self.use_colors {
@@ -472,10 +505,10 @@ impl ErrorFormatter {
             } else {
                 output.push_str("     help: ");
                 output.push_str(help_msg);
-                output.push_str("\n");
+                output.push('\n');
             }
         }
-        
+
         // Notes
         for note in &diagnostic.notes {
             if self.use_colors {
@@ -484,9 +517,9 @@ impl ErrorFormatter {
                 output.push_str("note: ");
             }
             output.push_str(note);
-            output.push_str("\n");
+            output.push('\n');
         }
-        
+
         output
     }
 }
@@ -506,18 +539,19 @@ pub mod haxe;
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_source_map() {
         let mut source_map = SourceMap::new();
-        let file_id = source_map.add_file("test.hx".to_string(), "line 1\nline 2\nline 3".to_string());
-        
+        let file_id =
+            source_map.add_file("test.hx".to_string(), "line 1\nline 2\nline 3".to_string());
+
         assert_eq!(source_map.get_line(file_id, 1), Some("line 1"));
         assert_eq!(source_map.get_line(file_id, 2), Some("line 2"));
         assert_eq!(source_map.get_line(file_id, 3), Some("line 3"));
         assert_eq!(source_map.get_line(file_id, 4), None);
     }
-    
+
     #[test]
     fn test_diagnostic_builder() {
         let span = SourceSpan::new(
@@ -525,14 +559,14 @@ mod tests {
             SourcePosition::new(1, 6, 5),
             FileId::new(0),
         );
-        
+
         let diagnostic = DiagnosticBuilder::error("test error", span.clone())
             .code("E0001")
             .label(span, "here")
             .help("try this")
             .note("additional info")
             .build();
-        
+
         assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
         assert_eq!(diagnostic.code, Some("E0001".to_string()));
         assert_eq!(diagnostic.message, "test error");

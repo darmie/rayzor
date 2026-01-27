@@ -1,3 +1,34 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
+#![allow(static_mut_refs, clippy::manual_unwrap_or)]
 /// Test: Cranelift Memory Model Execution
 ///
 /// This test proves that Cranelift can execute code that implements
@@ -13,7 +44,6 @@
 /// - Check borrow states
 /// - Enforce exclusive access
 /// - Clean up resources when lifetimes end
-
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
@@ -25,7 +55,7 @@ use std::collections::HashMap;
 enum OwnershipState {
     Owned,
     Moved,
-    BorrowedShared(u32),   // Count of shared borrows
+    BorrowedShared(u32), // Count of shared borrows
     BorrowedExclusive,
 }
 
@@ -50,7 +80,9 @@ impl MemoryRuntime {
         let id = *next_id;
         *next_id += 1;
 
-        self.values.borrow_mut().insert(id, (value, OwnershipState::Owned));
+        self.values
+            .borrow_mut()
+            .insert(id, (value, OwnershipState::Owned));
         println!("  → Allocated value {} with ID #{} (Owned)", value, id);
         id
     }
@@ -62,19 +94,31 @@ impl MemoryRuntime {
             Some((val, OwnershipState::Owned)) => {
                 let value = *val;
                 values.insert(from_id, (value, OwnershipState::Moved));
-                println!("  → Moved value from ID #{}: {} (state: Owned → Moved)", from_id, value);
+                println!(
+                    "  → Moved value from ID #{}: {} (state: Owned → Moved)",
+                    from_id, value
+                );
                 Ok(value)
             }
             Some((_, OwnershipState::Moved)) => {
-                println!("  ✗ ERROR: Cannot move from ID #{} - already moved!", from_id);
+                println!(
+                    "  ✗ ERROR: Cannot move from ID #{} - already moved!",
+                    from_id
+                );
                 Err(format!("Use after move: ID {}", from_id))
             }
             Some((_, OwnershipState::BorrowedShared(_))) => {
-                println!("  ✗ ERROR: Cannot move from ID #{} - currently borrowed (shared)!", from_id);
+                println!(
+                    "  ✗ ERROR: Cannot move from ID #{} - currently borrowed (shared)!",
+                    from_id
+                );
                 Err(format!("Move while borrowed: ID {}", from_id))
             }
             Some((_, OwnershipState::BorrowedExclusive)) => {
-                println!("  ✗ ERROR: Cannot move from ID #{} - currently borrowed (exclusive)!", from_id);
+                println!(
+                    "  ✗ ERROR: Cannot move from ID #{} - currently borrowed (exclusive)!",
+                    from_id
+                );
                 Err(format!("Move while borrowed: ID {}", from_id))
             }
             None => {
@@ -99,7 +143,10 @@ impl MemoryRuntime {
         match state {
             OwnershipState::Owned => {
                 values.insert(id, (value, OwnershipState::BorrowedShared(1)));
-                println!("  → Borrowed (shared) ID #{}: value = {} (Owned → BorrowedShared[1])", id, value);
+                println!(
+                    "  → Borrowed (shared) ID #{}: value = {} (Owned → BorrowedShared[1])",
+                    id, value
+                );
                 Ok(value)
             }
             OwnershipState::BorrowedShared(count) => {
@@ -114,8 +161,14 @@ impl MemoryRuntime {
                 Err(format!("Borrow after move: ID {}", id))
             }
             OwnershipState::BorrowedExclusive => {
-                println!("  ✗ ERROR: Cannot borrow (shared) ID #{} - exclusively borrowed!", id);
-                Err(format!("Shared borrow while exclusively borrowed: ID {}", id))
+                println!(
+                    "  ✗ ERROR: Cannot borrow (shared) ID #{} - exclusively borrowed!",
+                    id
+                );
+                Err(format!(
+                    "Shared borrow while exclusively borrowed: ID {}",
+                    id
+                ))
             }
         }
     }
@@ -135,7 +188,10 @@ impl MemoryRuntime {
         match state {
             OwnershipState::Owned => {
                 values.insert(id, (value, OwnershipState::BorrowedExclusive));
-                println!("  → Borrowed (exclusive) ID #{}: value = {} (Owned → BorrowedExclusive)", id, value);
+                println!(
+                    "  → Borrowed (exclusive) ID #{}: value = {} (Owned → BorrowedExclusive)",
+                    id, value
+                );
                 Ok(value)
             }
             OwnershipState::Moved => {
@@ -143,12 +199,21 @@ impl MemoryRuntime {
                 Err(format!("Borrow after move: ID {}", id))
             }
             OwnershipState::BorrowedShared(count) => {
-                println!("  ✗ ERROR: Cannot borrow (exclusive) ID #{} - has {} shared borrows!", id, count);
+                println!(
+                    "  ✗ ERROR: Cannot borrow (exclusive) ID #{} - has {} shared borrows!",
+                    id, count
+                );
                 Err(format!("Exclusive borrow while shared borrowed: ID {}", id))
             }
             OwnershipState::BorrowedExclusive => {
-                println!("  ✗ ERROR: Cannot borrow (exclusive) ID #{} - already exclusively borrowed!", id);
-                Err(format!("Exclusive borrow while exclusively borrowed: ID {}", id))
+                println!(
+                    "  ✗ ERROR: Cannot borrow (exclusive) ID #{} - already exclusively borrowed!",
+                    id
+                );
+                Err(format!(
+                    "Exclusive borrow while exclusively borrowed: ID {}",
+                    id
+                ))
             }
         }
     }
@@ -175,20 +240,32 @@ impl MemoryRuntime {
             }
             OwnershipState::BorrowedShared(_) => {
                 values.insert(id, (value, OwnershipState::Owned));
-                println!("  → Released shared borrow from ID #{} (BorrowedShared[1] → Owned)", id);
+                println!(
+                    "  → Released shared borrow from ID #{} (BorrowedShared[1] → Owned)",
+                    id
+                );
                 Ok(())
             }
             OwnershipState::BorrowedExclusive => {
                 values.insert(id, (value, OwnershipState::Owned));
-                println!("  → Released exclusive borrow from ID #{} (BorrowedExclusive → Owned)", id);
+                println!(
+                    "  → Released exclusive borrow from ID #{} (BorrowedExclusive → Owned)",
+                    id
+                );
                 Ok(())
             }
             OwnershipState::Owned => {
-                println!("  ✗ ERROR: Cannot release borrow from ID #{} - not borrowed!", id);
+                println!(
+                    "  ✗ ERROR: Cannot release borrow from ID #{} - not borrowed!",
+                    id
+                );
                 Err(format!("Release non-borrowed: ID {}", id))
             }
             OwnershipState::Moved => {
-                println!("  ✗ ERROR: Cannot release borrow from ID #{} - already moved!", id);
+                println!(
+                    "  ✗ ERROR: Cannot release borrow from ID #{} - already moved!",
+                    id
+                );
                 Err(format!("Release after move: ID {}", id))
             }
         }
@@ -199,7 +276,10 @@ impl MemoryRuntime {
 
         match values.get(&id) {
             Some((val, OwnershipState::Moved)) => {
-                println!("  ✗ ERROR: Cannot get value from ID #{} - already moved!", id);
+                println!(
+                    "  ✗ ERROR: Cannot get value from ID #{} - already moved!",
+                    id
+                );
                 Err(format!("Use after move: ID {}", id))
             }
             Some((val, _)) => {
@@ -222,7 +302,7 @@ extern "C" fn mem_allocate(value: i64) -> i64 {
 extern "C" fn mem_move(from_id: i64) -> i64 {
     match unsafe { RUNTIME.as_ref().unwrap().move_ownership(from_id) } {
         Ok(val) => val,
-        Err(_) => -1,  // Error sentinel
+        Err(_) => -1, // Error sentinel
     }
 }
 
@@ -243,7 +323,7 @@ extern "C" fn mem_borrow_exclusive(id: i64) -> i64 {
 extern "C" fn mem_release_borrow(id: i64) -> i64 {
     match unsafe { RUNTIME.as_ref().unwrap().release_borrow(id) } {
         Ok(()) => 0,  // Success
-        Err(_) => -1,  // Error
+        Err(_) => -1, // Error
     }
 }
 
@@ -267,7 +347,7 @@ fn main() {
     match test_move_semantics() {
         Ok(()) => {}
         Err(e) => {
-            eprintln!("\n❌ Test failed: {}", e);
+            eprintln!("\n❌ Test failed: {:?}", e);
             std::process::exit(1);
         }
     }
@@ -275,7 +355,7 @@ fn main() {
     match test_shared_borrows() {
         Ok(()) => {}
         Err(e) => {
-            eprintln!("\n❌ Test failed: {}", e);
+            eprintln!("\n❌ Test failed: {:?}", e);
             std::process::exit(1);
         }
     }
@@ -283,7 +363,7 @@ fn main() {
     match test_exclusive_borrow() {
         Ok(()) => {}
         Err(e) => {
-            eprintln!("\n❌ Test failed: {}", e);
+            eprintln!("\n❌ Test failed: {:?}", e);
             std::process::exit(1);
         }
     }
@@ -301,8 +381,7 @@ fn test_move_semantics() -> Result<(), String> {
     println!("Test 1: Move Semantics");
     println!("=======================\n");
 
-    let isa_builder = cranelift_native::builder()
-        .map_err(|e| format!("ISA error: {}", e))?;
+    let isa_builder = cranelift_native::builder().map_err(|e| format!("ISA error: {}", e))?;
     let isa = isa_builder
         .finish(settings::Flags::new(settings::builder()))
         .map_err(|e| format!("ISA error: {}", e))?;
@@ -359,10 +438,13 @@ fn test_move_semantics() -> Result<(), String> {
         builder.finalize();
     }
 
-    module.define_function(func_id, &mut ctx)
+    module
+        .define_function(func_id, &mut ctx)
         .map_err(|e| format!("Define error: {}", e))?;
     module.clear_context(&mut ctx);
-    module.finalize_definitions().map_err(|e| format!("Finalize error: {}", e))?;
+    module
+        .finalize_definitions()
+        .map_err(|e| format!("Finalize error: {}", e))?;
 
     let code_ptr = module.get_finalized_function(func_id);
     let jit_fn: fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
@@ -386,8 +468,7 @@ fn test_shared_borrows() -> Result<(), String> {
     println!("Test 2: Shared Borrows");
     println!("=======================\n");
 
-    let isa_builder = cranelift_native::builder()
-        .map_err(|e| format!("ISA error: {}", e))?;
+    let isa_builder = cranelift_native::builder().map_err(|e| format!("ISA error: {}", e))?;
     let isa = isa_builder
         .finish(settings::Flags::new(settings::builder()))
         .map_err(|e| format!("ISA error: {}", e))?;
@@ -450,10 +531,13 @@ fn test_shared_borrows() -> Result<(), String> {
         builder.finalize();
     }
 
-    module.define_function(func_id, &mut ctx)
+    module
+        .define_function(func_id, &mut ctx)
         .map_err(|e| format!("Define error: {}", e))?;
     module.clear_context(&mut ctx);
-    module.finalize_definitions().map_err(|e| format!("Finalize error: {}", e))?;
+    module
+        .finalize_definitions()
+        .map_err(|e| format!("Finalize error: {}", e))?;
 
     let code_ptr = module.get_finalized_function(func_id);
     let jit_fn: fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
@@ -477,8 +561,7 @@ fn test_exclusive_borrow() -> Result<(), String> {
     println!("Test 3: Exclusive Borrow");
     println!("=========================\n");
 
-    let isa_builder = cranelift_native::builder()
-        .map_err(|e| format!("ISA error: {}", e))?;
+    let isa_builder = cranelift_native::builder().map_err(|e| format!("ISA error: {}", e))?;
     let isa = isa_builder
         .finish(settings::Flags::new(settings::builder()))
         .map_err(|e| format!("ISA error: {}", e))?;
@@ -491,8 +574,14 @@ fn test_exclusive_borrow() -> Result<(), String> {
     let mut module = JITModule::new(builder);
 
     let allocate_func = declare_func(&mut module, "mem_allocate", &[types::I64], types::I64)?;
-    let borrow_excl_func = declare_func(&mut module, "mem_borrow_exclusive", &[types::I64], types::I64)?;
-    let borrow_shared_func = declare_func(&mut module, "mem_borrow_shared", &[types::I64], types::I64)?;
+    let borrow_excl_func = declare_func(
+        &mut module,
+        "mem_borrow_exclusive",
+        &[types::I64],
+        types::I64,
+    )?;
+    let borrow_shared_func =
+        declare_func(&mut module, "mem_borrow_shared", &[types::I64], types::I64)?;
 
     let mut sig = module.make_signature();
     sig.returns.push(AbiParam::new(types::I64));
@@ -537,10 +626,13 @@ fn test_exclusive_borrow() -> Result<(), String> {
         builder.finalize();
     }
 
-    module.define_function(func_id, &mut ctx)
+    module
+        .define_function(func_id, &mut ctx)
         .map_err(|e| format!("Define error: {}", e))?;
     module.clear_context(&mut ctx);
-    module.finalize_definitions().map_err(|e| format!("Finalize error: {}", e))?;
+    module
+        .finalize_definitions()
+        .map_err(|e| format!("Finalize error: {}", e))?;
 
     let code_ptr = module.get_finalized_function(func_id);
     let jit_fn: fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };

@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 /// Comprehensive test for 100% Haxe language support through Cranelift backend
 ///
 /// This test systematically exercises all major Haxe features:
@@ -8,17 +38,14 @@
 /// - Type casts
 /// - String operations
 /// - And more...
-
 use compiler::codegen::CraneliftBackend;
+use compiler::ir::{hir_to_mir::lower_hir_to_mir, tast_to_hir::lower_tast_to_hir};
 use compiler::tast::{
-    TypeTable, StringInterner, SymbolTable,
-    ast_lowering::AstLowering,
-    scopes::ScopeTree,
+    ast_lowering::AstLowering, scopes::ScopeTree, StringInterner, SymbolTable, TypeTable,
 };
-use compiler::ir::{tast_to_hir::lower_tast_to_hir, hir_to_mir::lower_hir_to_mir};
 use parser::haxe_parser::parse_haxe_file;
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 fn main() -> Result<(), String> {
     println!("=== Comprehensive Haxe Language Test ===\n");
@@ -64,7 +91,9 @@ class Math {
     let mir_module = compile_haxe_to_mir(source)?;
 
     // Get the function
-    let sum_func = mir_module.functions.values()
+    let sum_func = mir_module
+        .functions
+        .values()
         .next()
         .ok_or("No functions in MIR module")?;
 
@@ -73,7 +102,11 @@ class Math {
 
     // Print blocks
     for (block_id, block) in &sum_func.cfg.blocks {
-        println!("  Block {:?}: {} instructions", block_id, block.instructions.len());
+        println!(
+            "  Block {:?}: {} instructions",
+            block_id,
+            block.instructions.len()
+        );
     }
 
     // Compile with Cranelift
@@ -89,11 +122,11 @@ class Math {
     // Test cases: sum(n) = n*(n+1)/2
     println!("\nExecuting JIT-compiled function:");
     let tests = vec![
-        (0, 0),       // sum(0) = 0
-        (1, 1),       // sum(1) = 1
-        (5, 15),      // sum(5) = 1+2+3+4+5 = 15
-        (10, 55),     // sum(10) = 55
-        (100, 5050),  // sum(100) = 5050
+        (0, 0),      // sum(0) = 0
+        (1, 1),      // sum(1) = 1
+        (5, 15),     // sum(5) = 1+2+3+4+5 = 15
+        (10, 55),    // sum(10) = 55
+        (100, 5050), // sum(100) = 5050
     ];
 
     let mut all_passed = true;
@@ -101,7 +134,10 @@ class Math {
         let result = sum_fn(n);
         let passed = result == expected;
         let symbol = if passed { "✓" } else { "✗" };
-        println!("  {} sumToN({}) = {} (expected {})", symbol, n, result, expected);
+        println!(
+            "  {} sumToN({}) = {} (expected {})",
+            symbol, n, result, expected
+        );
         all_passed &= passed;
     }
 
@@ -148,7 +184,9 @@ class Math {
     }
 
     // Find the compute function (it takes 1 parameter, while add and multiply take 2)
-    let compute_func = mir_module.functions.values()
+    let compute_func = mir_module
+        .functions
+        .values()
         .find(|f| f.signature.parameters.len() == 1)
         .ok_or("Compute function not found (expected function with 1 parameter)")?;
 
@@ -169,19 +207,25 @@ class Math {
     // Test cases: compute(x) = (x + 10) * 2
     println!("\nExecuting JIT-compiled function:");
     let tests = vec![
-        (5, 30),   // (5 + 10) * 2 = 30
-        (0, 20),   // (0 + 10) * 2 = 20
-        (10, 40),  // (10 + 10) * 2 = 40
-        (-5, 10),  // (-5 + 10) * 2 = 10
+        (5, 30),  // (5 + 10) * 2 = 30
+        (0, 20),  // (0 + 10) * 2 = 20
+        (10, 40), // (10 + 10) * 2 = 40
+        (-5, 10), // (-5 + 10) * 2 = 10
     ];
 
     let mut all_passed = true;
     for (input, expected) in tests {
         let result = compute_fn(input);
         if result == expected {
-            println!("  ✓ compute({}) = {} (expected {})", input, result, expected);
+            println!(
+                "  ✓ compute({}) = {} (expected {})",
+                input, result, expected
+            );
         } else {
-            println!("  ✗ compute({}) = {} (expected {})", input, result, expected);
+            println!(
+                "  ✗ compute({}) = {} (expected {})",
+                input, result, expected
+            );
             all_passed = false;
         }
     }
@@ -197,19 +241,23 @@ class Math {
 /// Compile Haxe source through the full pipeline to MIR
 fn compile_haxe_to_mir(source: &str) -> Result<compiler::ir::IrModule, String> {
     // Step 1: Parse
-    let ast = parse_haxe_file("test.hx", source, false)
-        .map_err(|e| format!("Parse error: {}", e))?;
+    let ast =
+        parse_haxe_file("test.hx", source, false).map_err(|e| format!("Parse error: {}", e))?;
 
     // Step 2: Lower AST to TAST
     let mut string_interner = StringInterner::new();
     let mut symbol_table = SymbolTable::new();
     let type_table = Rc::new(RefCell::new(TypeTable::new()));
     let mut scope_tree = ScopeTree::new(compiler::tast::ScopeId::from_raw(0));
-    let mut namespace_resolver = compiler::tast::namespace::NamespaceResolver::new(&string_interner);
+    let mut namespace_resolver =
+        compiler::tast::namespace::NamespaceResolver::new(&string_interner);
     let mut import_resolver = compiler::tast::namespace::ImportResolver::new(&namespace_resolver);
 
     let mut ast_lowering = AstLowering::new(
         &mut string_interner,
+        std::rc::Rc::new(std::cell::RefCell::new(
+            compiler::tast::StringInterner::new(),
+        )),
         &mut symbol_table,
         &type_table,
         &mut scope_tree,
@@ -217,7 +265,8 @@ fn compile_haxe_to_mir(source: &str) -> Result<compiler::ir::IrModule, String> {
         &mut import_resolver,
     );
 
-    let mut typed_file = ast_lowering.lower_file(&ast)
+    let mut typed_file = ast_lowering
+        .lower_file(&ast)
         .map_err(|e| format!("TAST lowering error: {:?}", e))?;
 
     // Step 3: Lower TAST to HIR
@@ -230,17 +279,23 @@ fn compile_haxe_to_mir(source: &str) -> Result<compiler::ir::IrModule, String> {
         &type_table,
         &mut *string_interner_rc.borrow_mut(),
         None, // No semantic graphs for now
-    ).map_err(|errors| {
+    )
+    .map_err(|errors| {
         let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
         format!("HIR lowering errors: {}", messages.join(", "))
     })?;
 
     // Step 4: Lower HIR to MIR (this produces proper SSA!)
-    let mir_module = lower_hir_to_mir(&hir_module, &*string_interner_rc.borrow(), &type_table)
-        .map_err(|errors| {
-            let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
-            format!("MIR lowering errors: {}", messages.join(", "))
-        })?;
+    let mir_module = lower_hir_to_mir(
+        &hir_module,
+        &*string_interner_rc.borrow(),
+        &type_table,
+        &symbol_table,
+    )
+    .map_err(|errors| {
+        let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
+        format!("MIR lowering errors: {}", messages.join(", "))
+    })?;
 
     Ok(mir_module)
 }

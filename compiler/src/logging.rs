@@ -46,8 +46,8 @@
 //! RUST_LOG=compiler::codegen=trace ./rayzor compile main.hx
 //! ```
 
-use log::LevelFilter;
 use env_logger::Builder;
+use log::LevelFilter;
 use std::io::Write;
 use std::sync::Once;
 
@@ -88,9 +88,7 @@ pub fn init_with_level(level: LevelFilter) {
 /// This only initializes once; subsequent calls are no-ops.
 pub fn init_from_env() {
     INIT.call_once(|| {
-        env_logger::Builder::from_env(
-            env_logger::Env::default().default_filter_or("warn")
-        ).init();
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     });
 }
 

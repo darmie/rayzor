@@ -1,3 +1,11 @@
+#![allow(
+    unused_imports,
+    dead_code,
+    clippy::redundant_closure,
+    clippy::collapsible_str_replace,
+    clippy::single_component_path_imports
+)]
+
 //! Pre-compile stdlib to BLADE format
 //!
 //! This tool pre-compiles Haxe standard library modules to BLADE bytecode format
@@ -13,16 +21,16 @@
 //!   cargo run --bin preblade -- --list  # List modules that would be compiled
 //!   cargo run --bin preblade -- --bundle app.rzb Main.hx  # Create a bundle
 
-use std::path::{Path, PathBuf};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 use compiler::ir::blade::{
-    BladeModuleSymbols, BladeTypeInfo, BladeClassInfo, BladeEnumInfo,
-    BladeFieldInfo, BladeMethodInfo, BladeParamInfo, BladeEnumVariantInfo, BladeTypeAliasInfo,
-    BladeAbstractInfo, save_symbol_manifest, RayzorBundle, save_bundle,
+    save_bundle, save_symbol_manifest, BladeAbstractInfo, BladeClassInfo, BladeEnumInfo,
+    BladeEnumVariantInfo, BladeFieldInfo, BladeMethodInfo, BladeModuleSymbols, BladeParamInfo,
+    BladeTypeAliasInfo, BladeTypeInfo, RayzorBundle,
 };
-use compiler::compilation::{CompilationUnit, CompilationConfig};
 use parser;
 
 fn main() {
@@ -159,7 +167,8 @@ fn create_bundle(output: &Path, source_files: &[String], verbose: bool) -> Resul
     if verbose {
         println!("  Loading stdlib...");
     }
-    unit.load_stdlib().map_err(|e| format!("Failed to load stdlib: {}", e))?;
+    unit.load_stdlib()
+        .map_err(|e| format!("Failed to load stdlib: {}", e))?;
 
     // Add source files
     for source_file in source_files {
@@ -190,25 +199,31 @@ fn create_bundle(output: &Path, source_files: &[String], verbose: bool) -> Resul
     }
 
     // Convert Arc<IrModule> to IrModule for the bundle
-    let modules: Vec<_> = mir_modules.iter()
-        .map(|m| (**m).clone())
-        .collect();
+    let modules: Vec<_> = mir_modules.iter().map(|m| (**m).clone()).collect();
 
     let module_count = modules.len();
 
     // Find entry module and function
-    let entry_module = modules.iter()
-        .rev()  // User modules are at the end
-        .find(|m| m.functions.values().any(|f|
-            f.name == "main" || f.name == "Main_main" || f.name.ends_with("_main")))
+    let entry_module = modules
+        .iter()
+        .rev() // User modules are at the end
+        .find(|m| {
+            m.functions
+                .values()
+                .any(|f| f.name == "main" || f.name == "Main_main" || f.name.ends_with("_main"))
+        })
         .map(|m| m.name.clone())
         .ok_or("No entry point found (no main function)")?;
 
-    let entry_function = modules.iter()
+    let entry_function = modules
+        .iter()
         .find(|m| m.name == entry_module)
-        .and_then(|m| m.functions.values()
-            .find(|f| f.name == "main" || f.name == "Main_main" || f.name.ends_with("_main"))
-            .map(|f| f.name.clone()))
+        .and_then(|m| {
+            m.functions
+                .values()
+                .find(|f| f.name == "main" || f.name == "Main_main" || f.name.ends_with("_main"))
+                .map(|f| f.name.clone())
+        })
         .ok_or("Entry function not found")?;
 
     if verbose {
@@ -221,8 +236,7 @@ fn create_bundle(output: &Path, source_files: &[String], verbose: bool) -> Resul
     if verbose {
         println!("  Saving bundle...");
     }
-    save_bundle(output, &bundle)
-        .map_err(|e| format!("Failed to save bundle: {}", e))?;
+    save_bundle(output, &bundle).map_err(|e| format!("Failed to save bundle: {}", e))?;
 
     let elapsed = t0.elapsed();
     println!("  Compiled {} modules in {:?}", module_count, elapsed);
@@ -260,24 +274,22 @@ fn discover_modules_recursive(base_path: &Path, current_path: &Path, modules: &m
         let path = entry.path();
 
         if path.is_dir() {
-            let dir_name = path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
+            let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
             // Skip hidden and platform-specific directories
             if dir_name.starts_with('.') || dir_name.starts_with('_') {
                 continue;
             }
-            let skip_dirs = ["cpp", "cs", "flash", "hl", "java", "js", "lua", "neko", "php", "python", "eval"];
+            let skip_dirs = [
+                "cpp", "cs", "flash", "hl", "java", "js", "lua", "neko", "php", "python", "eval",
+            ];
             if skip_dirs.contains(&dir_name) {
                 continue;
             }
 
             discover_modules_recursive(base_path, &path, modules);
         } else if path.extension().map(|e| e == "hx").unwrap_or(false) {
-            let file_name = path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
             // Skip import.hx files
             if file_name == "import.hx" {
@@ -286,7 +298,8 @@ fn discover_modules_recursive(base_path: &Path, current_path: &Path, modules: &m
 
             // Convert path to qualified module name
             if let Ok(relative) = path.strip_prefix(base_path) {
-                let module_name = relative.to_string_lossy()
+                let module_name = relative
+                    .to_string_lossy()
                     .replace('/', ".")
                     .replace('\\', ".")
                     .replace(".hx", "");
@@ -304,7 +317,11 @@ fn discover_stdlib_files(stdlib_path: &Path) -> Vec<(String, PathBuf)> {
     files
 }
 
-fn discover_files_recursive(base_path: &Path, current_path: &Path, files: &mut Vec<(String, PathBuf)>) {
+fn discover_files_recursive(
+    base_path: &Path,
+    current_path: &Path,
+    files: &mut Vec<(String, PathBuf)>,
+) {
     let entries = match std::fs::read_dir(current_path) {
         Ok(e) => e,
         Err(_) => return,
@@ -314,24 +331,22 @@ fn discover_files_recursive(base_path: &Path, current_path: &Path, files: &mut V
         let path = entry.path();
 
         if path.is_dir() {
-            let dir_name = path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
+            let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
             // Skip hidden and platform-specific directories
             if dir_name.starts_with('.') || dir_name.starts_with('_') {
                 continue;
             }
-            let skip_dirs = ["cpp", "cs", "flash", "hl", "java", "js", "lua", "neko", "php", "python", "eval"];
+            let skip_dirs = [
+                "cpp", "cs", "flash", "hl", "java", "js", "lua", "neko", "php", "python", "eval",
+            ];
             if skip_dirs.contains(&dir_name) {
                 continue;
             }
 
             discover_files_recursive(base_path, &path, files);
         } else if path.extension().map(|e| e == "hx").unwrap_or(false) {
-            let file_name = path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
             // Skip import.hx files
             if file_name == "import.hx" {
@@ -340,7 +355,8 @@ fn discover_files_recursive(base_path: &Path, current_path: &Path, files: &mut V
 
             // Convert path to qualified module name
             if let Ok(relative) = path.strip_prefix(base_path) {
-                let module_name = relative.to_string_lossy()
+                let module_name = relative
+                    .to_string_lossy()
                     .replace('/', ".")
                     .replace('\\', ".")
                     .replace(".hx", "");
@@ -379,7 +395,10 @@ fn extract_stdlib_symbols(
     let mut total_aliases = 0;
     let mut all_module_symbols: Vec<BladeModuleSymbols> = Vec::new();
 
-    println!("  Parsing and extracting types from {} files...", all_files.len());
+    println!(
+        "  Parsing and extracting types from {} files...",
+        all_files.len()
+    );
 
     for (module_name, file_path) in &all_files {
         let source = match std::fs::read_to_string(file_path) {
@@ -414,16 +433,21 @@ fn extract_stdlib_symbols(
         let abstract_count = type_info.abstracts.len();
 
         if verbose && (class_count > 0 || enum_count > 0 || alias_count > 0 || abstract_count > 0) {
-            println!("  {}: {} classes, {} enums, {} aliases, {} abstracts",
-                module_name, class_count, enum_count, alias_count, abstract_count);
+            println!(
+                "  {}: {} classes, {} enums, {} aliases, {} abstracts",
+                module_name, class_count, enum_count, alias_count, abstract_count
+            );
         }
 
         total_classes += class_count;
         total_enums += enum_count;
         total_aliases += alias_count;
 
-        if !type_info.classes.is_empty() || !type_info.enums.is_empty()
-            || !type_info.type_aliases.is_empty() || !type_info.abstracts.is_empty() {
+        if !type_info.classes.is_empty()
+            || !type_info.enums.is_empty()
+            || !type_info.type_aliases.is_empty()
+            || !type_info.abstracts.is_empty()
+        {
             let source_hash = hash_string(&filename);
 
             all_module_symbols.push(BladeModuleSymbols {
@@ -440,7 +464,10 @@ fn extract_stdlib_symbols(
     let manifest_path = out_path.join("stdlib.bsym");
     println!();
     println!("Saving symbol manifest to {}...", manifest_path.display());
-    println!("  {} modules with symbol information", all_module_symbols.len());
+    println!(
+        "  {} modules with symbol information",
+        all_module_symbols.len()
+    );
 
     if let Err(e) = save_symbol_manifest(&manifest_path, all_module_symbols) {
         eprintln!("Failed to save symbol manifest: {}", e);
@@ -455,7 +482,8 @@ fn extract_stdlib_symbols(
 fn extract_type_info_from_ast(haxe_file: &parser::HaxeFile) -> BladeTypeInfo {
     let mut type_info = BladeTypeInfo::default();
 
-    let package: Vec<String> = haxe_file.package
+    let package: Vec<String> = haxe_file
+        .package
         .as_ref()
         .map(|p| p.path.clone())
         .unwrap_or_default();
@@ -466,12 +494,10 @@ fn extract_type_info_from_ast(haxe_file: &parser::HaxeFile) -> BladeTypeInfo {
                 let is_extern = class.modifiers.contains(&parser::Modifier::Extern);
 
                 let extends = class.extends.as_ref().map(|t| type_to_string(t));
-                let implements: Vec<String> = class.implements.iter()
-                    .map(|t| type_to_string(t))
-                    .collect();
-                let type_params: Vec<String> = class.type_params.iter()
-                    .map(|tp| tp.name.clone())
-                    .collect();
+                let implements: Vec<String> =
+                    class.implements.iter().map(|t| type_to_string(t)).collect();
+                let type_params: Vec<String> =
+                    class.type_params.iter().map(|tp| tp.name.clone()).collect();
 
                 // Extract fields
                 let mut fields: Vec<BladeFieldInfo> = Vec::new();
@@ -485,10 +511,17 @@ fn extract_type_info_from_ast(haxe_file: &parser::HaxeFile) -> BladeTypeInfo {
                     let is_public = matches!(field.access, Some(parser::Access::Public));
 
                     match &field.kind {
-                        parser::ClassFieldKind::Var { name, type_hint, expr } => {
+                        parser::ClassFieldKind::Var {
+                            name,
+                            type_hint,
+                            expr,
+                        } => {
                             let field_info = BladeFieldInfo {
                                 name: name.clone(),
-                                field_type: type_hint.as_ref().map(|t| type_to_string(t)).unwrap_or_else(|| "Dynamic".to_string()),
+                                field_type: type_hint
+                                    .as_ref()
+                                    .map(|t| type_to_string(t))
+                                    .unwrap_or_else(|| "Dynamic".to_string()),
                                 is_public,
                                 is_static,
                                 is_final: false,
@@ -500,10 +533,17 @@ fn extract_type_info_from_ast(haxe_file: &parser::HaxeFile) -> BladeTypeInfo {
                                 fields.push(field_info);
                             }
                         }
-                        parser::ClassFieldKind::Final { name, type_hint, expr } => {
+                        parser::ClassFieldKind::Final {
+                            name,
+                            type_hint,
+                            expr,
+                        } => {
                             let field_info = BladeFieldInfo {
                                 name: name.clone(),
-                                field_type: type_hint.as_ref().map(|t| type_to_string(t)).unwrap_or_else(|| "Dynamic".to_string()),
+                                field_type: type_hint
+                                    .as_ref()
+                                    .map(|t| type_to_string(t))
+                                    .unwrap_or_else(|| "Dynamic".to_string()),
                                 is_public,
                                 is_static,
                                 is_final: true,
@@ -515,10 +555,15 @@ fn extract_type_info_from_ast(haxe_file: &parser::HaxeFile) -> BladeTypeInfo {
                                 fields.push(field_info);
                             }
                         }
-                        parser::ClassFieldKind::Property { name, type_hint, .. } => {
+                        parser::ClassFieldKind::Property {
+                            name, type_hint, ..
+                        } => {
                             let field_info = BladeFieldInfo {
                                 name: name.clone(),
-                                field_type: type_hint.as_ref().map(|t| type_to_string(t)).unwrap_or_else(|| "Dynamic".to_string()),
+                                field_type: type_hint
+                                    .as_ref()
+                                    .map(|t| type_to_string(t))
+                                    .unwrap_or_else(|| "Dynamic".to_string()),
                                 is_public,
                                 is_static,
                                 is_final: false,
@@ -560,17 +605,27 @@ fn extract_type_info_from_ast(haxe_file: &parser::HaxeFile) -> BladeTypeInfo {
                 });
             }
             parser::TypeDeclaration::Enum(enum_decl) => {
-                let type_params: Vec<String> = enum_decl.type_params.iter()
+                let type_params: Vec<String> = enum_decl
+                    .type_params
+                    .iter()
                     .map(|tp| tp.name.clone())
                     .collect();
 
-                let variants: Vec<BladeEnumVariantInfo> = enum_decl.constructors.iter()
+                let variants: Vec<BladeEnumVariantInfo> = enum_decl
+                    .constructors
+                    .iter()
                     .enumerate()
                     .map(|(idx, v)| {
-                        let params: Vec<BladeParamInfo> = v.params.iter()
+                        let params: Vec<BladeParamInfo> = v
+                            .params
+                            .iter()
                             .map(|p| BladeParamInfo {
                                 name: p.name.clone(),
-                                param_type: p.type_hint.as_ref().map(|t| type_to_string(t)).unwrap_or_else(|| "Dynamic".to_string()),
+                                param_type: p
+                                    .type_hint
+                                    .as_ref()
+                                    .map(|t| type_to_string(t))
+                                    .unwrap_or_else(|| "Dynamic".to_string()),
                                 has_default: p.default_value.is_some(),
                                 is_optional: p.optional,
                             })
@@ -592,7 +647,9 @@ fn extract_type_info_from_ast(haxe_file: &parser::HaxeFile) -> BladeTypeInfo {
                 });
             }
             parser::TypeDeclaration::Typedef(typedef) => {
-                let type_params: Vec<String> = typedef.type_params.iter()
+                let type_params: Vec<String> = typedef
+                    .type_params
+                    .iter()
                     .map(|tp| tp.name.clone())
                     .collect();
 
@@ -604,21 +661,25 @@ fn extract_type_info_from_ast(haxe_file: &parser::HaxeFile) -> BladeTypeInfo {
                 });
             }
             parser::TypeDeclaration::Abstract(abstract_decl) => {
-                let type_params: Vec<String> = abstract_decl.type_params.iter()
+                let type_params: Vec<String> = abstract_decl
+                    .type_params
+                    .iter()
                     .map(|tp| tp.name.clone())
                     .collect();
 
-                let underlying_type = abstract_decl.underlying
+                let underlying_type = abstract_decl
+                    .underlying
                     .as_ref()
                     .map(|t| type_to_string(t))
                     .unwrap_or_else(|| "Dynamic".to_string());
 
-                let from_types: Vec<String> = abstract_decl.from.iter()
+                let from_types: Vec<String> = abstract_decl
+                    .from
+                    .iter()
                     .map(|t| type_to_string(t))
                     .collect();
-                let to_types: Vec<String> = abstract_decl.to.iter()
-                    .map(|t| type_to_string(t))
-                    .collect();
+                let to_types: Vec<String> =
+                    abstract_decl.to.iter().map(|t| type_to_string(t)).collect();
 
                 // Extract methods
                 let mut methods: Vec<BladeMethodInfo> = Vec::new();
@@ -652,12 +713,14 @@ fn extract_type_info_from_ast(haxe_file: &parser::HaxeFile) -> BladeTypeInfo {
             parser::TypeDeclaration::Interface(iface) => {
                 // Treat interfaces similar to classes for type resolution
                 let extends: Option<String> = iface.extends.first().map(|t| type_to_string(t));
-                let implements: Vec<String> = iface.extends.iter().skip(1)
+                let implements: Vec<String> = iface
+                    .extends
+                    .iter()
+                    .skip(1)
                     .map(|t| type_to_string(t))
                     .collect();
-                let type_params: Vec<String> = iface.type_params.iter()
-                    .map(|tp| tp.name.clone())
-                    .collect();
+                let type_params: Vec<String> =
+                    iface.type_params.iter().map(|tp| tp.name.clone()).collect();
 
                 let mut methods: Vec<BladeMethodInfo> = Vec::new();
                 for field in &iface.fields {
@@ -695,24 +758,36 @@ fn extract_type_info_from_ast(haxe_file: &parser::HaxeFile) -> BladeTypeInfo {
 }
 
 /// Extract method info from parsed function AST
-fn extract_method_from_ast(func: &parser::Function, is_public: bool, is_static: bool) -> BladeMethodInfo {
-    let params: Vec<BladeParamInfo> = func.params.iter()
+fn extract_method_from_ast(
+    func: &parser::Function,
+    is_public: bool,
+    is_static: bool,
+) -> BladeMethodInfo {
+    let params: Vec<BladeParamInfo> = func
+        .params
+        .iter()
         .map(|p| BladeParamInfo {
             name: p.name.clone(),
-            param_type: p.type_hint.as_ref().map(|t| type_to_string(t)).unwrap_or_else(|| "Dynamic".to_string()),
+            param_type: p
+                .type_hint
+                .as_ref()
+                .map(|t| type_to_string(t))
+                .unwrap_or_else(|| "Dynamic".to_string()),
             has_default: p.default_value.is_some(),
             is_optional: p.optional,
         })
         .collect();
 
-    let type_params: Vec<String> = func.type_params.iter()
-        .map(|tp| tp.name.clone())
-        .collect();
+    let type_params: Vec<String> = func.type_params.iter().map(|tp| tp.name.clone()).collect();
 
     BladeMethodInfo {
         name: func.name.clone(),
         params,
-        return_type: func.return_type.as_ref().map(|t| type_to_string(t)).unwrap_or_else(|| "Void".to_string()),
+        return_type: func
+            .return_type
+            .as_ref()
+            .map(|t| type_to_string(t))
+            .unwrap_or_else(|| "Void".to_string()),
         is_public,
         is_static,
         is_inline: false,
@@ -748,7 +823,8 @@ fn type_to_string(ty: &parser::Type) -> String {
             format!("({}) -> {}", param_strs.join(", "), type_to_string(ret))
         }
         parser::Type::Anonymous { fields, .. } => {
-            let field_strs: Vec<String> = fields.iter()
+            let field_strs: Vec<String> = fields
+                .iter()
                 .map(|f| format!("{}: {}", f.name, type_to_string(&f.type_hint)))
                 .collect();
             format!("{{ {} }}", field_strs.join(", "))

@@ -3,9 +3,9 @@
 //! This module provides a multi-level caching system for type lookups
 //! to improve performance in the type system.
 
-use super::{TypeId, SymbolId, InternedString};
+use super::{InternedString, SymbolId, TypeId};
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::cell::{RefCell, Cell};
 use std::rc::Rc;
 
 /// Statistics for cache performance monitoring
@@ -65,17 +65,17 @@ pub struct TypeCache {
     /// L1 cache: Small, fast cache for most frequently accessed types
     l1_cache: RefCell<HashMap<TypeCacheKey, CacheEntry>>,
     l1_max_size: usize,
-    
+
     /// L2 cache: Larger cache for moderately accessed types
     l2_cache: RefCell<HashMap<TypeCacheKey, CacheEntry>>,
     l2_max_size: usize,
-    
+
     /// Access counter for LRU tracking
     access_counter: Cell<u64>,
-    
+
     /// Cache statistics
     stats: RefCell<CacheStats>,
-    
+
     /// Enable statistics collection
     collect_stats: bool,
 }
@@ -85,7 +85,7 @@ impl TypeCache {
     pub fn new() -> Self {
         Self::with_sizes(64, 512, true)
     }
-    
+
     /// Create a type cache with custom sizes
     pub fn with_sizes(l1_size: usize, l2_size: usize, collect_stats: bool) -> Self {
         TypeCache {
@@ -98,29 +98,29 @@ impl TypeCache {
             collect_stats,
         }
     }
-    
+
     /// Look up a type in the cache
     pub fn get(&self, key: &TypeCacheKey) -> Option<TypeId> {
         let current_access = self.access_counter.get();
         self.access_counter.set(current_access + 1);
-        
+
         if self.collect_stats {
             let mut stats = self.stats.borrow_mut();
             stats.total_lookups += 1;
         }
-        
+
         // Check L1 cache first
         if let Some(entry) = self.l1_cache.borrow().get(key) {
             entry.access_count.set(entry.access_count.get() + 1);
             entry.last_access.set(current_access);
-            
+
             if self.collect_stats {
                 self.stats.borrow_mut().hits += 1;
             }
-            
+
             return Some(entry.type_id);
         }
-        
+
         // Check L2 cache
         let promote_info = {
             let l2_cache = self.l2_cache.borrow();
@@ -149,24 +149,24 @@ impl TypeCache {
 
             return Some(type_id);
         }
-        
+
         if self.collect_stats {
             self.stats.borrow_mut().misses += 1;
         }
-        
+
         None
     }
-    
+
     /// Insert a type into the cache
     pub fn insert(&self, key: TypeCacheKey, type_id: TypeId) {
         let current_access = self.access_counter.get();
-        
+
         let entry = CacheEntry {
             type_id,
             access_count: Cell::new(1),
             last_access: Cell::new(current_access),
         };
-        
+
         // Try to insert into L1 first
         let mut l1_cache = self.l1_cache.borrow_mut();
         if l1_cache.len() < self.l1_max_size {
@@ -177,41 +177,41 @@ impl TypeCache {
             self.insert_into_l2(key, entry);
         }
     }
-    
+
     /// Promote an entry from L2 to L1
     fn promote_to_l1(&self, key: TypeCacheKey, type_id: TypeId) {
         let mut l1_cache = self.l1_cache.borrow_mut();
-        
+
         // If L1 is full, evict LRU entry
         if l1_cache.len() >= self.l1_max_size {
             self.evict_lru_from_l1(&mut l1_cache);
         }
-        
+
         let current_access = self.access_counter.get();
         let entry = CacheEntry {
             type_id,
             access_count: Cell::new(1),
             last_access: Cell::new(current_access),
         };
-        
+
         l1_cache.insert(key.clone(), entry);
-        
+
         // Remove from L2
         self.l2_cache.borrow_mut().remove(&key);
     }
-    
+
     /// Insert into L2 cache
     fn insert_into_l2(&self, key: TypeCacheKey, entry: CacheEntry) {
         let mut l2_cache = self.l2_cache.borrow_mut();
-        
+
         // If L2 is full, evict LRU entry
         if l2_cache.len() >= self.l2_max_size {
             self.evict_lru_from_l2(&mut l2_cache);
         }
-        
+
         l2_cache.insert(key, entry);
     }
-    
+
     /// Evict least recently used entry from L1
     fn evict_lru_from_l1(&self, l1_cache: &mut HashMap<TypeCacheKey, CacheEntry>) {
         if let Some(lru_key) = l1_cache
@@ -222,14 +222,14 @@ impl TypeCache {
             if let Some(evicted) = l1_cache.remove(&lru_key) {
                 // Move evicted entry to L2
                 self.insert_into_l2(lru_key, evicted);
-                
+
                 if self.collect_stats {
                     self.stats.borrow_mut().evictions += 1;
                 }
             }
         }
     }
-    
+
     /// Evict least recently used entry from L2
     fn evict_lru_from_l2(&self, l2_cache: &mut HashMap<TypeCacheKey, CacheEntry>) {
         if let Some(lru_key) = l2_cache
@@ -238,13 +238,13 @@ impl TypeCache {
             .map(|(k, _)| k.clone())
         {
             l2_cache.remove(&lru_key);
-            
+
             if self.collect_stats {
                 self.stats.borrow_mut().evictions += 1;
             }
         }
     }
-    
+
     /// Clear all caches
     pub fn clear(&self) {
         self.l1_cache.borrow_mut().clear();
@@ -252,17 +252,17 @@ impl TypeCache {
         self.access_counter.set(0);
         *self.stats.borrow_mut() = CacheStats::default();
     }
-    
+
     /// Get cache statistics
     pub fn stats(&self) -> CacheStats {
         self.stats.borrow().clone()
     }
-    
+
     /// Get current cache sizes
     pub fn sizes(&self) -> (usize, usize) {
         (self.l1_cache.borrow().len(), self.l2_cache.borrow().len())
     }
-    
+
     /// Preload common types into cache
     pub fn preload_common_types(&self, common_types: Vec<(TypeCacheKey, TypeId)>) {
         for (key, type_id) in common_types {
@@ -284,7 +284,7 @@ pub fn get_type_cache() -> Rc<TypeCache> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_cache_basic_operations() {
         let cache = TypeCache::new();
@@ -310,11 +310,20 @@ mod tests {
         let cache = TypeCache::with_sizes(2, 4, true);
 
         // Fill L1
-        cache.insert(TypeCacheKey::NamedType(SymbolId::from_raw(1), 0), TypeId::from_raw(1));
-        cache.insert(TypeCacheKey::NamedType(SymbolId::from_raw(2), 0), TypeId::from_raw(2));
+        cache.insert(
+            TypeCacheKey::NamedType(SymbolId::from_raw(1), 0),
+            TypeId::from_raw(1),
+        );
+        cache.insert(
+            TypeCacheKey::NamedType(SymbolId::from_raw(2), 0),
+            TypeId::from_raw(2),
+        );
 
         // This should go to L2
-        cache.insert(TypeCacheKey::NamedType(SymbolId::from_raw(3), 0), TypeId::from_raw(3));
+        cache.insert(
+            TypeCacheKey::NamedType(SymbolId::from_raw(3), 0),
+            TypeId::from_raw(3),
+        );
 
         let (l1_size, l2_size) = cache.sizes();
         assert_eq!(l1_size, 2);
@@ -325,7 +334,7 @@ mod tests {
         for _ in 0..4 {
             cache.get(&key3);
         }
-        
+
         // Should now be promoted to L1
         let (l1_size, l2_size) = cache.sizes();
         assert_eq!(l1_size, 2);

@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test loading and executing a .rzb bundle
 //!
 //! Compares bundle loading speed vs full compilation.
@@ -8,12 +38,11 @@
 //!   # Then test loading it
 //!   cargo run --release --package compiler --example test_bundle_loading -- /tmp/test.rzb
 
+use compiler::codegen::profiling::ProfileConfig;
+use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig};
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 use compiler::ir::blade::{load_bundle, RayzorBundle};
 use compiler::ir::IrFunctionId;
-use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig};
-use compiler::codegen::profiling::ProfileConfig;
-use compiler::compilation::{CompilationUnit, CompilationConfig};
-use rayzor_runtime;
 use std::time::Instant;
 
 fn main() {
@@ -23,7 +52,9 @@ fn main() {
         eprintln!("Usage: test_bundle_loading <bundle.rzb>");
         eprintln!();
         eprintln!("First create a bundle:");
-        eprintln!("  cargo run --release --package compiler --bin preblade -- --bundle app.rzb Main.hx");
+        eprintln!(
+            "  cargo run --release --package compiler --bin preblade -- --bundle app.rzb Main.hx"
+        );
         std::process::exit(1);
     }
 
@@ -44,28 +75,35 @@ fn main() {
     let load_time = t0.elapsed();
     println!("  Bundle loaded in {:?}", load_time);
     println!("  Modules: {}", bundle.module_count());
-    println!("  Entry: {}::{}", bundle.entry_module().map(|m| m.name.as_str()).unwrap_or("?"), bundle.entry_function());
+    println!(
+        "  Entry: {}::{}",
+        bundle
+            .entry_module()
+            .map(|m| m.name.as_str())
+            .unwrap_or("?"),
+        bundle.entry_function()
+    );
 
     // Test 2: Execute via interpreter
     println!("\nTest 2: Execute via interpreter");
     match execute_bundle_interpreted(&bundle) {
         Ok(exec_time) => println!("  Execution time: {:?}", exec_time),
-        Err(e) => println!("  Execution failed: {}", e),
+        Err(e) => println!("  Execution failed: {:?}", e),
     }
 
     // Test 3: Compare with full compilation
     println!("\nTest 3: Compare with full compilation");
-    let source = std::fs::read_to_string(bundle_path.replace(".rzb", ".hx"))
-        .unwrap_or_else(|_| {
-            // Use a simple test source if original not found
-            r#"
+    let source = std::fs::read_to_string(bundle_path.replace(".rzb", ".hx")).unwrap_or_else(|_| {
+        // Use a simple test source if original not found
+        r#"
 class Main {
     static function main() {
         trace("Hello!");
     }
 }
-"#.to_string()
-        });
+"#
+        .to_string()
+    });
 
     let t1 = Instant::now();
     match compile_and_run(&source) {
@@ -74,10 +112,12 @@ class Main {
             println!("  Full compilation + execution: {:?}", compile_time);
             println!();
             println!("  Bundle load: {:?}", load_time);
-            println!("  Speedup: {:.1}x faster with bundle",
-                compile_time.as_micros() as f64 / load_time.as_micros() as f64);
+            println!(
+                "  Speedup: {:.1}x faster with bundle",
+                compile_time.as_micros() as f64 / load_time.as_micros() as f64
+            );
         }
-        Err(e) => println!("  Compilation failed: {}", e),
+        Err(e) => println!("  Compilation failed: {:?}", e),
     }
 
     println!("\n=== Test Complete ===");
@@ -105,31 +145,37 @@ fn execute_bundle_interpreted(bundle: &RayzorBundle) -> Result<std::time::Durati
         max_parallel_optimizations: 1,
         verbosity: 0,
         start_interpreted: true,
+        bailout_strategy: compiler::codegen::BailoutStrategy::Quick,
     };
 
     let mut backend = TieredBackend::with_symbols(config, &symbols_ref)
         .map_err(|e| format!("Failed to create backend: {}", e))?;
 
     // Get entry module from bundle
-    let entry_module = bundle.entry_module()
-        .ok_or("No entry module in bundle")?;
+    let entry_module = bundle.entry_module().ok_or("No entry module in bundle")?;
 
     // Find main function
-    let main_func_id = entry_module.functions.iter()
-        .find(|(_, f)| f.name == bundle.entry_function() ||
-                       f.name == "main" ||
-                       f.name == "Main_main" ||
-                       f.name.ends_with("_main"))
+    let main_func_id = entry_module
+        .functions
+        .iter()
+        .find(|(_, f)| {
+            f.name == bundle.entry_function()
+                || f.name == "main"
+                || f.name == "Main_main"
+                || f.name.ends_with("_main")
+        })
         .map(|(id, _)| *id)
         .ok_or("Main function not found")?;
 
     // Load module into backend
-    backend.compile_module(entry_module.clone())
+    backend
+        .compile_module(entry_module.clone())
         .map_err(|e| format!("Failed to load module: {}", e))?;
 
     // Execute
-    backend.execute_function(main_func_id, vec![])
-        .map_err(|e| format!("Execution failed: {}", e))?;
+    backend
+        .execute_function(main_func_id, vec![])
+        .map_err(|e| format!("Execution failed: {:?}", e))?;
 
     Ok(t0.elapsed())
 }
@@ -137,7 +183,8 @@ fn execute_bundle_interpreted(bundle: &RayzorBundle) -> Result<std::time::Durati
 fn compile_and_run(source: &str) -> Result<(), String> {
     let mut unit = CompilationUnit::new(CompilationConfig::default());
 
-    unit.load_stdlib().map_err(|e| format!("Failed to load stdlib: {}", e))?;
+    unit.load_stdlib()
+        .map_err(|e| format!("Failed to load stdlib: {}", e))?;
     unit.add_file(source, "main.hx")
         .map_err(|e| format!("Failed to add file: {}", e))?;
     unit.lower_to_tast()
@@ -166,6 +213,7 @@ fn compile_and_run(source: &str) -> Result<(), String> {
         max_parallel_optimizations: 1,
         verbosity: 0,
         start_interpreted: true,
+        bailout_strategy: compiler::codegen::BailoutStrategy::Quick,
     };
 
     let mut backend = TieredBackend::with_symbols(config, &symbols_ref)
@@ -173,13 +221,17 @@ fn compile_and_run(source: &str) -> Result<(), String> {
 
     // Find and execute main
     for module in mir_modules.iter().rev() {
-        if let Some((func_id, _)) = module.functions.iter()
+        if let Some((func_id, _)) = module
+            .functions
+            .iter()
             .find(|(_, f)| f.name == "main" || f.name == "Main_main" || f.name.ends_with("_main"))
         {
-            backend.compile_module((**module).clone())
+            backend
+                .compile_module((**module).clone())
                 .map_err(|e| format!("Failed to load module: {}", e))?;
-            backend.execute_function(*func_id, vec![])
-                .map_err(|e| format!("Execution failed: {}", e))?;
+            backend
+                .execute_function(*func_id, vec![])
+                .map_err(|e| format!("Execution failed: {:?}", e))?;
             return Ok(());
         }
     }

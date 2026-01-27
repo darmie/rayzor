@@ -9,9 +9,8 @@
 /// 3. The JIT runtime (in Rust) provides the actual allocation implementations
 ///
 /// This keeps everything pure Rust - no C linking required!
-
 use crate::ir::mir_builder::MirBuilder;
-use crate::ir::{IrType, CallingConvention, UnionVariant, BinaryOp, CompareOp};
+use crate::ir::{BinaryOp, CallingConvention, CompareOp, IrType, UnionVariant};
 
 /// Build all memory management functions
 pub fn build_memory_functions(builder: &mut MirBuilder) {
@@ -34,10 +33,11 @@ fn build_heap_alloc(builder: &mut MirBuilder) {
     let u8_ty = builder.u8_type();
     let ptr_u8_ty = builder.ptr_type(u8_ty.clone());
 
-    let func_id = builder.begin_function("malloc")
+    let func_id = builder
+        .begin_function("malloc")
         .param("size", u64_ty.clone())
         .returns(ptr_u8_ty.clone())
-        .calling_convention(CallingConvention::C)  // Use C calling convention for libc
+        .calling_convention(CallingConvention::C) // Use C calling convention for libc
         .build();
 
     // Mark as extern by clearing CFG blocks
@@ -52,11 +52,12 @@ fn build_heap_realloc(builder: &mut MirBuilder) {
     let u64_ty = builder.u64_type();
     let ptr_u8_ty = builder.ptr_type(u8_ty.clone());
 
-    let func_id = builder.begin_function("realloc")
+    let func_id = builder
+        .begin_function("realloc")
         .param("ptr", ptr_u8_ty.clone())
         .param("new_size", u64_ty.clone())
         .returns(ptr_u8_ty.clone())
-        .calling_convention(CallingConvention::C)  // Use C calling convention for libc
+        .calling_convention(CallingConvention::C) // Use C calling convention for libc
         .build();
 
     // Mark as extern by clearing CFG blocks
@@ -71,10 +72,11 @@ fn build_heap_free(builder: &mut MirBuilder) {
     let ptr_u8_ty = builder.ptr_type(u8_ty);
     let void_ty = builder.void_type();
 
-    let func_id = builder.begin_function("free")
+    let func_id = builder
+        .begin_function("free")
         .param("ptr", ptr_u8_ty)
         .returns(void_ty.clone())
-        .calling_convention(CallingConvention::C)  // Use C calling convention for libc
+        .calling_convention(CallingConvention::C) // Use C calling convention for libc
         .build();
 
     // Mark as extern by clearing CFG blocks
@@ -107,7 +109,8 @@ fn build_safe_allocate(builder: &mut MirBuilder) {
         ],
     );
 
-    let func_id = builder.begin_function("allocate")
+    let func_id = builder
+        .begin_function("allocate")
         .param("size", u64_ty.clone())
         .returns(option_ptr_ty.clone())
         .build();
@@ -128,7 +131,9 @@ fn build_safe_allocate(builder: &mut MirBuilder) {
 
     // Call malloc
     builder.set_insert_point(call_malloc);
-    let malloc_id = builder.get_function_by_name("malloc").expect("malloc not found");
+    let malloc_id = builder
+        .get_function_by_name("malloc")
+        .expect("malloc not found");
     let ptr = builder.call(malloc_id, vec![size]).unwrap();
     builder.br(check_null);
 
@@ -177,7 +182,8 @@ fn build_safe_reallocate(builder: &mut MirBuilder) {
         ],
     );
 
-    let func_id = builder.begin_function("reallocate")
+    let func_id = builder
+        .begin_function("reallocate")
         .param("ptr", ptr_u8_ty.clone())
         .param("old_size", u64_ty.clone())
         .param("new_size", u64_ty.clone())
@@ -202,7 +208,9 @@ fn build_safe_reallocate(builder: &mut MirBuilder) {
 
     // Call realloc with old_size and new_size
     builder.set_insert_point(call_realloc);
-    let realloc_id = builder.get_function_by_name("realloc").expect("realloc not found");
+    let realloc_id = builder
+        .get_function_by_name("realloc")
+        .expect("realloc not found");
     // libc realloc takes only 2 params: ptr and new_size
     let new_ptr = builder.call(realloc_id, vec![ptr, new_size]).unwrap();
     builder.br(check_null);
@@ -233,7 +241,8 @@ fn build_safe_deallocate(builder: &mut MirBuilder) {
     let ptr_u8_ty = builder.ptr_type(u8_ty);
     let void_ty = builder.void_type();
 
-    let func_id = builder.begin_function("deallocate")
+    let func_id = builder
+        .begin_function("deallocate")
         .param("ptr", ptr_u8_ty)
         .returns(void_ty.clone())
         .build();
@@ -247,7 +256,9 @@ fn build_safe_deallocate(builder: &mut MirBuilder) {
     let ptr = builder.get_param(0);
 
     // Call free (libc signature: ptr only)
-    let free_id = builder.get_function_by_name("free").expect("free not found");
+    let free_id = builder
+        .get_function_by_name("free")
+        .expect("free not found");
     builder.call(free_id, vec![ptr]);
 
     // Void function - return nothing

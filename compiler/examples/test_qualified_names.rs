@@ -1,13 +1,41 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 // Test that qualified names are being populated correctly during AST lowering
 
 use compiler::tast::{
-    TypeTable, StringInterner, SymbolTable,
-    ast_lowering::AstLowering,
-    scopes::ScopeTree,
+    ast_lowering::AstLowering, scopes::ScopeTree, StringInterner, SymbolTable, TypeTable,
 };
 use parser::haxe_parser::parse_haxe_file;
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 fn main() {
     let source = r#"
@@ -53,12 +81,16 @@ enum MyEnum {
     let mut symbol_table = SymbolTable::new();
     let type_table = Rc::new(RefCell::new(TypeTable::new()));
     let mut scope_tree = ScopeTree::new(compiler::tast::ScopeId::from_raw(0));
-    let mut namespace_resolver = compiler::tast::namespace::NamespaceResolver::new(&string_interner);
+    let mut namespace_resolver =
+        compiler::tast::namespace::NamespaceResolver::new(&string_interner);
     let mut import_resolver = compiler::tast::namespace::ImportResolver::new(&namespace_resolver);
 
     // Create AST lowering context
     let mut ast_lowering = AstLowering::new(
         &mut string_interner,
+        std::rc::Rc::new(std::cell::RefCell::new(
+            compiler::tast::StringInterner::new(),
+        )),
         &mut symbol_table,
         &type_table,
         &mut scope_tree,
@@ -117,10 +149,38 @@ enum MyEnum {
     }
 
     println!("\n4. Summary:");
-    println!("   Class qualified name: {}", if found_class { "✓ Found" } else { "✗ Not found" });
-    println!("   Method qualified name: {}", if found_method { "✓ Found" } else { "✗ Not found" });
-    println!("   Interface qualified name: {}", if found_interface { "✓ Found" } else { "✗ Not found" });
-    println!("   Enum qualified name: {}", if found_enum { "✓ Found" } else { "✗ Not found" });
+    println!(
+        "   Class qualified name: {}",
+        if found_class {
+            "✓ Found"
+        } else {
+            "✗ Not found"
+        }
+    );
+    println!(
+        "   Method qualified name: {}",
+        if found_method {
+            "✓ Found"
+        } else {
+            "✗ Not found"
+        }
+    );
+    println!(
+        "   Interface qualified name: {}",
+        if found_interface {
+            "✓ Found"
+        } else {
+            "✗ Not found"
+        }
+    );
+    println!(
+        "   Enum qualified name: {}",
+        if found_enum {
+            "✓ Found"
+        } else {
+            "✗ Not found"
+        }
+    );
 
     if found_class && found_method && found_interface && found_enum {
         println!("\n🎉 SUCCESS: All qualified names are correct!");

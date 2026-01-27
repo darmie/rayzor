@@ -33,7 +33,7 @@ use crate::tast::{
 ///
 /// ## **Algorithm Overview:**
 /// 1. **Region Assignment**: Assign lifetime regions to all variables
-/// 2. **Constraint Generation**: Build constraint system from code structure  
+/// 2. **Constraint Generation**: Build constraint system from code structure
 /// 3. **Constraint Solving**: Solve lifetime constraint system
 /// 4. **Violation Checking**: Verify all constraints are satisfied
 ///
@@ -1494,7 +1494,7 @@ impl LifetimeAnalyzer {
         if let Some(node) = dfg.nodes.get(&node_id) {
             match &node.kind {
                 DataFlowNodeKind::FieldAccess { .. } => true,
-                DataFlowNodeKind::StaticFieldAccess { .. } => false,  // Static fields don't create references
+                DataFlowNodeKind::StaticFieldAccess { .. } => false, // Static fields don't create references
                 DataFlowNodeKind::ArrayAccess { .. } => true,
                 DataFlowNodeKind::Load { .. } => true,
                 DataFlowNodeKind::Store { .. } => true,

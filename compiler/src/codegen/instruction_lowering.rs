@@ -2,7 +2,6 @@
 ///
 /// This module handles the translation of MIR instructions to Cranelift IR.
 /// Based on tested implementation from Zyntax compiler.
-
 use cranelift::prelude::*;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use std::collections::HashMap;
@@ -22,7 +21,10 @@ impl CraneliftBackend {
         right: IrId,
     ) -> Result<Value, String> {
         let lhs = *self.value_map.get(&left).ok_or("Left operand not found")?;
-        let rhs = *self.value_map.get(&right).ok_or("Right operand not found")?;
+        let rhs = *self
+            .value_map
+            .get(&right)
+            .ok_or("Right operand not found")?;
 
         // Check if operands have matching types and cast if needed
         // Same logic as lower_binary_op_static to handle i32/i64 type mismatches
@@ -45,13 +47,20 @@ impl CraneliftBackend {
         // to avoid truncating pointers (i64 values from generic functions)
         // Also handle the case where MIR type is float but operands are integers
         let both_operands_are_int = lhs_ty.is_int() && rhs_ty.is_int();
-        let larger_operand_ty = if lhs_ty.bits() >= rhs_ty.bits() { lhs_ty } else { rhs_ty };
+        let larger_operand_ty = if lhs_ty.bits() >= rhs_ty.bits() {
+            lhs_ty
+        } else {
+            rhs_ty
+        };
 
         let operation_ty = if both_operands_are_int && !expected_ty.is_int() {
             // Expected type is not an integer but operands are - use the larger operand type
             // This happens with unresolved generics that become Ptr(Void) -> I64
             larger_operand_ty
-        } else if larger_operand_ty.is_int() && expected_ty.is_int() && larger_operand_ty.bits() > expected_ty.bits() {
+        } else if larger_operand_ty.is_int()
+            && expected_ty.is_int()
+            && larger_operand_ty.bits() > expected_ty.bits()
+        {
             // Operand type is larger than expected - use larger to prevent truncation
             larger_operand_ty
         } else if expected_ty.is_int() {
@@ -67,7 +76,11 @@ impl CraneliftBackend {
         // Coerce operands to the correct type for the operation
         let lhs = if use_float_ops && lhs_ty.is_int() {
             // Convert integer to float
-            let float_ty = if rhs_ty.is_float() { rhs_ty } else { types::F64 };
+            let float_ty = if rhs_ty.is_float() {
+                rhs_ty
+            } else {
+                types::F64
+            };
             if ty.is_signed() || lhs_ty == types::I32 || lhs_ty == types::I64 {
                 builder.ins().fcvt_from_sint(float_ty, lhs)
             } else {
@@ -86,7 +99,11 @@ impl CraneliftBackend {
 
         let rhs = if use_float_ops && rhs_ty.is_int() {
             // Convert integer to float
-            let float_ty = if lhs_ty.is_float() { lhs_ty } else { types::F64 };
+            let float_ty = if lhs_ty.is_float() {
+                lhs_ty
+            } else {
+                types::F64
+            };
             if ty.is_signed() || rhs_ty == types::I32 || rhs_ty == types::I64 {
                 builder.ins().fcvt_from_sint(float_ty, rhs)
             } else {
@@ -175,15 +192,25 @@ impl CraneliftBackend {
                 let actual_rhs_ty = builder.func.dfg.value_type(rhs);
 
                 // Ensure we have float values - convert if needed
-                let float_ty = if actual_lhs_ty.is_float() { actual_lhs_ty } else if actual_rhs_ty.is_float() { actual_rhs_ty } else { types::F64 };
+                let float_ty = if actual_lhs_ty.is_float() {
+                    actual_lhs_ty
+                } else if actual_rhs_ty.is_float() {
+                    actual_rhs_ty
+                } else {
+                    types::F64
+                };
 
                 let lhs_f = if actual_lhs_ty.is_int() {
                     builder.ins().fcvt_from_sint(float_ty, lhs)
-                } else { lhs };
+                } else {
+                    lhs
+                };
 
                 let rhs_f = if actual_rhs_ty.is_int() {
                     builder.ins().fcvt_from_sint(float_ty, rhs)
-                } else { rhs };
+                } else {
+                    rhs
+                };
 
                 let div = builder.ins().fdiv(lhs_f, rhs_f);
                 let floored = builder.ins().floor(div);
@@ -231,10 +258,25 @@ impl CraneliftBackend {
         right: IrId,
     ) -> Result<Value, String> {
         let lhs = *self.value_map.get(&left).ok_or("Left operand not found")?;
-        let rhs = *self.value_map.get(&right).ok_or("Right operand not found")?;
+        let rhs = *self
+            .value_map
+            .get(&right)
+            .ok_or("Right operand not found")?;
 
         // Floating point comparisons
-        if ty.is_float() || matches!(op, CompareOp::FEq | CompareOp::FNe | CompareOp::FLt | CompareOp::FLe | CompareOp::FGt | CompareOp::FGe | CompareOp::FOrd | CompareOp::FUno) {
+        if ty.is_float()
+            || matches!(
+                op,
+                CompareOp::FEq
+                    | CompareOp::FNe
+                    | CompareOp::FLt
+                    | CompareOp::FLe
+                    | CompareOp::FGt
+                    | CompareOp::FGe
+                    | CompareOp::FOrd
+                    | CompareOp::FUno
+            )
+        {
             let cc = match op {
                 CompareOp::Eq | CompareOp::FEq => FloatCC::Equal,
                 CompareOp::Ne | CompareOp::FNe => FloatCC::NotEqual,
@@ -337,11 +379,7 @@ impl CraneliftBackend {
         count: Option<u32>,
     ) -> Result<Value, String> {
         let size = type_size(ty)?;
-        let alloc_size = if let Some(c) = count {
-            size * c
-        } else {
-            size
-        };
+        let alloc_size = if let Some(c) = count { size * c } else { size };
 
         let slot_data = StackSlotData::new(StackSlotKind::ExplicitSlot, alloc_size, 8); // 8-byte alignment
         let slot = builder.create_sized_stack_slot(slot_data);
@@ -368,10 +406,16 @@ impl CraneliftBackend {
         right: IrId,
     ) -> Result<Value, String> {
         let lhs = *value_map.get(&left).ok_or_else(|| {
-            eprintln!("ERROR: Left operand {:?} not found. Available keys: {:?}", left, value_map.keys().collect::<Vec<_>>());
+            eprintln!(
+                "ERROR: Left operand {:?} not found. Available keys: {:?}",
+                left,
+                value_map.keys().collect::<Vec<_>>()
+            );
             format!("Left operand {:?} not found in value_map", left)
         })?;
-        let rhs = *value_map.get(&right).ok_or_else(|| format!("Right operand {:?} not found in value_map", right))?;
+        let rhs = *value_map
+            .get(&right)
+            .ok_or_else(|| format!("Right operand {:?} not found in value_map", right))?;
 
         // Check if operands have matching types and cast if needed
         // IMPORTANT: Coerce operands to match the expected operation type (ty),
@@ -407,13 +451,20 @@ impl CraneliftBackend {
         // Determine operation type based on actual operand types
         // When both operands are integers but expected is not, use the larger integer type
         let both_operands_are_int = lhs_ty.is_int() && rhs_ty.is_int();
-        let larger_operand_ty = if lhs_ty.bits() >= rhs_ty.bits() { lhs_ty } else { rhs_ty };
+        let larger_operand_ty = if lhs_ty.bits() >= rhs_ty.bits() {
+            lhs_ty
+        } else {
+            rhs_ty
+        };
 
         let operation_ty = if both_operands_are_int && !expected_ty.is_int() {
             // Expected type is not an integer but operands are - use the larger operand type
             // This happens with unresolved generics that become Ptr(Void) -> I64
             larger_operand_ty
-        } else if larger_operand_ty.is_int() && expected_ty.is_int() && larger_operand_ty.bits() > expected_ty.bits() {
+        } else if larger_operand_ty.is_int()
+            && expected_ty.is_int()
+            && larger_operand_ty.bits() > expected_ty.bits()
+        {
             // Operand type is larger than expected - use larger to prevent truncation
             larger_operand_ty
         } else if expected_ty.is_int() {
@@ -429,7 +480,11 @@ impl CraneliftBackend {
         // Coerce operands to the correct type for the operation
         let lhs = if use_float_ops && lhs_ty.is_int() {
             // Convert integer to float
-            let float_ty = if rhs_ty.is_float() { rhs_ty } else { types::F64 };
+            let float_ty = if rhs_ty.is_float() {
+                rhs_ty
+            } else {
+                types::F64
+            };
             if ty.is_signed() || lhs_ty == types::I32 || lhs_ty == types::I64 {
                 builder.ins().fcvt_from_sint(float_ty, lhs)
             } else {
@@ -448,7 +503,11 @@ impl CraneliftBackend {
 
         let rhs = if use_float_ops && rhs_ty.is_int() {
             // Convert integer to float
-            let float_ty = if lhs_ty.is_float() { lhs_ty } else { types::F64 };
+            let float_ty = if lhs_ty.is_float() {
+                lhs_ty
+            } else {
+                types::F64
+            };
             if ty.is_signed() || rhs_ty == types::I32 || rhs_ty == types::I64 {
                 builder.ins().fcvt_from_sint(float_ty, rhs)
             } else {
@@ -536,15 +595,25 @@ impl CraneliftBackend {
                 let actual_rhs_ty = builder.func.dfg.value_type(rhs);
 
                 // Ensure we have float values - convert if needed
-                let float_ty = if actual_lhs_ty.is_float() { actual_lhs_ty } else if actual_rhs_ty.is_float() { actual_rhs_ty } else { types::F64 };
+                let float_ty = if actual_lhs_ty.is_float() {
+                    actual_lhs_ty
+                } else if actual_rhs_ty.is_float() {
+                    actual_rhs_ty
+                } else {
+                    types::F64
+                };
 
                 let lhs_f = if actual_lhs_ty.is_int() {
                     builder.ins().fcvt_from_sint(float_ty, lhs)
-                } else { lhs };
+                } else {
+                    lhs
+                };
 
                 let rhs_f = if actual_rhs_ty.is_int() {
                     builder.ins().fcvt_from_sint(float_ty, rhs)
-                } else { rhs };
+                } else {
+                    rhs
+                };
 
                 let div = builder.ins().fdiv(lhs_f, rhs_f);
                 let floored = builder.ins().floor(div);
@@ -592,12 +661,30 @@ impl CraneliftBackend {
         right: IrId,
     ) -> Result<Value, String> {
         let lhs = *value_map.get(&left).ok_or_else(|| {
-            eprintln!("ERROR: Left operand {:?} not found. Available keys: {:?}", left, value_map.keys().collect::<Vec<_>>());
+            eprintln!(
+                "ERROR: Left operand {:?} not found. Available keys: {:?}",
+                left,
+                value_map.keys().collect::<Vec<_>>()
+            );
             format!("Left operand {:?} not found in value_map", left)
         })?;
-        let rhs = *value_map.get(&right).ok_or_else(|| format!("Right operand {:?} not found in value_map", right))?;
+        let rhs = *value_map
+            .get(&right)
+            .ok_or_else(|| format!("Right operand {:?} not found in value_map", right))?;
 
-        if ty.is_float() || matches!(op, CompareOp::FEq | CompareOp::FNe | CompareOp::FLt | CompareOp::FLe | CompareOp::FGt | CompareOp::FGe | CompareOp::FOrd | CompareOp::FUno) {
+        if ty.is_float()
+            || matches!(
+                op,
+                CompareOp::FEq
+                    | CompareOp::FNe
+                    | CompareOp::FLt
+                    | CompareOp::FLe
+                    | CompareOp::FGt
+                    | CompareOp::FGe
+                    | CompareOp::FOrd
+                    | CompareOp::FUno
+            )
+        {
             let cc = match op {
                 CompareOp::Eq | CompareOp::FEq => FloatCC::Equal,
                 CompareOp::Ne | CompareOp::FNe => FloatCC::NotEqual,
@@ -732,7 +819,7 @@ impl CraneliftBackend {
             // Arrays should really be heap-allocated, but for now we allocate enough
             // stack space for reasonable array sizes (up to 16 elements).
             if matches!(ty, IrType::Any | IrType::Ptr(_) | IrType::Ref(_)) {
-                size * 16  // Allocate space for up to 16 pointers/elements
+                size * 16 // Allocate space for up to 16 pointers/elements
             } else {
                 size
             }
@@ -743,7 +830,6 @@ impl CraneliftBackend {
         let addr = builder.ins().stack_addr(types::I64, slot, 0);
         Ok(addr)
     }
-
 }
 
 /// Calculate type size in bytes
@@ -770,9 +856,6 @@ impl TypeProperties for IrType {
     }
 
     fn is_signed(&self) -> bool {
-        matches!(
-            self,
-            IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64
-        )
+        matches!(self, IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64)
     }
 }

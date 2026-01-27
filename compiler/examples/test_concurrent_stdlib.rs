@@ -1,12 +1,41 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
+use compiler::ir::IrModule;
 /// Test Rayzor Concurrent Stdlib Functions
 ///
 /// This example verifies that:
 /// 1. Thread, Channel, Arc, and Mutex functions are properly declared in MIR stdlib
 /// 2. Extern runtime functions are correctly registered
 /// 3. All function signatures are correct
-
 use compiler::stdlib::build_stdlib;
-use compiler::ir::IrModule;
 
 fn main() {
     println!("=== Rayzor Concurrent Stdlib Verification ===\n");
@@ -17,7 +46,10 @@ fn main() {
     println!("✅ Successfully built stdlib module: {}", stdlib.name);
     println!("📊 Statistics:");
     println!("   - Total Functions: {}", stdlib.functions.len());
-    println!("   - Total Extern Functions: {}", stdlib.extern_functions.len());
+    println!(
+        "   - Total Extern Functions: {}",
+        stdlib.extern_functions.len()
+    );
 
     // Test Thread functions
     println!("\n🧵 Thread Functions:");
@@ -33,8 +65,13 @@ fn main() {
     for func_name in &thread_functions {
         let found = stdlib.functions.values().any(|f| &f.name == func_name);
         if found {
-            let func = stdlib.functions.values().find(|f| &f.name == func_name).unwrap();
-            println!("   ✅ {} ({} params) -> {:?}",
+            let func = stdlib
+                .functions
+                .values()
+                .find(|f| &f.name == func_name)
+                .unwrap();
+            println!(
+                "   ✅ {} ({} params) -> {:?}",
                 func_name,
                 func.signature.parameters.len(),
                 func.signature.return_type
@@ -88,8 +125,13 @@ fn main() {
     for func_name in &channel_functions {
         let found = stdlib.functions.values().any(|f| &f.name == func_name);
         if found {
-            let func = stdlib.functions.values().find(|f| &f.name == func_name).unwrap();
-            println!("   ✅ {} ({} params) -> {:?}",
+            let func = stdlib
+                .functions
+                .values()
+                .find(|f| &f.name == func_name)
+                .unwrap();
+            println!(
+                "   ✅ {} ({} params) -> {:?}",
                 func_name,
                 func.signature.parameters.len(),
                 func.signature.return_type
@@ -118,7 +160,11 @@ fn main() {
     for func_name in &channel_externs {
         let found = stdlib.functions.values().find(|f| &f.name == func_name);
         if let Some(func) = found {
-            if func.cfg.blocks.is_empty() { println!("   ✅ {} (extern)", func_name); } else { println!("   ⚠️  {} exists but has body!", func_name); }
+            if func.cfg.blocks.is_empty() {
+                println!("   ✅ {} (extern)", func_name);
+            } else {
+                println!("   ⚠️  {} exists but has body!", func_name);
+            }
         } else {
             println!("   ❌ Missing: {}", func_name);
         }
@@ -138,8 +184,13 @@ fn main() {
     for func_name in &arc_functions {
         let found = stdlib.functions.values().any(|f| &f.name == func_name);
         if found {
-            let func = stdlib.functions.values().find(|f| &f.name == func_name).unwrap();
-            println!("   ✅ {} ({} params) -> {:?}",
+            let func = stdlib
+                .functions
+                .values()
+                .find(|f| &f.name == func_name)
+                .unwrap();
+            println!(
+                "   ✅ {} ({} params) -> {:?}",
                 func_name,
                 func.signature.parameters.len(),
                 func.signature.return_type
@@ -163,7 +214,11 @@ fn main() {
     for func_name in &arc_externs {
         let found = stdlib.functions.values().find(|f| &f.name == func_name);
         if let Some(func) = found {
-            if func.cfg.blocks.is_empty() { println!("   ✅ {} (extern)", func_name); } else { println!("   ⚠️  {} exists but has body!", func_name); }
+            if func.cfg.blocks.is_empty() {
+                println!("   ✅ {} (extern)", func_name);
+            } else {
+                println!("   ⚠️  {} exists but has body!", func_name);
+            }
         } else {
             println!("   ❌ Missing: {}", func_name);
         }
@@ -183,8 +238,13 @@ fn main() {
     for func_name in &mutex_functions {
         let found = stdlib.functions.values().any(|f| &f.name == func_name);
         if found {
-            let func = stdlib.functions.values().find(|f| &f.name == func_name).unwrap();
-            println!("   ✅ {} ({} params) -> {:?}",
+            let func = stdlib
+                .functions
+                .values()
+                .find(|f| &f.name == func_name)
+                .unwrap();
+            println!(
+                "   ✅ {} ({} params) -> {:?}",
                 func_name,
                 func.signature.parameters.len(),
                 func.signature.return_type
@@ -208,7 +268,11 @@ fn main() {
     for func_name in &mutex_externs {
         let found = stdlib.functions.values().find(|f| &f.name == func_name);
         if let Some(func) = found {
-            if func.cfg.blocks.is_empty() { println!("   ✅ {} (extern)", func_name); } else { println!("   ⚠️  {} exists but has body!", func_name); }
+            if func.cfg.blocks.is_empty() {
+                println!("   ✅ {} (extern)", func_name);
+            } else {
+                println!("   ⚠️  {} exists but has body!", func_name);
+            }
         } else {
             println!("   ❌ Missing: {}", func_name);
         }
@@ -218,21 +282,75 @@ fn main() {
     println!("📈 Summary:");
     println!("═══════════════════════════════════════");
 
-    let total_concurrent_funcs = thread_functions.len() + channel_functions.len() + arc_functions.len() + mutex_functions.len();
-    let total_concurrent_externs = thread_externs.len() + channel_externs.len() + arc_externs.len() + mutex_externs.len();
+    let total_concurrent_funcs = thread_functions.len()
+        + channel_functions.len()
+        + arc_functions.len()
+        + mutex_functions.len();
+    let total_concurrent_externs =
+        thread_externs.len() + channel_externs.len() + arc_externs.len() + mutex_externs.len();
 
-    let found_funcs = thread_functions.iter().filter(|n| stdlib.functions.values().any(|f| &f.name == *n)).count()
-        + channel_functions.iter().filter(|n| stdlib.functions.values().any(|f| &f.name == *n)).count()
-        + arc_functions.iter().filter(|n| stdlib.functions.values().any(|f| &f.name == *n)).count()
-        + mutex_functions.iter().filter(|n| stdlib.functions.values().any(|f| &f.name == *n)).count();
+    let found_funcs = thread_functions
+        .iter()
+        .filter(|n| stdlib.functions.values().any(|f| &f.name == *n))
+        .count()
+        + channel_functions
+            .iter()
+            .filter(|n| stdlib.functions.values().any(|f| &f.name == *n))
+            .count()
+        + arc_functions
+            .iter()
+            .filter(|n| stdlib.functions.values().any(|f| &f.name == *n))
+            .count()
+        + mutex_functions
+            .iter()
+            .filter(|n| stdlib.functions.values().any(|f| &f.name == *n))
+            .count();
 
-    let found_externs = thread_externs.iter().filter(|n| stdlib.functions.values().any(|f| &f.name == *n && f.cfg.blocks.is_empty())).count()
-        + channel_externs.iter().filter(|n| stdlib.functions.values().any(|f| &f.name == *n && f.cfg.blocks.is_empty())).count()
-        + arc_externs.iter().filter(|n| stdlib.functions.values().any(|f| &f.name == *n && f.cfg.blocks.is_empty())).count()
-        + mutex_externs.iter().filter(|n| stdlib.functions.values().any(|f| &f.name == *n && f.cfg.blocks.is_empty())).count();
+    let found_externs = thread_externs
+        .iter()
+        .filter(|n| {
+            stdlib
+                .functions
+                .values()
+                .any(|f| &f.name == *n && f.cfg.blocks.is_empty())
+        })
+        .count()
+        + channel_externs
+            .iter()
+            .filter(|n| {
+                stdlib
+                    .functions
+                    .values()
+                    .any(|f| &f.name == *n && f.cfg.blocks.is_empty())
+            })
+            .count()
+        + arc_externs
+            .iter()
+            .filter(|n| {
+                stdlib
+                    .functions
+                    .values()
+                    .any(|f| &f.name == *n && f.cfg.blocks.is_empty())
+            })
+            .count()
+        + mutex_externs
+            .iter()
+            .filter(|n| {
+                stdlib
+                    .functions
+                    .values()
+                    .any(|f| &f.name == *n && f.cfg.blocks.is_empty())
+            })
+            .count();
 
-    println!("   Wrapper Functions: {}/{}", found_funcs, total_concurrent_funcs);
-    println!("   Extern Functions:  {}/{}", found_externs, total_concurrent_externs);
+    println!(
+        "   Wrapper Functions: {}/{}",
+        found_funcs, total_concurrent_funcs
+    );
+    println!(
+        "   Extern Functions:  {}/{}",
+        found_externs, total_concurrent_externs
+    );
 
     if found_funcs == total_concurrent_funcs && found_externs == total_concurrent_externs {
         println!("\n🎉 All concurrent stdlib functions verified successfully!");

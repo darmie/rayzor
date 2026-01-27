@@ -11,9 +11,8 @@
 ///     state: u8,      // 0=running, 1=finished, 2=joined
 /// }
 /// ```
-
 use crate::ir::mir_builder::MirBuilder;
-use crate::ir::{IrType, IrFunctionId, Linkage, CallingConvention};
+use crate::ir::{CallingConvention, IrFunctionId, IrType, Linkage};
 
 /// Build all Thread functions
 pub fn build_thread_type(builder: &mut MirBuilder) {
@@ -47,7 +46,8 @@ fn declare_thread_externs(builder: &mut MirBuilder) {
     let void_ty = builder.void_type();
 
     // extern fn rayzor_thread_spawn(closure: *u8, closure_env: *u8) -> *u8
-    let func_id = builder.begin_function("rayzor_thread_spawn")
+    let func_id = builder
+        .begin_function("rayzor_thread_spawn")
         .param("closure", ptr_u8.clone())
         .param("closure_env", ptr_u8.clone())
         .returns(ptr_u8.clone())
@@ -56,7 +56,8 @@ fn declare_thread_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn rayzor_thread_join(handle: *u8) -> *u8
-    let func_id = builder.begin_function("rayzor_thread_join")
+    let func_id = builder
+        .begin_function("rayzor_thread_join")
         .param("handle", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -64,7 +65,8 @@ fn declare_thread_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn rayzor_thread_is_finished(handle: *u8) -> bool
-    let func_id = builder.begin_function("rayzor_thread_is_finished")
+    let func_id = builder
+        .begin_function("rayzor_thread_is_finished")
         .param("handle", ptr_u8.clone())
         .returns(bool_ty.clone())
         .calling_convention(CallingConvention::C)
@@ -72,14 +74,16 @@ fn declare_thread_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn rayzor_thread_yield_now()
-    let func_id = builder.begin_function("rayzor_thread_yield_now")
+    let func_id = builder
+        .begin_function("rayzor_thread_yield_now")
         .returns(void_ty.clone())
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
 
     // extern fn rayzor_thread_sleep(millis: i32)
-    let func_id = builder.begin_function("rayzor_thread_sleep")
+    let func_id = builder
+        .begin_function("rayzor_thread_sleep")
         .param("millis", i32_ty)
         .returns(void_ty.clone())
         .calling_convention(CallingConvention::C)
@@ -87,7 +91,8 @@ fn declare_thread_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn rayzor_thread_current_id() -> u64
-    let func_id = builder.begin_function("rayzor_thread_current_id")
+    let func_id = builder
+        .begin_function("rayzor_thread_current_id")
         .returns(u64_ty)
         .calling_convention(CallingConvention::C)
         .build();
@@ -95,7 +100,8 @@ fn declare_thread_externs(builder: &mut MirBuilder) {
 
     // extern fn rayzor_semaphore_init(initial_value: i32) -> *u8
     let i32_ty_clone = builder.i32_type();
-    let func_id = builder.begin_function("rayzor_semaphore_init")
+    let func_id = builder
+        .begin_function("rayzor_semaphore_init")
         .param("initial_value", i32_ty_clone)
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -103,7 +109,8 @@ fn declare_thread_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn rayzor_semaphore_acquire(semaphore: *u8)
-    let func_id = builder.begin_function("rayzor_semaphore_acquire")
+    let func_id = builder
+        .begin_function("rayzor_semaphore_acquire")
         .param("semaphore", ptr_u8.clone())
         .returns(void_ty.clone())
         .calling_convention(CallingConvention::C)
@@ -111,7 +118,8 @@ fn declare_thread_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 
     // extern fn rayzor_semaphore_try_acquire(semaphore: *u8, timeout: f64) -> bool
-    let func_id = builder.begin_function("rayzor_semaphore_try_acquire")
+    let func_id = builder
+        .begin_function("rayzor_semaphore_try_acquire")
         .param("semaphore", ptr_u8.clone())
         .param("timeout", IrType::F64)
         .returns(bool_ty)
@@ -121,7 +129,8 @@ fn declare_thread_externs(builder: &mut MirBuilder) {
 
     // extern fn sys_semaphore_try_acquire_nowait(semaphore: *u8) -> bool
     let bool_ty_clone = builder.bool_type();
-    let func_id = builder.begin_function("sys_semaphore_try_acquire_nowait")
+    let func_id = builder
+        .begin_function("sys_semaphore_try_acquire_nowait")
         .param("semaphore", ptr_u8.clone())
         .returns(bool_ty_clone)
         .calling_convention(CallingConvention::C)
@@ -134,7 +143,8 @@ fn declare_thread_externs(builder: &mut MirBuilder) {
 fn build_thread_spawn(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
 
-    let func_id = builder.begin_function("Thread_spawn")
+    let func_id = builder
+        .begin_function("Thread_spawn")
         .param("closure_obj", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -156,7 +166,8 @@ fn build_thread_spawn(builder: &mut MirBuilder) {
     let env_ptr = builder.load(env_ptr_addr, ptr_u8.clone());
 
     // Call runtime function with extracted pointers
-    let spawn_id = builder.get_function_by_name("rayzor_thread_spawn")
+    let spawn_id = builder
+        .get_function_by_name("rayzor_thread_spawn")
         .expect("rayzor_thread_spawn not found");
     let handle = builder.call(spawn_id, vec![fn_ptr, env_ptr]).unwrap();
 
@@ -169,9 +180,10 @@ fn build_thread_spawn(builder: &mut MirBuilder) {
 fn build_thread_join(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
 
-    let func_id = builder.begin_function("Thread_join")
+    let func_id = builder
+        .begin_function("Thread_join")
         .param("handle", ptr_u8.clone())
-        .returns(ptr_u8.clone())  // Return ptr_u8 (i64) to match rayzor_thread_join
+        .returns(ptr_u8.clone()) // Return ptr_u8 (i64) to match rayzor_thread_join
         .calling_convention(CallingConvention::C)
         .build();
 
@@ -183,7 +195,8 @@ fn build_thread_join(builder: &mut MirBuilder) {
     let handle = builder.get_param(0);
 
     // Call runtime function (returns *u8 which is i64)
-    let join_id = builder.get_function_by_name("rayzor_thread_join")
+    let join_id = builder
+        .get_function_by_name("rayzor_thread_join")
         .expect("rayzor_thread_join not found");
     let result_ptr = builder.call(join_id, vec![handle]).unwrap();
 
@@ -199,7 +212,8 @@ fn build_thread_is_finished(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
     let bool_ty = builder.bool_type();
 
-    let func_id = builder.begin_function("Thread_isFinished")
+    let func_id = builder
+        .begin_function("Thread_isFinished")
         .param("handle", ptr_u8)
         .returns(bool_ty)
         .calling_convention(CallingConvention::C)
@@ -213,7 +227,8 @@ fn build_thread_is_finished(builder: &mut MirBuilder) {
     let handle = builder.get_param(0);
 
     // Call runtime function
-    let is_finished_id = builder.get_function_by_name("rayzor_thread_is_finished")
+    let is_finished_id = builder
+        .get_function_by_name("rayzor_thread_is_finished")
         .expect("rayzor_thread_is_finished not found");
     let result = builder.call(is_finished_id, vec![handle]).unwrap();
 
@@ -224,7 +239,8 @@ fn build_thread_is_finished(builder: &mut MirBuilder) {
 fn build_thread_yield_now(builder: &mut MirBuilder) {
     let void_ty = builder.void_type();
 
-    let func_id = builder.begin_function("Thread_yieldNow")
+    let func_id = builder
+        .begin_function("Thread_yieldNow")
         .returns(void_ty)
         .calling_convention(CallingConvention::C)
         .build();
@@ -235,7 +251,8 @@ fn build_thread_yield_now(builder: &mut MirBuilder) {
     builder.set_insert_point(entry);
 
     // Call runtime function
-    let yield_id = builder.get_function_by_name("rayzor_thread_yield_now")
+    let yield_id = builder
+        .get_function_by_name("rayzor_thread_yield_now")
         .expect("rayzor_thread_yield_now not found");
     let _result = builder.call(yield_id, vec![]);
 
@@ -247,7 +264,8 @@ fn build_thread_sleep(builder: &mut MirBuilder) {
     let i32_ty = builder.i32_type();
     let void_ty = builder.void_type();
 
-    let func_id = builder.begin_function("Thread_sleep")
+    let func_id = builder
+        .begin_function("Thread_sleep")
         .param("millis", i32_ty)
         .returns(void_ty)
         .calling_convention(CallingConvention::C)
@@ -261,7 +279,8 @@ fn build_thread_sleep(builder: &mut MirBuilder) {
     let millis = builder.get_param(0);
 
     // Call runtime function
-    let sleep_id = builder.get_function_by_name("rayzor_thread_sleep")
+    let sleep_id = builder
+        .get_function_by_name("rayzor_thread_sleep")
         .expect("rayzor_thread_sleep not found");
     let _result = builder.call(sleep_id, vec![millis]);
 
@@ -272,7 +291,8 @@ fn build_thread_sleep(builder: &mut MirBuilder) {
 fn build_thread_current_id(builder: &mut MirBuilder) {
     let u64_ty = builder.u64_type();
 
-    let func_id = builder.begin_function("Thread_currentId")
+    let func_id = builder
+        .begin_function("Thread_currentId")
         .returns(u64_ty)
         .calling_convention(CallingConvention::C)
         .build();
@@ -283,7 +303,8 @@ fn build_thread_current_id(builder: &mut MirBuilder) {
     builder.set_insert_point(entry);
 
     // Call runtime function
-    let current_id_fn = builder.get_function_by_name("rayzor_thread_current_id")
+    let current_id_fn = builder
+        .get_function_by_name("rayzor_thread_current_id")
         .expect("rayzor_thread_current_id not found");
     let result = builder.call(current_id_fn, vec![]).unwrap();
 
@@ -295,7 +316,8 @@ fn build_thread_current_id(builder: &mut MirBuilder) {
 fn build_lock_init(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
 
-    let func_id = builder.begin_function("Lock_init")
+    let func_id = builder
+        .begin_function("Lock_init")
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
         .build();
@@ -306,7 +328,8 @@ fn build_lock_init(builder: &mut MirBuilder) {
     builder.set_insert_point(entry);
 
     // Call rayzor_semaphore_init(0) to create a semaphore with initial count 0
-    let semaphore_init_id = builder.get_function_by_name("rayzor_semaphore_init")
+    let semaphore_init_id = builder
+        .get_function_by_name("rayzor_semaphore_init")
         .expect("rayzor_semaphore_init not found");
     let zero = builder.const_i32(0);
     let handle = builder.call(semaphore_init_id, vec![zero]).unwrap();
@@ -320,7 +343,8 @@ fn build_lock_wait(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
     let bool_ty = builder.bool_type();
 
-    let func_id = builder.begin_function("Lock_wait")
+    let func_id = builder
+        .begin_function("Lock_wait")
         .param("handle", ptr_u8.clone())
         .returns(bool_ty)
         .calling_convention(CallingConvention::C)
@@ -334,7 +358,8 @@ fn build_lock_wait(builder: &mut MirBuilder) {
     let handle = builder.get_param(0);
 
     // Call rayzor_semaphore_acquire (blocking wait)
-    let acquire_id = builder.get_function_by_name("rayzor_semaphore_acquire")
+    let acquire_id = builder
+        .get_function_by_name("rayzor_semaphore_acquire")
         .expect("rayzor_semaphore_acquire not found");
     let _ = builder.call(acquire_id, vec![handle]);
 
@@ -350,7 +375,8 @@ fn build_lock_wait_timeout(builder: &mut MirBuilder) {
     let f64_ty = IrType::F64;
     let bool_ty = builder.bool_type();
 
-    let func_id = builder.begin_function("Lock_wait_timeout")
+    let func_id = builder
+        .begin_function("Lock_wait_timeout")
         .param("handle", ptr_u8.clone())
         .param("timeout", f64_ty)
         .returns(bool_ty)
@@ -366,7 +392,8 @@ fn build_lock_wait_timeout(builder: &mut MirBuilder) {
     let timeout = builder.get_param(1);
 
     // Call rayzor_semaphore_try_acquire(handle, timeout)
-    let try_acquire_id = builder.get_function_by_name("rayzor_semaphore_try_acquire")
+    let try_acquire_id = builder
+        .get_function_by_name("rayzor_semaphore_try_acquire")
         .expect("rayzor_semaphore_try_acquire not found");
     let result = builder.call(try_acquire_id, vec![handle, timeout]).unwrap();
 
@@ -379,7 +406,8 @@ fn build_semaphore_try_acquire(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
     let bool_ty = builder.bool_type();
 
-    let func_id = builder.begin_function("Semaphore_tryAcquire")
+    let func_id = builder
+        .begin_function("Semaphore_tryAcquire")
         .param("handle", ptr_u8.clone())
         .returns(bool_ty)
         .calling_convention(CallingConvention::C)
@@ -393,7 +421,8 @@ fn build_semaphore_try_acquire(builder: &mut MirBuilder) {
     let handle = builder.get_param(0);
 
     // Call sys_semaphore_try_acquire_nowait(handle)
-    let try_acquire_id = builder.get_function_by_name("sys_semaphore_try_acquire_nowait")
+    let try_acquire_id = builder
+        .get_function_by_name("sys_semaphore_try_acquire_nowait")
         .expect("sys_semaphore_try_acquire_nowait not found");
     let result = builder.call(try_acquire_id, vec![handle]).unwrap();
 
@@ -407,7 +436,8 @@ fn build_semaphore_try_acquire_timeout(builder: &mut MirBuilder) {
     let f64_ty = IrType::F64;
     let bool_ty = builder.bool_type();
 
-    let func_id = builder.begin_function("Semaphore_tryAcquire_timeout")
+    let func_id = builder
+        .begin_function("Semaphore_tryAcquire_timeout")
         .param("handle", ptr_u8.clone())
         .param("timeout", f64_ty)
         .returns(bool_ty)
@@ -423,7 +453,8 @@ fn build_semaphore_try_acquire_timeout(builder: &mut MirBuilder) {
     let timeout = builder.get_param(1);
 
     // Call rayzor_semaphore_try_acquire(handle, timeout)
-    let try_acquire_id = builder.get_function_by_name("rayzor_semaphore_try_acquire")
+    let try_acquire_id = builder
+        .get_function_by_name("rayzor_semaphore_try_acquire")
         .expect("rayzor_semaphore_try_acquire not found");
     let result = builder.call(try_acquire_id, vec![handle, timeout]).unwrap();
 

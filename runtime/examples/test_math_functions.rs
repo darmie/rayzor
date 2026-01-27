@@ -23,7 +23,10 @@ fn main() {
         println!("Constants:");
         let pi = haxe_math_pi();
         println!("  Math.PI = {}", pi);
-        assert!((pi - 3.14159265).abs() < 0.0001, "PI value incorrect");
+        assert!(
+            (pi - std::f64::consts::PI).abs() < 0.0001,
+            "PI value incorrect"
+        );
         println!("  ✅ Math.PI correct\n");
 
         // Test abs
@@ -98,8 +101,8 @@ fn main() {
         let rand2 = haxe_math_random();
         println!("  Math.random() = {}", rand1);
         println!("  Math.random() = {}", rand2);
-        assert!(rand1 >= 0.0 && rand1 <= 1.0, "random out of range");
-        assert!(rand2 >= 0.0 && rand2 <= 1.0, "random out of range");
+        assert!((0.0..=1.0).contains(&rand1), "random out of range");
+        assert!((0.0..=1.0).contains(&rand2), "random out of range");
         assert!(rand1 != rand2, "random values should differ");
         println!("  ✅ Math.random works\n");
     }

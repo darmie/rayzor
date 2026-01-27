@@ -1,7 +1,7 @@
 //! Type declaration tests for the new Haxe parser
 
-use parser::parse_haxe_file;
 use parser::haxe_ast::TypeDeclaration;
+use parser::parse_haxe_file;
 
 #[test]
 fn test_simple_class() {
@@ -9,7 +9,7 @@ fn test_simple_class() {
 class MyClass {
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(haxe_file) => {
             assert_eq!(haxe_file.declarations.len(), 1);
@@ -32,7 +32,7 @@ fn test_class_with_inheritance() {
 class Child extends Parent implements IInterface1, IInterface2 {
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(haxe_file) => {
             if let TypeDeclaration::Class(class) = &haxe_file.declarations[0] {
@@ -66,7 +66,7 @@ class MyClass {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(haxe_file) => {
             if let TypeDeclaration::Class(class) = &haxe_file.declarations[0] {
@@ -94,9 +94,9 @@ class MyClass {
     function set_writeOnly(value: Float): Float return value;
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Class with properties should parse, got: {}", e),
     }
 }
@@ -110,7 +110,7 @@ interface IMyInterface extends IParent {
     var property(get, set): String;
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(haxe_file) => {
             if let TypeDeclaration::Interface(interface) = &haxe_file.declarations[0] {
@@ -135,7 +135,7 @@ enum Color {
     HSV(h: Float, s: Float, v: Float);
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(haxe_file) => {
             if let TypeDeclaration::Enum(enum_decl) = &haxe_file.declarations[0] {
@@ -162,7 +162,7 @@ typedef StringMap<T> = Map<String, T>;
 
 typedef Callback = String -> Int -> Void;
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(haxe_file) => {
             assert_eq!(haxe_file.declarations.len(), 3);
@@ -192,7 +192,7 @@ abstract Vec2(Point) from Point to Point {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(haxe_file) => {
             if let TypeDeclaration::Abstract(abstract_decl) = &haxe_file.declarations[0] {
@@ -231,18 +231,18 @@ class Pair<T, U> {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
         Ok(haxe_file) => {
             assert_eq!(haxe_file.declarations.len(), 2);
-            
+
             if let TypeDeclaration::Class(class) = &haxe_file.declarations[0] {
                 assert_eq!(class.name, "Container");
                 assert_eq!(class.type_params.len(), 1);
             } else {
                 panic!("Expected class declaration");
             }
-            
+
             if let TypeDeclaration::Class(class) = &haxe_file.declarations[1] {
                 assert_eq!(class.name, "Pair");
                 assert_eq!(class.type_params.len(), 2);
@@ -263,9 +263,9 @@ extern class JsArray<T> {
     function pop(): T;
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Extern class should parse, got: {}", e),
     }
 }
@@ -283,9 +283,9 @@ class MyClass {
     public function method(x: String): Void {}
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Metadata on declarations should parse, got: {}", e),
     }
 }

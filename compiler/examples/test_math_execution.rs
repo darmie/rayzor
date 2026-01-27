@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test Math operations with actual execution and logging
 
 use compiler::pipeline::{HaxeCompilationPipeline, PipelineConfig};
@@ -57,10 +87,15 @@ class MathTest {
             println!("MIR Module {}: {} functions", i, mir_module.functions.len());
 
             for (func_name, func) in &mir_module.functions {
-                println!("  Function '{}': {} blocks, {} instructions",
+                println!(
+                    "  Function '{}': {} blocks, {} instructions",
                     func_name,
                     func.cfg.blocks.len(),
-                    func.cfg.blocks.values().map(|b| b.instructions.len()).sum::<usize>()
+                    func.cfg
+                        .blocks
+                        .values()
+                        .map(|b| b.instructions.len())
+                        .sum::<usize>()
                 );
             }
         }

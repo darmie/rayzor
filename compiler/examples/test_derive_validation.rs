@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 use compiler::pipeline::compile_haxe_file;
 
 fn main() {
@@ -46,10 +76,21 @@ class Main {
 
         let typed_file = &result.typed_files[0];
         for class in &typed_file.classes {
-            let class_name = typed_file.string_interner.borrow().get(class.name).unwrap_or("?").to_string();
+            let class_name = typed_file
+                .string_interner
+                .borrow()
+                .get(class.name)
+                .unwrap_or("?")
+                .to_string();
             if class_name == "SharedResource" {
                 println!("  Class: {}", class_name);
-                println!("  Has @:rc: {}", class.memory_annotations.iter().any(|a| matches!(a, compiler::tast::MemoryAnnotation::Rc)));
+                println!(
+                    "  Has @:rc: {}",
+                    class
+                        .memory_annotations
+                        .iter()
+                        .any(|a| matches!(a, compiler::tast::MemoryAnnotation::Rc))
+                );
                 println!("  Derived traits: {:?}", class.get_derived_traits());
                 println!("  is_clone(): {}", class.is_clone());
             }
@@ -88,10 +129,21 @@ class Main {
 
         let typed_file = &result.typed_files[0];
         for class in &typed_file.classes {
-            let class_name = typed_file.string_interner.borrow().get(class.name).unwrap_or("?").to_string();
+            let class_name = typed_file
+                .string_interner
+                .borrow()
+                .get(class.name)
+                .unwrap_or("?")
+                .to_string();
             if class_name == "SharedResource" {
                 println!("  Class: {}", class_name);
-                println!("  Has @:rc: {}", class.memory_annotations.iter().any(|a| matches!(a, compiler::tast::MemoryAnnotation::Rc)));
+                println!(
+                    "  Has @:rc: {}",
+                    class
+                        .memory_annotations
+                        .iter()
+                        .any(|a| matches!(a, compiler::tast::MemoryAnnotation::Rc))
+                );
                 println!("  Derived traits: {:?}", class.get_derived_traits());
                 println!("  is_clone(): {} (auto-added)", class.is_clone());
             }
@@ -130,7 +182,12 @@ class Main {
 
         let typed_file = &result.typed_files[0];
         for class in &typed_file.classes {
-            let class_name = typed_file.string_interner.borrow().get(class.name).unwrap_or("?").to_string();
+            let class_name = typed_file
+                .string_interner
+                .borrow()
+                .get(class.name)
+                .unwrap_or("?")
+                .to_string();
             if class_name == "Person" {
                 println!("  Class: {}", class_name);
                 println!("  Derived traits: {:?}", class.get_derived_traits());
@@ -171,7 +228,12 @@ class Main {
 
         let typed_file = &result.typed_files[0];
         for class in &typed_file.classes {
-            let class_name = typed_file.string_interner.borrow().get(class.name).unwrap_or("?").to_string();
+            let class_name = typed_file
+                .string_interner
+                .borrow()
+                .get(class.name)
+                .unwrap_or("?")
+                .to_string();
             if class_name == "Buffer" {
                 println!("  Class: {}", class_name);
                 println!("  Derived traits: {:?}", class.get_derived_traits());

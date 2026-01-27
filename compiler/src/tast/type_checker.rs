@@ -86,53 +86,47 @@ pub enum TypeErrorKind {
 
     /// Generic type inference failed
     InferenceFailed { reason: String },
-    
+
     /// Interface implementation is missing or incorrect
     InterfaceNotImplemented {
         interface_type: TypeId,
         class_type: TypeId,
         missing_method: InternedString,
     },
-    
+
     /// Method signature doesn't match interface requirement
     MethodSignatureMismatch {
         expected: TypeId,
         actual: TypeId,
         method_name: InternedString,
     },
-    
+
     /// Missing override modifier on overriding method
     MissingOverride {
         method_name: InternedString,
         parent_class: InternedString,
     },
-    
+
     /// Invalid override - no parent method to override
-    InvalidOverride {
-        method_name: InternedString,
-    },
-    
+    InvalidOverride { method_name: InternedString },
+
     /// Accessing static member through instance
     StaticAccessFromInstance {
         member_name: InternedString,
         class_name: InternedString,
     },
-    
+
     /// Accessing instance member through static context
     InstanceAccessFromStatic {
         member_name: InternedString,
         class_name: InternedString,
     },
-    
+
     /// Import-related errors
-    ImportError {
-        message: String,
-    },
-    
+    ImportError { message: String },
+
     /// Unknown symbol reference
-    UnknownSymbol {
-        name: String,
-    },
+    UnknownSymbol { name: String },
 }
 
 /// Access levels for visibility checking
@@ -979,19 +973,19 @@ pub struct ClassHierarchyInfo {
 
     /// Depth in hierarchy (Object = 0, direct subclasses = 1, etc.)
     pub depth: usize,
-    
+
     /// Whether the class is final (cannot be extended)
     pub is_final: bool,
-    
+
     /// Whether the class is abstract (cannot be instantiated)
     pub is_abstract: bool,
-    
+
     /// Whether the class is extern (defined externally)
     pub is_extern: bool,
-    
+
     /// Whether this is an interface (not a class)
     pub is_interface: bool,
-    
+
     /// Types this abstract/enum is sealed to (if any)
     pub sealed_to: Option<Vec<TypeId>>,
 }
@@ -1009,7 +1003,7 @@ pub struct TypeChecker<'a> {
     pub(crate) type_table: &'a RefCell<TypeTable>,
 
     /// Symbol table for symbol resolution
-    pub (crate) symbol_table: &'a SymbolTable,
+    pub(crate) symbol_table: &'a SymbolTable,
 
     /// Scope tree for context resolution
     scope_tree: &'a ScopeTree,
@@ -1458,7 +1452,7 @@ impl<'a> TypeChecker<'a> {
         overall_compat
     }
 
-    pub (crate) fn get_parent_class(&self, class:SymbolId) -> Option<TypeId> {
+    pub(crate) fn get_parent_class(&self, class: SymbolId) -> Option<TypeId> {
         self.symbol_table.get_class_hierarchy(class)?.superclass
     }
 
@@ -1715,7 +1709,7 @@ impl<'a> TypeChecker<'a> {
         target_id: TypeId,
         target_args: &[TypeId],
     ) -> TypeCompatibility {
-         if source_interface != target_interface {
+        if source_interface != target_interface {
             return TypeCompatibility::Incompatible;
         }
         // Check if source interface extends target
@@ -1738,7 +1732,6 @@ impl<'a> TypeChecker<'a> {
 
     /// Check if one interface extends another
     fn interface_extends(&self, source: SymbolId, target: TypeId) -> bool {
-       
         // Use class hierarchy info (interfaces use the same system)
         if let Some(hierarchy) = self.symbol_table.get_class_hierarchy(source) {
             return hierarchy.all_supertypes.contains(&target);
@@ -1756,29 +1749,30 @@ impl<'a> TypeChecker<'a> {
         if source_args.len() != target_args.len() {
             return TypeCompatibility::Incompatible;
         }
-        
+
         // Apply variance checking for each type argument
         let mut overall_compat = TypeCompatibility::Identical;
-        
-        for (i, (source_arg, target_arg)) in source_args.iter().zip(target_args.iter()).enumerate() {
+
+        for (i, (source_arg, target_arg)) in source_args.iter().zip(target_args.iter()).enumerate()
+        {
             // For now, use conservative variance rules:
             // - Most generic types use covariance for "output" types (like Array<T>, return types)
             // - Function parameter types are contravariant
             // - In absence of explicit variance annotations, use sound defaults
-            
+
             let variance = self.infer_type_parameter_variance(i, source_args.len());
-            
+
             let arg_compat = match variance {
                 super::core::Variance::Covariant => {
                     // Source type argument can be more specific than target
                     // T <: U means Generic<T> <: Generic<U>
                     self.check_compatibility(*source_arg, *target_arg)
-                },
+                }
                 super::core::Variance::Contravariant => {
                     // Source type argument can be more general than target
                     // T :> U means Generic<T> <: Generic<U>
                     self.check_compatibility(*target_arg, *source_arg)
-                },
+                }
                 super::core::Variance::Invariant => {
                     // Type arguments must be exactly the same
                     if source_arg == target_arg {
@@ -1788,36 +1782,40 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             };
-            
+
             match arg_compat {
                 TypeCompatibility::Incompatible => return TypeCompatibility::Incompatible,
                 TypeCompatibility::Identical if overall_compat == TypeCompatibility::Identical => {
                     // Keep as Identical
-                },
+                }
                 TypeCompatibility::Assignable | TypeCompatibility::Convertible => {
                     overall_compat = TypeCompatibility::Assignable;
-                },
+                }
                 _ => {
                     overall_compat = TypeCompatibility::Assignable;
                 }
             }
         }
-        
+
         overall_compat
     }
-    
+
     /// Infer variance for a type parameter position based on common patterns
-    fn infer_type_parameter_variance(&self, parameter_index: usize, total_params: usize) -> super::core::Variance {
+    fn infer_type_parameter_variance(
+        &self,
+        parameter_index: usize,
+        total_params: usize,
+    ) -> super::core::Variance {
         // Use safe defaults that are common in object-oriented languages:
         // - For most generic types (Array<T>, List<T>, etc.), use covariance
         // - This allows Array<Dog> to be treated as Array<Animal> when Dog extends Animal
         // - This is sound for immutable/read-only access patterns
-        
+
         // In the future, this could be improved by:
         // 1. Looking up actual variance annotations from type definitions
         // 2. Using variance inference based on how type parameters are used
         // 3. Supporting explicit variance annotations in Haxe syntax
-        
+
         super::core::Variance::Covariant
     }
 
@@ -1891,25 +1889,22 @@ impl<'a> TypeChecker<'a> {
         if chain.is_empty() {
             return initial_args.to_vec();
         }
-        
+
         let mut current_args = initial_args.to_vec();
-        
+
         // Walk through the inheritance chain and apply type substitutions
         for i in 0..chain.len() - 1 {
             let current_class = chain[i];
             let next_class = chain[i + 1];
-            
+
             // Apply type substitution from current_class to next_class
-            current_args = self.substitute_type_arguments_to_parent(
-                current_class,
-                &current_args,
-                next_class,
-            );
+            current_args =
+                self.substitute_type_arguments_to_parent(current_class, &current_args, next_class);
         }
-        
+
         current_args
     }
-    
+
     /// Substitute type arguments from a child class to its direct parent
     fn substitute_type_arguments_to_parent(
         &self,
@@ -1927,10 +1922,12 @@ impl<'a> TypeChecker<'a> {
                         return self.extract_type_arguments_from_type(superclass_type);
                     }
                 }
-                
+
                 // Check interfaces as well
                 for &interface_type in &hierarchy.interfaces {
-                    if let Some(interface_sym) = self.symbol_table.get_symbol_from_type(interface_type) {
+                    if let Some(interface_sym) =
+                        self.symbol_table.get_symbol_from_type(interface_type)
+                    {
                         if interface_sym == parent_class {
                             // This is the target interface - extract its type arguments
                             return self.extract_type_arguments_from_type(interface_type);
@@ -1939,25 +1936,25 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
-        
+
         // Fallback: return child arguments unchanged
         // This happens when we can't find the exact inheritance relationship
         child_args.to_vec()
     }
-    
+
     /// Extract type arguments from a generic type
     fn extract_type_arguments_from_type(&self, type_id: TypeId) -> Vec<TypeId> {
         if let Some(type_info) = self.type_table.borrow().get(type_id) {
             match &type_info.kind {
-                super::core::TypeKind::Class { type_args, .. } |
-                super::core::TypeKind::Interface { type_args, .. } |
-                super::core::TypeKind::Enum { type_args, .. } => {
+                super::core::TypeKind::Class { type_args, .. }
+                | super::core::TypeKind::Interface { type_args, .. }
+                | super::core::TypeKind::Enum { type_args, .. } => {
                     return type_args.clone();
-                },
+                }
                 _ => {}
             }
         }
-        
+
         // No type arguments found
         vec![]
     }
@@ -2059,10 +2056,10 @@ impl<'a> TypeChecker<'a> {
                 let expected_params = params.clone();
                 let expected_return = *return_type;
                 let void_type = type_table.void_type();
-                
+
                 // Drop the borrow before doing more work
                 drop(type_table);
-                
+
                 let len = expected_params.len();
                 // Check parameter count
                 if len != arg_types.len() {
@@ -2074,11 +2071,7 @@ impl<'a> TypeChecker<'a> {
                             actual_return: void_type,
                         },
                         location: call_location,
-                        context: format!(
-                            "Expected {} arguments, got {}",
-                            len,
-                            arg_types.len()
-                        ),
+                        context: format!("Expected {} arguments, got {}", len, arg_types.len()),
                         suggestion: Some("Check the function signature".to_string()),
                     });
                 }
@@ -2372,8 +2365,8 @@ mod tests {
     fn test_type_checker_creation() {
         let (mut type_table, symbol_table, scope_tree, string_interner) = create_test_setup();
 
-  
-        let mut checker = TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
+        let mut checker =
+            TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
 
         assert!(!checker.has_errors());
         assert_eq!(checker.errors().len(), 0);
@@ -2382,8 +2375,9 @@ mod tests {
     #[test]
     fn test_primitive_type_compatibility() {
         let (mut type_table, symbol_table, scope_tree, string_interner) = create_test_setup();
-       
-        let mut checker = TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
+
+        let mut checker =
+            TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
 
         // Same types should be identical
         let int_type = checker.type_table.borrow().int_type();
@@ -2410,8 +2404,9 @@ mod tests {
     #[test]
     fn test_dynamic_type_compatibility() {
         let (mut type_table, symbol_table, scope_tree, string_interner) = create_test_setup();
-        
-        let mut checker = TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
+
+        let mut checker =
+            TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
 
         let dynamic_type = checker.type_table.borrow().dynamic_type();
         let int_type = checker.type_table.borrow().int_type();
@@ -2430,8 +2425,9 @@ mod tests {
     #[test]
     fn test_optional_type_compatibility() {
         let (mut type_table, symbol_table, scope_tree, string_interner) = create_test_setup();
-       
-        let mut checker = TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
+
+        let mut checker =
+            TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
 
         let int_type = checker.type_table.borrow().int_type();
         let optional_int = checker
@@ -2456,7 +2452,8 @@ mod tests {
     fn test_array_type_compatibility() {
         let (mut type_table, symbol_table, scope_tree, string_interner) = create_test_setup();
 
-        let mut checker = TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
+        let mut checker =
+            TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
 
         let int_type = checker.type_table.borrow().int_type();
         let string_type = checker.type_table.borrow().string_type();
@@ -2484,8 +2481,9 @@ mod tests {
     #[test]
     fn test_function_type_compatibility() {
         let (mut type_table, symbol_table, scope_tree, string_interner) = create_test_setup();
-      
-        let mut checker = TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
+
+        let mut checker =
+            TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
 
         let int_type = checker.type_table.borrow().int_type();
         let string_type = checker.type_table.borrow().string_type();
@@ -2522,7 +2520,8 @@ mod tests {
     #[test]
     fn test_function_call_checking() {
         let (mut type_table, symbol_table, scope_tree, string_interner) = create_test_setup();
-        let mut checker = TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
+        let mut checker =
+            TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
 
         let int_type = checker.type_table.borrow().int_type();
         let string_type = checker.type_table.borrow().string_type();
@@ -2553,7 +2552,8 @@ mod tests {
     fn test_subtype_caching() {
         let (mut type_table, symbol_table, scope_tree, string_interner) = create_test_setup();
 
-        let mut checker = TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
+        let mut checker =
+            TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
 
         let int_type = checker.type_table.borrow().int_type();
         let float_type = checker.type_table.borrow().float_type();
@@ -2571,8 +2571,9 @@ mod tests {
     #[test]
     fn test_generic_type_validation() {
         let (mut type_table, symbol_table, scope_tree, string_interner) = create_test_setup();
-        
-        let mut checker = TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
+
+        let mut checker =
+            TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
 
         let symbol_id = SymbolId::from_raw(1);
         let int_type = checker.type_table.borrow().int_type();
@@ -2623,8 +2624,9 @@ mod tests {
     #[test]
     fn test_error_accumulation() {
         let (mut type_table, symbol_table, scope_tree, string_interner) = create_test_setup();
-       
-        let mut checker = TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
+
+        let mut checker =
+            TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
 
         // Add some errors
         let error1 = TypeCheckError {
@@ -2660,8 +2662,9 @@ mod tests {
     #[test]
     fn test_type_checker_stats() {
         let (mut type_table, symbol_table, scope_tree, string_interner) = create_test_setup();
-       
-        let mut checker = TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
+
+        let mut checker =
+            TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
 
         // Perform some type checking operations
         let int_type = checker.type_table.borrow().int_type();
@@ -2752,7 +2755,7 @@ mod tests {
     #[test]
     fn test_constraint_validator() {
         let mut validator = ConstraintValidator::new();
-        let type_table = RefCell::new(TypeTable::new()); 
+        let type_table = RefCell::new(TypeTable::new());
 
         let result = validator.validate_constraint(
             TypeId::from_raw(1),
@@ -2769,19 +2772,23 @@ mod tests {
         let type_table = RefCell::new(TypeTable::new());
         let mut symbol_table = SymbolTable::new();
         let interner = StringInterner::new();
-        
+
         // Create class symbols
         let object_sym = symbol_table.create_class(interner.intern("Object"));
         let animal_sym = symbol_table.create_class(interner.intern("Animal"));
         let dog_sym = symbol_table.create_class(interner.intern("Dog"));
         let cat_sym = symbol_table.create_class(interner.intern("Cat"));
-        
+
         // Create class types
-        let object_type = type_table.borrow_mut().create_class_type(object_sym, vec![]);
-        let animal_type = type_table.borrow_mut().create_class_type(animal_sym, vec![]);
+        let object_type = type_table
+            .borrow_mut()
+            .create_class_type(object_sym, vec![]);
+        let animal_type = type_table
+            .borrow_mut()
+            .create_class_type(animal_sym, vec![]);
         let dog_type = type_table.borrow_mut().create_class_type(dog_sym, vec![]);
         let cat_type = type_table.borrow_mut().create_class_type(cat_sym, vec![]);
-        
+
         // Build hierarchy: Object <- Animal <- Dog
         //                                   <- Cat
         let mut builder = ClassHierarchyBuilder::new();
@@ -2789,25 +2796,21 @@ mod tests {
         builder.register_class(animal_sym, Some(object_type), vec![]);
         builder.register_class(dog_sym, Some(animal_type), vec![]);
         builder.register_class(cat_sym, Some(animal_type), vec![]);
-        
+
         builder.compute_transitive_closure(&type_table);
         builder.finalize(&mut symbol_table);
-        
+
         // Create type checker
         let scope_tree = ScopeTree::new(ScopeId::first());
         let string_interner = StringInterner::new();
-        let type_checker = TypeChecker::new(
-            &type_table,
-            &symbol_table,
-            &scope_tree,
-            &string_interner,
-        );
-        
+        let type_checker =
+            TypeChecker::new(&type_table, &symbol_table, &scope_tree, &string_interner);
+
         // Test subtype relationships
         assert!(type_checker.is_class_subtype_of(dog_type, animal_type));
         assert!(type_checker.is_class_subtype_of(dog_type, object_type));
         assert!(!type_checker.is_class_subtype_of(dog_type, cat_type));
-        
+
         // Test common supertype
         let common = type_checker.find_common_class_supertype(dog_type, cat_type);
         assert_eq!(common, Some(animal_type));

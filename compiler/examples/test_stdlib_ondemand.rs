@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 /// Test on-demand stdlib loading without runtime dependencies
 ///
 /// This test validates that:
@@ -5,8 +35,7 @@
 /// 2. Package-level stdlib types load on-demand when referenced
 /// 3. All stdlib symbols resolve correctly during TAST lowering
 /// 4. No parsing errors occur
-
-use compiler::compilation::{CompilationUnit, CompilationConfig};
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 
 fn main() {
     println!("=== On-Demand Stdlib Loading Test ===\n");
@@ -41,7 +70,7 @@ class Main {
             passed += 1;
         }
         Err(e) => {
-            println!("❌ TEST 1 FAILED: {}", e);
+            println!("❌ TEST 1 FAILED: {:?}", e);
             failed += 1;
         }
     }
@@ -70,7 +99,7 @@ class Main {
             passed += 1;
         }
         Err(e) => {
-            println!("❌ TEST 2 FAILED: {}", e);
+            println!("❌ TEST 2 FAILED: {:?}", e);
             failed += 1;
         }
     }
@@ -97,7 +126,7 @@ class Main {
             passed += 1;
         }
         Err(e) => {
-            println!("❌ TEST 3 FAILED: {}", e);
+            println!("❌ TEST 3 FAILED: {:?}", e);
             failed += 1;
         }
     }
@@ -125,7 +154,7 @@ class Main {
             passed += 1;
         }
         Err(e) => {
-            println!("❌ TEST 4 FAILED: {}", e);
+            println!("❌ TEST 4 FAILED: {:?}", e);
             failed += 1;
         }
     }
@@ -153,7 +182,7 @@ class Main {
             passed += 1;
         }
         Err(e) => {
-            println!("❌ TEST 5 FAILED: {}", e);
+            println!("❌ TEST 5 FAILED: {:?}", e);
             failed += 1;
         }
     }
@@ -191,13 +220,10 @@ fn run_test(name: &str, source: &str) -> Result<(), String> {
 
     // Compile to TAST (this is where on-demand loading should happen)
     println!("Compiling to TAST (on-demand loading will occur here)...");
-    let typed_files = unit.lower_to_tast()
-        .map_err(|errors| {
-            let error_msgs: Vec<String> = errors.iter()
-                .map(|e| e.message.clone())
-                .collect();
-            format!("TAST lowering failed:\n  {}", error_msgs.join("\n  "))
-        })?;
+    let typed_files = unit.lower_to_tast().map_err(|errors| {
+        let error_msgs: Vec<String> = errors.iter().map(|e| e.message.clone()).collect();
+        format!("TAST lowering failed:\n  {}", error_msgs.join("\n  "))
+    })?;
 
     println!("  ✓ TAST lowering succeeded ({} files)", typed_files.len());
 

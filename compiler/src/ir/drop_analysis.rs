@@ -27,9 +27,9 @@
 //!
 //! The analyzer tracks that z is used in the loop and determines drop points.
 
-use std::collections::{HashMap, HashSet};
+use super::hir::{HirBlock, HirExpr, HirExprKind, HirLValue, HirPattern, HirStatement};
 use crate::tast::SymbolId;
-use super::hir::{HirBlock, HirStatement, HirExpr, HirExprKind, HirLValue, HirPattern};
+use std::collections::{HashMap, HashSet};
 
 /// Defines how a type should be dropped/cleaned up
 ///
@@ -146,12 +146,15 @@ impl DropPointAnalyzer {
         let mut last_use = HashMap::new();
         for (symbol, use_list) in &self.uses {
             if let Some(&(stmt_idx, in_loop, depth)) = use_list.last() {
-                last_use.insert(*symbol, LastUseInfo {
-                    statement_index: stmt_idx,
-                    in_loop,
-                    is_reassigned: self.reassigned.contains(symbol),
-                    block_depth: depth,
-                });
+                last_use.insert(
+                    *symbol,
+                    LastUseInfo {
+                        statement_index: stmt_idx,
+                        in_loop,
+                        is_reassigned: self.reassigned.contains(symbol),
+                        block_depth: depth,
+                    },
+                );
             }
         }
 
@@ -224,7 +227,11 @@ impl DropPointAnalyzer {
                 }
             }
 
-            HirStatement::If { condition, then_branch, else_branch } => {
+            HirStatement::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
                 self.analyze_expr(condition);
                 self.analyze_block(then_branch);
                 if let Some(else_block) = else_branch {
@@ -232,7 +239,11 @@ impl DropPointAnalyzer {
                 }
             }
 
-            HirStatement::While { label: _, condition, body } => {
+            HirStatement::While {
+                label: _,
+                condition,
+                body,
+            } => {
                 let was_in_loop = self.in_loop;
                 self.in_loop = true;
 
@@ -242,7 +253,12 @@ impl DropPointAnalyzer {
                 self.in_loop = was_in_loop;
             }
 
-            HirStatement::ForIn { label: _, pattern: _, iterator, body } => {
+            HirStatement::ForIn {
+                label: _,
+                pattern: _,
+                iterator,
+                body,
+            } => {
                 let was_in_loop = self.in_loop;
                 self.in_loop = true;
 
@@ -290,7 +306,11 @@ impl DropPointAnalyzer {
                 self.analyze_expr(operand);
             }
 
-            HirExprKind::If { condition, then_expr, else_expr } => {
+            HirExprKind::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
                 self.analyze_expr(condition);
                 self.analyze_expr(then_expr);
                 self.analyze_expr(else_expr);

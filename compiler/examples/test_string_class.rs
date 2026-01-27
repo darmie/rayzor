@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 /// Comprehensive test for String class methods
 use compiler::codegen::CraneliftBackend;
 use compiler::compilation::{CompilationConfig, CompilationUnit};
@@ -90,24 +120,24 @@ class Main {
     println!("Codegen complete!\n");
 
     println!("=== Expected Output ===");
-    println!("5");       // length
-    println!("HELLO");   // toUpperCase
-    println!("world");   // toLowerCase
-    println!("h");       // charAt(0)
-    println!("o");       // charAt(4)
-    println!("104");     // charCodeAt(0)
-    println!("101");     // charCodeAt(1)
-    println!("4");       // indexOf("o")
-    println!("6");       // indexOf("world")
-    println!("-1");      // indexOf("xyz")
-    println!("7");       // lastIndexOf("o")
-    println!("9");       // lastIndexOf("l")
-    println!("hello");   // substr(0, 5)
-    println!("world");   // substr(6, 5)
-    println!("hello");   // substring(0, 5)
-    println!("world");   // substring(6, 11)
-    println!("A");       // fromCharCode(65)
-    println!("Z");       // fromCharCode(90)
+    println!("5"); // length
+    println!("HELLO"); // toUpperCase
+    println!("world"); // toLowerCase
+    println!("h"); // charAt(0)
+    println!("o"); // charAt(4)
+    println!("104"); // charCodeAt(0)
+    println!("101"); // charCodeAt(1)
+    println!("4"); // indexOf("o")
+    println!("6"); // indexOf("world")
+    println!("-1"); // indexOf("xyz")
+    println!("7"); // lastIndexOf("o")
+    println!("9"); // lastIndexOf("l")
+    println!("hello"); // substr(0, 5)
+    println!("world"); // substr(6, 5)
+    println!("hello"); // substring(0, 5)
+    println!("world"); // substring(6, 11)
+    println!("A"); // fromCharCode(65)
+    println!("Z"); // fromCharCode(90)
     println!("\n=== Actual Output ===\n");
 
     for module in mir_modules.iter().rev() {

@@ -1,8 +1,37 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 /// Test Cranelift backend with real MIR arithmetic operations
 ///
 /// This example creates a MIR function that adds two i64 parameters and returns the result.
 /// Function signature: fn add(a: i64, b: i64) -> i64 { return a + b; }
-
 use compiler::codegen::CraneliftBackend;
 use compiler::ir::*;
 use compiler::tast::SymbolId;
@@ -39,15 +68,11 @@ fn main() -> Result<(), String> {
         calling_convention: CallingConvention::Haxe,
         can_throw: false,
         type_params: vec![],
+        uses_sret: false,
     };
 
     // Create the function
-    let mut function = IrFunction::new(
-        func_id,
-        symbol_id,
-        "add".to_string(),
-        signature,
-    );
+    let mut function = IrFunction::new(func_id, symbol_id, "add".to_string(), signature);
 
     // Add local variable for result
     function.locals.insert(

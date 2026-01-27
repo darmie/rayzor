@@ -1,8 +1,7 @@
 //! Test complex generic type constraints parsing and lowering
 
 use crate::tast::{
-    AstLowering, StringInterner, SymbolTable, TypeTable, ScopeTree, ScopeId,
-    node::TypedFile,
+    node::TypedFile, AstLowering, ScopeId, ScopeTree, StringInterner, SymbolTable, TypeTable,
 };
 use parser::parse_haxe_file;
 use std::cell::RefCell;
@@ -20,17 +19,18 @@ mod tests {
             Ok(file) => file,
             Err(errors) => return Err(format!("Parse errors: {:?}", errors)),
         };
-        
+
         // Create lowering context
         let mut string_interner = StringInterner::new();
         let mut symbol_table = SymbolTable::new();
         let type_table = Rc::new(RefCell::new(TypeTable::new()));
         let mut scope_tree = ScopeTree::new(ScopeId::first());
-        
+
         // Create namespace and import resolvers
-        let mut namespace_resolver = crate::tast::namespace::NamespaceResolver::new(&string_interner);
+        let mut namespace_resolver =
+            crate::tast::namespace::NamespaceResolver::new(&string_interner);
         let mut import_resolver = crate::tast::namespace::ImportResolver::new(&namespace_resolver);
-        
+
         // Create AST lowering instance
         let string_interner_rc = Rc::new(RefCell::new(StringInterner::new()));
         let mut lowering = AstLowering::new(
@@ -42,7 +42,7 @@ mod tests {
             &mut namespace_resolver,
             &mut import_resolver,
         );
-        
+
         // Lower to TAST
         match lowering.lower_file(&haxe_file) {
             Ok(typed_file) => Ok(typed_file),
@@ -57,7 +57,7 @@ mod tests {
             interface Comparable<T> {
                 public function compareTo(other:T):Int;
             }
-            
+
             class GenericClass<T, U:Comparable<String>> {
                 public function new() {}
                 public function process<V>(input: V): T {
@@ -65,9 +65,9 @@ mod tests {
                 }
             }
         "#;
-        
+
         println!("🔍 Testing complex generic constraints...");
-        
+
         let result = parse_and_lower(haxe_code);
         match &result {
             Ok(typed_file) => {
@@ -82,25 +82,29 @@ mod tests {
                 println!("❌ Parse and lower failed: {}", error);
             }
         }
-        
-        assert!(result.is_ok(), "Failed to parse/lower complex generics: {:?}", result.err());
+
+        assert!(
+            result.is_ok(),
+            "Failed to parse/lower complex generics: {:?}",
+            result.err()
+        );
     }
 
-    #[test] 
+    #[test]
     fn test_intersection_type_constraints() {
         let haxe_code = r#"
             // Define Comparable interface since it's not built-in
             interface Comparable<T> {
                 public function compareTo(other:T):Int;
             }
-            
+
             class IntersectionClass<T, U:Iterable<String> & Comparable<Int>> {
                 public function new() {}
             }
         "#;
-        
+
         println!("🔍 Testing intersection type constraints...");
-        
+
         let result = parse_and_lower(haxe_code);
         match &result {
             Ok(typed_file) => {
@@ -111,7 +115,11 @@ mod tests {
                     println!("   Type parameters: {}", class.type_parameters.len());
                     // Check if intersection type constraints are preserved
                     for (i, param) in class.type_parameters.iter().enumerate() {
-                        println!("   Type param {}: {} constraints", i, param.constraints.len());
+                        println!(
+                            "   Type param {}: {} constraints",
+                            i,
+                            param.constraints.len()
+                        );
                     }
                 }
             }
@@ -119,7 +127,11 @@ mod tests {
                 println!("❌ Parse and lower failed: {}", error);
             }
         }
-        
-        assert!(result.is_ok(), "Failed to parse/lower intersection type constraints: {:?}", result.err());
+
+        assert!(
+            result.is_ok(),
+            "Failed to parse/lower intersection type constraints: {:?}",
+            result.err()
+        );
     }
 }

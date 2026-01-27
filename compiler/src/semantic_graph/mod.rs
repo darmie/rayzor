@@ -24,23 +24,23 @@ pub use self::ownership_graph::*;
 pub use self::source_location_tracking::*;
 // pub use self::analysis::*;
 
-pub  mod analysis;
-pub  mod builder;
-pub (crate) mod call_graph;
+pub mod analysis;
+pub mod builder;
+pub(crate) mod call_graph;
 
-pub (crate) mod cfg;
-pub (crate) mod dfg;
-pub (crate) mod dfg_builder;
-pub (crate) mod free_variables;
-pub (crate) mod phi_type;
+pub(crate) mod cfg;
+pub(crate) mod dfg;
+pub(crate) mod dfg_builder;
+pub(crate) mod free_variables;
+pub(crate) mod phi_type;
 
 // mod dfg_test;
-pub (crate) mod dominance;
-pub (crate) mod ownership_graph;
-pub (crate) mod source_location_tracking;
-pub (crate) mod tast_cfg_mapping;
+pub(crate) mod dominance;
+pub(crate) mod ownership_graph;
+pub(crate) mod source_location_tracking;
+pub(crate) mod tast_cfg_mapping;
 mod test;
-pub (crate) mod validation;
+pub(crate) mod validation;
 
 impl LifetimeId {
     /// The global lifetime that outlives all other lifetimes
@@ -60,7 +60,7 @@ pub struct SemanticGraphs {
     /// Control Flow Graph for each function
     pub control_flow: IdMap<SymbolId, ControlFlowGraph>,
 
-    /// Data Flow Graph for each function  
+    /// Data Flow Graph for each function
     pub data_flow: IdMap<SymbolId, DataFlowGraph>,
 
     /// Inter-procedural call graph
@@ -104,22 +104,28 @@ impl SemanticGraphs {
                 for block_id in cfg.blocks.keys() {
                     if !dfg.block_nodes.contains_key(block_id) {
                         return Err(GraphValidationError::OwnershipInconsistency {
-                            message: format!("CFG block {:?} has no corresponding DFG nodes", block_id)
+                            message: format!(
+                                "CFG block {:?} has no corresponding DFG nodes",
+                                block_id
+                            ),
                         });
                     }
                 }
-                
+
                 // Check that DFG nodes reference valid CFG blocks
                 for (block_id, _) in &dfg.block_nodes {
                     if !cfg.blocks.contains_key(block_id) {
                         return Err(GraphValidationError::OwnershipInconsistency {
-                            message: format!("DFG references non-existent CFG block {:?}", block_id)
+                            message: format!(
+                                "DFG references non-existent CFG block {:?}",
+                                block_id
+                            ),
                         });
                     }
                 }
             }
         }
-        
+
         // Validate call graph consistency
         for call_site in self.call_graph.call_sites.values() {
             // Check that direct called functions exist in CFG
@@ -127,24 +133,28 @@ impl SemanticGraphs {
                 crate::semantic_graph::CallTarget::Direct { function } => {
                     if !self.control_flow.contains_key(function) {
                         return Err(GraphValidationError::UndefinedVariables {
-                            variables: vec![*function]
+                            variables: vec![*function],
                         });
                     }
                 }
-                crate::semantic_graph::CallTarget::Virtual { possible_targets, .. } => {
+                crate::semantic_graph::CallTarget::Virtual {
+                    possible_targets, ..
+                } => {
                     for &target in possible_targets {
                         if !self.control_flow.contains_key(&target) {
                             return Err(GraphValidationError::UndefinedVariables {
-                                variables: vec![target]
+                                variables: vec![target],
                             });
                         }
                     }
                 }
-                crate::semantic_graph::CallTarget::Dynamic { possible_targets, .. } => {
+                crate::semantic_graph::CallTarget::Dynamic {
+                    possible_targets, ..
+                } => {
                     for &target in possible_targets {
                         if !self.control_flow.contains_key(&target) {
                             return Err(GraphValidationError::UndefinedVariables {
-                                variables: vec![target]
+                                variables: vec![target],
                             });
                         }
                     }
@@ -153,7 +163,7 @@ impl SemanticGraphs {
                 _ => {}
             }
         }
-        
+
         // Validate ownership graph variables exist in DFG
         let mut all_original_symbols = std::collections::HashSet::new();
         for dfg in self.data_flow.values() {
@@ -161,16 +171,16 @@ impl SemanticGraphs {
                 all_original_symbols.insert(ssa_var.original_symbol);
             }
         }
-        
+
         for node in self.ownership_graph.variables.values() {
             // Check that the variable's original symbol exists in the DFG
             if !all_original_symbols.contains(&node.variable) {
                 return Err(GraphValidationError::UndefinedVariables {
-                    variables: vec![node.variable]
+                    variables: vec![node.variable],
                 });
             }
         }
-        
+
         Ok(())
     }
 }

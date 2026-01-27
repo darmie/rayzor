@@ -15,9 +15,17 @@ class Main {
 "#;
 
     let result = parse_haxe_file("test.hx", source, true);
-    assert!(result.is_ok(), "Failed to parse simple arrow function with block: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to parse simple arrow function with block: {:?}",
+        result.err()
+    );
     let file = result.unwrap();
-    assert_eq!(file.declarations.len(), 1, "Should have 1 class declaration");
+    assert_eq!(
+        file.declarations.len(),
+        1,
+        "Should have 1 class declaration"
+    );
 }
 
 #[test]
@@ -35,9 +43,17 @@ class Main {
 "#;
 
     let result = parse_haxe_file("test.hx", source, true);
-    assert!(result.is_ok(), "Failed to parse arrow function with multiple statements: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to parse arrow function with multiple statements: {:?}",
+        result.err()
+    );
     let file = result.unwrap();
-    assert_eq!(file.declarations.len(), 1, "Should have 1 class declaration");
+    assert_eq!(
+        file.declarations.len(),
+        1,
+        "Should have 1 class declaration"
+    );
 }
 
 #[test]
@@ -56,9 +72,17 @@ class Main {
 "#;
 
     let result = parse_haxe_file("test.hx", source, true);
-    assert!(result.is_ok(), "Failed to parse arrow function with method calls: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to parse arrow function with method calls: {:?}",
+        result.err()
+    );
     let file = result.unwrap();
-    assert_eq!(file.declarations.len(), 1, "Should have 1 class declaration");
+    assert_eq!(
+        file.declarations.len(),
+        1,
+        "Should have 1 class declaration"
+    );
 }
 
 #[test]
@@ -98,9 +122,17 @@ class Main {
 "#;
 
     let result = parse_haxe_file("test.hx", source, true);
-    assert!(result.is_ok(), "Failed to parse exact test_combined pattern: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to parse exact test_combined pattern: {:?}",
+        result.err()
+    );
     let file = result.unwrap();
-    assert_eq!(file.declarations.len(), 2, "Should have 2 class declarations");
+    assert_eq!(
+        file.declarations.len(),
+        2,
+        "Should have 2 class declarations"
+    );
 }
 
 #[test]
@@ -117,7 +149,15 @@ class Main {
 "#;
 
     let result = parse_haxe_file("test.hx", source, true);
-    assert!(result.is_ok(), "Failed to parse simplified test_combined: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to parse simplified test_combined: {:?}",
+        result.err()
+    );
     let file = result.unwrap();
-    assert_eq!(file.declarations.len(), 1, "Should have 1 class declaration");
+    assert_eq!(
+        file.declarations.len(),
+        1,
+        "Should have 1 class declaration"
+    );
 }

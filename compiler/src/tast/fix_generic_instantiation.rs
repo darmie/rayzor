@@ -25,12 +25,12 @@ impl TypeParameterRegistry {
             type_param_counts: HashMap::new(),
         }
     }
-    
+
     /// Register a type with its parameter count
     pub fn register_type(&mut self, symbol_id: SymbolId, param_count: usize) {
         self.type_param_counts.insert(symbol_id, param_count);
     }
-    
+
     /// Get the parameter count for a type
     pub fn get_param_count(&self, symbol_id: SymbolId) -> Option<usize> {
         self.type_param_counts.get(&symbol_id).copied()
@@ -41,26 +41,26 @@ impl TypeParameterRegistry {
 /// after the file has been fully lowered.
 pub fn extract_type_param_counts(typed_file: &crate::tast::node::TypedFile) -> HashMap<SymbolId, usize> {
     let mut counts = HashMap::new();
-    
+
     // Extract from classes
     for class in &typed_file.classes {
         counts.insert(class.symbol_id, class.type_parameters.len());
     }
-    
+
     // Extract from interfaces
     for interface in &typed_file.interfaces {
         counts.insert(interface.symbol_id, interface.type_parameters.len());
     }
-    
+
     // Extract from enums
     for enum_decl in &typed_file.enums {
         counts.insert(enum_decl.symbol_id, enum_decl.type_parameters.len());
     }
-    
+
     // Extract from type aliases
     for type_alias in &typed_file.type_aliases {
         counts.insert(type_alias.symbol_id, type_alias.type_parameters.len());
     }
-    
+
     counts
 }

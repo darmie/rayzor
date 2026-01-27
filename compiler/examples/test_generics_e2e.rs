@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! End-to-end test for generic function compilation
 //!
 //! This tests the COMPLETE generics pipeline:
@@ -49,9 +79,18 @@ class Main {
         Ok(stats) => {
             println!("  ✅ Compilation succeeded");
             println!("  📊 Monomorphization stats:");
-            println!("     - Generic functions found: {}", stats.generic_functions_found);
-            println!("     - Instantiations created: {}", stats.instantiations_created);
-            println!("     - Call sites rewritten: {}", stats.call_sites_rewritten);
+            println!(
+                "     - Generic functions found: {}",
+                stats.generic_functions_found
+            );
+            println!(
+                "     - Instantiations created: {}",
+                stats.instantiations_created
+            );
+            println!(
+                "     - Call sites rewritten: {}",
+                stats.call_sites_rewritten
+            );
 
             if stats.generic_functions_found > 0 {
                 println!("  ✅ Generic functions detected");
@@ -60,7 +99,7 @@ class Main {
             }
         }
         Err(e) => {
-            println!("  ❌ Compilation failed: {}", e);
+            println!("  ❌ Compilation failed: {:?}", e);
         }
     }
     println!();
@@ -102,12 +141,21 @@ class Main {
         Ok(stats) => {
             println!("  ✅ Compilation succeeded");
             println!("  📊 Monomorphization stats:");
-            println!("     - Generic functions found: {}", stats.generic_functions_found);
-            println!("     - Instantiations created: {}", stats.instantiations_created);
-            println!("     - Call sites rewritten: {}", stats.call_sites_rewritten);
+            println!(
+                "     - Generic functions found: {}",
+                stats.generic_functions_found
+            );
+            println!(
+                "     - Instantiations created: {}",
+                stats.instantiations_created
+            );
+            println!(
+                "     - Call sites rewritten: {}",
+                stats.call_sites_rewritten
+            );
         }
         Err(e) => {
-            println!("  ❌ Compilation failed: {}", e);
+            println!("  ❌ Compilation failed: {:?}", e);
         }
     }
     println!();
@@ -133,7 +181,8 @@ fn compile_and_check(source: &str, name: &str) -> Result<MonoStats, String> {
         .map_err(|e| format!("Failed to add file: {}", e))?;
 
     // Compile to TAST
-    let _typed_files = unit.lower_to_tast()
+    let _typed_files = unit
+        .lower_to_tast()
         .map_err(|errors| format!("TAST errors: {:?}", errors))?;
 
     // Get MIR modules
@@ -146,7 +195,10 @@ fn compile_and_check(source: &str, name: &str) -> Result<MonoStats, String> {
     let mut stats = MonoStats::default();
 
     println!("  📋 User-defined functions in MIR:");
-    println!("  📦 Total functions in module: {}", mir_modules.iter().map(|m| m.functions.len()).sum::<usize>());
+    println!(
+        "  📦 Total functions in module: {}",
+        mir_modules.iter().map(|m| m.functions.len()).sum::<usize>()
+    );
 
     // Look for monomorphized functions (contain __ in name)
     for module in &mir_modules {
@@ -162,18 +214,35 @@ fn compile_and_check(source: &str, name: &str) -> Result<MonoStats, String> {
         // Count functions with type parameters
         for (_id, func) in &module.functions {
             // Only show user-defined functions (not stdlib)
-            if func.name == "main" || func.name == "get" || func.name == "set" || func.name == "new" || func.name == "id" {
-                println!("    - {} (type_params: {:?}, return: {:?})",
+            if func.name == "main"
+                || func.name == "get"
+                || func.name == "set"
+                || func.name == "new"
+                || func.name == "id"
+            {
+                println!(
+                    "    - {} (type_params: {:?}, return: {:?})",
                     func.name,
-                    func.signature.type_params.iter().map(|p| &p.name).collect::<Vec<_>>(),
-                    func.signature.return_type);
+                    func.signature
+                        .type_params
+                        .iter()
+                        .map(|p| &p.name)
+                        .collect::<Vec<_>>(),
+                    func.signature.return_type
+                );
             }
 
             if !func.signature.type_params.is_empty() {
                 stats.generic_functions_found += 1;
-                println!("  Found generic function: {} with params {:?}",
+                println!(
+                    "  Found generic function: {} with params {:?}",
                     func.name,
-                    func.signature.type_params.iter().map(|p| &p.name).collect::<Vec<_>>());
+                    func.signature
+                        .type_params
+                        .iter()
+                        .map(|p| &p.name)
+                        .collect::<Vec<_>>()
+                );
             }
 
             // Check for TypeVar in signature
@@ -189,10 +258,15 @@ fn compile_and_check(source: &str, name: &str) -> Result<MonoStats, String> {
             // Check for CallDirect instructions with type_args
             for block in func.cfg.blocks.values() {
                 for instr in &block.instructions {
-                    if let compiler::ir::IrInstruction::CallDirect { func_id, type_args, .. } = instr {
+                    if let compiler::ir::IrInstruction::CallDirect {
+                        func_id, type_args, ..
+                    } = instr
+                    {
                         if !type_args.is_empty() {
-                            println!("  📞 Call with type_args in {}: func_id={:?}, type_args={:?}",
-                                func.name, func_id, type_args);
+                            println!(
+                                "  📞 Call with type_args in {}: func_id={:?}, type_args={:?}",
+                                func.name, func_id, type_args
+                            );
                             stats.call_sites_rewritten += 1;
                         }
                     }

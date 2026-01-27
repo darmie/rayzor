@@ -1,16 +1,41 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 /// Test Cranelift backend with all binary operations
 ///
 /// Tests: add, sub, mul, div, rem, and, or, xor, shl, shr
-
 use compiler::codegen::CraneliftBackend;
 use compiler::ir::*;
 use compiler::tast::SymbolId;
 
-fn create_binop_function(
-    name: &str,
-    op: BinaryOp,
-    func_id: u32,
-) -> (IrFunction, IrFunctionId) {
+fn create_binop_function(name: &str, op: BinaryOp, func_id: u32) -> (IrFunction, IrFunctionId) {
     let fid = IrFunctionId(func_id);
     let symbol_id = SymbolId::from_raw(func_id + 1);
 
@@ -37,6 +62,7 @@ fn create_binop_function(
         calling_convention: CallingConvention::Haxe,
         can_throw: false,
         type_params: vec![],
+        uses_sret: false,
     };
 
     let mut function = IrFunction::new(fid, symbol_id, name.to_string(), signature);
@@ -89,7 +115,10 @@ fn main() -> Result<(), String> {
         ("shr", BinaryOp::Shr),
     ];
 
-    println!("Creating MIR functions for {} operations...", operations.len());
+    println!(
+        "Creating MIR functions for {} operations...",
+        operations.len()
+    );
     for (idx, (name, op)) in operations.iter().enumerate() {
         let (func, fid) = create_binop_function(name, op.clone(), idx as u32);
         func_ids.push((name.to_string(), fid));
@@ -174,7 +203,10 @@ fn main() -> Result<(), String> {
         let op: fn(i64, i64) -> i64 = unsafe { std::mem::transmute(func_ptr) };
         let result = op(0b1100, 0b1010);
         let expected = 0b1000;
-        println!("  {}(0b1100, 0b1010) = 0b{:b} (expected 0b{:b})", name, result, expected);
+        println!(
+            "  {}(0b1100, 0b1010) = 0b{:b} (expected 0b{:b})",
+            name, result, expected
+        );
         all_passed &= result == expected;
     }
 
@@ -185,7 +217,10 @@ fn main() -> Result<(), String> {
         let op: fn(i64, i64) -> i64 = unsafe { std::mem::transmute(func_ptr) };
         let result = op(0b1100, 0b1010);
         let expected = 0b1110;
-        println!("  {}(0b1100, 0b1010) = 0b{:b} (expected 0b{:b})", name, result, expected);
+        println!(
+            "  {}(0b1100, 0b1010) = 0b{:b} (expected 0b{:b})",
+            name, result, expected
+        );
         all_passed &= result == expected;
     }
 
@@ -196,7 +231,10 @@ fn main() -> Result<(), String> {
         let op: fn(i64, i64) -> i64 = unsafe { std::mem::transmute(func_ptr) };
         let result = op(0b1100, 0b1010);
         let expected = 0b0110;
-        println!("  {}(0b1100, 0b1010) = 0b{:b} (expected 0b{:b})", name, result, expected);
+        println!(
+            "  {}(0b1100, 0b1010) = 0b{:b} (expected 0b{:b})",
+            name, result, expected
+        );
         all_passed &= result == expected;
     }
 
@@ -225,7 +263,10 @@ fn main() -> Result<(), String> {
     println!();
 
     if all_passed {
-        println!("🎉 SUCCESS: All {} binary operations passed!", operations.len());
+        println!(
+            "🎉 SUCCESS: All {} binary operations passed!",
+            operations.len()
+        );
         Ok(())
     } else {
         Err("FAILED: Some operations produced incorrect results".to_string())

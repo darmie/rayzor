@@ -1,3 +1,34 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
+#![allow(static_mut_refs)]
 /// Test: Cranelift Exception Handling Execution
 ///
 /// This test proves that Cranelift can execute code with exception-like
@@ -14,7 +45,6 @@
 /// - Match exception types
 /// - Execute finally blocks regardless of exception
 /// - Propagate exceptions through call stack
-
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
@@ -24,7 +54,7 @@ use std::cell::RefCell;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExceptionState {
     None,
-    Pending(i64, i64),  // (exception_type, exception_value)
+    Pending(i64, i64), // (exception_type, exception_value)
 }
 
 /// Runtime exception tracker
@@ -45,7 +75,10 @@ impl ExceptionRuntime {
 
     fn throw(&self, exc_type: i64, exc_value: i64) {
         *self.state.borrow_mut() = ExceptionState::Pending(exc_type, exc_value);
-        println!("  → Exception thrown: type={}, value={}", exc_type, exc_value);
+        println!(
+            "  → Exception thrown: type={}, value={}",
+            exc_type, exc_value
+        );
     }
 
     fn check_exception(&self) -> i64 {
@@ -108,7 +141,9 @@ impl ExceptionRuntime {
 
 // Runtime FFI functions
 extern "C" fn exc_throw(exc_type: i64, exc_value: i64) {
-    unsafe { RUNTIME.as_ref().unwrap().throw(exc_type, exc_value); }
+    unsafe {
+        RUNTIME.as_ref().unwrap().throw(exc_type, exc_value);
+    }
 }
 
 extern "C" fn exc_check() -> i64 {
@@ -124,11 +159,15 @@ extern "C" fn exc_get_value() -> i64 {
 }
 
 extern "C" fn exc_clear() {
-    unsafe { RUNTIME.as_ref().unwrap().clear_exception(); }
+    unsafe {
+        RUNTIME.as_ref().unwrap().clear_exception();
+    }
 }
 
 extern "C" fn exc_finally() {
-    unsafe { RUNTIME.as_ref().unwrap().execute_finally(); }
+    unsafe {
+        RUNTIME.as_ref().unwrap().execute_finally();
+    }
 }
 
 fn main() {
@@ -144,7 +183,7 @@ fn main() {
     match test_try_catch_basic() {
         Ok(()) => {}
         Err(e) => {
-            eprintln!("\n❌ Test failed: {}", e);
+            eprintln!("\n❌ Test failed: {:?}", e);
             std::process::exit(1);
         }
     }
@@ -152,7 +191,7 @@ fn main() {
     match test_exception_type_matching() {
         Ok(()) => {}
         Err(e) => {
-            eprintln!("\n❌ Test failed: {}", e);
+            eprintln!("\n❌ Test failed: {:?}", e);
             std::process::exit(1);
         }
     }
@@ -160,7 +199,7 @@ fn main() {
     match test_finally_execution() {
         Ok(()) => {}
         Err(e) => {
-            eprintln!("\n❌ Test failed: {}", e);
+            eprintln!("\n❌ Test failed: {:?}", e);
             std::process::exit(1);
         }
     }
@@ -178,8 +217,7 @@ fn test_try_catch_basic() -> Result<(), String> {
     println!("Test 1: Basic Try-Catch");
     println!("========================\n");
 
-    let isa_builder = cranelift_native::builder()
-        .map_err(|e| format!("ISA error: {}", e))?;
+    let isa_builder = cranelift_native::builder().map_err(|e| format!("ISA error: {}", e))?;
     let isa = isa_builder
         .finish(settings::Flags::new(settings::builder()))
         .map_err(|e| format!("ISA error: {}", e))?;
@@ -192,7 +230,12 @@ fn test_try_catch_basic() -> Result<(), String> {
 
     let mut module = JITModule::new(builder);
 
-    let throw_func = declare_func(&mut module, "exc_throw", &[types::I64, types::I64], types::INVALID)?;
+    let throw_func = declare_func(
+        &mut module,
+        "exc_throw",
+        &[types::I64, types::I64],
+        types::INVALID,
+    )?;
     let check_func = declare_func(&mut module, "exc_check", &[], types::I64)?;
     let get_value_func = declare_func(&mut module, "exc_get_value", &[], types::I64)?;
     let clear_func = declare_func(&mut module, "exc_clear", &[], types::INVALID)?;
@@ -225,8 +268,8 @@ fn test_try_catch_basic() -> Result<(), String> {
         // Try block - throw exception
         builder.switch_to_block(try_block);
         let throw_ref = module.declare_func_in_func(throw_func, &mut builder.func);
-        let exc_type = builder.ins().iconst(types::I64, 1);  // Type 1
-        let exc_val = builder.ins().iconst(types::I64, 42);  // Value 42
+        let exc_type = builder.ins().iconst(types::I64, 1); // Type 1
+        let exc_val = builder.ins().iconst(types::I64, 42); // Value 42
         builder.ins().call(throw_ref, &[exc_type, exc_val]);
         builder.ins().jump(check_block, &[]);
         builder.seal_block(try_block);
@@ -239,7 +282,9 @@ fn test_try_catch_basic() -> Result<(), String> {
 
         let zero = builder.ins().iconst(types::I64, 0);
         let is_exc = builder.ins().icmp(IntCC::NotEqual, has_exception, zero);
-        builder.ins().brif(is_exc, catch_block, &[], normal_return, &[]);
+        builder
+            .ins()
+            .brif(is_exc, catch_block, &[], normal_return, &[]);
         builder.seal_block(check_block);
 
         // Catch block - get exception value and return it
@@ -263,10 +308,13 @@ fn test_try_catch_basic() -> Result<(), String> {
         builder.finalize();
     }
 
-    module.define_function(func_id, &mut ctx)
+    module
+        .define_function(func_id, &mut ctx)
         .map_err(|e| format!("Define error: {}", e))?;
     module.clear_context(&mut ctx);
-    module.finalize_definitions().map_err(|e| format!("Finalize error: {}", e))?;
+    module
+        .finalize_definitions()
+        .map_err(|e| format!("Finalize error: {}", e))?;
 
     let code_ptr = module.get_finalized_function(func_id);
     let jit_fn: fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
@@ -294,8 +342,7 @@ fn test_exception_type_matching() -> Result<(), String> {
         RUNTIME.as_ref().unwrap().clear_exception();
     }
 
-    let isa_builder = cranelift_native::builder()
-        .map_err(|e| format!("ISA error: {}", e))?;
+    let isa_builder = cranelift_native::builder().map_err(|e| format!("ISA error: {}", e))?;
     let isa = isa_builder
         .finish(settings::Flags::new(settings::builder()))
         .map_err(|e| format!("ISA error: {}", e))?;
@@ -309,7 +356,12 @@ fn test_exception_type_matching() -> Result<(), String> {
 
     let mut module = JITModule::new(builder);
 
-    let throw_func = declare_func(&mut module, "exc_throw", &[types::I64, types::I64], types::INVALID)?;
+    let throw_func = declare_func(
+        &mut module,
+        "exc_throw",
+        &[types::I64, types::I64],
+        types::INVALID,
+    )?;
     let check_func = declare_func(&mut module, "exc_check", &[], types::I64)?;
     let get_type_func = declare_func(&mut module, "exc_get_type", &[], types::I64)?;
     let get_value_func = declare_func(&mut module, "exc_get_value", &[], types::I64)?;
@@ -345,8 +397,8 @@ fn test_exception_type_matching() -> Result<(), String> {
         // Try block - throw type 2 exception
         builder.switch_to_block(try_block);
         let throw_ref = module.declare_func_in_func(throw_func, &mut builder.func);
-        let exc_type = builder.ins().iconst(types::I64, 2);  // Type 2
-        let exc_val = builder.ins().iconst(types::I64, 99);  // Value 99
+        let exc_type = builder.ins().iconst(types::I64, 2); // Type 2
+        let exc_val = builder.ins().iconst(types::I64, 99); // Value 99
         builder.ins().call(throw_ref, &[exc_type, exc_val]);
         builder.ins().jump(check_block, &[]);
         builder.seal_block(try_block);
@@ -359,7 +411,9 @@ fn test_exception_type_matching() -> Result<(), String> {
 
         let zero = builder.ins().iconst(types::I64, 0);
         let is_exc = builder.ins().icmp(IntCC::NotEqual, has_exception, zero);
-        builder.ins().brif(is_exc, type_check_block, &[], normal_return, &[]);
+        builder
+            .ins()
+            .brif(is_exc, type_check_block, &[], normal_return, &[]);
         builder.seal_block(check_block);
 
         // Type check - which catch clause?
@@ -371,7 +425,9 @@ fn test_exception_type_matching() -> Result<(), String> {
         // Check if type == 1
         let type1 = builder.ins().iconst(types::I64, 1);
         let is_type1 = builder.ins().icmp(IntCC::Equal, actual_type, type1);
-        builder.ins().brif(is_type1, catch_type1, &[], catch_type2, &[]);
+        builder
+            .ins()
+            .brif(is_type1, catch_type1, &[], catch_type2, &[]);
         builder.seal_block(type_check_block);
 
         // Catch type 1 - return 1000
@@ -404,10 +460,13 @@ fn test_exception_type_matching() -> Result<(), String> {
         builder.finalize();
     }
 
-    module.define_function(func_id, &mut ctx)
+    module
+        .define_function(func_id, &mut ctx)
         .map_err(|e| format!("Define error: {}", e))?;
     module.clear_context(&mut ctx);
-    module.finalize_definitions().map_err(|e| format!("Finalize error: {}", e))?;
+    module
+        .finalize_definitions()
+        .map_err(|e| format!("Finalize error: {}", e))?;
 
     let code_ptr = module.get_finalized_function(func_id);
     let jit_fn: fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
@@ -436,8 +495,7 @@ fn test_finally_execution() -> Result<(), String> {
         RUNTIME.as_ref().unwrap().reset_finally();
     }
 
-    let isa_builder = cranelift_native::builder()
-        .map_err(|e| format!("ISA error: {}", e))?;
+    let isa_builder = cranelift_native::builder().map_err(|e| format!("ISA error: {}", e))?;
     let isa = isa_builder
         .finish(settings::Flags::new(settings::builder()))
         .map_err(|e| format!("ISA error: {}", e))?;
@@ -450,7 +508,12 @@ fn test_finally_execution() -> Result<(), String> {
 
     let mut module = JITModule::new(builder);
 
-    let throw_func = declare_func(&mut module, "exc_throw", &[types::I64, types::I64], types::INVALID)?;
+    let throw_func = declare_func(
+        &mut module,
+        "exc_throw",
+        &[types::I64, types::I64],
+        types::INVALID,
+    )?;
     let check_func = declare_func(&mut module, "exc_check", &[], types::I64)?;
     let clear_func = declare_func(&mut module, "exc_clear", &[], types::INVALID)?;
     let finally_func = declare_func(&mut module, "exc_finally", &[], types::INVALID)?;
@@ -498,7 +561,9 @@ fn test_finally_execution() -> Result<(), String> {
 
         let zero = builder.ins().iconst(types::I64, 0);
         let is_exc = builder.ins().icmp(IntCC::NotEqual, has_exception, zero);
-        builder.ins().brif(is_exc, catch_block, &[], finally_block, &[]);
+        builder
+            .ins()
+            .brif(is_exc, catch_block, &[], finally_block, &[]);
         builder.seal_block(check_block);
 
         // Catch block - clear exception then jump to finally
@@ -517,17 +582,20 @@ fn test_finally_execution() -> Result<(), String> {
 
         // Return
         builder.switch_to_block(return_block);
-        let ret_val = builder.ins().iconst(types::I64, 1);  // Success
+        let ret_val = builder.ins().iconst(types::I64, 1); // Success
         builder.ins().return_(&[ret_val]);
         builder.seal_block(return_block);
 
         builder.finalize();
     }
 
-    module.define_function(func_id, &mut ctx)
+    module
+        .define_function(func_id, &mut ctx)
         .map_err(|e| format!("Define error: {}", e))?;
     module.clear_context(&mut ctx);
-    module.finalize_definitions().map_err(|e| format!("Finalize error: {}", e))?;
+    module
+        .finalize_definitions()
+        .map_err(|e| format!("Finalize error: {}", e))?;
 
     let code_ptr = module.get_finalized_function(func_id);
     let jit_fn: fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
@@ -545,7 +613,10 @@ fn test_finally_execution() -> Result<(), String> {
         println!("\n  ✅ Finally block works! Cleanup code executed.\n");
         Ok(())
     } else {
-        Err(format!("Expected result=1 and finally=true, got result={}, finally={}", result, finally_executed))
+        Err(format!(
+            "Expected result=1 and finally=true, got result={}, finally={}",
+            result, finally_executed
+        ))
     }
 }
 

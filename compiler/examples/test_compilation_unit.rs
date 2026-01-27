@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test the new CompilationUnit infrastructure with proper stdlib loading
 //!
 //! This example demonstrates:
@@ -5,7 +35,7 @@
 //! 2. Adding user files AFTER stdlib
 //! 3. Lowering all files together with proper symbol propagation
 
-use compiler::compilation::{CompilationUnit, CompilationConfig};
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 
 fn main() {
     println!("=== Testing CompilationUnit with Stdlib Loading ===\n");
@@ -71,9 +101,11 @@ fn main() {
     match unit.add_file(source, "MyClass.hx") {
         Ok(()) => {
             println!("   ✓ Added user file");
-            println!("   Total files: {} stdlib + {} user\n",
-                     unit.stdlib_files.len(),
-                     unit.user_files.len());
+            println!(
+                "   Total files: {} stdlib + {} user\n",
+                unit.stdlib_files.len(),
+                unit.user_files.len()
+            );
         }
         Err(e) => {
             eprintln!("   ✗ Failed to add file: {}", e);
@@ -88,11 +120,16 @@ fn main() {
 
     match unit.lower_to_tast() {
         Ok(typed_files) => {
-            println!("   ✓ Successfully lowered {} files to TAST", typed_files.len());
+            println!(
+                "   ✓ Successfully lowered {} files to TAST",
+                typed_files.len()
+            );
 
             // Check symbols
             println!("\n5. Checking symbol table...");
-            let stdlib_symbols = unit.symbol_table.all_symbols()
+            let stdlib_symbols = unit
+                .symbol_table
+                .all_symbols()
                 .filter(|s| {
                     if let Some(qname) = s.qualified_name {
                         let name_str = unit.string_interner.get(qname).unwrap_or("");
@@ -104,7 +141,9 @@ fn main() {
                 })
                 .count();
 
-            let user_symbols = unit.symbol_table.all_symbols()
+            let user_symbols = unit
+                .symbol_table
+                .all_symbols()
                 .filter(|s| {
                     if let Some(qname) = s.qualified_name {
                         let name_str = unit.string_interner.get(qname).unwrap_or("");
@@ -120,38 +159,38 @@ fn main() {
             println!("   User symbols (test.* package): {}", user_symbols);
 
             // Check for haxe.String class and String.toUpperCase method
-            let has_string_class = unit.symbol_table.all_symbols()
-                .any(|s| {
-                    if let Some(qname) = s.qualified_name {
-                        let name_str = unit.string_interner.get(qname).unwrap_or("");
-                        name_str == "haxe.String"
-                    } else {
-                        false
-                    }
-                });
+            let has_string_class = unit.symbol_table.all_symbols().any(|s| {
+                if let Some(qname) = s.qualified_name {
+                    let name_str = unit.string_interner.get(qname).unwrap_or("");
+                    name_str == "haxe.String"
+                } else {
+                    false
+                }
+            });
 
-            let has_string_method = unit.symbol_table.all_symbols()
-                .any(|s| {
-                    if let Some(qname) = s.qualified_name {
-                        let name_str = unit.string_interner.get(qname).unwrap_or("");
-                        name_str == "String.toUpperCase"
-                    } else {
-                        false
-                    }
-                });
+            let has_string_method = unit.symbol_table.all_symbols().any(|s| {
+                if let Some(qname) = s.qualified_name {
+                    let name_str = unit.string_interner.get(qname).unwrap_or("");
+                    name_str == "String.toUpperCase"
+                } else {
+                    false
+                }
+            });
 
             if has_string_class && has_string_method {
                 println!("   ✓ Found haxe.String class and String.toUpperCase method");
                 println!("   ✓ Stdlib symbols correctly prefixed with 'haxe.*'");
             } else {
-                println!("   ⚠️  Missing: haxe.String={}, String.toUpperCase={}",
-                         has_string_class, has_string_method);
+                println!(
+                    "   ⚠️  Missing: haxe.String={}, String.toUpperCase={}",
+                    has_string_class, has_string_method
+                );
             }
 
             println!("\n🎉 SUCCESS: CompilationUnit working correctly!");
         }
         Err(e) => {
-            eprintln!("   ✗ TAST lowering failed: {}", e);
+            eprintln!("   ✗ TAST lowering failed: {:?}", e);
             eprintln!("\nThis likely means stdlib symbols are not propagating correctly.");
         }
     }

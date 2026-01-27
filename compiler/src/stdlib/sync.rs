@@ -16,9 +16,8 @@
 ///     inner: *u8,     // Pointer to OS mutex + data
 /// }
 /// ```
-
 use crate::ir::mir_builder::MirBuilder;
-use crate::ir::{IrType, CallingConvention};
+use crate::ir::{CallingConvention, IrType};
 
 /// Build all synchronization functions
 pub fn build_sync_types(builder: &mut MirBuilder) {
@@ -48,42 +47,48 @@ fn declare_arc_externs(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
     let u64_ty = builder.u64_type();
 
-    let func_id = builder.begin_function("rayzor_arc_init")
+    let func_id = builder
+        .begin_function("rayzor_arc_init")
         .param("value", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
 
-    let func_id = builder.begin_function("rayzor_arc_clone")
+    let func_id = builder
+        .begin_function("rayzor_arc_clone")
         .param("arc", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
 
-    let func_id = builder.begin_function("rayzor_arc_get")
+    let func_id = builder
+        .begin_function("rayzor_arc_get")
         .param("arc", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
 
-    let func_id = builder.begin_function("rayzor_arc_strong_count")
+    let func_id = builder
+        .begin_function("rayzor_arc_strong_count")
         .param("arc", ptr_u8.clone())
         .returns(u64_ty.clone())
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
 
-    let func_id = builder.begin_function("rayzor_arc_try_unwrap")
+    let func_id = builder
+        .begin_function("rayzor_arc_try_unwrap")
         .param("arc", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
 
-    let func_id = builder.begin_function("rayzor_arc_as_ptr")
+    let func_id = builder
+        .begin_function("rayzor_arc_as_ptr")
         .param("arc", ptr_u8.clone())
         .returns(u64_ty)
         .calling_convention(CallingConvention::C)
@@ -97,42 +102,48 @@ fn declare_mutex_externs(builder: &mut MirBuilder) {
     let bool_ty = builder.bool_type();
     let void_ty = builder.void_type();
 
-    let func_id = builder.begin_function("rayzor_mutex_init")
+    let func_id = builder
+        .begin_function("rayzor_mutex_init")
         .param("value", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
 
-    let func_id = builder.begin_function("rayzor_mutex_lock")
+    let func_id = builder
+        .begin_function("rayzor_mutex_lock")
         .param("mutex", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
 
-    let func_id = builder.begin_function("rayzor_mutex_try_lock")
+    let func_id = builder
+        .begin_function("rayzor_mutex_try_lock")
         .param("mutex", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
 
-    let func_id = builder.begin_function("rayzor_mutex_is_locked")
+    let func_id = builder
+        .begin_function("rayzor_mutex_is_locked")
         .param("mutex", ptr_u8.clone())
         .returns(bool_ty)
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
 
-    let func_id = builder.begin_function("rayzor_mutex_guard_get")
+    let func_id = builder
+        .begin_function("rayzor_mutex_guard_get")
         .param("guard", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
 
-    let func_id = builder.begin_function("rayzor_mutex_unlock")
+    let func_id = builder
+        .begin_function("rayzor_mutex_unlock")
         .param("guard", ptr_u8.clone())
         .returns(void_ty)
         .calling_convention(CallingConvention::C)
@@ -148,7 +159,8 @@ fn declare_mutex_externs(builder: &mut MirBuilder) {
 fn build_arc_init(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
 
-    let func_id = builder.begin_function("Arc_init")
+    let func_id = builder
+        .begin_function("Arc_init")
         .param("value", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -161,7 +173,8 @@ fn build_arc_init(builder: &mut MirBuilder) {
 
     let value = builder.get_param(0);
 
-    let new_id = builder.get_function_by_name("rayzor_arc_init")
+    let new_id = builder
+        .get_function_by_name("rayzor_arc_init")
         .expect("rayzor_arc_init not found");
     let arc = builder.call(new_id, vec![value]).unwrap();
 
@@ -172,7 +185,8 @@ fn build_arc_init(builder: &mut MirBuilder) {
 fn build_arc_clone(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
 
-    let func_id = builder.begin_function("Arc_clone")
+    let func_id = builder
+        .begin_function("Arc_clone")
         .param("arc", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -185,7 +199,8 @@ fn build_arc_clone(builder: &mut MirBuilder) {
 
     let arc = builder.get_param(0);
 
-    let clone_id = builder.get_function_by_name("rayzor_arc_clone")
+    let clone_id = builder
+        .get_function_by_name("rayzor_arc_clone")
         .expect("rayzor_arc_clone not found");
     let cloned = builder.call(clone_id, vec![arc]).unwrap();
 
@@ -196,7 +211,8 @@ fn build_arc_clone(builder: &mut MirBuilder) {
 fn build_arc_get(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
 
-    let func_id = builder.begin_function("Arc_get")
+    let func_id = builder
+        .begin_function("Arc_get")
         .param("arc", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -209,7 +225,8 @@ fn build_arc_get(builder: &mut MirBuilder) {
 
     let arc = builder.get_param(0);
 
-    let get_id = builder.get_function_by_name("rayzor_arc_get")
+    let get_id = builder
+        .get_function_by_name("rayzor_arc_get")
         .expect("rayzor_arc_get not found");
     let value_ptr = builder.call(get_id, vec![arc]).unwrap();
 
@@ -221,7 +238,8 @@ fn build_arc_strong_count(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
     let u64_ty = builder.u64_type();
 
-    let func_id = builder.begin_function("Arc_strongCount")
+    let func_id = builder
+        .begin_function("Arc_strongCount")
         .param("arc", ptr_u8)
         .returns(u64_ty)
         .calling_convention(CallingConvention::C)
@@ -234,7 +252,8 @@ fn build_arc_strong_count(builder: &mut MirBuilder) {
 
     let arc = builder.get_param(0);
 
-    let count_id = builder.get_function_by_name("rayzor_arc_strong_count")
+    let count_id = builder
+        .get_function_by_name("rayzor_arc_strong_count")
         .expect("rayzor_arc_strong_count not found");
     let count = builder.call(count_id, vec![arc]).unwrap();
 
@@ -245,7 +264,8 @@ fn build_arc_strong_count(builder: &mut MirBuilder) {
 fn build_arc_try_unwrap(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
 
-    let func_id = builder.begin_function("Arc_tryUnwrap")
+    let func_id = builder
+        .begin_function("Arc_tryUnwrap")
         .param("arc", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -258,7 +278,8 @@ fn build_arc_try_unwrap(builder: &mut MirBuilder) {
 
     let arc = builder.get_param(0);
 
-    let unwrap_id = builder.get_function_by_name("rayzor_arc_try_unwrap")
+    let unwrap_id = builder
+        .get_function_by_name("rayzor_arc_try_unwrap")
         .expect("rayzor_arc_try_unwrap not found");
     let value_ptr = builder.call(unwrap_id, vec![arc]).unwrap();
 
@@ -270,7 +291,8 @@ fn build_arc_as_ptr(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
     let u64_ty = builder.u64_type();
 
-    let func_id = builder.begin_function("Arc_asPtr")
+    let func_id = builder
+        .begin_function("Arc_asPtr")
         .param("arc", ptr_u8)
         .returns(u64_ty)
         .calling_convention(CallingConvention::C)
@@ -283,7 +305,8 @@ fn build_arc_as_ptr(builder: &mut MirBuilder) {
 
     let arc = builder.get_param(0);
 
-    let as_ptr_id = builder.get_function_by_name("rayzor_arc_as_ptr")
+    let as_ptr_id = builder
+        .get_function_by_name("rayzor_arc_as_ptr")
         .expect("rayzor_arc_as_ptr not found");
     let ptr_val = builder.call(as_ptr_id, vec![arc]).unwrap();
 
@@ -298,7 +321,8 @@ fn build_arc_as_ptr(builder: &mut MirBuilder) {
 fn build_mutex_init(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
 
-    let func_id = builder.begin_function("Mutex_init")
+    let func_id = builder
+        .begin_function("Mutex_init")
         .param("value", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -311,7 +335,8 @@ fn build_mutex_init(builder: &mut MirBuilder) {
 
     let value = builder.get_param(0);
 
-    let new_id = builder.get_function_by_name("rayzor_mutex_init")
+    let new_id = builder
+        .get_function_by_name("rayzor_mutex_init")
         .expect("rayzor_mutex_init not found");
     let mutex = builder.call(new_id, vec![value]).unwrap();
 
@@ -322,7 +347,8 @@ fn build_mutex_init(builder: &mut MirBuilder) {
 fn build_mutex_lock(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
 
-    let func_id = builder.begin_function("Mutex_lock")
+    let func_id = builder
+        .begin_function("Mutex_lock")
         .param("mutex", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -335,7 +361,8 @@ fn build_mutex_lock(builder: &mut MirBuilder) {
 
     let mutex = builder.get_param(0);
 
-    let lock_id = builder.get_function_by_name("rayzor_mutex_lock")
+    let lock_id = builder
+        .get_function_by_name("rayzor_mutex_lock")
         .expect("rayzor_mutex_lock not found");
     let guard = builder.call(lock_id, vec![mutex]).unwrap();
 
@@ -346,7 +373,8 @@ fn build_mutex_lock(builder: &mut MirBuilder) {
 fn build_mutex_try_lock(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
 
-    let func_id = builder.begin_function("Mutex_tryLock")
+    let func_id = builder
+        .begin_function("Mutex_tryLock")
         .param("mutex", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -359,7 +387,8 @@ fn build_mutex_try_lock(builder: &mut MirBuilder) {
 
     let mutex = builder.get_param(0);
 
-    let try_lock_id = builder.get_function_by_name("rayzor_mutex_try_lock")
+    let try_lock_id = builder
+        .get_function_by_name("rayzor_mutex_try_lock")
         .expect("rayzor_mutex_try_lock not found");
     let guard = builder.call(try_lock_id, vec![mutex]).unwrap();
 
@@ -371,7 +400,8 @@ fn build_mutex_is_locked(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
     let bool_ty = builder.bool_type();
 
-    let func_id = builder.begin_function("Mutex_isLocked")
+    let func_id = builder
+        .begin_function("Mutex_isLocked")
         .param("mutex", ptr_u8)
         .returns(bool_ty)
         .calling_convention(CallingConvention::C)
@@ -384,7 +414,8 @@ fn build_mutex_is_locked(builder: &mut MirBuilder) {
 
     let mutex = builder.get_param(0);
 
-    let is_locked_id = builder.get_function_by_name("rayzor_mutex_is_locked")
+    let is_locked_id = builder
+        .get_function_by_name("rayzor_mutex_is_locked")
         .expect("rayzor_mutex_is_locked not found");
     let locked = builder.call(is_locked_id, vec![mutex]).unwrap();
 
@@ -395,7 +426,8 @@ fn build_mutex_is_locked(builder: &mut MirBuilder) {
 fn build_mutex_guard_get(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
 
-    let func_id = builder.begin_function("MutexGuard_get")
+    let func_id = builder
+        .begin_function("MutexGuard_get")
         .param("guard", ptr_u8.clone())
         .returns(ptr_u8.clone())
         .calling_convention(CallingConvention::C)
@@ -408,7 +440,8 @@ fn build_mutex_guard_get(builder: &mut MirBuilder) {
 
     let guard = builder.get_param(0);
 
-    let get_id = builder.get_function_by_name("rayzor_mutex_guard_get")
+    let get_id = builder
+        .get_function_by_name("rayzor_mutex_guard_get")
         .expect("rayzor_mutex_guard_get not found");
     let value_ptr = builder.call(get_id, vec![guard]).unwrap();
 
@@ -420,7 +453,8 @@ fn build_mutex_unlock(builder: &mut MirBuilder) {
     let ptr_u8 = builder.ptr_type(builder.u8_type());
     let void_ty = builder.void_type();
 
-    let func_id = builder.begin_function("MutexGuard_unlock")
+    let func_id = builder
+        .begin_function("MutexGuard_unlock")
         .param("guard", ptr_u8)
         .returns(void_ty)
         .calling_convention(CallingConvention::C)
@@ -433,7 +467,8 @@ fn build_mutex_unlock(builder: &mut MirBuilder) {
 
     let guard = builder.get_param(0);
 
-    let unlock_id = builder.get_function_by_name("rayzor_mutex_unlock")
+    let unlock_id = builder
+        .get_function_by_name("rayzor_mutex_unlock")
         .expect("rayzor_mutex_unlock not found");
     let _result = builder.call(unlock_id, vec![guard]);
 

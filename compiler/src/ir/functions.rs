@@ -4,12 +4,11 @@
 //! function signatures, parameters, local variables, and the function body.
 
 use super::{
-    IrId, IrType, IrSourceLocation, CallingConvention, Linkage,
-    IrControlFlowGraph, IrBlockId,
+    CallingConvention, IrBlockId, IrControlFlowGraph, IrId, IrSourceLocation, IrType, Linkage,
 };
 use crate::tast::SymbolId;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
 
 /// HIR function representation
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,13 +89,13 @@ pub struct IrFunctionSignature {
 pub struct IrParameter {
     /// Parameter name
     pub name: String,
-    
+
     /// Parameter type
     pub ty: IrType,
-    
+
     /// Register assigned to this parameter
     pub reg: IrId,
-    
+
     /// Whether this parameter is passed by reference
     pub by_ref: bool,
 }
@@ -106,7 +105,7 @@ pub struct IrParameter {
 pub struct IrTypeParam {
     /// Type parameter name
     pub name: String,
-    
+
     /// Constraints on this type parameter
     pub constraints: Vec<String>,
 }
@@ -116,16 +115,16 @@ pub struct IrTypeParam {
 pub struct IrLocal {
     /// Variable name (for debugging)
     pub name: String,
-    
+
     /// Variable type
     pub ty: IrType,
-    
+
     /// Whether this is mutable
     pub mutable: bool,
-    
+
     /// Source location
     pub source_location: IrSourceLocation,
-    
+
     /// Allocation hint from escape analysis
     pub allocation: AllocationHint,
 }
@@ -135,13 +134,13 @@ pub struct IrLocal {
 pub enum AllocationHint {
     /// Allocate on stack
     Stack,
-    
+
     /// Allocate on heap
     Heap,
-    
+
     /// Keep in register if possible
     Register,
-    
+
     /// Compiler decides
     Auto,
 }
@@ -151,19 +150,19 @@ pub enum AllocationHint {
 pub struct FunctionAttributes {
     /// Linkage type
     pub linkage: Linkage,
-    
+
     /// Whether this function is inline
     pub inline: InlineHint,
-    
+
     /// Whether this function is pure (no side effects)
     pub pure: bool,
-    
+
     /// Whether this function never returns
     pub no_return: bool,
-    
+
     /// Whether this function should be optimized for size
     pub optimize_size: bool,
-    
+
     /// Custom attributes
     pub custom: HashMap<String, String>,
 }
@@ -247,17 +246,17 @@ impl IrFunction {
             function.signature.parameters[i].reg = reg;
             function.register_types.insert(reg, param_ty);
         }
-        
+
         function
     }
-    
+
     /// Allocate a new register
     pub fn alloc_reg(&mut self) -> IrId {
         let id = IrId::new(self.next_reg_id);
         self.next_reg_id += 1;
         id
     }
-    
+
     /// Declare a local variable
     pub fn declare_local(&mut self, name: String, ty: IrType) -> IrId {
         let reg = self.alloc_reg();
@@ -271,48 +270,49 @@ impl IrFunction {
         self.locals.insert(reg, local);
         reg
     }
-    
+
     /// Get the entry block
     pub fn entry_block(&self) -> IrBlockId {
         self.cfg.entry_block
     }
-    
+
     /// Get parameter register by index
     pub fn get_param_reg(&self, index: usize) -> Option<IrId> {
         self.signature.parameters.get(index).map(|p| p.reg)
     }
-    
+
     /// Check if this function is a leaf function (doesn't call other functions)
     pub fn is_leaf(&self) -> bool {
         use super::IrInstruction;
-        
+
         for block in self.cfg.blocks.values() {
             for inst in &block.instructions {
                 match inst {
-                    IrInstruction::CallDirect { .. } |
-                    IrInstruction::CallIndirect { .. } => return false,
+                    IrInstruction::CallDirect { .. } | IrInstruction::CallIndirect { .. } => {
+                        return false
+                    }
                     _ => {}
                 }
             }
         }
         true
     }
-    
+
     /// Get all registers used in this function
     pub fn used_registers(&self) -> Vec<IrId> {
         let mut regs = Vec::new();
-        
+
         // Add parameter registers
         for param in &self.signature.parameters {
             regs.push(param.reg);
         }
-        
+
         // Add local registers
         regs.extend(self.locals.keys().copied());
-        
+
         regs
     }
-    
+
     /// Verify function integrity
     pub fn verify(&self) -> Result<(), String> {
         // Skip verification for extern functions (no body/blocks)
@@ -341,16 +341,16 @@ impl IrFunction {
 pub struct FunctionStats {
     /// Number of basic blocks
     pub block_count: usize,
-    
+
     /// Number of instructions
     pub instruction_count: usize,
-    
+
     /// Number of phi nodes
     pub phi_count: usize,
-    
+
     /// Maximum block nesting depth
     pub max_depth: usize,
-    
+
     /// Number of loops
     pub loop_count: usize,
 }
@@ -359,16 +359,16 @@ impl IrFunction {
     /// Compute statistics for this function
     pub fn compute_stats(&self) -> FunctionStats {
         let mut stats = FunctionStats::default();
-        
+
         stats.block_count = self.cfg.blocks.len();
-        
+
         for block in self.cfg.blocks.values() {
             stats.instruction_count += block.instructions.len();
             stats.phi_count += block.phi_nodes.len();
         }
-        
+
         // TODO: Compute loop count and max depth
-        
+
         stats
     }
 }
@@ -376,7 +376,7 @@ impl IrFunction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_function_creation() {
         let sig = IrFunctionSignature {
@@ -400,22 +400,25 @@ mod tests {
             type_params: Vec::new(),
             uses_sret: false,
         };
-        
+
         let func = IrFunction::new(
             IrFunctionId(1),
             SymbolId::from_raw(100),
             "add".to_string(),
             sig,
         );
-        
+
         assert_eq!(func.name, "add");
         assert_eq!(func.signature.parameters.len(), 2);
         assert!(func.is_leaf());
-        
+
         // Parameters should have registers assigned
-        assert_ne!(func.signature.parameters[0].reg, func.signature.parameters[1].reg);
+        assert_ne!(
+            func.signature.parameters[0].reg,
+            func.signature.parameters[1].reg
+        );
     }
-    
+
     #[test]
     fn test_local_declaration() {
         let sig = IrFunctionSignature {
@@ -426,17 +429,17 @@ mod tests {
             type_params: Vec::new(),
             uses_sret: false,
         };
-        
+
         let mut func = IrFunction::new(
             IrFunctionId(1),
             SymbolId::from_raw(100),
             "test".to_string(),
             sig,
         );
-        
+
         let local1 = func.declare_local("tmp1".to_string(), IrType::I32);
         let local2 = func.declare_local("tmp2".to_string(), IrType::Bool);
-        
+
         assert_ne!(local1, local2);
         assert_eq!(func.locals.len(), 2);
         assert_eq!(func.locals[&local1].name, "tmp1");

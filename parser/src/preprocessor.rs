@@ -76,7 +76,7 @@ pub fn preprocess(source: &str, config: &PreprocessorConfig) -> String {
             i += 1;
         } else if trimmed.starts_with("#if ") {
             // Parse conditional block
-            let condition = trimmed[4..].trim();
+            let condition = trimmed.strip_prefix("#if ").unwrap().trim();
             let (block_lines, end_idx) = extract_conditional_block(&lines, i);
 
             // Process the conditional block and extract the appropriate branch
@@ -95,7 +95,10 @@ pub fn preprocess(source: &str, config: &PreprocessorConfig) -> String {
             }
 
             i = end_idx + 1;
-        } else if trimmed.starts_with("#else") || trimmed.starts_with("#elseif ") || trimmed.starts_with("#end") {
+        } else if trimmed.starts_with("#else")
+            || trimmed.starts_with("#elseif ")
+            || trimmed.starts_with("#end")
+        {
             // These should be handled by extract_conditional_block
             // If we encounter them here, just skip them
             i += 1;
@@ -144,7 +147,10 @@ fn process_inline_conditionals(line: &str, config: &PreprocessorConfig) -> Strin
                     // Check if this whitespace is followed by more condition tokens
                     let remaining = &line[cond_start + i..];
                     let trimmed = remaining.trim_start();
-                    if !trimmed.starts_with("||") && !trimmed.starts_with("&&") && !trimmed.starts_with("!") {
+                    if !trimmed.starts_with("||")
+                        && !trimmed.starts_with("&&")
+                        && !trimmed.starts_with("!")
+                    {
                         cond_end = cond_start + i;
                         break;
                     }
@@ -173,8 +179,10 @@ fn process_inline_conditionals(line: &str, config: &PreprocessorConfig) -> Strin
                         let else_has_semicolon = else_branch.trim_end().ends_with(';');
 
                         // Remove leading/trailing semicolons and whitespace
-                        let if_content = if_branch.trim_matches(|c: char| c == ';' || c.is_whitespace());
-                        let else_content = else_branch.trim_matches(|c: char| c == ';' || c.is_whitespace());
+                        let if_content =
+                            if_branch.trim_matches(|c: char| c == ';' || c.is_whitespace());
+                        let else_content =
+                            else_branch.trim_matches(|c: char| c == ';' || c.is_whitespace());
 
                         // Evaluate condition and add semicolon back if needed
                         if evaluate_condition(condition, config) {
@@ -227,7 +235,7 @@ fn process_inline_conditionals(line: &str, config: &PreprocessorConfig) -> Strin
 fn process_conditional_block<'a>(
     block_lines: &[&'a str],
     initial_condition: &str,
-    config: &PreprocessorConfig
+    config: &PreprocessorConfig,
 ) -> Vec<&'a str> {
     let mut result = Vec::new();
     let mut i = 1; // Skip the #if line
@@ -235,7 +243,8 @@ fn process_conditional_block<'a>(
     let mut in_active_branch = condition_met;
     let mut depth = 0; // Track nested #if blocks
 
-    while i < block_lines.len() - 1 {  // Skip the #end line
+    while i < block_lines.len() - 1 {
+        // Skip the #end line
         let line = block_lines[i];
         let trimmed = line.trim_start();
 
@@ -265,7 +274,7 @@ fn process_conditional_block<'a>(
         if trimmed.starts_with("#elseif ") {
             in_active_branch = false;
             if !condition_met {
-                let cond = trimmed[8..].trim();
+                let cond = trimmed.strip_prefix("#elseif ").unwrap().trim();
                 if evaluate_condition(cond, config) {
                     condition_met = true;
                     in_active_branch = true;
@@ -433,7 +442,7 @@ fn evaluate_tokens(tokens: &[CondToken], config: &PreprocessorConfig) -> bool {
 
     // Handle parentheses (simplified - just remove them for now)
     if tokens[0] == CondToken::LParen && tokens[tokens.len() - 1] == CondToken::RParen {
-        return evaluate_tokens(&tokens[1..tokens.len()-1], config);
+        return evaluate_tokens(&tokens[1..tokens.len() - 1], config);
     }
 
     // Single identifier
@@ -562,7 +571,11 @@ var x = 42;
         println!("Result: {}", result);
 
         // flash is defined, so if branch should be kept
-        assert!(result.contains(r#"__global__["isFinite"](i)"#), "Result was: {}", result);
+        assert!(
+            result.contains(r#"__global__["isFinite"](i)"#),
+            "Result was: {}",
+            result
+        );
         assert!(!result.contains("false"), "Result was: {}", result);
         assert!(!result.contains("#if"), "Result was: {}", result);
     }
@@ -619,7 +632,11 @@ untyped {
 
         // !js is true (js is not defined), so inline should be kept
         assert!(result.contains("inline"), "Result was: '{}'", result);
-        assert!(result.contains("inline function"), "Result was: '{}'", result);
+        assert!(
+            result.contains("inline function"),
+            "Result was: '{}'",
+            result
+        );
         assert!(!result.contains("#if"), "Result was: '{}'", result);
     }
 
@@ -636,7 +653,11 @@ untyped {
 
         // !js is false (js IS defined), so inline should be removed
         assert!(!result.contains("inline"), "Result was: {}", result);
-        assert!(result.contains("private static  function"), "Result was: {}", result);
+        assert!(
+            result.contains("private static  function"),
+            "Result was: {}",
+            result
+        );
         assert!(!result.contains("#if"), "Result was: {}", result);
     }
 
@@ -663,9 +684,21 @@ abstract UInt(Int) {}
         println!("Result: {}", result);
 
         // flash is not defined, so else branch should be kept
-        assert!(result.contains("Generic implementation"), "Result was: {}", result);
-        assert!(!result.contains("Flash implementation"), "Result was: {}", result);
-        assert!(result.contains("abstract UInt(Int)"), "Result was: {}", result);
+        assert!(
+            result.contains("Generic implementation"),
+            "Result was: {}",
+            result
+        );
+        assert!(
+            !result.contains("Flash implementation"),
+            "Result was: {}",
+            result
+        );
+        assert!(
+            result.contains("abstract UInt(Int)"),
+            "Result was: {}",
+            result
+        );
     }
 
     #[test]
@@ -679,8 +712,16 @@ abstract UInt(Int) {}
         println!("Result: '{}'", result);
 
         // None of cs, java, python, js are defined, so inline should be REMOVED
-        assert!(!result.contains("inline"), "inline should be removed. Result was: '{}'", result);
-        assert!(result.contains("public static  function startsWith"), "Result was: '{}'", result);
+        assert!(
+            !result.contains("inline"),
+            "inline should be removed. Result was: '{}'",
+            result
+        );
+        assert!(
+            result.contains("public static  function startsWith"),
+            "Result was: '{}'",
+            result
+        );
         assert!(result.contains("s:String"), "Result was: '{}'", result);
         assert!(!result.contains("#if"), "Result was: '{}'", result);
     }

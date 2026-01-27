@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 /// Test: Compile-Time Diagnostic Infrastructure with Memory Safety Analysis
 ///
 /// This test validates that the compiler's diagnostic system correctly formats
@@ -20,8 +50,7 @@
 ///
 /// CRITICAL: CompilationUnit automatically prints formatted diagnostics from the
 /// diagnostics infrastructure. All formatting is handled by ErrorFormatter.
-
-use compiler::compilation::{CompilationUnit, CompilationConfig};
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 
 fn main() {
     println!("=== Memory Safety & Diagnostic Infrastructure Test ===\n");
@@ -106,20 +135,18 @@ class Test {
     println!("Expected: error[E0200] with source snippet\n");
 
     match unit.add_file(source, "symbol_test.hx") {
-        Ok(_) => {
-            match unit.lower_to_tast() {
-                Ok(_) => {
-                    println!("❌ FAIL: Code should not compile\n");
-                    false
-                }
-                Err(errors) => {
-                    println!("✅ PASS: Error detected and formatted\n");
-                    !errors.is_empty()
-                }
+        Ok(_) => match unit.lower_to_tast() {
+            Ok(_) => {
+                println!("❌ FAIL: Code should not compile\n");
+                false
             }
-        }
+            Err(errors) => {
+                println!("✅ PASS: Error detected and formatted\n");
+                !errors.is_empty()
+            }
+        },
         Err(e) => {
-            println!("❌ FAIL: Parsing failed: {}\n", e);
+            println!("❌ FAIL: Parsing failed: {:?}\n", e);
             false
         }
     }
@@ -150,7 +177,7 @@ class Test {
                 Ok(_) => {
                     // Type checking might not be fully implemented yet
                     println!("⚠️  SKIP: Type checking not yet enforced\n");
-                    true  // Don't fail if type checking isn't implemented
+                    true // Don't fail if type checking isn't implemented
                 }
                 Err(errors) => {
                     println!("✅ PASS: Type error detected and formatted\n");
@@ -159,7 +186,7 @@ class Test {
             }
         }
         Err(e) => {
-            println!("❌ FAIL: Parsing failed: {}\n", e);
+            println!("❌ FAIL: Parsing failed: {:?}\n", e);
             false
         }
     }
@@ -205,14 +232,17 @@ class Test {
                         println!("   Error recovery successfully collected all errors!\n");
                         true
                     } else {
-                        println!("❌ FAIL: Expected at least 3 errors, got {}\n", errors.len());
+                        println!(
+                            "❌ FAIL: Expected at least 3 errors, got {}\n",
+                            errors.len()
+                        );
                         false
                     }
                 }
             }
         }
         Err(e) => {
-            println!("❌ FAIL: Parsing failed: {}\n", e);
+            println!("❌ FAIL: Parsing failed: {:?}\n", e);
             false
         }
     }
@@ -272,14 +302,21 @@ class Test {
                     // Code compiles successfully - Haxe uses reference semantics by default
                     println!("⚠️  SKIP: Code compiles (Haxe uses reference semantics)");
                     println!("   Pipeline configured with enable_ownership_analysis=true");
-                    println!("   OwnershipAnalyzer is integrated but Haxe doesn't have move semantics");
-                    println!("   To enable ownership checking, types would need @:move annotation\n");
-                    true  // Expected - standard Haxe doesn't trigger ownership violations
+                    println!(
+                        "   OwnershipAnalyzer is integrated but Haxe doesn't have move semantics"
+                    );
+                    println!(
+                        "   To enable ownership checking, types would need @:move annotation\n"
+                    );
+                    true // Expected - standard Haxe doesn't trigger ownership violations
                 }
                 Err(errors) => {
                     // Check if we got an ownership error
                     let has_ownership_error = errors.iter().any(|e| {
-                        matches!(e.category, compiler::pipeline::ErrorCategory::OwnershipError)
+                        matches!(
+                            e.category,
+                            compiler::pipeline::ErrorCategory::OwnershipError
+                        )
                     });
 
                     if has_ownership_error {
@@ -290,7 +327,11 @@ class Test {
                         // Got a different error (symbol, type, etc.)
                         println!("❌ FAIL: Got error but not ownership-related:");
                         for err in &errors {
-                            println!("   {:?}: {}", err.category, err.message.lines().next().unwrap_or(""));
+                            println!(
+                                "   {:?}: {}",
+                                err.category,
+                                err.message.lines().next().unwrap_or("")
+                            );
                         }
                         println!();
                         false
@@ -299,7 +340,7 @@ class Test {
             }
         }
         Err(e) => {
-            println!("❌ FAIL: Parsing failed: {}\n", e);
+            println!("❌ FAIL: Parsing failed: {:?}\n", e);
             false
         }
     }
@@ -353,13 +394,18 @@ class Test {
                 Ok(_) => {
                     println!("⚠️  SKIP: Code compiles (Haxe uses reference semantics)");
                     println!("   Pipeline configured with enable_ownership_analysis=true");
-                    println!("   OwnershipAnalyzer is integrated but mutable aliasing is legal in Haxe");
+                    println!(
+                        "   OwnershipAnalyzer is integrated but mutable aliasing is legal in Haxe"
+                    );
                     println!("   Rust-style borrow checking would require explicit @:unique annotations\n");
-                    true  // Expected
+                    true // Expected
                 }
                 Err(errors) => {
                     let has_ownership_error = errors.iter().any(|e| {
-                        matches!(e.category, compiler::pipeline::ErrorCategory::OwnershipError)
+                        matches!(
+                            e.category,
+                            compiler::pipeline::ErrorCategory::OwnershipError
+                        )
                     });
 
                     if has_ownership_error {
@@ -369,7 +415,11 @@ class Test {
                     } else {
                         println!("❌ FAIL: Got error but not ownership-related:");
                         for err in &errors {
-                            println!("   {:?}: {}", err.category, err.message.lines().next().unwrap_or(""));
+                            println!(
+                                "   {:?}: {}",
+                                err.category,
+                                err.message.lines().next().unwrap_or("")
+                            );
                         }
                         println!();
                         false
@@ -378,7 +428,7 @@ class Test {
             }
         }
         Err(e) => {
-            println!("❌ FAIL: Parsing failed: {}\n", e);
+            println!("❌ FAIL: Parsing failed: {:?}\n", e);
             false
         }
     }
@@ -410,23 +460,21 @@ class Test {
     println!("Expected: error[E0400] - Dangling reference\n");
 
     match unit.add_file(source, "dangling_ref.hx") {
-        Ok(_) => {
-            match unit.lower_to_tast() {
-                Ok(_) => {
-                    println!("⚠️  SKIP: Lifetime analysis not yet enforced");
-                    println!("   (Pipeline infrastructure is ready, awaiting full implementation)\n");
-                    true
-                }
-                Err(_errors) => {
-                    println!("⚠️  SKIP: Got parse/lowering error (reference syntax not supported yet)");
-                    println!("   Lifetime analyzer is integrated and working - references would enable detection\n");
-                    true
-                }
+        Ok(_) => match unit.lower_to_tast() {
+            Ok(_) => {
+                println!("⚠️  SKIP: Lifetime analysis not yet enforced");
+                println!("   (Pipeline infrastructure is ready, awaiting full implementation)\n");
+                true
             }
-        }
+            Err(_errors) => {
+                println!("⚠️  SKIP: Got parse/lowering error (reference syntax not supported yet)");
+                println!("   Lifetime analyzer is integrated and working - references would enable detection\n");
+                true
+            }
+        },
         Err(_e) => {
             println!("⚠️  SKIP: Reference syntax not yet supported in parser\n");
-            true  // Expected - reference syntax not in Haxe
+            true // Expected - reference syntax not in Haxe
         }
     }
 }

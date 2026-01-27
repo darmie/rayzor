@@ -5,8 +5,8 @@
 //! constraints when closures are passed to Thread::spawn or similar functions.
 
 use crate::tast::{
-    TypeId, SymbolId, ScopeId,
     node::{TypedExpression, TypedExpressionKind, TypedStatement},
+    ScopeId, SymbolId, TypeId,
 };
 use std::collections::HashSet;
 
@@ -114,7 +114,11 @@ impl CaptureAnalyzer {
                 self.collect_from_expression(expression, referenced, locals);
             }
 
-            TypedStatement::VarDeclaration { symbol_id, initializer, .. } => {
+            TypedStatement::VarDeclaration {
+                symbol_id,
+                initializer,
+                ..
+            } => {
                 // This declares a new local variable
                 locals.insert(*symbol_id);
                 if let Some(init) = initializer {
@@ -127,7 +131,12 @@ impl CaptureAnalyzer {
                 self.collect_from_expression(value, referenced, locals);
             }
 
-            TypedStatement::If { condition, then_branch, else_branch, .. } => {
+            TypedStatement::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 self.collect_from_expression(condition, referenced, locals);
                 self.collect_variable_references(then_branch, referenced, locals);
                 if let Some(else_stmt) = else_branch {
@@ -135,12 +144,20 @@ impl CaptureAnalyzer {
                 }
             }
 
-            TypedStatement::While { condition, body, .. } => {
+            TypedStatement::While {
+                condition, body, ..
+            } => {
                 self.collect_from_expression(condition, referenced, locals);
                 self.collect_variable_references(body, referenced, locals);
             }
 
-            TypedStatement::For { init, condition, update, body, .. } => {
+            TypedStatement::For {
+                init,
+                condition,
+                update,
+                body,
+                ..
+            } => {
                 if let Some(init_stmt) = init {
                     self.collect_variable_references(init_stmt, referenced, locals);
                 }
@@ -153,7 +170,13 @@ impl CaptureAnalyzer {
                 self.collect_variable_references(body, referenced, locals);
             }
 
-            TypedStatement::ForIn { value_var, key_var, iterable, body, .. } => {
+            TypedStatement::ForIn {
+                value_var,
+                key_var,
+                iterable,
+                body,
+                ..
+            } => {
                 locals.insert(*value_var);
                 if let Some(key) = key_var {
                     locals.insert(*key);
@@ -172,20 +195,34 @@ impl CaptureAnalyzer {
                 self.collect_from_expression(exception, referenced, locals);
             }
 
-            TypedStatement::Try { body, catch_clauses, finally_block, .. } => {
+            TypedStatement::Try {
+                body,
+                catch_clauses,
+                finally_block,
+                ..
+            } => {
                 self.collect_variable_references(body, referenced, locals);
                 for catch_clause in catch_clauses {
                     // Catch variable is local to the catch block
                     let mut catch_locals = locals.clone();
                     catch_locals.insert(catch_clause.exception_variable);
-                    self.collect_variable_references(&catch_clause.body, referenced, &mut catch_locals);
+                    self.collect_variable_references(
+                        &catch_clause.body,
+                        referenced,
+                        &mut catch_locals,
+                    );
                 }
                 if let Some(finally) = finally_block {
                     self.collect_variable_references(finally, referenced, locals);
                 }
             }
 
-            TypedStatement::Switch { discriminant, cases, default_case, .. } => {
+            TypedStatement::Switch {
+                discriminant,
+                cases,
+                default_case,
+                ..
+            } => {
                 self.collect_from_expression(discriminant, referenced, locals);
                 for case in cases {
                     self.collect_from_expression(&case.case_value, referenced, locals);
@@ -202,7 +239,9 @@ impl CaptureAnalyzer {
                 }
             }
 
-            TypedStatement::PatternMatch { value, patterns, .. } => {
+            TypedStatement::PatternMatch {
+                value, patterns, ..
+            } => {
                 self.collect_from_expression(value, referenced, locals);
                 for pattern_case in patterns {
                     // Pattern bindings are local
@@ -246,14 +285,22 @@ impl CaptureAnalyzer {
                 self.collect_from_expression(index, referenced, locals);
             }
 
-            TypedExpressionKind::FunctionCall { function, arguments, .. } => {
+            TypedExpressionKind::FunctionCall {
+                function,
+                arguments,
+                ..
+            } => {
                 self.collect_from_expression(function, referenced, locals);
                 for arg in arguments {
                     self.collect_from_expression(arg, referenced, locals);
                 }
             }
 
-            TypedExpressionKind::MethodCall { receiver, arguments, .. } => {
+            TypedExpressionKind::MethodCall {
+                receiver,
+                arguments,
+                ..
+            } => {
                 self.collect_from_expression(receiver, referenced, locals);
                 for arg in arguments {
                     self.collect_from_expression(arg, referenced, locals);
@@ -275,7 +322,11 @@ impl CaptureAnalyzer {
                 self.collect_from_expression(operand, referenced, locals);
             }
 
-            TypedExpressionKind::Conditional { condition, then_expr, else_expr } => {
+            TypedExpressionKind::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
                 self.collect_from_expression(condition, referenced, locals);
                 self.collect_from_expression(then_expr, referenced, locals);
                 if let Some(else_e) = else_expr {
@@ -295,7 +346,9 @@ impl CaptureAnalyzer {
                 }
             }
 
-            TypedExpressionKind::FunctionLiteral { parameters, body, .. } => {
+            TypedExpressionKind::FunctionLiteral {
+                parameters, body, ..
+            } => {
                 // Nested closure - need to track its local scope separately
                 let mut nested_locals = locals.clone();
                 for param in parameters {
@@ -322,17 +375,29 @@ impl CaptureAnalyzer {
                 }
             }
 
-            TypedExpressionKind::VarDeclarationExpr { symbol_id, initializer, .. } => {
+            TypedExpressionKind::VarDeclarationExpr {
+                symbol_id,
+                initializer,
+                ..
+            } => {
                 locals.insert(*symbol_id);
                 self.collect_from_expression(initializer, referenced, locals);
             }
 
-            TypedExpressionKind::FinalDeclarationExpr { symbol_id, initializer, .. } => {
+            TypedExpressionKind::FinalDeclarationExpr {
+                symbol_id,
+                initializer,
+                ..
+            } => {
                 locals.insert(*symbol_id);
                 self.collect_from_expression(initializer, referenced, locals);
             }
 
-            TypedExpressionKind::Switch { discriminant, cases, default_case } => {
+            TypedExpressionKind::Switch {
+                discriminant,
+                cases,
+                default_case,
+            } => {
                 self.collect_from_expression(discriminant, referenced, locals);
                 for case in cases {
                     self.collect_from_expression(&case.case_value, referenced, locals);
@@ -344,7 +409,11 @@ impl CaptureAnalyzer {
                 }
             }
 
-            TypedExpressionKind::Try { try_expr, catch_clauses, finally_block } => {
+            TypedExpressionKind::Try {
+                try_expr,
+                catch_clauses,
+                finally_block,
+            } => {
                 self.collect_from_expression(try_expr, referenced, locals);
                 for catch in catch_clauses {
                     let mut catch_locals = locals.clone();
@@ -362,12 +431,12 @@ impl CaptureAnalyzer {
             }
 
             // Expressions that don't reference variables
-            TypedExpressionKind::Literal { .. } |
-            TypedExpressionKind::This { .. } |
-            TypedExpressionKind::Super { .. } |
-            TypedExpressionKind::Null |
-            TypedExpressionKind::Break |
-            TypedExpressionKind::Continue => {}
+            TypedExpressionKind::Literal { .. }
+            | TypedExpressionKind::This { .. }
+            | TypedExpressionKind::Super { .. }
+            | TypedExpressionKind::Null
+            | TypedExpressionKind::Break
+            | TypedExpressionKind::Continue => {}
 
             // TODO: Handle remaining expression kinds
             _ => {}

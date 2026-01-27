@@ -45,7 +45,7 @@ import Map.StringMap;
         Ok(haxe_file) => {
             assert!(haxe_file.package.is_none());
             assert_eq!(haxe_file.imports.len(), 3);
-            
+
             assert_eq!(haxe_file.imports[0].path, vec!["haxe", "Json"]);
             assert_eq!(haxe_file.imports[1].path, vec!["sys", "io", "File"]);
             assert_eq!(haxe_file.imports[2].path, vec!["Map", "StringMap"]);

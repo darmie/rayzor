@@ -15,7 +15,7 @@ use crate::tast::{SourceLocation, SymbolId};
 ///
 /// Efficiently solves systems of lifetime constraints using specialized algorithms:
 /// - **Union-Find**: O(α(n)) for equality constraints
-/// - **Topological Sort**: O(V + E) for ordering constraints  
+/// - **Topological Sort**: O(V + E) for ordering constraints
 /// - **Strongly Connected Components**: Cycle detection in outlives graph
 /// - **Incremental Solving**: Reuse solutions for similar constraint sets
 ///

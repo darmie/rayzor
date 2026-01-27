@@ -1,7 +1,36 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 /// Test that safety violations are actually detected and reported with proper diagnostics
-
 use compiler::pipeline::{compile_haxe_source, CompilationError, ErrorCategory};
-use diagnostics::{SourceMap, ErrorFormatter};
+use diagnostics::{ErrorFormatter, SourceMap};
 
 fn print_diagnostics(source: &str, filename: &str, errors: &[CompilationError]) {
     let mut source_map = SourceMap::new();
@@ -106,7 +135,9 @@ class Main {
     let result = compile_haxe_source(source3);
 
     // Filter out non-ownership errors
-    let ownership_errors: Vec<_> = result.errors.iter()
+    let ownership_errors: Vec<_> = result
+        .errors
+        .iter()
         .filter(|e| matches!(e.category, ErrorCategory::OwnershipError))
         .collect();
 

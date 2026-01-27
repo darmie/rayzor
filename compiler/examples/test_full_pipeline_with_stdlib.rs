@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test the full compilation pipeline with stdlib
 //!
 //! This test verifies:
@@ -7,9 +37,9 @@
 //! 4. MIR lowering creates proper IR
 //! 5. Symbol qualified names flow through all phases
 
-use compiler::compilation::{CompilationUnit, CompilationConfig};
-use compiler::ir::tast_to_hir::lower_tast_to_hir;
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 use compiler::ir::hir_to_mir::lower_hir_to_mir;
+use compiler::ir::tast_to_hir::lower_tast_to_hir;
 
 fn main() {
     println!("=== Full Compilation Pipeline Test ===\n");
@@ -68,25 +98,23 @@ fn main() {
             println!("   ✓ Lowered {} files to TAST", files.len());
 
             // Check for haxe.Array and haxe.String
-            let has_array = unit.symbol_table.all_symbols()
-                .any(|s| {
-                    if let Some(qname) = s.qualified_name {
-                        let name = unit.string_interner.get(qname).unwrap_or("");
-                        name == "haxe.Array"
-                    } else {
-                        false
-                    }
-                });
+            let has_array = unit.symbol_table.all_symbols().any(|s| {
+                if let Some(qname) = s.qualified_name {
+                    let name = unit.string_interner.get(qname).unwrap_or("");
+                    name == "haxe.Array"
+                } else {
+                    false
+                }
+            });
 
-            let has_string = unit.symbol_table.all_symbols()
-                .any(|s| {
-                    if let Some(qname) = s.qualified_name {
-                        let name = unit.string_interner.get(qname).unwrap_or("");
-                        name == "haxe.String"
-                    } else {
-                        false
-                    }
-                });
+            let has_string = unit.symbol_table.all_symbols().any(|s| {
+                if let Some(qname) = s.qualified_name {
+                    let name = unit.string_interner.get(qname).unwrap_or("");
+                    name == "haxe.String"
+                } else {
+                    false
+                }
+            });
 
             println!("   ✓ haxe.Array: {}", has_array);
             println!("   ✓ haxe.String: {}", has_string);
@@ -94,7 +122,7 @@ fn main() {
             files
         }
         Err(e) => {
-            eprintln!("   ✗ TAST lowering failed: {}", e);
+            eprintln!("   ✗ TAST lowering failed: {:?}", e);
             return;
         }
     };

@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 /// Complete pipeline test: Haxe Source → AST → TAST → HIR → MIR → Cranelift → Native Execution
 ///
 /// This test demonstrates the full compilation pipeline with proper SSA form from HIR,
@@ -11,10 +41,8 @@
 /// 5. Compile MIR to Cranelift IR
 /// 6. JIT compile to native code
 /// 7. Execute and verify results
-
 use compiler::codegen::CraneliftBackend;
-use compiler::compilation::{CompilationUnit, CompilationConfig};
-use rayzor_runtime;
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 
 fn main() -> Result<(), String> {
     println!("=== Full Pipeline Test: Haxe → Native Code ===\n");
@@ -26,7 +54,7 @@ fn main() -> Result<(), String> {
     test_conditional()?;
 
     // Test 3: Loop (while) - the crucial SSA test
-    test_loop_ssa()?; 
+    test_loop_ssa()?;
 
     println!("\n=== All Pipeline Tests Passed! ===\n");
     Ok(())
@@ -59,18 +87,31 @@ class TestMath {
     // Get the first (and only) function - it should be 'add'
     // TODO: Function names from HIR are not properly resolved (showing as InternedString(N))
     // This is a known issue in HIR→MIR lowering - needs string interner access
-    let add_func = mir_module.functions.values()
+    let add_func = mir_module
+        .functions
+        .values()
         .next()
         .ok_or("No functions in MIR module")?;
 
     println!("\nMIR Function: {}", add_func.name);
     println!("  Blocks: {}", add_func.cfg.blocks.len());
-    println!("  Instructions: {}",
-        add_func.cfg.blocks.values().map(|b| b.instructions.len()).sum::<usize>());
+    println!(
+        "  Instructions: {}",
+        add_func
+            .cfg
+            .blocks
+            .values()
+            .map(|b| b.instructions.len())
+            .sum::<usize>()
+    );
 
     // Debug: Print block details
     for (block_id, block) in &add_func.cfg.blocks {
-        println!("  Block {:?}: {} instructions", block_id, block.instructions.len());
+        println!(
+            "  Block {:?}: {} instructions",
+            block_id,
+            block.instructions.len()
+        );
     }
 
     // Compile with Cranelift
@@ -91,19 +132,17 @@ class TestMath {
 
     // Test cases
     println!("\nExecuting JIT-compiled function:");
-    let tests = vec![
-        (10, 20, 30),
-        (100, 200, 300),
-        (-5, 15, 10),
-        (0, 0, 0),
-    ];
+    let tests = vec![(10, 20, 30), (100, 200, 300), (-5, 15, 10), (0, 0, 0)];
 
     let mut all_passed = true;
     for (a, b, expected) in tests {
         let result = add_fn(a, b);
         let passed = result == expected;
         let symbol = if passed { "✓" } else { "✗" };
-        println!("  {} add({}, {}) = {} (expected {})", symbol, a, b, result, expected);
+        println!(
+            "  {} add({}, {}) = {} (expected {})",
+            symbol, a, b, result, expected
+        );
         all_passed &= passed;
     }
 
@@ -138,19 +177,26 @@ class TestMath {
     let mir_module = compile_haxe_to_mir(source)?;
 
     // Get the first (and only) function - it should be 'max'
-    let max_func = mir_module.functions.values()
+    let max_func = mir_module
+        .functions
+        .values()
         .next()
         .ok_or("No functions in MIR module")?;
 
     println!("\nMIR Function: {}", max_func.name);
-    println!("  Blocks: {} (should have 3: entry, then, else)", max_func.cfg.blocks.len());
+    println!(
+        "  Blocks: {} (should have 3: entry, then, else)",
+        max_func.cfg.blocks.len()
+    );
 
     // Debug: Print all blocks
     for (block_id, block) in &max_func.cfg.blocks {
-        println!("  Block {:?}: {} instructions, terminator: {:?}",
+        println!(
+            "  Block {:?}: {} instructions, terminator: {:?}",
             block_id,
             block.instructions.len(),
-            std::mem::discriminant(&block.terminator));
+            std::mem::discriminant(&block.terminator)
+        );
     }
 
     // Compile with Cranelift
@@ -184,7 +230,10 @@ class TestMath {
         let result = max_fn(a, b);
         let passed = result == expected;
         let symbol = if passed { "✓" } else { "✗" };
-        println!("  {} max({}, {}) = {} (expected {})", symbol, a, b, result, expected);
+        println!(
+            "  {} max({}, {}) = {} (expected {})",
+            symbol, a, b, result, expected
+        );
         all_passed &= passed;
     }
 
@@ -222,17 +271,24 @@ class Math {
     let mir_module = compile_haxe_to_mir(source)?;
 
     // Find the 'sumToN' function
-    let sum_func = mir_module.functions.values()
+    let sum_func = mir_module
+        .functions
+        .values()
         .find(|f| f.name == "sumToN")
         .ok_or("Could not find 'sumToN' function")?;
 
     println!("\nMIR Function: {}", sum_func.name);
-    println!("  Blocks: {} (should have 4: entry, cond, body, exit)", sum_func.cfg.blocks.len());
+    println!(
+        "  Blocks: {} (should have 4: entry, cond, body, exit)",
+        sum_func.cfg.blocks.len()
+    );
 
     // Verify SSA form: Check for phi nodes in loop header
-    let has_phi_nodes = sum_func.cfg.blocks.values().any(|block| {
-        !block.phi_nodes.is_empty()
-    });
+    let has_phi_nodes = sum_func
+        .cfg
+        .blocks
+        .values()
+        .any(|block| !block.phi_nodes.is_empty());
 
     if has_phi_nodes {
         println!("  ✓ SSA form verified: phi nodes present for loop variables");
@@ -259,11 +315,11 @@ class Math {
     // Test cases: sum_to_n(n) = n*(n+1)/2
     println!("\nExecuting JIT-compiled function:");
     let tests = vec![
-        (0, 0),       // sum_to_n(0) = 0
-        (1, 1),       // sum_to_n(1) = 1
-        (5, 15),      // sum_to_n(5) = 1+2+3+4+5 = 15
-        (10, 55),     // sum_to_n(10) = 55
-        (100, 5050),  // sum_to_n(100) = 5050
+        (0, 0),      // sum_to_n(0) = 0
+        (1, 1),      // sum_to_n(1) = 1
+        (5, 15),     // sum_to_n(5) = 1+2+3+4+5 = 15
+        (10, 55),    // sum_to_n(10) = 55
+        (100, 5050), // sum_to_n(100) = 5050
     ];
 
     let mut all_passed = true;
@@ -271,7 +327,10 @@ class Math {
         let result = sum_fn(n);
         let passed = result == expected;
         let symbol = if passed { "✓" } else { "✗" };
-        println!("  {} sumToN({}) = {} (expected {})", symbol, n, result, expected);
+        println!(
+            "  {} sumToN({}) = {} (expected {})",
+            symbol, n, result, expected
+        );
         all_passed &= passed;
     }
 
@@ -297,11 +356,10 @@ fn compile_haxe_to_mir(source: &str) -> Result<compiler::ir::IrModule, String> {
     unit.add_file(source, "test.hx")?;
 
     // Lower to TAST (also generates HIR and MIR internally via pipeline)
-    unit.lower_to_tast()
-        .map_err(|errors| {
-            let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
-            format!("Compilation errors: {}", messages.join(", "))
-        })?;
+    unit.lower_to_tast().map_err(|errors| {
+        let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
+        format!("Compilation errors: {}", messages.join(", "))
+    })?;
 
     // Get the MIR modules (pipeline generates them automatically)
     let mir_modules = unit.get_mir_modules();

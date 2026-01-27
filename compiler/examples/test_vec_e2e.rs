@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! End-to-end tests for rayzor.Vec<T>
 //!
 //! Tests:
@@ -8,7 +38,6 @@
 use compiler::codegen::CraneliftBackend;
 use compiler::compilation::{CompilationConfig, CompilationUnit};
 use compiler::ir::IrModule;
-use rayzor_runtime;
 use std::sync::Arc;
 
 fn main() {
@@ -18,28 +47,44 @@ fn main() {
     let mut failed = 0;
 
     // Test 1: Vec<Int> basic operations
-    if run_test("vec_int_basic", "Vec<Int> basic operations", test_vec_int_basic()) {
+    if run_test(
+        "vec_int_basic",
+        "Vec<Int> basic operations",
+        test_vec_int_basic(),
+    ) {
         passed += 1;
     } else {
         failed += 1;
     }
 
     // Test 2: Vec<Float> operations
-    if run_test("vec_float_basic", "Vec<Float> basic operations", test_vec_float_basic()) {
+    if run_test(
+        "vec_float_basic",
+        "Vec<Float> basic operations",
+        test_vec_float_basic(),
+    ) {
         passed += 1;
     } else {
         failed += 1;
     }
 
     // Test 3: Vec<Int> sorting
-    if run_test("vec_int_sort", "Vec<Int> sort (ascending)", test_vec_int_sort()) {
+    if run_test(
+        "vec_int_sort",
+        "Vec<Int> sort (ascending)",
+        test_vec_int_sort(),
+    ) {
         passed += 1;
     } else {
         failed += 1;
     }
 
     // Test 4: Vec<Float> sorting
-    if run_test("vec_float_sort", "Vec<Float> sort (ascending)", test_vec_float_sort()) {
+    if run_test(
+        "vec_float_sort",
+        "Vec<Float> sort (ascending)",
+        test_vec_float_sort(),
+    ) {
         passed += 1;
     } else {
         failed += 1;
@@ -91,9 +136,9 @@ fn compile_and_run(source: &str, name: &str) -> Result<(), String> {
     unit.add_file(source, &format!("{}.hx", name))?;
 
     // Compile to TAST
-    let _typed_files = unit.lower_to_tast().map_err(|errors| {
-        format!("TAST lowering failed: {:?}", errors)
-    })?;
+    let _typed_files = unit
+        .lower_to_tast()
+        .map_err(|errors| format!("TAST lowering failed: {:?}", errors))?;
 
     // Get MIR modules
     let mir_modules = unit.get_mir_modules();

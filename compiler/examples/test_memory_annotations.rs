@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 use compiler::compilation::{CompilationConfig, CompilationUnit};
 use compiler::tast::MemoryAnnotation;
 
@@ -52,7 +82,10 @@ class Test {
                     for typed_file in &typed_files {
                         for class in &typed_file.classes {
                             if !class.memory_annotations.is_empty() {
-                                println!("Found class with {} memory annotation(s)", class.memory_annotations.len());
+                                println!(
+                                    "Found class with {} memory annotation(s)",
+                                    class.memory_annotations.len()
+                                );
                                 for annotation in &class.memory_annotations {
                                     println!("  - {:?}", annotation);
                                     total_class_annotations += 1;
@@ -62,7 +95,10 @@ class Test {
 
                             for method in &class.methods {
                                 if !method.metadata.memory_annotations.is_empty() {
-                                    println!("Found method with {} memory annotation(s)", method.metadata.memory_annotations.len());
+                                    println!(
+                                        "Found method with {} memory annotation(s)",
+                                        method.metadata.memory_annotations.len()
+                                    );
                                     for annotation in &method.metadata.memory_annotations {
                                         println!("  - {:?}", annotation);
                                         total_method_annotations += 1;
@@ -73,8 +109,10 @@ class Test {
                         }
                     }
 
-                    println!("Total: {} class annotations, {} method annotations\n",
-                             total_class_annotations, total_method_annotations);
+                    println!(
+                        "Total: {} class annotations, {} method annotations\n",
+                        total_class_annotations, total_method_annotations
+                    );
 
                     // Verify expected counts
                     println!("=== Verification ===");
@@ -87,8 +125,14 @@ class Test {
                         println!("\n🎉 Memory annotation system working correctly!");
                     } else {
                         println!("❌ Unexpected annotation counts");
-                        println!("   Expected: 3 class annotations, got {}", total_class_annotations);
-                        println!("   Expected: 2 method annotations, got {}", total_method_annotations);
+                        println!(
+                            "   Expected: 3 class annotations, got {}",
+                            total_class_annotations
+                        );
+                        println!(
+                            "   Expected: 2 method annotations, got {}",
+                            total_method_annotations
+                        );
                     }
                 }
                 Err(errors) => {
@@ -100,7 +144,7 @@ class Test {
             }
         }
         Err(e) => {
-            println!("❌ Parsing failed: {}", e);
+            println!("❌ Parsing failed: {:?}", e);
         }
     }
 }

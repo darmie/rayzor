@@ -5,7 +5,7 @@ use parser::parse_haxe_file;
 fn test_expression_parsing(expr: &str) {
     let input = &format!("class Test {{ function test() {{ {}; }} }}", expr);
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Failed to parse expression '{}': {}", expr, e),
     }
 }
@@ -80,11 +80,11 @@ fn test_assignments() {
 fn test_control_flow_expressions() {
     test_expression_parsing("if (condition) action");
     test_expression_parsing("if (x > 0) positive else negative");
-    
+
     test_expression_parsing("while (running) update()");
     test_expression_parsing("for (i in 0...10) trace(i)");
     test_expression_parsing("do action while (condition)");
-    
+
     test_expression_parsing("return value");
     test_expression_parsing("return");
     test_expression_parsing("break");
@@ -129,9 +129,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Switch expression should parse, got: {}", e),
     }
 }
@@ -151,9 +151,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Try-catch expression should parse, got: {}", e),
     }
 }
@@ -170,9 +170,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Block expression should parse, got: {}", e),
     }
 }
@@ -189,9 +189,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Function expressions should parse, got: {}", e),
     }
 }
@@ -207,9 +207,9 @@ class Test {
     }
 }
 "#;
-    
+
     match parse_haxe_file("test.hx", input, false) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => panic!("Array comprehensions should parse, got: {}", e),
     }
 }

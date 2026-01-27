@@ -3,32 +3,33 @@
 //! This module provides the proper architecture for compiling multiple source files
 //! together, including standard library loading, package management, and symbol resolution.
 
-use crate::tast::{
-    AstLowering, StringInterner, SymbolTable, TypeTable, ScopeTree, ScopeId, TypeId, SymbolId,
-    TypeKind,
-    namespace::{NamespaceResolver, ImportResolver},
-    stdlib_loader::{StdLibConfig, StdLibLoader},
-    symbols::SymbolFlags,
-    TypedFile, SourceLocation,
+use crate::compiler_plugin::CompilerPluginRegistry;
+use crate::dependency_graph::{CircularDependency, DependencyAnalysis, DependencyGraph};
+use crate::ir::{
+    blade::{
+        load_blade, load_symbol_manifest, save_blade, BladeAbstractInfo, BladeClassInfo,
+        BladeEnumInfo, BladeMetadata, BladeMethodInfo, BladeSymbolManifest, BladeTypeAliasInfo,
+    },
+    IrInstruction, IrModule, Monomorphizer,
 };
 use crate::pipeline::{
-    CompilationError, ErrorCategory, HaxeCompilationPipeline,
-    PipelineConfig, CompilationResult,
+    CompilationError, CompilationResult, ErrorCategory, HaxeCompilationPipeline, PipelineConfig,
 };
-use crate::dependency_graph::{DependencyGraph, DependencyAnalysis, CircularDependency};
-use crate::ir::{IrModule, IrInstruction, Monomorphizer, blade::{
-    save_blade, load_blade, BladeMetadata, load_symbol_manifest, BladeSymbolManifest,
-    BladeClassInfo, BladeEnumInfo, BladeTypeAliasInfo, BladeAbstractInfo, BladeMethodInfo,
-}};
-use parser::{HaxeFile, parse_haxe_file, parse_haxe_file_with_debug};
-use std::rc::Rc;
-use std::cell::RefCell;
-use std::path::{PathBuf, Path};
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::collections::{HashMap, HashSet};
-use log::{debug, info, warn, trace};
-use crate::compiler_plugin::CompilerPluginRegistry;
 use crate::stdlib::hdll_plugin::HdllPlugin;
+use crate::tast::{
+    namespace::{ImportResolver, NamespaceResolver},
+    stdlib_loader::{StdLibConfig, StdLibLoader},
+    symbols::SymbolFlags,
+    AstLowering, ScopeId, ScopeTree, SourceLocation, StringInterner, SymbolId, SymbolTable, TypeId,
+    TypeKind, TypeTable, TypedFile,
+};
+use log::{debug, info, trace, warn};
+use parser::{parse_haxe_file, parse_haxe_file_with_debug, HaxeFile};
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Represents a complete compilation unit with multiple source files
 pub struct CompilationUnit {
@@ -141,8 +142,8 @@ impl Default for CompilationConfig {
                 "StdTypes.hx".to_string(), // Contains Iterator typedef
                 "String.hx".to_string(),
                 "Array.hx".to_string(),
-                "Math.hx".to_string(),     // Top-level Math functions (sqrt, sin, cos, etc.)
-                "Std.hx".to_string(),      // Top-level conversion utilities
+                "Math.hx".to_string(), // Top-level Math functions (sqrt, sin, cos, etc.)
+                "Std.hx".to_string(),  // Top-level conversion utilities
                 // Concurrent types
                 "rayzor/concurrent/Thread.hx".to_string(),
                 "rayzor/concurrent/Channel.hx".to_string(),
@@ -151,9 +152,9 @@ impl Default for CompilationConfig {
             ],
             load_stdlib: true,
             stdlib_root_package: Some("haxe".to_string()), // Prefix stdlib with "haxe.*" namespace
-            global_import_hx_files: Vec::new(), // No global import.hx by default
+            global_import_hx_files: Vec::new(),            // No global import.hx by default
             enable_cache: true, // Cache enabled - BLADE manifest now includes Math, Std, Date, etc.
-            cache_dir: None, // Auto-discover cache directory when needed
+            cache_dir: None,    // Auto-discover cache directory when needed
             lazy_stdlib: false, // Default to eager loading for compatibility
             pipeline_config: PipelineConfig::default(),
             hdll_search_paths: vec![PathBuf::from(".")],
@@ -181,7 +182,10 @@ impl CompilationConfig {
                 paths.push(path);
                 return paths; // Use this path exclusively if set
             } else {
-                warn!("HAXE_STD_PATH set but directory doesn't exist: {}", haxe_std_path);
+                warn!(
+                    "HAXE_STD_PATH set but directory doesn't exist: {}",
+                    haxe_std_path
+                );
             }
         }
 
@@ -416,7 +420,8 @@ impl CompilationUnit {
         let mut loader = StdLibLoader::new(loader_config);
 
         // Configure namespace resolver with stdlib paths for on-demand loading
-        self.namespace_resolver.set_stdlib_paths(self.config.stdlib_paths.clone());
+        self.namespace_resolver
+            .set_stdlib_paths(self.config.stdlib_paths.clone());
 
         // Load pre-compiled symbols from BLADE manifest if caching is enabled
         // Skip if lazy_stdlib is enabled (for faster cold start)
@@ -478,8 +483,8 @@ impl CompilationUnit {
 
     /// Compute hash of source content for cache validation
     fn hash_source(source: &str) -> u64 {
-        use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
         source.hash(&mut hasher);
         hasher.finish()
@@ -503,7 +508,11 @@ impl CompilationUnit {
                 // Validate cache by checking source hash
                 let current_hash = Self::hash_source(source);
                 if metadata.source_hash == current_hash {
-                    debug!("[BLADE] Cache hit: {} -> {}", source_path, blade_path.display());
+                    debug!(
+                        "[BLADE] Cache hit: {} -> {}",
+                        source_path,
+                        blade_path.display()
+                    );
                     Some(mir)
                 } else {
                     trace!("[BLADE] Cache stale (hash mismatch): {}", source_path);
@@ -518,7 +527,13 @@ impl CompilationUnit {
     }
 
     /// Save a MIR module to BLADE cache
-    fn save_blade_cached(&self, source_path: &str, source: &str, mir: &IrModule, dependencies: Vec<String>) {
+    fn save_blade_cached(
+        &self,
+        source_path: &str,
+        source: &str,
+        mir: &IrModule,
+        dependencies: Vec<String>,
+    ) {
         if !self.config.enable_cache {
             return;
         }
@@ -555,7 +570,11 @@ impl CompilationUnit {
 
         match save_blade(&blade_path, mir, metadata) {
             Ok(()) => {
-                debug!("[BLADE] Cached: {} -> {}", source_path, blade_path.display());
+                debug!(
+                    "[BLADE] Cached: {} -> {}",
+                    source_path,
+                    blade_path.display()
+                );
             }
             Err(e) => {
                 trace!("[BLADE] Failed to cache {}: {}", source_path, e);
@@ -570,13 +589,19 @@ impl CompilationUnit {
     pub fn load_stdlib_symbols(&mut self) -> bool {
         let manifest_path = PathBuf::from(".rayzor/blade/stdlib/stdlib.bsym");
         if !manifest_path.exists() {
-            debug!("[BLADE] No symbol manifest found at {}", manifest_path.display());
+            debug!(
+                "[BLADE] No symbol manifest found at {}",
+                manifest_path.display()
+            );
             return false;
         }
 
         match load_symbol_manifest(&manifest_path) {
             Ok(manifest) => {
-                info!("[BLADE] Loading {} modules from symbol manifest", manifest.modules.len());
+                info!(
+                    "[BLADE] Loading {} modules from symbol manifest",
+                    manifest.modules.len()
+                );
                 self.register_symbols_from_manifest(&manifest);
                 // Also register builtin globals like 'trace' that aren't in the manifest
                 self.register_builtin_globals();
@@ -591,7 +616,9 @@ impl CompilationUnit {
 
     /// Register built-in global symbols like 'trace' that aren't in the BLADE manifest
     fn register_builtin_globals(&mut self) {
-        use crate::tast::{Symbol, SymbolKind, SymbolFlags, Visibility, Mutability, LifetimeId, SourceLocation};
+        use crate::tast::{
+            LifetimeId, Mutability, SourceLocation, Symbol, SymbolFlags, SymbolKind, Visibility,
+        };
 
         // Register built-in global functions
         let builtin_functions = [
@@ -602,7 +629,8 @@ impl CompilationUnit {
             let func_name_interned = self.string_interner.intern(func_name);
 
             // Create parameter types
-            let param_type_ids: Vec<TypeId> = param_types.iter()
+            let param_type_ids: Vec<TypeId> = param_types
+                .iter()
                 .map(|param_type_name| match *param_type_name {
                     "Dynamic" => self.type_table.borrow().dynamic_type(),
                     "Int" => self.type_table.borrow().int_type(),
@@ -626,7 +654,9 @@ impl CompilationUnit {
             };
 
             // Create function type
-            let function_type_id = self.type_table.borrow_mut()
+            let function_type_id = self
+                .type_table
+                .borrow_mut()
                 .create_function_type(param_type_ids, return_type_id);
 
             // Create function symbol
@@ -715,7 +745,9 @@ impl CompilationUnit {
         let class_scope = self.scope_tree.create_scope(Some(ScopeId::first()));
 
         // Create class symbol using the existing helper method
-        let symbol_id = self.symbol_table.create_class_in_scope(short_name, ScopeId::first());
+        let symbol_id = self
+            .symbol_table
+            .create_class_in_scope(short_name, ScopeId::first());
 
         // Update symbol metadata including the class scope
         if let Some(sym) = self.symbol_table.get_symbol_mut(symbol_id) {
@@ -734,16 +766,21 @@ impl CompilationUnit {
         }
 
         // Create class type
-        let class_type = self.type_table.borrow_mut().create_class_type(symbol_id, vec![]);
+        let class_type = self
+            .type_table
+            .borrow_mut()
+            .create_class_type(symbol_id, vec![]);
 
         // Update symbol with type
         self.symbol_table.update_symbol_type(symbol_id, class_type);
 
         // Register type-symbol mapping
-        self.symbol_table.register_type_symbol_mapping(class_type, symbol_id);
+        self.symbol_table
+            .register_type_symbol_mapping(class_type, symbol_id);
 
         // Register qualified name alias
-        self.symbol_table.add_symbol_alias(symbol_id, ScopeId::first(), qualified_interned);
+        self.symbol_table
+            .add_symbol_alias(symbol_id, ScopeId::first(), qualified_interned);
 
         // Register instance methods
         for method in &class_info.methods {
@@ -770,9 +807,13 @@ impl CompilationUnit {
             self.register_field_from_blade(field, symbol_id, class_scope);
         }
 
-        trace!("[BLADE] Registered class: {} ({} methods, {} fields) in scope {:?}",
-            qualified_name, class_info.methods.len() + class_info.static_methods.len(),
-            class_info.fields.len() + class_info.static_fields.len(), class_scope);
+        trace!(
+            "[BLADE] Registered class: {} ({} methods, {} fields) in scope {:?}",
+            qualified_name,
+            class_info.methods.len() + class_info.static_methods.len(),
+            class_info.fields.len() + class_info.static_fields.len(),
+            class_scope
+        );
 
         symbol_id
     }
@@ -788,22 +829,27 @@ impl CompilationUnit {
         let method_name = self.string_interner.intern(&method.name);
 
         // Create the function symbol
-        let method_symbol = self.symbol_table.create_function_in_scope(method_name, class_scope);
+        let method_symbol = self
+            .symbol_table
+            .create_function_in_scope(method_name, class_scope);
 
         // Parse parameter types and return type to create a function type
-        let param_types: Vec<TypeId> = method.params.iter()
+        let param_types: Vec<TypeId> = method
+            .params
+            .iter()
             .map(|p| self.parse_type_string(&p.param_type))
             .collect();
         let return_type = self.parse_type_string(&method.return_type);
 
         // Create function type
-        let func_type = self.type_table.borrow_mut().create_type(
-            TypeKind::Function {
+        let func_type = self
+            .type_table
+            .borrow_mut()
+            .create_type(TypeKind::Function {
                 params: param_types,
                 return_type,
                 effects: crate::tast::core::FunctionEffects::default(),
-            }
-        );
+            });
 
         // Update symbol with type and flags
         if let Some(sym) = self.symbol_table.get_symbol_mut(method_symbol) {
@@ -817,7 +863,9 @@ impl CompilationUnit {
         }
 
         // Add to scope
-        let _ = self.scope_tree.add_symbol_to_scope(class_scope, method_symbol);
+        let _ = self
+            .scope_tree
+            .add_symbol_to_scope(class_scope, method_symbol);
 
         method_symbol
     }
@@ -853,7 +901,9 @@ impl CompilationUnit {
         }
 
         // Add to scope
-        let _ = self.scope_tree.add_symbol_to_scope(class_scope, field_symbol);
+        let _ = self
+            .scope_tree
+            .add_symbol_to_scope(class_scope, field_symbol);
 
         field_symbol
     }
@@ -869,7 +919,9 @@ impl CompilationUnit {
         let qualified_interned = self.string_interner.intern(&qualified_name);
 
         // Create enum symbol using the existing helper method
-        let symbol_id = self.symbol_table.create_enum_in_scope(short_name, ScopeId::first());
+        let symbol_id = self
+            .symbol_table
+            .create_enum_in_scope(short_name, ScopeId::first());
 
         // Update symbol metadata
         if let Some(sym) = self.symbol_table.get_symbol_mut(symbol_id) {
@@ -881,19 +933,27 @@ impl CompilationUnit {
         }
 
         // Create enum type
-        let enum_type = self.type_table.borrow_mut().create_enum_type(symbol_id, vec![]);
+        let enum_type = self
+            .type_table
+            .borrow_mut()
+            .create_enum_type(symbol_id, vec![]);
 
         // Update symbol with type
         self.symbol_table.update_symbol_type(symbol_id, enum_type);
 
         // Register type-symbol mapping
-        self.symbol_table.register_type_symbol_mapping(enum_type, symbol_id);
+        self.symbol_table
+            .register_type_symbol_mapping(enum_type, symbol_id);
 
         // Register qualified name alias
-        self.symbol_table.add_symbol_alias(symbol_id, ScopeId::first(), qualified_interned);
+        self.symbol_table
+            .add_symbol_alias(symbol_id, ScopeId::first(), qualified_interned);
 
-        trace!("[BLADE] Registered enum: {} ({} variants)",
-            qualified_name, enum_info.variants.len());
+        trace!(
+            "[BLADE] Registered enum: {} ({} variants)",
+            qualified_name,
+            enum_info.variants.len()
+        );
 
         symbol_id
     }
@@ -909,7 +969,9 @@ impl CompilationUnit {
         let qualified_interned = self.string_interner.intern(&qualified_name);
 
         // Create type alias symbol using the existing helper method
-        let symbol_id = self.symbol_table.create_type_alias_in_scope(short_name, ScopeId::first());
+        let symbol_id = self
+            .symbol_table
+            .create_type_alias_in_scope(short_name, ScopeId::first());
 
         // Update symbol metadata
         if let Some(sym) = self.symbol_table.get_symbol_mut(symbol_id) {
@@ -921,25 +983,31 @@ impl CompilationUnit {
         let target_type = self.parse_type_string(&alias_info.target_type);
 
         // Create type alias type
-        let alias_type = self.type_table.borrow_mut().create_type(
-            TypeKind::TypeAlias {
+        let alias_type = self
+            .type_table
+            .borrow_mut()
+            .create_type(TypeKind::TypeAlias {
                 symbol_id,
                 target_type,
                 type_args: vec![],
-            }
-        );
+            });
 
         // Update symbol with type
         self.symbol_table.update_symbol_type(symbol_id, alias_type);
 
         // Register type-symbol mapping
-        self.symbol_table.register_type_symbol_mapping(alias_type, symbol_id);
+        self.symbol_table
+            .register_type_symbol_mapping(alias_type, symbol_id);
 
         // Register qualified name alias
-        self.symbol_table.add_symbol_alias(symbol_id, ScopeId::first(), qualified_interned);
+        self.symbol_table
+            .add_symbol_alias(symbol_id, ScopeId::first(), qualified_interned);
 
-        trace!("[BLADE] Registered type alias: {} -> {}",
-            qualified_name, alias_info.target_type);
+        trace!(
+            "[BLADE] Registered type alias: {} -> {}",
+            qualified_name,
+            alias_info.target_type
+        );
 
         symbol_id
     }
@@ -958,7 +1026,9 @@ impl CompilationUnit {
         let abstract_scope = self.scope_tree.create_scope(Some(ScopeId::first()));
 
         // Create abstract symbol using the existing helper method
-        let symbol_id = self.symbol_table.create_abstract_in_scope(short_name, ScopeId::first());
+        let symbol_id = self
+            .symbol_table
+            .create_abstract_in_scope(short_name, ScopeId::first());
 
         // Parse the underlying type
         let underlying_type = self.parse_type_string(&abstract_info.underlying_type);
@@ -971,22 +1041,26 @@ impl CompilationUnit {
         }
 
         // Create abstract type
-        let abstract_type = self.type_table.borrow_mut().create_type(
-            TypeKind::Abstract {
+        let abstract_type = self
+            .type_table
+            .borrow_mut()
+            .create_type(TypeKind::Abstract {
                 symbol_id,
                 underlying: Some(underlying_type),
                 type_args: vec![],
-            }
-        );
+            });
 
         // Update symbol with type
-        self.symbol_table.update_symbol_type(symbol_id, abstract_type);
+        self.symbol_table
+            .update_symbol_type(symbol_id, abstract_type);
 
         // Register type-symbol mapping
-        self.symbol_table.register_type_symbol_mapping(abstract_type, symbol_id);
+        self.symbol_table
+            .register_type_symbol_mapping(abstract_type, symbol_id);
 
         // Register qualified name alias
-        self.symbol_table.add_symbol_alias(symbol_id, ScopeId::first(), qualified_interned);
+        self.symbol_table
+            .add_symbol_alias(symbol_id, ScopeId::first(), qualified_interned);
 
         // Register instance methods
         for method in &abstract_info.methods {
@@ -998,8 +1072,12 @@ impl CompilationUnit {
             self.register_method_from_blade(method, symbol_id, abstract_scope, true);
         }
 
-        trace!("[BLADE] Registered abstract: {} ({} methods) in scope {:?}",
-            qualified_name, abstract_info.methods.len() + abstract_info.static_methods.len(), abstract_scope);
+        trace!(
+            "[BLADE] Registered abstract: {} ({} methods) in scope {:?}",
+            qualified_name,
+            abstract_info.methods.len() + abstract_info.static_methods.len(),
+            abstract_scope
+        );
 
         symbol_id
     }
@@ -1020,13 +1098,22 @@ impl CompilationUnit {
         }
 
         // Handle Null<T>
-        if let Some(inner) = type_str.strip_prefix("Null<").and_then(|s| s.strip_suffix(">")) {
+        if let Some(inner) = type_str
+            .strip_prefix("Null<")
+            .and_then(|s| s.strip_suffix(">"))
+        {
             let inner_type = self.parse_type_string(inner);
-            return self.type_table.borrow_mut().create_optional_type(inner_type);
+            return self
+                .type_table
+                .borrow_mut()
+                .create_optional_type(inner_type);
         }
 
         // Handle Array<T>
-        if let Some(inner) = type_str.strip_prefix("Array<").and_then(|s| s.strip_suffix(">")) {
+        if let Some(inner) = type_str
+            .strip_prefix("Array<")
+            .and_then(|s| s.strip_suffix(">"))
+        {
             let element_type = self.parse_type_string(inner);
             return self.type_table.borrow_mut().create_array_type(element_type);
         }
@@ -1041,7 +1128,10 @@ impl CompilationUnit {
                     self.parse_type_list(params_str)
                 };
                 let return_type = self.parse_type_string(return_str);
-                return self.type_table.borrow_mut().create_function_type(params, return_type);
+                return self
+                    .type_table
+                    .borrow_mut()
+                    .create_function_type(params, return_type);
             }
         }
 
@@ -1067,12 +1157,15 @@ impl CompilationUnit {
             if let Some(close) = close {
                 if open < close {
                     let base_name = &type_str[..open];
-                    let args_str = &type_str[open+1..close];
+                    let args_str = &type_str[open + 1..close];
                     let type_args = self.parse_type_list(args_str);
 
                     // Look up the base type
                     if let Some(symbol_id) = self.lookup_type_symbol(base_name) {
-                        return self.type_table.borrow_mut().create_class_type(symbol_id, type_args);
+                        return self
+                            .type_table
+                            .borrow_mut()
+                            .create_class_type(symbol_id, type_args);
                     }
                 }
             }
@@ -1080,12 +1173,17 @@ impl CompilationUnit {
 
         // Simple class/enum name
         if let Some(symbol_id) = self.lookup_type_symbol(type_str) {
-            return self.type_table.borrow_mut().create_class_type(symbol_id, vec![]);
+            return self
+                .type_table
+                .borrow_mut()
+                .create_class_type(symbol_id, vec![]);
         }
 
         // Create a placeholder for unresolved types
         let name = self.string_interner.intern(type_str);
-        self.type_table.borrow_mut().create_type(TypeKind::Placeholder { name })
+        self.type_table
+            .borrow_mut()
+            .create_type(TypeKind::Placeholder { name })
     }
 
     /// Parse a comma-separated list of types, handling nested generics
@@ -1193,7 +1291,10 @@ impl CompilationUnit {
         }
 
         // Helper to extract dependencies from a block element
-        fn extract_block_elem_deps(elem: &BlockElement, deps: &mut std::collections::HashSet<String>) {
+        fn extract_block_elem_deps(
+            elem: &BlockElement,
+            deps: &mut std::collections::HashSet<String>,
+        ) {
             match elem {
                 BlockElement::Expr(e) => extract_expr_deps(e, deps),
                 BlockElement::Import(imp) => {
@@ -1230,7 +1331,11 @@ impl CompilationUnit {
         // Helper to extract dependencies from an expression
         fn extract_expr_deps(expr: &parser::Expr, deps: &mut std::collections::HashSet<String>) {
             match &expr.kind {
-                ExprKind::New { type_path, params, args } => {
+                ExprKind::New {
+                    type_path,
+                    params,
+                    args,
+                } => {
                     // Extract class name from new expression
                     if type_path.package.is_empty() && !type_path.name.is_empty() {
                         let first_char = type_path.name.chars().next();
@@ -1274,7 +1379,11 @@ impl CompilationUnit {
                     extract_expr_deps(left, deps);
                     extract_expr_deps(right, deps);
                 }
-                ExprKind::Ternary { cond, then_expr, else_expr } => {
+                ExprKind::Ternary {
+                    cond,
+                    then_expr,
+                    else_expr,
+                } => {
                     extract_expr_deps(cond, deps);
                     extract_expr_deps(then_expr, deps);
                     extract_expr_deps(else_expr, deps);
@@ -1289,7 +1398,12 @@ impl CompilationUnit {
                         extract_block_elem_deps(elem, deps);
                     }
                 }
-                ExprKind::Var { type_hint, expr, .. } | ExprKind::Final { type_hint, expr, .. } => {
+                ExprKind::Var {
+                    type_hint, expr, ..
+                }
+                | ExprKind::Final {
+                    type_hint, expr, ..
+                } => {
                     if let Some(ty) = type_hint {
                         extract_type_deps(ty, deps);
                     }
@@ -1300,7 +1414,11 @@ impl CompilationUnit {
                 ExprKind::Return(Some(e)) | ExprKind::Throw(e) => {
                     extract_expr_deps(e, deps);
                 }
-                ExprKind::If { cond, then_branch, else_branch } => {
+                ExprKind::If {
+                    cond,
+                    then_branch,
+                    else_branch,
+                } => {
                     extract_expr_deps(cond, deps);
                     extract_expr_deps(then_branch, deps);
                     if let Some(e) = else_branch {
@@ -1315,7 +1433,11 @@ impl CompilationUnit {
                     extract_expr_deps(iter, deps);
                     extract_expr_deps(body, deps);
                 }
-                ExprKind::Try { expr, catches, finally_block } => {
+                ExprKind::Try {
+                    expr,
+                    catches,
+                    finally_block,
+                } => {
                     extract_expr_deps(expr, deps);
                     for catch in catches {
                         if let Some(ty) = &catch.type_hint {
@@ -1337,7 +1459,11 @@ impl CompilationUnit {
                     extract_expr_deps(expr, deps);
                     extract_type_deps(type_hint, deps);
                 }
-                ExprKind::Switch { expr, cases, default } => {
+                ExprKind::Switch {
+                    expr,
+                    cases,
+                    default,
+                } => {
                     extract_expr_deps(expr, deps);
                     for case in cases {
                         // Extract from patterns (they may contain constructor references)
@@ -1384,8 +1510,12 @@ impl CompilationUnit {
                         extract_expr_deps(body, deps);
                     }
                 }
-                ExprKind::Paren(e) | ExprKind::Untyped(e) | ExprKind::Meta { expr: e, .. }
-                    | ExprKind::Macro(e) | ExprKind::Inline(e) | ExprKind::Reify(e) => {
+                ExprKind::Paren(e)
+                | ExprKind::Untyped(e)
+                | ExprKind::Meta { expr: e, .. }
+                | ExprKind::Macro(e)
+                | ExprKind::Inline(e)
+                | ExprKind::Reify(e) => {
                     extract_expr_deps(e, deps);
                 }
                 ExprKind::ArrayComprehension { for_parts, expr } => {
@@ -1394,7 +1524,11 @@ impl CompilationUnit {
                     }
                     extract_expr_deps(expr, deps);
                 }
-                ExprKind::MapComprehension { for_parts, key, value } => {
+                ExprKind::MapComprehension {
+                    for_parts,
+                    key,
+                    value,
+                } => {
                     for part in for_parts {
                         extract_expr_deps(&part.iter, deps);
                     }
@@ -1413,7 +1547,10 @@ impl CompilationUnit {
         }
 
         // Helper to extract dependencies from patterns (in switch cases)
-        fn extract_pattern_deps(pattern: &parser::Pattern, deps: &mut std::collections::HashSet<String>) {
+        fn extract_pattern_deps(
+            pattern: &parser::Pattern,
+            deps: &mut std::collections::HashSet<String>,
+        ) {
             match pattern {
                 parser::Pattern::Const(e) => extract_expr_deps(e, deps),
                 parser::Pattern::Constructor { path, params } => {
@@ -1459,10 +1596,17 @@ impl CompilationUnit {
         }
 
         // Helper to extract dependencies from class fields
-        fn extract_field_deps(field: &parser::ClassField, deps: &mut std::collections::HashSet<String>) {
+        fn extract_field_deps(
+            field: &parser::ClassField,
+            deps: &mut std::collections::HashSet<String>,
+        ) {
             match &field.kind {
-                ClassFieldKind::Var { type_hint, expr, .. }
-                | ClassFieldKind::Final { type_hint, expr, .. } => {
+                ClassFieldKind::Var {
+                    type_hint, expr, ..
+                }
+                | ClassFieldKind::Final {
+                    type_hint, expr, ..
+                } => {
                     if let Some(ty) = type_hint {
                         extract_type_deps(ty, deps);
                     }
@@ -1601,15 +1745,29 @@ impl CompilationUnit {
             visited.insert(qualified_path.clone());
 
             // Resolve to file path
-            let file_path = if let Some(path) = self.namespace_resolver.resolve_qualified_path_to_file(&qualified_path) {
+            let file_path = if let Some(path) = self
+                .namespace_resolver
+                .resolve_qualified_path_to_file(&qualified_path)
+            {
                 path
             } else if !qualified_path.contains('.') {
                 // Try common prefixes for unqualified names
-                let prefixes = ["haxe.iterators", "haxe.ds", "haxe", "sys.thread", "sys", "haxe.exceptions", "haxe.io"];
+                let prefixes = [
+                    "haxe.iterators",
+                    "haxe.ds",
+                    "haxe",
+                    "sys.thread",
+                    "sys",
+                    "haxe.exceptions",
+                    "haxe.io",
+                ];
                 let mut found = None;
                 for prefix in &prefixes {
                     let full = format!("{}.{}", prefix, qualified_path);
-                    if let Some(path) = self.namespace_resolver.resolve_qualified_path_to_file(&full) {
+                    if let Some(path) = self
+                        .namespace_resolver
+                        .resolve_qualified_path_to_file(&full)
+                    {
                         found = Some(path);
                         break;
                     }
@@ -1663,7 +1821,8 @@ impl CompilationUnit {
             }
         }
 
-        let mut queue: VecDeque<String> = in_degree.iter()
+        let mut queue: VecDeque<String> = in_degree
+            .iter()
             .filter(|(_, &deg)| deg == 0)
             .map(|(name, _)| name.clone())
             .collect();
@@ -1738,24 +1897,45 @@ impl CompilationUnit {
 
     /// Internal recursive function for loading files with dependency resolution
     /// Max depth prevents infinite loops in circular dependencies
-    fn load_import_file_recursive(&mut self, qualified_path: &str, depth: usize) -> Result<(), String> {
+    fn load_import_file_recursive(
+        &mut self,
+        qualified_path: &str,
+        depth: usize,
+    ) -> Result<(), String> {
         const MAX_DEPTH: usize = 10;
 
         if depth > MAX_DEPTH {
-            return Err(format!("Maximum dependency depth ({}) exceeded for: {}", MAX_DEPTH, qualified_path));
+            return Err(format!(
+                "Maximum dependency depth ({}) exceeded for: {}",
+                MAX_DEPTH, qualified_path
+            ));
         }
 
         // Resolve the qualified path to a filesystem path
         // If not found directly, try common stdlib package prefixes for unqualified names
-        let file_path = if let Some(path) = self.namespace_resolver.resolve_qualified_path_to_file(qualified_path) {
+        let file_path = if let Some(path) = self
+            .namespace_resolver
+            .resolve_qualified_path_to_file(qualified_path)
+        {
             path
         } else if !qualified_path.contains('.') {
             // Unqualified name - try common stdlib packages
-            let prefixes = vec!["haxe.iterators", "haxe.ds", "haxe", "sys.thread", "sys", "haxe.exceptions", "haxe.io"];
+            let prefixes = vec![
+                "haxe.iterators",
+                "haxe.ds",
+                "haxe",
+                "sys.thread",
+                "sys",
+                "haxe.exceptions",
+                "haxe.io",
+            ];
             let mut found_path = None;
             for prefix in &prefixes {
                 let qualified = format!("{}.{}", prefix, qualified_path);
-                if let Some(path) = self.namespace_resolver.resolve_qualified_path_to_file(&qualified) {
+                if let Some(path) = self
+                    .namespace_resolver
+                    .resolve_qualified_path_to_file(&qualified)
+                {
                     found_path = Some(path);
                     break;
                 }
@@ -1784,10 +1964,16 @@ impl CompilationUnit {
         // Try to compile - if it fails due to missing dependencies, extract and load them
         match self.compile_file_with_shared_state(&filename, &source) {
             Ok(typed_file) => {
-                debug!("  ✓ Successfully compiled and registered: {}", qualified_path);
+                debug!(
+                    "  ✓ Successfully compiled and registered: {}",
+                    qualified_path
+                );
                 // Store typedef files so they're included in HIR conversion
                 if !typed_file.type_aliases.is_empty() {
-                    trace!("    (contains {} type aliases)", typed_file.type_aliases.len());
+                    trace!(
+                        "    (contains {} type aliases)",
+                        typed_file.type_aliases.len()
+                    );
                 }
 
                 // Check if any type aliases have Placeholder targets that need to be loaded
@@ -1799,7 +1985,10 @@ impl CompilationUnit {
                         if let Some(target_info) = type_table.get(alias.target_type) {
                             if let crate::tast::TypeKind::Placeholder { name } = &target_info.kind {
                                 if let Some(placeholder_name) = self.string_interner.get(*name) {
-                                    trace!("    Found typedef with Placeholder target: {}", placeholder_name);
+                                    trace!(
+                                        "    Found typedef with Placeholder target: {}",
+                                        placeholder_name
+                                    );
                                     placeholder_targets.push(placeholder_name.to_string());
                                 }
                             }
@@ -1819,7 +2008,10 @@ impl CompilationUnit {
 
                     if any_loaded {
                         // Retry compilation after loading typedef targets
-                        debug!("  Retrying compilation of {} after loading typedef targets...", qualified_path);
+                        debug!(
+                            "  Retrying compilation of {} after loading typedef targets...",
+                            qualified_path
+                        );
                         match self.compile_file_with_shared_state(&filename, &source) {
                             Ok(recompiled_file) => {
                                 self.loaded_stdlib_typed_files.push(recompiled_file);
@@ -1834,14 +2026,18 @@ impl CompilationUnit {
 
                 self.loaded_stdlib_typed_files.push(typed_file);
                 Ok(())
-            },
+            }
             Err(errors) => {
                 // Extract UnresolvedType errors and try to load those dependencies
                 let mut missing_types = Vec::new();
                 for error in &errors {
-                    if let Some(type_name) = Self::extract_unresolved_type_from_error(&error.message) {
+                    if let Some(type_name) =
+                        Self::extract_unresolved_type_from_error(&error.message)
+                    {
                         // Skip generic type parameters and built-in typedefs
-                        if !Self::is_generic_type_parameter(&type_name) && !self.failed_type_loads.contains(&type_name) {
+                        if !Self::is_generic_type_parameter(&type_name)
+                            && !self.failed_type_loads.contains(&type_name)
+                        {
                             missing_types.push(type_name);
                         }
                     }
@@ -1849,8 +2045,12 @@ impl CompilationUnit {
 
                 // If we found missing types, try to load them recursively
                 if !missing_types.is_empty() {
-                    debug!("  Detected {} missing dependencies for {}: {:?}",
-                        missing_types.len(), qualified_path, missing_types);
+                    debug!(
+                        "  Detected {} missing dependencies for {}: {:?}",
+                        missing_types.len(),
+                        qualified_path,
+                        missing_types
+                    );
 
                     let mut load_success = false;
                     for missing_type in &missing_types {
@@ -1859,7 +2059,12 @@ impl CompilationUnit {
                         let type_to_load = if let Some(last_dot) = missing_type.rfind('.') {
                             let after_dot = &missing_type[last_dot + 1..];
                             // If the part after the last dot starts with lowercase, it's likely a field
-                            if after_dot.chars().next().map(|c| c.is_lowercase()).unwrap_or(false) {
+                            if after_dot
+                                .chars()
+                                .next()
+                                .map(|c| c.is_lowercase())
+                                .unwrap_or(false)
+                            {
                                 &missing_type[..last_dot]
                             } else {
                                 missing_type.as_str()
@@ -1869,7 +2074,9 @@ impl CompilationUnit {
                         };
 
                         // Try loading with the (possibly adjusted) name first
-                        let loaded = if let Ok(_) = self.load_import_file_recursive(type_to_load, depth + 1) {
+                        let loaded = if let Ok(_) =
+                            self.load_import_file_recursive(type_to_load, depth + 1)
+                        {
                             debug!("    ✓ Loaded dependency: {}", type_to_load);
                             true
                         } else if !type_to_load.contains('.') {
@@ -1878,8 +2085,13 @@ impl CompilationUnit {
                             let mut prefix_loaded = false;
                             for prefix in prefixes {
                                 let qualified = format!("{}{}", prefix, type_to_load);
-                                if let Ok(_) = self.load_import_file_recursive(&qualified, depth + 1) {
-                                    debug!("    ✓ Loaded dependency: {} (as {})", type_to_load, qualified);
+                                if let Ok(_) =
+                                    self.load_import_file_recursive(&qualified, depth + 1)
+                                {
+                                    debug!(
+                                        "    ✓ Loaded dependency: {} (as {})",
+                                        type_to_load, qualified
+                                    );
                                     prefix_loaded = true;
                                     break;
                                 }
@@ -1899,12 +2111,18 @@ impl CompilationUnit {
 
                     // If we successfully loaded at least one dependency, retry compilation
                     if load_success {
-                        debug!("  Retrying compilation of {} after loading dependencies...", qualified_path);
+                        debug!(
+                            "  Retrying compilation of {} after loading dependencies...",
+                            qualified_path
+                        );
                         match self.compile_file_with_shared_state(&filename, &source) {
                             Ok(typed_file) => {
                                 // Store typedef files so they're included in HIR conversion
                                 if !typed_file.type_aliases.is_empty() {
-                                    trace!("    (contains {} type aliases after retry)", typed_file.type_aliases.len());
+                                    trace!(
+                                        "    (contains {} type aliases after retry)",
+                                        typed_file.type_aliases.len()
+                                    );
                                 }
 
                                 // Check if any type aliases have Placeholder targets that need to be loaded
@@ -1913,11 +2131,17 @@ impl CompilationUnit {
                                 {
                                     let type_table = self.type_table.borrow();
                                     for alias in &typed_file.type_aliases {
-                                        if let Some(target_info) = type_table.get(alias.target_type) {
-                                            if let crate::tast::TypeKind::Placeholder { name } = &target_info.kind {
-                                                if let Some(placeholder_name) = self.string_interner.get(*name) {
+                                        if let Some(target_info) = type_table.get(alias.target_type)
+                                        {
+                                            if let crate::tast::TypeKind::Placeholder { name } =
+                                                &target_info.kind
+                                            {
+                                                if let Some(placeholder_name) =
+                                                    self.string_interner.get(*name)
+                                                {
                                                     trace!("    Found typedef with Placeholder target (after deps): {}", placeholder_name);
-                                                    placeholder_targets.push(placeholder_name.to_string());
+                                                    placeholder_targets
+                                                        .push(placeholder_name.to_string());
                                                 }
                                             }
                                         }
@@ -1928,8 +2152,13 @@ impl CompilationUnit {
                                 if !placeholder_targets.is_empty() {
                                     let mut any_loaded = false;
                                     for target in &placeholder_targets {
-                                        if let Ok(_) = self.load_import_file_recursive(target, depth + 1) {
-                                            debug!("    ✓ Loaded typedef target (after deps): {}", target);
+                                        if let Ok(_) =
+                                            self.load_import_file_recursive(target, depth + 1)
+                                        {
+                                            debug!(
+                                                "    ✓ Loaded typedef target (after deps): {}",
+                                                target
+                                            );
                                             any_loaded = true;
                                         }
                                     }
@@ -1937,9 +2166,12 @@ impl CompilationUnit {
                                     if any_loaded {
                                         // Retry compilation after loading typedef targets
                                         debug!("  Retrying compilation of {} after loading typedef targets...", qualified_path);
-                                        match self.compile_file_with_shared_state(&filename, &source) {
+                                        match self
+                                            .compile_file_with_shared_state(&filename, &source)
+                                        {
                                             Ok(recompiled_file) => {
-                                                self.loaded_stdlib_typed_files.push(recompiled_file);
+                                                self.loaded_stdlib_typed_files
+                                                    .push(recompiled_file);
                                                 return Ok(());
                                             }
                                             Err(_) => {
@@ -1956,8 +2188,12 @@ impl CompilationUnit {
                                 // Check if any errors are UnresolvedType that we can try to load
                                 let mut additional_missing = Vec::new();
                                 for error in &errors {
-                                    if let Some(type_name) = Self::extract_unresolved_type_from_error(&error.message) {
-                                        if !Self::is_generic_type_parameter(&type_name) && !self.failed_type_loads.contains(&type_name) {
+                                    if let Some(type_name) =
+                                        Self::extract_unresolved_type_from_error(&error.message)
+                                    {
+                                        if !Self::is_generic_type_parameter(&type_name)
+                                            && !self.failed_type_loads.contains(&type_name)
+                                        {
                                             additional_missing.push(type_name);
                                         }
                                     }
@@ -1966,8 +2202,13 @@ impl CompilationUnit {
                                 if !additional_missing.is_empty() {
                                     let mut loaded_any = false;
                                     for missing in &additional_missing {
-                                        if let Ok(_) = self.load_import_file_recursive(missing, depth + 1) {
-                                            debug!("    ✓ Loaded additional dependency: {}", missing);
+                                        if let Ok(_) =
+                                            self.load_import_file_recursive(missing, depth + 1)
+                                        {
+                                            debug!(
+                                                "    ✓ Loaded additional dependency: {}",
+                                                missing
+                                            );
                                             loaded_any = true;
                                         }
                                     }
@@ -1975,13 +2216,16 @@ impl CompilationUnit {
                                     if loaded_any {
                                         // Try one more time
                                         debug!("  Retrying compilation of {} after loading additional dependencies...", qualified_path);
-                                        match self.compile_file_with_shared_state(&filename, &source) {
+                                        match self
+                                            .compile_file_with_shared_state(&filename, &source)
+                                        {
                                             Ok(final_file) => {
                                                 self.loaded_stdlib_typed_files.push(final_file);
                                                 return Ok(());
                                             }
                                             Err(final_errors) => {
-                                                let error_msgs: Vec<String> = final_errors.iter()
+                                                let error_msgs: Vec<String> = final_errors
+                                                    .iter()
                                                     .map(|e| e.message.clone())
                                                     .collect();
                                                 return Err(format!("Errors compiling {} (after loading additional dependencies): {}", filename, error_msgs.join(", ")));
@@ -1990,20 +2234,25 @@ impl CompilationUnit {
                                     }
                                 }
 
-                                let error_msgs: Vec<String> = errors.iter()
-                                    .map(|e| e.message.clone())
-                                    .collect();
-                                return Err(format!("Errors compiling {} (after loading dependencies): {}", filename, error_msgs.join(", ")));
+                                let error_msgs: Vec<String> =
+                                    errors.iter().map(|e| e.message.clone()).collect();
+                                return Err(format!(
+                                    "Errors compiling {} (after loading dependencies): {}",
+                                    filename,
+                                    error_msgs.join(", ")
+                                ));
                             }
                         }
                     }
                 }
 
                 // No missing types found or couldn't load them - return original error
-                let error_msgs: Vec<String> = errors.iter()
-                    .map(|e| e.message.clone())
-                    .collect();
-                Err(format!("Errors compiling {}: {}", filename, error_msgs.join(", ")))
+                let error_msgs: Vec<String> = errors.iter().map(|e| e.message.clone()).collect();
+                Err(format!(
+                    "Errors compiling {}: {}",
+                    filename,
+                    error_msgs.join(", ")
+                ))
             }
         }
     }
@@ -2016,7 +2265,7 @@ impl CompilationUnit {
         if let Some(type_name_start) = error_msg.find("type_name: \"") {
             // Move past 'type_name: "' to get to the actual name
             let after_marker = &error_msg[type_name_start + 12..]; // 12 = length of 'type_name: "'
-            // Find the closing quote
+                                                                   // Find the closing quote
             if let Some(end) = after_marker.find('"') {
                 return Some(after_marker[..end].to_string());
             }
@@ -2028,11 +2277,27 @@ impl CompilationUnit {
     /// Returns true for single letters (T, K, V) or common parameter patterns
     fn is_generic_type_parameter(type_name: &str) -> bool {
         // Single uppercase letter
-        if type_name.len() == 1 && type_name.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false) {
+        if type_name.len() == 1
+            && type_name
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_uppercase())
+                .unwrap_or(false)
+        {
             return true;
         }
         // Common generic parameter patterns
-        matches!(type_name, "Key" | "Value" | "Item" | "Element" | "Iterator" | "KeyValueIterator" | "Iterable" | "KeyValueIterable")
+        matches!(
+            type_name,
+            "Key"
+                | "Value"
+                | "Item"
+                | "Element"
+                | "Iterator"
+                | "KeyValueIterator"
+                | "Iterable"
+                | "KeyValueIterable"
+        )
     }
 
     /// Pre-register type declarations from a file without full compilation
@@ -2062,7 +2327,8 @@ impl CompilationUnit {
         );
 
         // Pre-register only - call the pre_register_file method
-        lowering.pre_register_file(&ast_file)
+        lowering
+            .pre_register_file(&ast_file)
             .map_err(|e| format!("Pre-registration error in {}: {:?}", filename, e))?;
 
         Ok(())
@@ -2078,11 +2344,9 @@ impl CompilationUnit {
             let source = fs::read_to_string(import_path)
                 .map_err(|e| format!("Failed to read import.hx at {:?}: {}", import_path, e))?;
 
-            let haxe_file = parse_haxe_file(
-                import_path.to_str().unwrap_or("import.hx"),
-                &source,
-                true
-            ).map_err(|e| format!("Parse error in {:?}: {}", import_path, e))?;
+            let haxe_file =
+                parse_haxe_file(import_path.to_str().unwrap_or("import.hx"), &source, true)
+                    .map_err(|e| format!("Parse error in {:?}: {}", import_path, e))?;
 
             self.import_hx_files.push(haxe_file);
         }
@@ -2109,7 +2373,8 @@ impl CompilationUnit {
         let source = fs::read_to_string(path)
             .map_err(|e| format!("Failed to read file {:?}: {}", path, e))?;
 
-        let file_path_str = path.to_str()
+        let file_path_str = path
+            .to_str()
             .ok_or_else(|| format!("Invalid UTF-8 in path: {:?}", path))?;
 
         self.add_file(&source, file_path_str)
@@ -2154,7 +2419,11 @@ impl CompilationUnit {
     /// # Arguments
     /// * `import_path` - The import path (e.g., "com.example.model.User")
     /// * `source_paths` - Directories to search for source files (e.g., ["src", "lib"])
-    pub fn resolve_import_path(&self, import_path: &str, source_paths: &[PathBuf]) -> Option<PathBuf> {
+    pub fn resolve_import_path(
+        &self,
+        import_path: &str,
+        source_paths: &[PathBuf],
+    ) -> Option<PathBuf> {
         // Convert import path to filesystem path
         // "com.example.model.User" -> "com/example/model/User.hx"
         let file_path = import_path.replace('.', "/") + ".hx";
@@ -2176,8 +2445,13 @@ impl CompilationUnit {
     /// # Arguments
     /// * `import_path` - The import path
     /// * `source_paths` - Directories to search for source files
-    pub fn add_file_by_import(&mut self, import_path: &str, source_paths: &[PathBuf]) -> Result<(), String> {
-        let path = self.resolve_import_path(import_path, source_paths)
+    pub fn add_file_by_import(
+        &mut self,
+        import_path: &str,
+        source_paths: &[PathBuf],
+    ) -> Result<(), String> {
+        let path = self
+            .resolve_import_path(import_path, source_paths)
             .ok_or_else(|| format!("Could not resolve import: {}", import_path))?;
 
         self.add_file_from_path(&path)
@@ -2221,16 +2495,15 @@ impl CompilationUnit {
     ///
     /// If `skip_pre_registration` is true, assumes types have already been pre-registered
     /// and skips the first pass in lower_file.
-    
+
     fn compile_file_with_shared_state_ex(
         &mut self,
         filename: &str,
         source: &str,
-        skip_pre_registration: bool
+        skip_pre_registration: bool,
     ) -> Result<TypedFile, Vec<CompilationError>> {
         use crate::tast::ast_lowering::AstLowering;
         use parser::parse_haxe_file_with_diagnostics;
-
 
         // Skip if already successfully compiled - return cached TypedFile
         if let Some(cached) = self.compiled_files.get(filename) {
@@ -2238,14 +2511,15 @@ impl CompilationUnit {
         }
 
         // Parse the file
-        let parse_result = parse_haxe_file_with_diagnostics(filename, source)
-            .map_err(|e| vec![CompilationError {
+        let parse_result = parse_haxe_file_with_diagnostics(filename, source).map_err(|e| {
+            vec![CompilationError {
                 message: format!("Parse error: {}", e),
                 location: SourceLocation::unknown(),
                 category: ErrorCategory::ParseError,
                 suggestion: None,
                 related_errors: Vec::new(),
-            }])?;
+            }]
+        })?;
 
         let ast_file = parse_result.file;
         let _source_map = parse_result.source_map;
@@ -2282,14 +2556,15 @@ impl CompilationUnit {
             filename.to_string(),
         );
 
-        let typed_file = lowering.lower_file(&ast_file)
-            .map_err(|e| vec![CompilationError {
+        let typed_file = lowering.lower_file(&ast_file).map_err(|e| {
+            vec![CompilationError {
                 message: format!("Lowering error: {:?}", e),
                 location: SourceLocation::unknown(),
                 category: ErrorCategory::TypeError,
                 suggestion: None,
                 related_errors: Vec::new(),
-            }])?;
+            }]
+        })?;
 
         // Lower to HIR
         use crate::ir::tast_to_hir::lower_tast_to_hir;
@@ -2299,14 +2574,18 @@ impl CompilationUnit {
             &self.type_table,
             &mut self.string_interner,
             None, // No semantic graphs for now
-        ).map_err(|errors| {
-            errors.into_iter().map(|e| CompilationError {
-                message: format!("HIR lowering error: {:?}", e),
-                location: SourceLocation::unknown(),
-                category: ErrorCategory::InternalError,
-                suggestion: None,
-                related_errors: Vec::new(),
-            }).collect::<Vec<_>>()
+        )
+        .map_err(|errors| {
+            errors
+                .into_iter()
+                .map(|e| CompilationError {
+                    message: format!("HIR lowering error: {:?}", e),
+                    location: SourceLocation::unknown(),
+                    category: ErrorCategory::InternalError,
+                    suggestion: None,
+                    related_errors: Vec::new(),
+                })
+                .collect::<Vec<_>>()
         })?;
 
         // Lower to MIR
@@ -2317,11 +2596,14 @@ impl CompilationUnit {
 
         // Check if this is a stdlib file BEFORE lowering so we can decide whether
         // to collect function mappings
-        let is_stdlib_file = filename.contains("haxe-std") ||
-                              filename.contains("/haxe-std/") ||
-                              filename.contains("\\haxe-std\\");
+        let is_stdlib_file = filename.contains("haxe-std")
+            || filename.contains("/haxe-std/")
+            || filename.contains("\\haxe-std\\");
 
-        debug!("DEBUG: [MIR LOWERING] filename='{}', is_stdlib_file={}", filename, is_stdlib_file);
+        debug!(
+            "DEBUG: [MIR LOWERING] filename='{}', is_stdlib_file={}",
+            filename, is_stdlib_file
+        );
 
         // For user files, pass the stdlib function map so they can call stdlib functions
         // For stdlib files, pass an empty map (they can call each other once we accumulate the map)
@@ -2346,22 +2628,29 @@ impl CompilationUnit {
             external_functions,
             external_functions_by_name,
             stdlib_mapping,
-        ).map_err(|errors| {
-            errors.into_iter().map(|e| CompilationError {
-                message: format!("MIR lowering error: {:?}", e),
-                location: SourceLocation::unknown(),
-                category: ErrorCategory::InternalError,
-                suggestion: None,
-                related_errors: Vec::new(),
-            }).collect::<Vec<_>>()
+        )
+        .map_err(|errors| {
+            errors
+                .into_iter()
+                .map(|e| CompilationError {
+                    message: format!("MIR lowering error: {:?}", e),
+                    location: SourceLocation::unknown(),
+                    category: ErrorCategory::InternalError,
+                    suggestion: None,
+                    related_errors: Vec::new(),
+                })
+                .collect::<Vec<_>>()
         })?;
 
         let mut mir_module = mir_result.module;
 
         // If this is a stdlib file, collect its function mappings
         if is_stdlib_file {
-            debug!("DEBUG: Collecting {} function mappings from stdlib file: {}",
-                      mir_result.function_map.len(), filename);
+            debug!(
+                "DEBUG: Collecting {} function mappings from stdlib file: {}",
+                mir_result.function_map.len(),
+                filename
+            );
             for (symbol_id, func_id) in mir_result.function_map {
                 self.stdlib_function_map.insert(symbol_id, func_id);
             }
@@ -2373,21 +2662,27 @@ impl CompilationUnit {
             for (func_id, func) in &mir_module.functions {
                 // Only add non-empty CFG functions (skip forward refs/stubs)
                 if !func.cfg.blocks.is_empty() {
-                    self.stdlib_function_name_map.insert(func.name.clone(), *func_id);
+                    self.stdlib_function_name_map
+                        .insert(func.name.clone(), *func_id);
                     debug!("DEBUG: [NAME MAP] Added '{}' -> {:?}", func.name, func_id);
                     added_count += 1;
                 } else {
-                    debug!("DEBUG: [NAME MAP SKIP] '{}' has empty CFG (forward ref/stub)", func.name);
+                    debug!(
+                        "DEBUG: [NAME MAP SKIP] '{}' has empty CFG (forward ref/stub)",
+                        func.name
+                    );
                     skipped_count += 1;
                 }
             }
-            debug!("DEBUG: [NAME MAP] {} added, {} skipped for {}", added_count, skipped_count, filename);
+            debug!(
+                "DEBUG: [NAME MAP] {} added, {} skipped for {}",
+                added_count, skipped_count, filename
+            );
         }
 
         // Only skip EXTERN stdlib files (those with Rust implementations in build_stdlib).
         // Pure Haxe stdlib files (like ArrayIterator) must compile when imported.
-        let is_extern_stdlib_file =
-            filename.contains("rayzor/concurrent/") ||
+        let is_extern_stdlib_file = filename.contains("rayzor/concurrent/") ||
             filename.contains("rayzor\\concurrent\\") ||  // Windows compatibility
             // Also skip core types that have Rust implementations
             (filename.contains("haxe-std") && (
@@ -2398,10 +2693,14 @@ impl CompilationUnit {
             ));
 
         if is_extern_stdlib_file {
-            debug!("DEBUG: Skipping MIR module creation for EXTERN stdlib file: {}", filename);
+            debug!(
+                "DEBUG: Skipping MIR module creation for EXTERN stdlib file: {}",
+                filename
+            );
             // Extern stdlib files have Rust implementations in build_stdlib().
             // The Haxe files are just type declarations.
-            self.compiled_files.insert(filename.to_string(), typed_file.clone());
+            self.compiled_files
+                .insert(filename.to_string(), typed_file.clone());
             return Ok(typed_file);
         }
 
@@ -2414,8 +2713,12 @@ impl CompilationUnit {
         // DEBUG: Check a specific extern function signature before renumbering
         for (func_id, func) in &stdlib_mir.functions {
             if func.name == "rayzor_channel_init" {
-                debug!("DEBUG: BEFORE renumbering - rayzor_channel_init (ID {}): params={}, extern={}",
-                          func_id.0, func.signature.parameters.len(), func.cfg.blocks.is_empty());
+                debug!(
+                    "DEBUG: BEFORE renumbering - rayzor_channel_init (ID {}): params={}, extern={}",
+                    func_id.0,
+                    func.signature.parameters.len(),
+                    func.cfg.blocks.is_empty()
+                );
             }
         }
 
@@ -2427,7 +2730,10 @@ impl CompilationUnit {
         // Without renumbering, stdlib's "free" would be skipped, causing vec_u8_free to call "indexOf"!
 
         // DEBUG: Print user functions before merging
-        debug!("DEBUG: User module has {} functions before merging:", mir_module.functions.len());
+        debug!(
+            "DEBUG: User module has {} functions before merging:",
+            mir_module.functions.len()
+        );
         let mut user_func_ids: Vec<_> = mir_module.functions.keys().collect();
         user_func_ids.sort_by_key(|id| id.0);
         for func_id in user_func_ids.iter().take(5) {
@@ -2436,12 +2742,16 @@ impl CompilationUnit {
         }
 
         // Find the maximum function ID in the user module
-        let max_user_func_id = mir_module.functions.keys()
+        let max_user_func_id = mir_module
+            .functions
+            .keys()
             .map(|id| id.0)
             .max()
             .unwrap_or(0);
 
-        let max_user_extern_id = mir_module.extern_functions.keys()
+        let max_user_extern_id = mir_module
+            .extern_functions
+            .keys()
             .map(|id| id.0)
             .max()
             .unwrap_or(0);
@@ -2452,8 +2762,8 @@ impl CompilationUnit {
                   offset, max_user_func_id, max_user_extern_id);
 
         // Build mapping of old stdlib IDs to new renumbered IDs
-        use std::collections::HashMap;
         use crate::ir::IrFunctionId;
+        use std::collections::HashMap;
         let mut id_mapping: HashMap<IrFunctionId, IrFunctionId> = HashMap::new();
 
         // Note: extern_functions is not used - externs are in the functions map with empty CFGs
@@ -2481,22 +2791,28 @@ impl CompilationUnit {
                     match inst {
                         IrInstruction::CallDirect { func_id, .. } => {
                             if let Some(&new_func_id) = id_mapping.get(func_id) {
-                                debug!("DEBUG: Updated CallDirect in {} from func_id {} -> {}",
-                                          func.name, func_id.0, new_func_id.0);
+                                debug!(
+                                    "DEBUG: Updated CallDirect in {} from func_id {} -> {}",
+                                    func.name, func_id.0, new_func_id.0
+                                );
                                 *func_id = new_func_id;
                             }
                         }
                         IrInstruction::FunctionRef { func_id, .. } => {
                             if let Some(&new_func_id) = id_mapping.get(func_id) {
-                                debug!("DEBUG: Updated FunctionRef in {} from func_id {} -> {}",
-                                          func.name, func_id.0, new_func_id.0);
+                                debug!(
+                                    "DEBUG: Updated FunctionRef in {} from func_id {} -> {}",
+                                    func.name, func_id.0, new_func_id.0
+                                );
                                 *func_id = new_func_id;
                             }
                         }
                         IrInstruction::MakeClosure { func_id, .. } => {
                             if let Some(&new_func_id) = id_mapping.get(func_id) {
-                                debug!("DEBUG: Updated MakeClosure in {} from func_id {} -> {}",
-                                          func.name, func_id.0, new_func_id.0);
+                                debug!(
+                                    "DEBUG: Updated MakeClosure in {} from func_id {} -> {}",
+                                    func.name, func_id.0, new_func_id.0
+                                );
                                 *func_id = new_func_id;
                             }
                         }
@@ -2506,8 +2822,10 @@ impl CompilationUnit {
             }
 
             renumbered_functions.insert(new_id, func);
-            debug!("DEBUG: Renumbered function '{}': {} -> {}",
-                      renumbered_functions[&new_id].name, old_id.0, new_id.0);
+            debug!(
+                "DEBUG: Renumbered function '{}': {} -> {}",
+                renumbered_functions[&new_id].name, old_id.0, new_id.0
+            );
         }
 
         // Merge renumbered stdlib functions - no collisions possible now!
@@ -2531,13 +2849,18 @@ impl CompilationUnit {
 
         for (func_id, func) in &renumbered_functions {
             if let Some(&existing_id) = user_func_name_to_id.get(&func.name) {
-                debug!("DEBUG: Will replace user function '{}' (ID {}) with stdlib version (ID {})",
-                          func.name, existing_id.0, func_id.0);
+                debug!(
+                    "DEBUG: Will replace user function '{}' (ID {}) with stdlib version (ID {})",
+                    func.name, existing_id.0, func_id.0
+                );
                 id_replacements.insert(existing_id, *func_id);
             }
         }
 
-        debug!("DEBUG: ID replacement map has {} entries:", id_replacements.len());
+        debug!(
+            "DEBUG: ID replacement map has {} entries:",
+            id_replacements.len()
+        );
         for (old_id, new_id) in &id_replacements {
             if let Some(func) = mir_module.functions.get(old_id) {
                 debug!("  {} (ID {}) -> ID {}", func.name, old_id.0, new_id.0);
@@ -2550,8 +2873,12 @@ impl CompilationUnit {
         for (func_id, func) in renumbered_functions {
             // DEBUG: Check signature after renumbering
             if func.name == "rayzor_channel_init" {
-                debug!("DEBUG: AFTER renumbering - rayzor_channel_init (ID {}): params={}, extern={}",
-                          func_id.0, func.signature.parameters.len(), func.cfg.blocks.is_empty());
+                debug!(
+                    "DEBUG: AFTER renumbering - rayzor_channel_init (ID {}): params={}, extern={}",
+                    func_id.0,
+                    func.signature.parameters.len(),
+                    func.cfg.blocks.is_empty()
+                );
             }
 
             // If this function replaces an existing one, remove the old one
@@ -2569,24 +2896,39 @@ impl CompilationUnit {
                 for block in caller_func.cfg.blocks.values_mut() {
                     for instr in &mut block.instructions {
                         match instr {
-                            IrInstruction::CallDirect { func_id: ref mut called_func_id, .. } => {
+                            IrInstruction::CallDirect {
+                                func_id: ref mut called_func_id,
+                                ..
+                            } => {
                                 if let Some(&new_id) = id_replacements.get(called_func_id) {
-                                    debug!("DEBUG: Updated CallDirect in {} from func_id {} -> {}",
-                                              caller_func.name, called_func_id.0, new_id.0);
+                                    debug!(
+                                        "DEBUG: Updated CallDirect in {} from func_id {} -> {}",
+                                        caller_func.name, called_func_id.0, new_id.0
+                                    );
                                     *called_func_id = new_id;
                                 }
                             }
-                            IrInstruction::FunctionRef { func_id: ref mut ref_func_id, .. } => {
+                            IrInstruction::FunctionRef {
+                                func_id: ref mut ref_func_id,
+                                ..
+                            } => {
                                 if let Some(&new_id) = id_replacements.get(ref_func_id) {
-                                    debug!("DEBUG: Updated FunctionRef in {} from func_id {} -> {}",
-                                              caller_func.name, ref_func_id.0, new_id.0);
+                                    debug!(
+                                        "DEBUG: Updated FunctionRef in {} from func_id {} -> {}",
+                                        caller_func.name, ref_func_id.0, new_id.0
+                                    );
                                     *ref_func_id = new_id;
                                 }
                             }
-                            IrInstruction::MakeClosure { func_id: ref mut closure_func_id, .. } => {
+                            IrInstruction::MakeClosure {
+                                func_id: ref mut closure_func_id,
+                                ..
+                            } => {
                                 if let Some(&new_id) = id_replacements.get(closure_func_id) {
-                                    debug!("DEBUG: Updated MakeClosure in {} from func_id {} -> {}",
-                                              caller_func.name, closure_func_id.0, new_id.0);
+                                    debug!(
+                                        "DEBUG: Updated MakeClosure in {} from func_id {} -> {}",
+                                        caller_func.name, closure_func_id.0, new_id.0
+                                    );
                                     *closure_func_id = new_id;
                                 }
                             }
@@ -2598,13 +2940,21 @@ impl CompilationUnit {
         }
 
         // DEBUG: Print all function IDs in the merged module
-        debug!("DEBUG: Merged module has {} functions:", mir_module.functions.len());
+        debug!(
+            "DEBUG: Merged module has {} functions:",
+            mir_module.functions.len()
+        );
         let mut func_ids: Vec<_> = mir_module.functions.keys().collect();
         func_ids.sort_by_key(|id| id.0);
-        for func_id in func_ids.iter().take(10) {  // Print first 10
+        for func_id in func_ids.iter().take(10) {
+            // Print first 10
             let func = &mir_module.functions[func_id];
-            debug!("  - IrFunctionId({}) = '{}' (extern: {})",
-                      func_id.0, func.name, func.cfg.blocks.is_empty());
+            debug!(
+                "  - IrFunctionId({}) = '{}' (extern: {})",
+                func_id.0,
+                func.name,
+                func.cfg.blocks.is_empty()
+            );
         }
 
         // Run monomorphization pass to specialize generic functions
@@ -2622,14 +2972,19 @@ impl CompilationUnit {
         self.mir_modules.push(std::sync::Arc::new(mir_module));
 
         // Mark as successfully compiled to prevent redundant recompilation
-        self.compiled_files.insert(filename.to_string(), typed_file.clone());
+        self.compiled_files
+            .insert(filename.to_string(), typed_file.clone());
 
         Ok(typed_file)
     }
 
     /// Compile a single file using shared state (backward-compatible wrapper)
-    
-    fn compile_file_with_shared_state(&mut self, filename: &str, source: &str) -> Result<TypedFile, Vec<CompilationError>> {
+
+    fn compile_file_with_shared_state(
+        &mut self,
+        filename: &str,
+        source: &str,
+    ) -> Result<TypedFile, Vec<CompilationError>> {
         self.compile_file_with_shared_state_ex(filename, source, false)
     }
 
@@ -2651,9 +3006,8 @@ impl CompilationUnit {
     /// the file that should contain it based on qualified path resolution.
     ///
     /// IMPORTANT: On error, this automatically prints formatted diagnostics to stderr
-    
-    pub fn lower_to_tast(&mut self) -> Result<Vec<TypedFile>, Vec<CompilationError>> {
 
+    pub fn lower_to_tast(&mut self) -> Result<Vec<TypedFile>, Vec<CompilationError>> {
         // Step 0: Discover @:hlNative metadata in user files and load HDLL plugins
         self.discover_and_load_hdlls();
 
@@ -2672,25 +3026,34 @@ impl CompilationUnit {
         // Step 2: Pre-load stdlib files for explicit imports AND using statements in user files
         // This ensures typedefs like sys.FileStat are available before compilation
         // Also handles root-level imports like "import StringTools;" and "using StringTools;"
-        let (imports_to_load, usings_to_load): (Vec<String>, Vec<String>) = self.user_files.iter()
-            .filter_map(|file| file.input.as_ref().map(|source| (file.filename.clone(), source.clone())))
-            .fold((Vec::new(), Vec::new()), |(mut imports, mut usings), (filename, source)| {
-                if let Ok(ast) = parser::parse_haxe_file(&filename, &source, false) {
-                    // Collect imports
-                    for import in &ast.imports {
-                        if !import.path.is_empty() {
-                            imports.push(import.path.join("."));
+        let (imports_to_load, usings_to_load): (Vec<String>, Vec<String>) = self
+            .user_files
+            .iter()
+            .filter_map(|file| {
+                file.input
+                    .as_ref()
+                    .map(|source| (file.filename.clone(), source.clone()))
+            })
+            .fold(
+                (Vec::new(), Vec::new()),
+                |(mut imports, mut usings), (filename, source)| {
+                    if let Ok(ast) = parser::parse_haxe_file(&filename, &source, false) {
+                        // Collect imports
+                        for import in &ast.imports {
+                            if !import.path.is_empty() {
+                                imports.push(import.path.join("."));
+                            }
+                        }
+                        // Collect using statements (static extensions)
+                        for using in &ast.using {
+                            if !using.path.is_empty() {
+                                usings.push(using.path.join("."));
+                            }
                         }
                     }
-                    // Collect using statements (static extensions)
-                    for using in &ast.using {
-                        if !using.path.is_empty() {
-                            usings.push(using.path.join("."));
-                        }
-                    }
-                }
-                (imports, usings)
-            });
+                    (imports, usings)
+                },
+            );
 
         // Pre-load imports using efficient topological loading (avoids retry loops)
         let mut all_imports = imports_to_load;
@@ -2698,7 +3061,9 @@ impl CompilationUnit {
         let _ = self.load_imports_efficiently(&all_imports);
 
         // Step 3: Compile import.hx files using SHARED state
-        let import_sources: Vec<(String, String)> = self.import_hx_files.iter()
+        let import_sources: Vec<(String, String)> = self
+            .import_hx_files
+            .iter()
             .filter_map(|f| f.input.as_ref().map(|s| (f.filename.clone(), s.clone())))
             .collect();
 
@@ -2715,13 +3080,16 @@ impl CompilationUnit {
 
         // Step 4: Compile user files in dependency order using SHARED state
         // This ensures user files can see symbols from stdlib and other user files
-        let user_sources: Vec<(String, String)> = analysis.compilation_order.iter()
+        let user_sources: Vec<(String, String)> = analysis
+            .compilation_order
+            .iter()
             .filter_map(|&idx| {
                 let file = &self.user_files[idx];
-                file.input.as_ref().map(|s| (file.filename.clone(), s.clone()))
+                file.input
+                    .as_ref()
+                    .map(|s| (file.filename.clone(), s.clone()))
             })
             .collect();
-
 
         for (filename, source) in user_sources {
             match self.compile_file_with_shared_state(&filename, &source) {
@@ -2731,7 +3099,8 @@ impl CompilationUnit {
                 Err(errors) => {
                     // Check if any errors are unresolved types that we can try to load on-demand
                     let (loadable, other): (Vec<_>, Vec<_>) = errors.into_iter().partition(|e| {
-                        e.message.contains("Unresolved type") || e.message.contains("UnresolvedType")
+                        e.message.contains("Unresolved type")
+                            || e.message.contains("UnresolvedType")
                     });
 
                     // Try to load unresolved types on-demand
@@ -2766,16 +3135,24 @@ impl CompilationUnit {
                             Err(retry_errors) => {
                                 // Still failed after loading dependencies
                                 // Check if retry revealed NEW unresolved types that need loading
-                                let (retry_loadable, retry_other): (Vec<_>, Vec<_>) = retry_errors.into_iter().partition(|e| {
-                                    e.message.contains("Unresolved type") || e.message.contains("UnresolvedType")
-                                });
+                                let (retry_loadable, retry_other): (Vec<_>, Vec<_>) =
+                                    retry_errors.into_iter().partition(|e| {
+                                        e.message.contains("Unresolved type")
+                                            || e.message.contains("UnresolvedType")
+                                    });
 
                                 let mut retry_loaded = false;
                                 for error in retry_loadable {
-                                    if let Some(type_name) = self.extract_type_name_from_error(&error.message) {
+                                    if let Some(type_name) =
+                                        self.extract_type_name_from_error(&error.message)
+                                    {
                                         if !self.failed_type_loads.contains(&type_name) {
-                                            if let Err(load_err) = self.load_import_file(&type_name) {
-                                                debug!("On-demand load failed for {}: {}", type_name, load_err);
+                                            if let Err(load_err) = self.load_import_file(&type_name)
+                                            {
+                                                debug!(
+                                                    "On-demand load failed for {}: {}",
+                                                    type_name, load_err
+                                                );
                                                 self.failed_type_loads.insert(type_name.clone());
                                                 all_errors.push(error);
                                             } else {
@@ -2791,7 +3168,10 @@ impl CompilationUnit {
 
                                 // If we loaded more dependencies on retry, try ONE more time
                                 if retry_loaded {
-                                    debug!("  Second retry of {} after loading more dependencies...", filename);
+                                    debug!(
+                                        "  Second retry of {} after loading more dependencies...",
+                                        filename
+                                    );
                                     match self.compile_file_with_shared_state(&filename, &source) {
                                         Ok(typed_file) => {
                                             all_typed_files.push(typed_file);
@@ -2843,7 +3223,8 @@ impl CompilationUnit {
             }
         } else if let Some(start) = message.find("Unresolved type: ") {
             let start = start + "Unresolved type: ".len();
-            let end = message[start..].find(|c: char| !c.is_alphanumeric() && c != '.')
+            let end = message[start..]
+                .find(|c: char| !c.is_alphanumeric() && c != '.')
                 .unwrap_or(message.len() - start);
             Some(message[start..start + end].to_string())
         } else {
@@ -2857,7 +3238,13 @@ impl CompilationUnit {
         // These should NOT be treated as importable types
         if let Some(ref name) = type_name {
             // Skip single uppercase letter type parameters
-            if name.len() == 1 && name.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false) {
+            if name.len() == 1
+                && name
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_uppercase())
+                    .unwrap_or(false)
+            {
                 return None;
             }
             // Skip common generic type parameter patterns
@@ -2865,7 +3252,11 @@ impl CompilationUnit {
                 return None;
             }
             // Skip built-in typedefs from StdTypes.hx (these are already loaded)
-            if name == "Iterator" || name == "KeyValueIterator" || name == "Iterable" || name == "KeyValueIterable" {
+            if name == "Iterator"
+                || name == "KeyValueIterator"
+                || name == "Iterable"
+                || name == "KeyValueIterable"
+            {
                 debug!("  Filtering out StdTypes typedef: {}", name);
                 return None;
             }
@@ -2907,8 +3298,10 @@ impl CompilationUnit {
                 // Cache is stale if source was modified after cache was created
                 if source_timestamp > metadata.compile_timestamp {
                     if self.config.enable_cache {
-                        debug!("Cache stale for {:?} (source: {}, cache: {})",
-                                 source_path, source_timestamp, metadata.compile_timestamp);
+                        debug!(
+                            "Cache stale for {:?} (source: {}, cache: {})",
+                            source_path, source_timestamp, metadata.compile_timestamp
+                        );
                     }
                     return None;
                 }
@@ -2919,8 +3312,10 @@ impl CompilationUnit {
         let current_version = env!("CARGO_PKG_VERSION");
         if metadata.compiler_version != current_version {
             if self.config.enable_cache {
-                debug!("Cache version mismatch for {:?} (cache: {}, current: {})",
-                         source_path, metadata.compiler_version, current_version);
+                debug!(
+                    "Cache version mismatch for {:?} (cache: {}, current: {})",
+                    source_path, metadata.compiler_version, current_version
+                );
             }
             return None;
         }
@@ -3000,7 +3395,7 @@ impl CompilationUnit {
     /// Print compilation errors with formatted diagnostics to stderr
     /// Uses the diagnostics crate's ErrorFormatter for consistent formatting
     fn print_compilation_errors(&self, errors: &[CompilationError]) {
-        use diagnostics::{SourceMap, ErrorFormatter};
+        use diagnostics::{ErrorFormatter, SourceMap};
 
         // Build source map with all parsed files
         let mut source_map = SourceMap::new();
@@ -3091,10 +3486,13 @@ impl CompilationUnit {
             for decl in &file.declarations {
                 if let parser::TypeDeclaration::Class(class_decl) = decl {
                     if let Some(lib_name) = Self::extract_hl_native_meta(&class_decl.meta) {
-                        let methods: Vec<(String, bool)> = class_decl.fields.iter()
+                        let methods: Vec<(String, bool)> = class_decl
+                            .fields
+                            .iter()
                             .filter_map(|field| {
                                 if let parser::ClassFieldKind::Function(func) = &field.kind {
-                                    let is_static = field.modifiers.contains(&parser::Modifier::Static);
+                                    let is_static =
+                                        field.modifiers.contains(&parser::Modifier::Static);
                                     Some((func.name.clone(), is_static))
                                 } else {
                                     None
@@ -3105,7 +3503,9 @@ impl CompilationUnit {
                         if !methods.is_empty() {
                             info!(
                                 "Found @:hlNative(\"{}\") on class '{}' with {} methods",
-                                lib_name, class_decl.name, methods.len()
+                                lib_name,
+                                class_decl.name,
+                                methods.len()
                             );
                             hl_native_classes.push((lib_name, class_decl.name.clone(), methods));
                         }
@@ -3121,13 +3521,17 @@ impl CompilationUnit {
                 continue;
             }
 
-            let method_refs: Vec<(&str, bool)> = methods.iter()
+            let method_refs: Vec<(&str, bool)> = methods
+                .iter()
                 .map(|(name, is_static)| (name.as_str(), *is_static))
                 .collect();
 
             if let Some(hdll_path) = self.find_hdll(&lib_name) {
                 match HdllPlugin::load_with_introspection(
-                    &hdll_path, &lib_name, &class_name, &method_refs,
+                    &hdll_path,
+                    &lib_name,
+                    &class_name,
+                    &method_refs,
                 ) {
                     Ok(plugin) => {
                         for (name, ptr) in plugin.get_symbols() {
@@ -3182,10 +3586,7 @@ impl CompilationUnit {
                 format!("{}.dylib", lib_name),
             ]
         } else if cfg!(target_os = "windows") {
-            vec![
-                format!("{}.hdll", lib_name),
-                format!("{}.dll", lib_name),
-            ]
+            vec![format!("{}.hdll", lib_name), format!("{}.dll", lib_name)]
         } else {
             vec![
                 format!("{}.hdll", lib_name),
@@ -3253,7 +3654,8 @@ mod tests {
             }
         "#;
 
-        unit.add_file(source, "MyClass.hx").expect("Failed to add file");
+        unit.add_file(source, "MyClass.hx")
+            .expect("Failed to add file");
 
         assert_eq!(unit.user_files.len(), 1);
         assert_eq!(unit.stdlib_files.len(), 0);
@@ -3279,7 +3681,8 @@ mod tests {
             }
         "#;
 
-        unit.add_file(source, "MyClass.hx").expect("Failed to add file");
+        unit.add_file(source, "MyClass.hx")
+            .expect("Failed to add file");
 
         // Lower to TAST - this should succeed now with proper stdlib propagation
         let typed_files = unit.lower_to_tast().expect("Failed to lower to TAST");

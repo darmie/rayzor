@@ -3,21 +3,12 @@
 //! This module provides an improved version of the incremental parser that
 //! collects rich diagnostics instead of simple error strings.
 
-use diagnostics::{
-    SourceMap, SourceSpan, SourcePosition, FileId, Diagnostics
-};
+use diagnostics::{Diagnostics, FileId, SourceMap, SourcePosition, SourceSpan};
 
 use crate::enhanced_context::HaxeDiagnostics;
 use crate::haxe_ast::HaxeFile;
-use crate::haxe_parser_decls;
-use nom::{
-    combinator::peek,
-    bytes::complete::tag,
-    character::complete::multispace0,
-    sequence::preceded,
-    branch::alt,
-    IResult,
-};
+use nom::character::complete::multispace0;
+use nom::IResult;
 
 /// Result of enhanced incremental parsing
 #[derive(Debug)]
@@ -30,24 +21,24 @@ pub struct EnhancedParseResult {
 impl EnhancedParseResult {
     pub fn new(file_name: String, input: &str) -> Self {
         let mut source_map = SourceMap::new();
-        let file_id = source_map.add_file(file_name, input.to_string());
-        
+        let _file_id = source_map.add_file(file_name, input.to_string());
+
         Self {
             file: None,
             diagnostics: Diagnostics::new(),
             source_map,
         }
     }
-    
+
     pub fn with_file(mut self, file: HaxeFile) -> Self {
         self.file = Some(file);
         self
     }
-    
+
     pub fn add_diagnostic(&mut self, diagnostic: diagnostics::Diagnostic) {
         self.diagnostics.push(diagnostic);
     }
-    
+
     pub fn has_errors(&self) -> bool {
         self.diagnostics.has_errors()
     }
@@ -57,8 +48,8 @@ impl EnhancedParseResult {
 pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> EnhancedParseResult {
     let mut result = EnhancedParseResult::new(file_name.to_string(), input);
     let file_id = FileId::new(0); // First file in source map
-    // let mut collector = ContextErrorCollector::new(file_id);
-    
+                                  // let mut collector = ContextErrorCollector::new(file_id);
+
     // Always run style validation for enhanced diagnostics
     validate_source_style(input, &mut result, file_id);
 
@@ -66,59 +57,91 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> EnhancedPar
     if let Ok(file) = crate::haxe_parser::parse_haxe_file(file_name, input, false) {
         return result.with_file(file);
     }
-    
+
     // If full parsing fails, try incremental parsing with enhanced diagnostics
     let mut current_input = input;
     let mut byte_offset = 0;
     let mut line_number = 1;
     let mut column_number = 1;
-    
+
     while !current_input.trim().is_empty() {
         // Try to identify the next declaration type
         let declaration_result = identify_next_declaration(current_input);
-        
+
         match declaration_result {
             Ok((remaining, decl_type)) => {
                 let consumed = current_input.len() - remaining.len();
-                
+
                 // Try to parse this specific declaration
                 match parse_single_declaration(current_input, &decl_type) {
                     Ok((new_remaining, _)) => {
                         // Successfully parsed declaration
                         let new_consumed = current_input.len() - new_remaining.len();
-                        update_position(&mut byte_offset, &mut line_number, &mut column_number, 
-                                      &current_input[..new_consumed]);
+                        update_position(
+                            &mut byte_offset,
+                            &mut line_number,
+                            &mut column_number,
+                            &current_input[..new_consumed],
+                        );
                         current_input = new_remaining;
                     }
                     Err(_) => {
                         // Failed to parse declaration - create enhanced diagnostic
-                        let span = create_span_for_error(line_number, column_number, byte_offset, consumed, file_id);
-                        let diagnostic = create_enhanced_diagnostic_for_declaration(&decl_type, span, current_input);
+                        let span = create_span_for_error(
+                            line_number,
+                            column_number,
+                            byte_offset,
+                            consumed,
+                            file_id,
+                        );
+                        let diagnostic = create_enhanced_diagnostic_for_declaration(
+                            &decl_type,
+                            span,
+                            current_input,
+                        );
                         result.add_diagnostic(diagnostic);
-                        
+
                         // Skip to next potential declaration
                         let (new_input, new_consumed) = skip_to_next_declaration(current_input);
-                        update_position(&mut byte_offset, &mut line_number, &mut column_number, 
-                                      &current_input[..new_consumed]);
+                        update_position(
+                            &mut byte_offset,
+                            &mut line_number,
+                            &mut column_number,
+                            &current_input[..new_consumed],
+                        );
                         current_input = new_input;
                     }
                 }
             }
             Err(_) => {
                 // Couldn't identify declaration type - create generic error
-                let span = create_span_for_error(line_number, column_number, byte_offset, 1, file_id);
+                let span =
+                    create_span_for_error(line_number, column_number, byte_offset, 1, file_id);
                 let diagnostic = HaxeDiagnostics::unexpected_token(
                     span,
-                    current_input.chars().next().unwrap_or(' ').to_string().as_str(),
-                    &["class".to_string(), "function".to_string(), "interface".to_string()],
+                    current_input
+                        .chars()
+                        .next()
+                        .unwrap_or(' ')
+                        .to_string()
+                        .as_str(),
+                    &[
+                        "class".to_string(),
+                        "function".to_string(),
+                        "interface".to_string(),
+                    ],
                 );
                 result.add_diagnostic(diagnostic);
-                
+
                 // Skip one character and continue
                 if let Some(ch) = current_input.chars().next() {
                     let char_len = ch.len_utf8();
-                    update_position(&mut byte_offset, &mut line_number, &mut column_number, 
-                                  &current_input[..char_len]);
+                    update_position(
+                        &mut byte_offset,
+                        &mut line_number,
+                        &mut column_number,
+                        &current_input[..char_len],
+                    );
                     current_input = &current_input[char_len..];
                 } else {
                     break;
@@ -126,18 +149,26 @@ pub fn parse_incrementally_enhanced(file_name: &str, input: &str) -> EnhancedPar
             }
         }
     }
-    
+
     // Add any diagnostics collected during context parsing
     // for diagnostic in collector.into_diagnostics() {
     //     result.add_diagnostic(diagnostic);
     // }
-    
+
     result
 }
 
 /// Strip access modifiers and other keywords from the beginning of a line
 fn strip_modifiers(s: &str) -> &str {
-    let modifiers = ["public ", "private ", "static ", "override ", "inline ", "extern ", "final "];
+    let modifiers = [
+        "public ",
+        "private ",
+        "static ",
+        "override ",
+        "inline ",
+        "extern ",
+        "final ",
+    ];
     let mut result = s;
     loop {
         let mut changed = false;
@@ -188,7 +219,10 @@ fn validate_source_style(input: &str, result: &mut EnhancedParseResult, file_id:
             let end_of_content = line.trim_end().len();
             let byte_pos = line_byte_offset + end_of_content;
             let span = create_span_for_error(line_number, end_of_content + 1, byte_pos, 1, file_id);
-            result.add_diagnostic(HaxeDiagnostics::missing_semicolon(span, "variable declaration"));
+            result.add_diagnostic(HaxeDiagnostics::missing_semicolon(
+                span,
+                "variable declaration",
+            ));
         }
 
         // Check for function declarations without opening brace
@@ -203,8 +237,13 @@ fn validate_source_style(input: &str, result: &mut EnhancedParseResult, file_id:
                 if !next_has_brace {
                     let end_of_content = line.trim_end().len();
                     let byte_pos = line_byte_offset + end_of_content;
-                    let span =
-                        create_span_for_error(line_number, end_of_content + 1, byte_pos, 1, file_id);
+                    let span = create_span_for_error(
+                        line_number,
+                        end_of_content + 1,
+                        byte_pos,
+                        1,
+                        file_id,
+                    );
                     result.add_diagnostic(HaxeDiagnostics::missing_closing_delimiter(
                         span.clone(),
                         span,
@@ -222,19 +261,29 @@ fn validate_source_style(input: &str, result: &mut EnhancedParseResult, file_id:
 fn identify_next_declaration(input: &str) -> IResult<&str, String> {
     let (input, _) = multispace0(input)?;
     let trimmed = input.trim_start();
-    
+
     let keywords = [
-        "package", "import", "using", "class", "interface", 
-        "enum", "typedef", "abstract", "function"
+        "package",
+        "import",
+        "using",
+        "class",
+        "interface",
+        "enum",
+        "typedef",
+        "abstract",
+        "function",
     ];
-    
+
     for keyword in &keywords {
         if trimmed.starts_with(keyword) {
             return Ok((input, keyword.to_string()));
         }
     }
-    
-    Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)))
+
+    Err(nom::Err::Error(nom::error::Error::new(
+        input,
+        nom::error::ErrorKind::Tag,
+    )))
 }
 
 /// Parse a single declaration based on its type
@@ -250,11 +299,11 @@ fn parse_single_declaration<'a>(
 
 /// Consume input until we find a delimiter that indicates end of declaration
 fn consume_until_delimiter(input: &str) -> IResult<&str, ()> {
-    let mut remaining = input;
+    let _remaining = input;
     let mut brace_depth = 0;
     let mut in_string = false;
     let mut chars = input.chars();
-    
+
     while let Some(ch) = chars.next() {
         match ch {
             '"' if !in_string => in_string = true,
@@ -276,7 +325,7 @@ fn consume_until_delimiter(input: &str) -> IResult<&str, ()> {
             _ => {}
         }
     }
-    
+
     // Consumed everything
     Ok(("", ()))
 }
@@ -294,7 +343,11 @@ fn create_enhanced_diagnostic_for_declaration(
             } else if input.matches('{').count() != input.matches('}').count() {
                 HaxeDiagnostics::missing_closing_delimiter(span.clone(), span, '}')
             } else {
-                HaxeDiagnostics::unexpected_token(span, "class", &["valid class declaration".to_string()])
+                HaxeDiagnostics::unexpected_token(
+                    span,
+                    "class",
+                    &["valid class declaration".to_string()],
+                )
             }
         }
         "function" => {
@@ -303,19 +356,25 @@ fn create_enhanced_diagnostic_for_declaration(
             } else if !input.contains(')') {
                 HaxeDiagnostics::missing_closing_delimiter(span.clone(), span, ')')
             } else {
-                HaxeDiagnostics::unexpected_token(span, "function", &["valid function declaration".to_string()])
+                HaxeDiagnostics::unexpected_token(
+                    span,
+                    "function",
+                    &["valid function declaration".to_string()],
+                )
             }
         }
         "import" => {
             if !input.contains(';') {
                 HaxeDiagnostics::missing_semicolon(span, "import statement")
             } else {
-                HaxeDiagnostics::unexpected_token(span, "import", &["valid import path".to_string()])
+                HaxeDiagnostics::unexpected_token(
+                    span,
+                    "import",
+                    &["valid import path".to_string()],
+                )
             }
         }
-        _ => {
-            HaxeDiagnostics::unexpected_token(span, decl_type, &["valid declaration".to_string()])
-        }
+        _ => HaxeDiagnostics::unexpected_token(span, decl_type, &["valid declaration".to_string()]),
     }
 }
 
@@ -353,8 +412,18 @@ fn update_position(
 /// Skip to the next potential declaration
 fn skip_to_next_declaration(input: &str) -> (&str, usize) {
     // Look for common declaration keywords
-    let keywords = ["class", "interface", "enum", "typedef", "abstract", "function", "package", "import", "using"];
-    
+    let keywords = [
+        "class",
+        "interface",
+        "enum",
+        "typedef",
+        "abstract",
+        "function",
+        "package",
+        "import",
+        "using",
+    ];
+
     for (i, line) in input.lines().enumerate() {
         let trimmed = line.trim();
         if keywords.iter().any(|&keyword| trimmed.starts_with(keyword)) {
@@ -363,7 +432,7 @@ fn skip_to_next_declaration(input: &str) -> (&str, usize) {
             return (&input[lines_to_skip..], lines_to_skip);
         }
     }
-    
+
     // No declaration found, consume everything
     ("", input.len())
 }
@@ -371,7 +440,7 @@ fn skip_to_next_declaration(input: &str) -> (&str, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_enhanced_parse_with_missing_semicolon() {
         let input = r#"
@@ -382,16 +451,19 @@ class Test {
     }
 }
 "#;
-        
+
         let result = parse_incrementally_enhanced("test.hx", input);
-        
+
         // Should have diagnostic for missing semicolon
-        assert!(result.diagnostics.len() > 0);
-        let has_semicolon_error = result.diagnostics.diagnostics.iter()
+        assert!(!result.diagnostics.is_empty());
+        let has_semicolon_error = result
+            .diagnostics
+            .diagnostics
+            .iter()
             .any(|d| d.code == Some("E0002".to_string()));
         assert!(has_semicolon_error);
     }
-    
+
     #[test]
     fn test_enhanced_parse_with_valid_code() {
         let input = r#"
@@ -402,29 +474,32 @@ class Test {
     }
 }
 "#;
-        
+
         let result = parse_incrementally_enhanced("test.hx", input);
-        
+
         // Should parse successfully with no errors
         assert!(!result.has_errors());
         assert!(result.file.is_some());
     }
-    
+
     #[test]
     fn test_enhanced_parse_with_missing_braces() {
         let input = r#"
 class Test {
     var x = 1;
-    function test() 
+    function test()
         return x;
     }
 "#;
-        
+
         let result = parse_incrementally_enhanced("test.hx", input);
-        
+
         // Should have diagnostic for missing opening brace
-        assert!(result.diagnostics.len() > 0);
-        let has_brace_error = result.diagnostics.diagnostics.iter()
+        assert!(!result.diagnostics.is_empty());
+        let has_brace_error = result
+            .diagnostics
+            .diagnostics
+            .iter()
             .any(|d| d.code == Some("E0003".to_string()));
         assert!(has_brace_error);
     }

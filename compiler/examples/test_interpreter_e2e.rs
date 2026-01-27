@@ -1,15 +1,44 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! End-to-end test: Haxe source -> MIR -> Interpreter execution
 //!
 //! Demonstrates Phase 0 (Interpreter) instant startup with real Haxe code.
 //!
 //! Run with: cargo run --package compiler --example test_interpreter_e2e
 
-use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig};
 use compiler::codegen::profiling::ProfileConfig;
+use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig};
 use compiler::codegen::InterpValue;
 use compiler::compilation::{CompilationConfig, CompilationUnit};
 use compiler::ir::IrModule;
-use rayzor_runtime;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -129,8 +158,10 @@ class Main {
     println!("  JIT total time: {:?}", jit_time);
 
     if interp_time < jit_time {
-        println!("  Interpreter was {:.1}x faster to start",
-                 jit_time.as_micros() as f64 / interp_time.as_micros() as f64);
+        println!(
+            "  Interpreter was {:.1}x faster to start",
+            jit_time.as_micros() as f64 / interp_time.as_micros() as f64
+        );
     }
 }
 
@@ -181,7 +212,7 @@ fn compile_and_run_interpreted(source: &str, name: &str) -> Result<(), String> {
     // Create tiered backend in interpreted mode
     let config = TieredConfig {
         profile_config: ProfileConfig {
-            interpreter_threshold: 1000,  // High threshold - stay interpreted
+            interpreter_threshold: 1000, // High threshold - stay interpreted
             warm_threshold: 10000,
             hot_threshold: 100000,
             blazing_threshold: 1000000,
@@ -191,7 +222,8 @@ fn compile_and_run_interpreted(source: &str, name: &str) -> Result<(), String> {
         optimization_check_interval_ms: 1000,
         max_parallel_optimizations: 1,
         verbosity: 0,
-        start_interpreted: true,  // Start in interpreter mode
+        start_interpreted: true, // Start in interpreter mode
+        bailout_strategy: compiler::codegen::BailoutStrategy::Quick,
     };
 
     let mut backend = TieredBackend::with_symbols(config, &symbols_ref)
@@ -199,16 +231,21 @@ fn compile_and_run_interpreted(source: &str, name: &str) -> Result<(), String> {
 
     // Find the module containing main first, then load only that one
     // (since TieredBackend only stores one module at a time)
-    let main_module = mir_modules.iter().rev()
-        .find(|m| m.functions.values().any(|f|
-            f.name == "main" || f.name == "Main_main" || f.name.ends_with("_main")))
+    let main_module = mir_modules
+        .iter()
+        .rev()
+        .find(|m| {
+            m.functions
+                .values()
+                .any(|f| f.name == "main" || f.name == "Main_main" || f.name.ends_with("_main"))
+        })
         .ok_or("No module with main function found")?;
 
-    let main_func_id = find_main_function(&main_module)
-        .ok_or("Main function not found")?;
+    let main_func_id = find_main_function(&main_module).ok_or("Main function not found")?;
 
     // Load the main module
-    backend.compile_module((**main_module).clone())
+    backend
+        .compile_module((**main_module).clone())
         .map_err(|e| format!("Failed to load module: {}", e))?;
 
     let setup_time = t1.elapsed();
@@ -220,13 +257,13 @@ fn compile_and_run_interpreted(source: &str, name: &str) -> Result<(), String> {
     match result {
         Ok(_) => {
             let exec_time = t2.elapsed();
-            eprintln!("  [{}] compile={:?}, setup={:?}, exec={:?}",
-                     name, compile_time, setup_time, exec_time);
+            eprintln!(
+                "  [{}] compile={:?}, setup={:?}, exec={:?}",
+                name, compile_time, setup_time, exec_time
+            );
             Ok(())
         }
-        Err(e) => {
-            Err(format!("Execution failed: {}", e))
-        }
+        Err(e) => Err(format!("Execution failed: {:?}", e)),
     }
 }
 
@@ -252,7 +289,8 @@ fn compile_and_run_jit(source: &str, name: &str) -> Result<(), String> {
 
     // Compile all modules
     for module in &mir_modules {
-        backend.compile_module(&module)
+        backend
+            .compile_module(&module)
             .map_err(|e| format!("Failed to compile module: {}", e))?;
     }
 
@@ -264,8 +302,10 @@ fn compile_and_run_jit(source: &str, name: &str) -> Result<(), String> {
     for module in mir_modules.iter().rev() {
         if backend.call_main(&module).is_ok() {
             let exec_time = t2.elapsed();
-            eprintln!("  [{}] compile={:?}, jit={:?}, exec={:?}",
-                     name, compile_time, jit_time, exec_time);
+            eprintln!(
+                "  [{}] compile={:?}, jit={:?}, exec={:?}",
+                name, compile_time, jit_time, exec_time
+            );
             return Ok(());
         }
     }
@@ -281,13 +321,18 @@ fn compile_to_mir_fast(source: &str, name: &str) -> Result<Vec<Arc<IrModule>>, S
     compile_to_mir_with_config(source, name, CompilationConfig::fast())
 }
 
-fn compile_to_mir_with_config(source: &str, name: &str, config: CompilationConfig) -> Result<Vec<Arc<IrModule>>, String> {
+fn compile_to_mir_with_config(
+    source: &str,
+    name: &str,
+    config: CompilationConfig,
+) -> Result<Vec<Arc<IrModule>>, String> {
     let t0 = Instant::now();
     let mut unit = CompilationUnit::new(config);
 
     // Load stdlib
     let t1 = Instant::now();
-    unit.load_stdlib().map_err(|e| format!("Failed to load stdlib: {}", e))?;
+    unit.load_stdlib()
+        .map_err(|e| format!("Failed to load stdlib: {}", e))?;
     let stdlib_time = t1.elapsed();
 
     // Add source file
@@ -307,8 +352,14 @@ fn compile_to_mir_with_config(source: &str, name: &str, config: CompilationConfi
     let mir_modules = unit.get_mir_modules();
     let mir_time = t4.elapsed();
 
-    eprintln!("    [compile breakdown] stdlib={:?}, parse={:?}, tast={:?}, mir={:?}, total={:?}",
-        stdlib_time, add_file_time, tast_time, mir_time, t0.elapsed());
+    eprintln!(
+        "    [compile breakdown] stdlib={:?}, parse={:?}, tast={:?}, mir={:?}, total={:?}",
+        stdlib_time,
+        add_file_time,
+        tast_time,
+        mir_time,
+        t0.elapsed()
+    );
 
     if mir_modules.is_empty() {
         return Err("No MIR modules generated".to_string());

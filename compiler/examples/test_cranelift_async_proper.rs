@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 /// PROPER Cranelift async runtime test - JIT compiles and calls runtime
 ///
 /// This test ACTUALLY proves that:
@@ -6,10 +36,9 @@
 /// 3. Multiple await points work from JIT-compiled code
 ///
 /// No shortcuts - this is real JIT compilation calling real runtime.
-
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{Linkage, Module, FuncId};
+use cranelift_module::{FuncId, Linkage, Module};
 use cranelift_native;
 
 // Runtime functions that will be called from JIT code
@@ -27,7 +56,10 @@ extern "C" fn async_create_promise() -> i64 {
 extern "C" fn async_await_promise(promise_id: i64) -> i64 {
     println!("  → Runtime: Awaiting promise #{}", promise_id);
     let result = promise_id * 10 + 42;
-    println!("  → Runtime: Promise #{} resolved to {}", promise_id, result);
+    println!(
+        "  → Runtime: Promise #{} resolved to {}",
+        promise_id, result
+    );
     result
 }
 
@@ -52,8 +84,8 @@ fn test_single_await() -> Result<(), String> {
     println!("====================\n");
 
     // Create ISA
-    let isa_builder = cranelift_native::builder()
-        .map_err(|e| format!("ISA builder error: {}", e))?;
+    let isa_builder =
+        cranelift_native::builder().map_err(|e| format!("ISA builder error: {}", e))?;
     let isa = isa_builder
         .finish(settings::Flags::new(settings::builder()))
         .map_err(|e| format!("ISA creation error: {}", e))?;
@@ -67,7 +99,12 @@ fn test_single_await() -> Result<(), String> {
 
     // Declare runtime functions
     let create_func = declare_runtime_func(&mut module, "async_create_promise", &[], types::I64)?;
-    let await_func = declare_runtime_func(&mut module, "async_await_promise", &[types::I64], types::I64)?;
+    let await_func = declare_runtime_func(
+        &mut module,
+        "async_await_promise",
+        &[types::I64],
+        types::I64,
+    )?;
 
     // Create JIT function: () -> i64
     let mut sig = module.make_signature();
@@ -109,7 +146,9 @@ fn test_single_await() -> Result<(), String> {
         .define_function(func_id, &mut ctx)
         .map_err(|e| format!("Define error: {}", e))?;
     module.clear_context(&mut ctx);
-    module.finalize_definitions().map_err(|e| format!("Finalize error: {}", e))?;
+    module
+        .finalize_definitions()
+        .map_err(|e| format!("Finalize error: {}", e))?;
 
     // Execute JIT code
     let code_ptr = module.get_finalized_function(func_id);
@@ -134,8 +173,8 @@ fn test_multiple_awaits() -> Result<(), String> {
     println!("========================\n");
 
     // Create ISA
-    let isa_builder = cranelift_native::builder()
-        .map_err(|e| format!("ISA builder error: {}", e))?;
+    let isa_builder =
+        cranelift_native::builder().map_err(|e| format!("ISA builder error: {}", e))?;
     let isa = isa_builder
         .finish(settings::Flags::new(settings::builder()))
         .map_err(|e| format!("ISA creation error: {}", e))?;
@@ -149,7 +188,12 @@ fn test_multiple_awaits() -> Result<(), String> {
 
     // Declare runtime functions
     let create_func = declare_runtime_func(&mut module, "async_create_promise", &[], types::I64)?;
-    let await_func = declare_runtime_func(&mut module, "async_await_promise", &[types::I64], types::I64)?;
+    let await_func = declare_runtime_func(
+        &mut module,
+        "async_await_promise",
+        &[types::I64],
+        types::I64,
+    )?;
 
     // Create JIT function: () -> i64
     let mut sig = module.make_signature();
@@ -198,7 +242,9 @@ fn test_multiple_awaits() -> Result<(), String> {
         .define_function(func_id, &mut ctx)
         .map_err(|e| format!("Define error: {}", e))?;
     module.clear_context(&mut ctx);
-    module.finalize_definitions().map_err(|e| format!("Finalize error: {}", e))?;
+    module
+        .finalize_definitions()
+        .map_err(|e| format!("Finalize error: {}", e))?;
 
     // Execute JIT code
     let code_ptr = module.get_finalized_function(func_id);

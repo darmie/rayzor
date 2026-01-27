@@ -1,11 +1,40 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 // Test for missing constructor validation in HIR lowering
 
-use compiler::ir::{hir::*, tast_to_hir::lower_tast_to_hir};
+use compiler::ir::tast_to_hir::lower_tast_to_hir;
 use compiler::tast::{
     ast_lowering::AstLowering, scopes::ScopeTree, StringInterner, SymbolTable, TypeTable,
 };
-use parser::haxe_parser::parse_haxe_file;
-use parser::{parse_haxe_file_with_diagnostics};
+use parser::parse_haxe_file_with_diagnostics;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -58,13 +87,16 @@ class Main {
     let mut symbol_table = SymbolTable::new();
     let type_table = Rc::new(RefCell::new(TypeTable::new()));
     let mut scope_tree = ScopeTree::new(compiler::tast::ScopeId::from_raw(0));
-    let mut namespace_resolver = compiler::tast::namespace::NamespaceResolver::new(&string_interner);
+    let mut namespace_resolver =
+        compiler::tast::namespace::NamespaceResolver::new(&string_interner);
     let mut import_resolver = compiler::tast::namespace::ImportResolver::new(&namespace_resolver);
 
     // Step 3: AST to TAST lowering
     println!("\n3. Lowering AST to TAST...");
+    let string_interner_rc = Rc::new(RefCell::new(StringInterner::new()));
     let mut ast_lowering = AstLowering::new(
         &mut string_interner,
+        string_interner_rc,
         &mut symbol_table,
         &type_table,
         &mut scope_tree,
@@ -76,18 +108,25 @@ class Main {
         Ok(tast) => {
             println!("   ✓ Successfully lowered to TAST");
             println!("   - Classes: {}", tast.classes.len());
-            
+
             for class in &tast.classes {
                 let class_name = string_interner.get(class.name).unwrap_or("?");
-                println!("     • Class '{}' with {} methods", class_name, class.methods.len());
-                
+                println!(
+                    "     • Class '{}' with {} methods",
+                    class_name,
+                    class.methods.len()
+                );
+
                 if !class.constructors.is_empty() {
-                    println!("       - Has constructor: YES ({} constructors)", class.constructors.len());
+                    println!(
+                        "       - Has constructor: YES ({} constructors)",
+                        class.constructors.len()
+                    );
                 } else {
                     println!("       - Has constructor: NO");
                 }
             }
-            
+
             tast
         }
         Err(error) => {

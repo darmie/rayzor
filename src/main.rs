@@ -230,7 +230,7 @@ enum Preset {
 }
 
 impl Preset {
-    fn to_tier_preset(&self) -> compiler::codegen::TierPreset {
+    fn to_tier_preset(self) -> compiler::codegen::TierPreset {
         match self {
             Preset::Script => compiler::codegen::TierPreset::Script,
             Preset::Application => compiler::codegen::TierPreset::Application,
@@ -246,35 +246,54 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Run { file, verbose, stats, tier, llvm, preset, cache, cache_dir, release } => {
-            run_file(file, verbose, stats, tier, llvm, preset, cache, cache_dir, release)
-        }
-        Commands::Jit { file, tier, show_cranelift, show_mir, profile } => {
-            jit_compile(file, tier, show_cranelift, show_mir, profile)
-        }
-        Commands::Check { file, show_types, format } => {
-            check_file(file, show_types, format)
-        }
-        Commands::Compile { file, stage, show_ir, output, cache, cache_dir, release } => {
-            compile_file(file, stage, show_ir, output, cache, cache_dir, release)
-        }
-        Commands::Build { file, verbose, output, dry_run } => {
-            build_hxml(file, verbose, output, dry_run)
-        }
+        Commands::Run {
+            file,
+            verbose,
+            stats,
+            tier,
+            llvm,
+            preset,
+            cache,
+            cache_dir,
+            release,
+        } => run_file(
+            file, verbose, stats, tier, llvm, preset, cache, cache_dir, release,
+        ),
+        Commands::Jit {
+            file,
+            tier,
+            show_cranelift,
+            show_mir,
+            profile,
+        } => jit_compile(file, tier, show_cranelift, show_mir, profile),
+        Commands::Check {
+            file,
+            show_types,
+            format,
+        } => check_file(file, show_types, format),
+        Commands::Compile {
+            file,
+            stage,
+            show_ir,
+            output,
+            cache,
+            cache_dir,
+            release,
+        } => compile_file(file, stage, show_ir, output, cache, cache_dir, release),
+        Commands::Build {
+            file,
+            verbose,
+            output,
+            dry_run,
+        } => build_hxml(file, verbose, output, dry_run),
         Commands::Info { features, tiers } => {
             show_info(features, tiers);
             Ok(())
         }
-        Commands::Cache { action } => {
-            match action {
-                CacheAction::Stats { cache_dir } => {
-                    cache_stats(cache_dir)
-                }
-                CacheAction::Clear { cache_dir } => {
-                    cache_clear(cache_dir)
-                }
-            }
-        }
+        Commands::Cache { action } => match action {
+            CacheAction::Stats { cache_dir } => cache_stats(cache_dir),
+            CacheAction::Clear { cache_dir } => cache_clear(cache_dir),
+        },
     };
 
     if let Err(e) = result {
@@ -287,11 +306,13 @@ fn main() {
 /// Uses CompilationUnit for proper multi-file, stdlib-aware compilation
 /// Returns the primary MIR module (user code)
 fn compile_haxe_to_mir(source: &str, filename: &str) -> Result<compiler::ir::IrModule, String> {
-    use compiler::compilation::{CompilationUnit, CompilationConfig};
+    use compiler::compilation::{CompilationConfig, CompilationUnit};
 
     // Create compilation unit with stdlib support
-    let mut config = CompilationConfig::default();
-    config.load_stdlib = true; // Enable stdlib for full Haxe compatibility
+    let config = CompilationConfig {
+        load_stdlib: true, // Enable stdlib for full Haxe compatibility
+        ..Default::default()
+    };
 
     let mut unit = CompilationUnit::new(config);
 
@@ -321,16 +342,34 @@ fn compile_haxe_to_mir(source: &str, filename: &str) -> Result<compiler::ir::IrM
     Ok(module)
 }
 
-fn run_file(file: PathBuf, verbose: bool, stats: bool, _tier: u8, llvm: bool, preset: Preset, cache: bool, cache_dir: Option<PathBuf>, release: bool) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+fn run_file(
+    file: PathBuf,
+    verbose: bool,
+    stats: bool,
+    _tier: u8,
+    llvm: bool,
+    preset: Preset,
+    cache: bool,
+    cache_dir: Option<PathBuf>,
+    release: bool,
+) -> Result<(), String> {
     use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig};
-    use compiler::compilation::{CompilationUnit, CompilationConfig};
+    use compiler::compilation::{CompilationConfig, CompilationUnit};
 
     let profile = if release { "release" } else { "debug" };
-    println!("🚀 Running {} [{}] [preset: {:?}]...", file.display(), profile, preset);
+    println!(
+        "🚀 Running {} [{}] [preset: {:?}]...",
+        file.display(),
+        profile,
+        preset
+    );
 
     #[cfg(not(feature = "llvm-backend"))]
     if llvm {
-        return Err("LLVM backend not available. Recompile with --features llvm-backend".to_string());
+        return Err(
+            "LLVM backend not available. Recompile with --features llvm-backend".to_string(),
+        );
     }
 
     // Read source file
@@ -345,21 +384,26 @@ fn run_file(file: PathBuf, verbose: bool, stats: bool, _tier: u8, llvm: bool, pr
     }
 
     // Create compilation unit with cache configuration
-    let mut config = CompilationConfig::default();
-    config.load_stdlib = false;
-    config.enable_cache = cache;
-    if let Some(dir) = cache_dir {
-        config.cache_dir = Some(dir);
+    let cache_dir_resolved = if let Some(dir) = cache_dir {
+        Some(dir)
     } else if cache {
-        // Use profile-specific cache directory
-        config.cache_dir = Some(CompilationConfig::get_profile_cache_dir(profile));
-    }
+        Some(CompilationConfig::get_profile_cache_dir(profile))
+    } else {
+        None
+    };
+
+    let config = CompilationConfig {
+        load_stdlib: false,
+        enable_cache: cache,
+        cache_dir: cache_dir_resolved,
+        ..Default::default()
+    };
 
     let _unit = CompilationUnit::new(config);
 
     // Compile source file to MIR
-    let source = std::fs::read_to_string(&file)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+    let source =
+        std::fs::read_to_string(&file).map_err(|e| format!("Failed to read file: {}", e))?;
     let mir_module = compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"))?;
 
     let total_functions = mir_module.functions.len();
@@ -410,10 +454,22 @@ fn run_file(file: PathBuf, verbose: bool, stats: bool, _tier: u8, llvm: bool, pr
 
         let backend_stats = backend.get_statistics();
         println!("\nTier Distribution:");
-        println!("  Tier 0 (Baseline):  {} functions", backend_stats.baseline_functions);
-        println!("  Tier 1 (Standard):  {} functions", backend_stats.standard_functions);
-        println!("  Tier 2 (Optimized): {} functions", backend_stats.optimized_functions);
-        println!("  Tier 3 (Maximum):   {} functions", backend_stats.llvm_functions);
+        println!(
+            "  Tier 0 (Baseline):  {} functions",
+            backend_stats.baseline_functions
+        );
+        println!(
+            "  Tier 1 (Standard):  {} functions",
+            backend_stats.standard_functions
+        );
+        println!(
+            "  Tier 2 (Optimized): {} functions",
+            backend_stats.optimized_functions
+        );
+        println!(
+            "  Tier 3 (Maximum):   {} functions",
+            backend_stats.llvm_functions
+        );
     }
 
     backend.shutdown();
@@ -446,7 +502,10 @@ fn jit_compile(
     }
 
     // TODO: Implement JIT compilation
-    Err("JIT command not yet fully implemented. See compiler/examples/test_full_pipeline_tiered.rs".to_string())
+    Err(
+        "JIT command not yet fully implemented. See compiler/examples/test_full_pipeline_tiered.rs"
+            .to_string(),
+    )
 }
 
 fn check_file(file: PathBuf, show_types: bool, format: OutputFormat) -> Result<(), String> {
@@ -456,16 +515,13 @@ fn check_file(file: PathBuf, show_types: bool, format: OutputFormat) -> Result<(
         return Err(format!("File not found: {}", file.display()));
     }
 
-    let source = std::fs::read_to_string(&file)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+    let source =
+        std::fs::read_to_string(&file).map_err(|e| format!("Failed to read file: {}", e))?;
 
     // Parse the file
     use parser::haxe_parser::parse_haxe_file;
-    let ast = parse_haxe_file(
-        file.to_str().unwrap_or("unknown"),
-        &source,
-        false,
-    ).map_err(|e| format!("Parse error: {}", e))?;
+    let ast = parse_haxe_file(file.to_str().unwrap_or("unknown"), &source, false)
+        .map_err(|e| format!("Parse error: {}", e))?;
 
     match format {
         OutputFormat::Text => {
@@ -570,7 +626,10 @@ fn build_hxml(
                     println!("  (Full HXML AOT pipeline coming soon)");
                     println!("  For now, use: rayzor compile {}", main_file.display());
                 } else {
-                    return Err("Compile mode requires output file. Use --rayzor-compile <output>".to_string());
+                    return Err(
+                        "Compile mode requires output file. Use --rayzor-compile <output>"
+                            .to_string(),
+                    );
                 }
                 Ok(())
             }
@@ -589,12 +648,18 @@ fn compile_file(
     cache_dir: Option<PathBuf>,
     release: bool,
 ) -> Result<(), String> {
+    use compiler::compilation::{CompilationConfig, CompilationUnit};
     use parser::haxe_parser::parse_haxe_file;
-    use compiler::compilation::{CompilationUnit, CompilationConfig};
 
     let profile = if release { "release" } else { "debug" };
     let target = CompilationConfig::get_target_triple();
-    println!("🔨 Compiling {} to {:?} [{}] [{}]...", file.display(), stage, profile, target);
+    println!(
+        "🔨 Compiling {} to {:?} [{}] [{}]...",
+        file.display(),
+        stage,
+        profile,
+        target
+    );
 
     if let Some(ref out) = output {
         println!("  Output: {}", out.display());
@@ -605,8 +670,8 @@ fn compile_file(
         return Err(format!("File not found: {}", file.display()));
     }
 
-    let source = std::fs::read_to_string(&file)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+    let source =
+        std::fs::read_to_string(&file).map_err(|e| format!("Failed to read file: {}", e))?;
 
     println!("\n{}", "=".repeat(60));
     println!("Compilation Pipeline [{}]", profile);
@@ -638,15 +703,20 @@ fn compile_file(
     }
 
     // Create compilation unit with cache configuration
-    let mut config = CompilationConfig::default();
-    config.load_stdlib = false;
-    config.enable_cache = cache;
-    if let Some(dir) = cache_dir {
-        config.cache_dir = Some(dir);
+    let cache_dir_resolved = if let Some(dir) = cache_dir {
+        Some(dir)
     } else if cache {
-        // Use profile-specific cache directory
-        config.cache_dir = Some(CompilationConfig::get_profile_cache_dir(profile));
-    }
+        Some(CompilationConfig::get_profile_cache_dir(profile))
+    } else {
+        None
+    };
+
+    let config = CompilationConfig {
+        load_stdlib: false,
+        enable_cache: cache,
+        cache_dir: cache_dir_resolved,
+        ..Default::default()
+    };
 
     let unit = CompilationUnit::new(config);
 
@@ -678,7 +748,10 @@ fn compile_file(
         println!("{:#?}", mir_module);
     }
 
-    if matches!(stage, CompileStage::Mir) | matches!(stage, CompileStage::Tast) | matches!(stage, CompileStage::Hir) {
+    if matches!(stage, CompileStage::Mir)
+        | matches!(stage, CompileStage::Tast)
+        | matches!(stage, CompileStage::Hir)
+    {
         println!("\n✓ Stopped at {:?} stage (showing MIR)", stage);
         if let Some(output_path) = output {
             let mir_json = format!("{:#?}", mir_module);
@@ -717,7 +790,7 @@ fn show_info(features: bool, tiers: bool) {
     println!("Rayzor Compiler v0.1.0");
     println!("High-performance Haxe compiler with tiered JIT compilation\n");
 
-    if features || (!features && !tiers) {
+    if features || !tiers {
         println!("Features:");
         println!("  ✓ Full Haxe parser");
         println!("  ✓ Type checker (TAST)");
@@ -734,7 +807,7 @@ fn show_info(features: bool, tiers: bool) {
         println!();
     }
 
-    if tiers || (!features && !tiers) {
+    if tiers || !features {
         println!("Tiered JIT System:");
         println!("  Tier 0 (Baseline)  - Cranelift 'none'          - ~3ms compile, 1.0x speed");
         println!("  Tier 1 (Standard)  - Cranelift 'speed'         - ~10ms compile, 1.5-3x speed");
@@ -759,7 +832,7 @@ fn show_info(features: bool, tiers: bool) {
 }
 
 fn cache_stats(cache_dir: Option<PathBuf>) -> Result<(), String> {
-    use compiler::compilation::{CompilationUnit, CompilationConfig};
+    use compiler::compilation::{CompilationConfig, CompilationUnit};
 
     let mut config = CompilationConfig::default();
     if let Some(dir) = cache_dir {
@@ -790,7 +863,7 @@ fn cache_stats(cache_dir: Option<PathBuf>) -> Result<(), String> {
 }
 
 fn cache_clear(cache_dir: Option<PathBuf>) -> Result<(), String> {
-    use compiler::compilation::{CompilationUnit, CompilationConfig};
+    use compiler::compilation::{CompilationConfig, CompilationUnit};
 
     let mut config = CompilationConfig::default();
     if let Some(dir) = cache_dir {

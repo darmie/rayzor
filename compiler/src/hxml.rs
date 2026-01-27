@@ -116,7 +116,9 @@ impl HxmlConfig {
             } else if let Some(rest) = line.strip_prefix("-D ") {
                 let parts: Vec<&str> = rest.trim().splitn(2, '=').collect();
                 if parts.len() == 2 {
-                    config.defines.push((parts[0].to_string(), Some(parts[1].to_string())));
+                    config
+                        .defines
+                        .push((parts[0].to_string(), Some(parts[1].to_string())));
                 } else {
                     config.defines.push((parts[0].to_string(), None));
                 }
@@ -134,10 +136,14 @@ impl HxmlConfig {
                 config.output = Some(PathBuf::from(rest.trim()));
             } else if let Some(rest) = line.strip_prefix("--output ") {
                 config.output = Some(PathBuf::from(rest.trim()));
-            } else if line.starts_with("--js ") || line.starts_with("--cpp ") ||
-                      line.starts_with("--cs ") || line.starts_with("--java ") ||
-                      line.starts_with("--python ") || line.starts_with("--lua ") ||
-                      line.starts_with("--php ") {
+            } else if line.starts_with("--js ")
+                || line.starts_with("--cpp ")
+                || line.starts_with("--cs ")
+                || line.starts_with("--java ")
+                || line.starts_with("--python ")
+                || line.starts_with("--lua ")
+                || line.starts_with("--php ")
+            {
                 // Ignore traditional Haxe targets - Rayzor uses --rayzor-jit or --rayzor-compile
                 if config.verbose {
                     eprintln!("Note: Ignoring traditional Haxe target: {}. Use --rayzor-jit or --rayzor-compile", line);
@@ -145,7 +151,9 @@ impl HxmlConfig {
             } else if let Some(rest) = line.strip_prefix("-resource ") {
                 let parts: Vec<&str> = rest.trim().splitn(2, '@').collect();
                 if parts.len() == 2 {
-                    config.resources.push((PathBuf::from(parts[0]), Some(parts[1].to_string())));
+                    config
+                        .resources
+                        .push((PathBuf::from(parts[0]), Some(parts[1].to_string())));
                 } else {
                     config.resources.push((PathBuf::from(parts[0]), None));
                 }

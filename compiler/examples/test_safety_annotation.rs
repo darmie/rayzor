@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 use compiler::compilation::{CompilationConfig, CompilationUnit};
 use compiler::tast::MemoryAnnotation;
 
@@ -59,7 +89,10 @@ class UniqueResource {
                             let is_managed = class.is_managed();
                             let uses_manual = class.uses_manual_memory();
 
-                            println!("Class with {} annotation(s):", class.memory_annotations.len());
+                            println!(
+                                "Class with {} annotation(s):",
+                                class.memory_annotations.len()
+                            );
                             for annotation in &class.memory_annotations {
                                 println!("  - {:?}", annotation);
                             }
@@ -89,7 +122,10 @@ class UniqueResource {
                         }
                     }
 
-                    println!("Classes using default garbage collection: {}", managed_default);
+                    println!(
+                        "Classes using default garbage collection: {}",
+                        managed_default
+                    );
                     println!("Classes explicitly marked @:managed: {}", managed_explicit);
                     println!("Classes with @:safety (manual memory): {}", safety_classes);
 
@@ -112,7 +148,7 @@ class UniqueResource {
             }
         }
         Err(e) => {
-            println!("❌ Parsing failed: {}", e);
+            println!("❌ Parsing failed: {:?}", e);
         }
     }
 }

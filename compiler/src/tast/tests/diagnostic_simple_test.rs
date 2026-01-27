@@ -15,20 +15,20 @@ class Child extends Base {
     public function test():String { return "child"; }
 }
         "#;
-        
+
         let result = compile_haxe_source(haxe_code);
-        
+
         println!("\n=== Compilation Result ===");
         println!("Errors: {}", result.errors.len());
         println!("Warnings: {}", result.warnings.len());
-        
+
         for (i, error) in result.errors.iter().enumerate() {
             println!("\nError {}:", i + 1);
             println!("Message: {}", error.message);
             println!("Location: {:?}", error.location);
             println!("Category: {:?}", error.category);
         }
-        
+
         // Just check we have errors
         assert!(!result.errors.is_empty(), "Should have at least one error");
     }

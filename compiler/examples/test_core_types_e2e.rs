@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -16,7 +46,6 @@ use compiler::codegen::CraneliftBackend;
 /// and compatible with the current compilation pipeline.
 use compiler::compilation::{CompilationConfig, CompilationUnit};
 use compiler::ir::IrModule;
-use rayzor_runtime;
 
 /// Test result levels
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,7 +231,7 @@ impl E2ETestCase {
             Err(e) => {
                 return TestResult::Failed {
                     level: TestLevel::Codegen,
-                    error: format!("Codegen failed: {}", e),
+                    error: format!("Codegen failed: {:?}", e),
                 };
             }
         };
@@ -218,7 +247,7 @@ impl E2ETestCase {
         if let Err(e) = self.execute_and_validate(&mut backend, self.name.clone(), &mir_modules) {
             return TestResult::Failed {
                 level: TestLevel::Execution,
-                error: format!("Execution failed: {}", e),
+                error: format!("Execution failed: {:?}", e),
             };
         }
         println!("  ✅ Execution succeeded");
@@ -320,7 +349,12 @@ impl E2ETestSuite {
             if success {
                 println!("\n✅ {} PASSED", test_name);
             } else {
-                if let TestResult::Failed { ref error, ref level, .. } = result {
+                if let TestResult::Failed {
+                    ref error,
+                    ref level,
+                    ..
+                } = result
+                {
                     println!("  Error at {:?}: {}", level, error);
                 }
                 println!("\n❌ {} FAILED", test_name);

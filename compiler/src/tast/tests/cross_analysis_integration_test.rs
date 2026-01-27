@@ -40,18 +40,18 @@ mod tests {
     #[test]
     fn test_null_safety_with_control_flow() {
         let (type_table, symbol_table, string_interner) = create_test_environment();
-        
+
         // Create function with complex control flow affecting null safety
         let nullable_var = SymbolId::from_raw(1);
-        
-        // if (x != null) { 
-        //   doSomething(); 
-        //   x.method(); // safe 
+
+        // if (x != null) {
+        //   doSomething();
+        //   x.method(); // safe
         // } else {
         //   x = getValue();
         //   x.method(); // depends on getValue's nullability
         // }
-        
+
         let null_check = TypedExpression {
             kind: TypedExpressionKind::BinaryOp {
                 left: Box::new(TypedExpression {
@@ -107,8 +107,8 @@ mod tests {
                         value: Box::new(TypedExpression {
                             kind: TypedExpressionKind::FunctionCall {
                                 function: Box::new(TypedExpression {
-                                    kind: TypedExpressionKind::Variable { 
-                                        symbol_id: SymbolId::from_raw(10) 
+                                    kind: TypedExpressionKind::Variable {
+                                        symbol_id: SymbolId::from_raw(10)
                                     },
                                     type_id: TypeId::from_raw(5),
                                     source_location: SourceLocation::unknown(),
@@ -146,9 +146,9 @@ mod tests {
         let mut enhanced_checker = EnhancedTypeChecker::new(&symbol_table, &type_table);
         let mut file = TypedFile::new(string_interner.clone());
         file.functions.push(function);
-        
+
         let results = enhanced_checker.check_file(&file);
-        
+
         println!("✅ Null safety with control flow integration test passed");
         println!("   Found {} errors and {} warnings", results.errors.len(), results.warnings.len());
     }
@@ -156,12 +156,12 @@ mod tests {
     #[test]
     fn test_dead_code_with_throwing_functions() {
         let (type_table, symbol_table, string_interner) = create_test_environment();
-        
+
         // Create function that throws, making subsequent code dead
         let throw_stmt = TypedStatement::Throw {
             value: Box::new(TypedExpression {
-                kind: TypedExpressionKind::StringLiteral { 
-                    value: "Error occurred".to_string() 
+                kind: TypedExpressionKind::StringLiteral {
+                    value: "Error occurred".to_string()
                 },
                 type_id: TypeId::from_raw(1),
                 source_location: SourceLocation::unknown(),
@@ -192,23 +192,23 @@ mod tests {
         // Analyze with both control flow and effect analysis
         let mut cfg_analyzer = ControlFlowAnalyzer::new();
         let cfg_results = cfg_analyzer.analyze_function(&function);
-        
+
         let mut effect_analyzer = EffectAnalyzer::new(&symbol_table, &type_table);
         let effects = effect_analyzer.analyze_function(&function);
-        
+
         assert!(!cfg_results.dead_code.is_empty(), "Should detect dead code after throw");
         assert!(effects.can_throw, "Should detect function can throw");
-        
+
         println!("✅ Dead code with throwing functions integration test passed");
     }
 
     #[test]
     fn test_resource_tracking_with_exceptions() {
         let (type_table, symbol_table, string_interner) = create_test_environment();
-        
+
         // Function that opens a resource but might throw before closing
         let file_var = SymbolId::from_raw(1);
-        
+
         let file_open = TypedStatement::VarDeclaration {
             name: "file".to_string(),
             symbol_id: file_var,
@@ -216,7 +216,7 @@ mod tests {
             initializer: Some(Box::new(TypedExpression {
                 kind: TypedExpressionKind::FunctionCall {
                     function: Box::new(TypedExpression {
-                        kind: TypedExpressionKind::Variable { 
+                        kind: TypedExpressionKind::Variable {
                             symbol_id: SymbolId::from_raw(20) // File.open
                         },
                         type_id: TypeId::from_raw(11),
@@ -234,16 +234,16 @@ mod tests {
 
         let might_throw = TypedStatement::If {
             condition: Box::new(TypedExpression {
-                kind: TypedExpressionKind::Variable { 
-                    symbol_id: SymbolId::from_raw(30) 
+                kind: TypedExpressionKind::Variable {
+                    symbol_id: SymbolId::from_raw(30)
                 },
                 type_id: TypeId::from_raw(4), // bool
                 source_location: SourceLocation::unknown(),
             }),
             then_branch: Box::new(TypedStatement::Throw {
                 value: Box::new(TypedExpression {
-                    kind: TypedExpressionKind::StringLiteral { 
-                        value: "Operation failed".to_string() 
+                    kind: TypedExpressionKind::StringLiteral {
+                        value: "Operation failed".to_string()
                     },
                     type_id: TypeId::from_raw(1),
                     source_location: SourceLocation::unknown(),
@@ -287,14 +287,14 @@ mod tests {
         let mut enhanced_checker = EnhancedTypeChecker::new(&symbol_table, &type_table);
         let mut file = TypedFile::new(string_interner);
         file.functions.push(function);
-        
+
         let results = enhanced_checker.check_file(&file);
-        
+
         // Should warn about potential resource leak on exception path
         let has_resource_warning = results.warnings.iter().any(|w| {
             matches!(w, EnhancedTypeError::ResourceLeak { .. })
         });
-        
+
         println!("✅ Resource tracking with exceptions integration test passed");
         println!("   Resource leak warning detected: {}", has_resource_warning);
     }
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn test_async_effect_propagation_with_null_safety() {
         let (type_table, symbol_table, string_interner) = create_test_environment();
-        
+
         // Async function that might return null
         let async_nullable_func = TypedFunction {
             name: "asyncNullable".to_string(),
@@ -389,15 +389,15 @@ mod tests {
         let mut file = TypedFile::new(string_interner);
         file.functions.push(async_nullable_func);
         file.functions.push(caller_func);
-        
+
         let results = enhanced_checker.check_file(&file);
-        
+
         // Should detect both async effect and null safety issue
         let has_async_effect = results.metrics.functions_analyzed > 0;
         let has_null_error = results.errors.iter().any(|e| {
             matches!(e, EnhancedTypeError::NullDereference { .. })
         });
-        
+
         println!("✅ Async effect propagation with null safety integration test passed");
         println!("   Functions analyzed: {}", results.metrics.functions_analyzed);
         println!("   Null dereference detected: {}", has_null_error);
@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn test_comprehensive_class_analysis() {
         let (type_table, symbol_table, string_interner) = create_test_environment();
-        
+
         // Create a class with multiple analysis concerns
         let class_with_issues = TypedClass {
             name: "ComplexClass".to_string(),
@@ -506,14 +506,14 @@ mod tests {
         let mut enhanced_checker = EnhancedTypeChecker::new(&symbol_table, &type_table);
         let mut file = TypedFile::new(string_interner);
         file.declarations.push(TypedDeclaration::Class(class_with_issues));
-        
+
         let results = enhanced_checker.check_file(&file);
-        
+
         // Should find multiple issues
         println!("✅ Comprehensive class analysis integration test passed");
         println!("   Total errors: {}", results.errors.len());
         println!("   Total warnings: {}", results.warnings.len());
-        
+
         // Check for specific error types
         let error_types = results.errors.iter().map(|e| match e {
             EnhancedTypeError::UninitializedVariable { .. } => "Uninitialized",
@@ -522,17 +522,17 @@ mod tests {
             EnhancedTypeError::DeadCode { .. } => "DeadCode",
             EnhancedTypeError::UnhandledException { .. } => "UnhandledException",
         }).collect::<Vec<_>>();
-        
+
         println!("   Error types found: {:?}", error_types);
     }
 
     #[test]
     fn test_performance_metrics_accuracy() {
         let (type_table, symbol_table, string_interner) = create_test_environment();
-        
+
         // Create a file with multiple functions to analyze
         let mut file = TypedFile::new(string_interner);
-        
+
         // Add several functions with different complexities
         for i in 0..5 {
             let func = TypedFunction {
@@ -560,12 +560,12 @@ mod tests {
             };
             file.functions.push(func);
         }
-        
+
         // Run analysis and check metrics
         let mut enhanced_checker = EnhancedTypeChecker::new(&symbol_table, &type_table);
         let results = enhanced_checker.check_file(&file);
-        
-        assert_eq!(results.metrics.functions_analyzed, 5, 
+
+        assert_eq!(results.metrics.functions_analyzed, 5,
             "Should have analyzed exactly 5 functions");
         assert!(results.metrics.control_flow_time_us >= 0,
             "Control flow time should be non-negative");
@@ -573,11 +573,11 @@ mod tests {
             "Effect analysis time should be non-negative");
         assert!(results.metrics.null_safety_time_us >= 0,
             "Null safety time should be non-negative");
-        
+
         let total_time = results.metrics.control_flow_time_us +
                         results.metrics.effect_analysis_time_us +
                         results.metrics.null_safety_time_us;
-        
+
         println!("✅ Performance metrics accuracy test passed");
         println!("   Functions analyzed: {}", results.metrics.functions_analyzed);
         println!("   Total analysis time: {} μs", total_time);
@@ -587,10 +587,10 @@ mod tests {
     #[test]
     fn test_error_location_tracking() {
         let (type_table, symbol_table, string_interner) = create_test_environment();
-        
+
         // Create function with specific source locations
         let specific_loc = SourceLocation::new(0, 10, 20, 100);
-        
+
         let null_deref_stmt = TypedStatement::Expression {
             expression: Box::new(TypedExpression {
                 kind: TypedExpressionKind::FieldAccess {
@@ -621,9 +621,9 @@ mod tests {
         let mut enhanced_checker = EnhancedTypeChecker::new(&symbol_table, &type_table);
         let mut file = TypedFile::new(string_interner);
         file.functions.push(function);
-        
+
         let results = enhanced_checker.check_file(&file);
-        
+
         // Verify errors have proper locations
         for error in &results.errors {
             match error {
@@ -634,14 +634,14 @@ mod tests {
                 _ => {}
             }
         }
-        
+
         println!("✅ Error location tracking test passed");
     }
 
     #[test]
     fn test_all_analyses_run() {
         let (type_table, symbol_table, string_interner) = create_test_environment();
-        
+
         // Create a simple function to ensure all analyses run
         let simple_func = TypedFunction {
             name: "simpleTest".to_string(),
@@ -666,15 +666,15 @@ mod tests {
         let mut enhanced_checker = EnhancedTypeChecker::new(&symbol_table, &type_table);
         let mut file = TypedFile::new(string_interner);
         file.functions.push(simple_func);
-        
+
         let results = enhanced_checker.check_file(&file);
-        
+
         // All analysis phases should have run
         assert!(results.metrics.control_flow_time_us >= 0, "CFG analysis should run");
         assert!(results.metrics.effect_analysis_time_us >= 0, "Effect analysis should run");
         assert!(results.metrics.null_safety_time_us >= 0, "Null safety should run");
         assert_eq!(results.metrics.functions_analyzed, 1, "Should analyze the function");
-        
+
         println!("✅ All analyses run test passed");
         println!("   CFG time: {} μs", results.metrics.control_flow_time_us);
         println!("   Effect time: {} μs", results.metrics.effect_analysis_time_us);

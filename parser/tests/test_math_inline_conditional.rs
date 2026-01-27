@@ -38,7 +38,10 @@ extern class Math {
                     println!("  - {:?}: {}", error.severity, error.message);
                 }
             }
-            assert!(!parse_result.diagnostics.has_errors(), "Should not have errors");
+            assert!(
+                !parse_result.diagnostics.has_errors(),
+                "Should not have errors"
+            );
         }
         Err(e) => {
             println!("Parse failed: {}", e);

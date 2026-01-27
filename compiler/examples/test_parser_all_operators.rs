@@ -1,6 +1,36 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test that parser correctly handles all types of operator metadata
 
-use compiler::compilation::{CompilationUnit, CompilationConfig};
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 
 fn main() -> Result<(), String> {
     println!("\n=== Testing Parser Support for All Operator Metadata ===\n");
@@ -131,7 +161,8 @@ fn main() -> Result<(), String> {
             println!("✅ Parser successfully handled all operator metadata!");
 
             // Find the Vec2 abstract
-            let vec2 = typed_files.iter()
+            let vec2 = typed_files
+                .iter()
                 .flat_map(|f| &f.abstracts)
                 .find(|a| unit.string_interner.get(a.name) == Some("Vec2"))
                 .ok_or("Vec2 abstract not found")?;
@@ -182,8 +213,6 @@ fn main() -> Result<(), String> {
                 Ok(())
             }
         }
-        Err(e) => {
-            Err(format!("❌ FAILED: {}", e))
-        }
+        Err(e) => Err(format!("❌ FAILED: {:?}", e)),
     }
 }

@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 /// Isolated test for for-in iterator functionality
 ///
 /// This test is separate from the main e2e test suite because for-in loops
@@ -10,7 +40,6 @@
 ///
 /// This causes infinite loops because the uninitialized condition register
 /// has random garbage values that happen to be truthy.
-
 use compiler::codegen::CraneliftBackend;
 use compiler::compilation::{CompilationConfig, CompilationUnit};
 use compiler::ir::IrModule;
@@ -98,7 +127,10 @@ class Main {
     if mir_modules.is_empty() {
         return Err("No MIR modules generated".to_string());
     }
-    println!("  ✅ MIR lowering succeeded ({} modules)", mir_modules.len());
+    println!(
+        "  ✅ MIR lowering succeeded ({} modules)",
+        mir_modules.len()
+    );
 
     // Codegen
     println!("L5: Compiling to native code...");

@@ -1,17 +1,48 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
+#![allow(clippy::unnecessary_mut_passed)]
 // Integration test for complete HIR to MIR lowering
 // Tests all newly implemented features from Week 3
 
 use compiler::ir::{
     hir_to_mir::lower_hir_to_mir, tast_to_hir::lower_tast_to_hir, validation::validate_module,
 };
-use compiler::tast::{
-    ast_lowering::AstLowering, scopes::ScopeTree, StringInterner,
-    SymbolTable, TypeTable, type_checking_pipeline::TypeCheckingPhase,
-};
 use compiler::tast::ScopeId;
+use compiler::tast::{
+    ast_lowering::AstLowering, scopes::ScopeTree, type_checking_pipeline::TypeCheckingPhase,
+    StringInterner, SymbolTable, TypeTable,
+};
 use diagnostics::{Diagnostics, ErrorFormatter};
-use source_map::SourceMap;
 use parser::haxe_parser::parse_haxe_file;
+use source_map::SourceMap;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -213,6 +244,9 @@ fn run_pipeline(source: &str) -> Result<(), String> {
     // Step 3: Lower AST to TAST
     let mut lowerer = AstLowering::new(
         &mut string_interner,
+        std::rc::Rc::new(std::cell::RefCell::new(
+            compiler::tast::StringInterner::new(),
+        )),
         &mut symbol_table,
         &mut type_table,
         &mut scope_tree,
@@ -248,7 +282,10 @@ fn run_pipeline(source: &str) -> Result<(), String> {
     // In a production compiler, you would fail here if has_errors() is true.
     if diagnostics.has_errors() {
         let error_count = diagnostics.errors().count();
-        eprintln!("\n⚠ Type checking found {} error(s) - continuing to test MIR lowering\n", error_count);
+        eprintln!(
+            "\n⚠ Type checking found {} error(s) - continuing to test MIR lowering\n",
+            error_count
+        );
 
         // Use the default ErrorFormatter to print diagnostics with source context
         let formatter = ErrorFormatter::new();
@@ -262,13 +299,13 @@ fn run_pipeline(source: &str) -> Result<(), String> {
         &symbol_table,
         &type_table,
         &mut string_interner,
-        None
+        None,
     )
     .map_err(|e| format!("HIR lowering error: {:?}", e))?;
 
     // Step 6: Lower HIR to MIR
-    let mir_module =
-        lower_hir_to_mir(&hir_module, &string_interner).map_err(|e| format!("MIR lowering errors: {:?}", e))?;
+    let mir_module = lower_hir_to_mir(&hir_module, &string_interner, &type_table, &symbol_table)
+        .map_err(|e| format!("MIR lowering errors: {:?}", e))?;
 
     // Step 7: Validate MIR
     validate_module(&mir_module)

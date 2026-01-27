@@ -5,8 +5,8 @@
 //! and in different orders based on optimization level.
 
 use super::{
-    IrModule, IrFunction, IrBasicBlock, IrInstruction, IrTerminator,
-    IrType, IrId, IrBlockId, IrFunctionId, IrValue, BinaryOp, CompareOp,
+    BinaryOp, CompareOp, IrBasicBlock, IrBlockId, IrFunction, IrFunctionId, IrId, IrInstruction,
+    IrModule, IrTerminator, IrType, IrValue,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -14,10 +14,10 @@ use std::collections::{HashMap, HashSet};
 pub trait OptimizationPass {
     /// Get the name of this pass
     fn name(&self) -> &'static str;
-    
+
     /// Run the pass on a module
     fn run_on_module(&mut self, module: &mut IrModule) -> OptimizationResult;
-    
+
     /// Run the pass on a function (default implementation does nothing)
     fn run_on_function(&mut self, _function: &mut IrFunction) -> OptimizationResult {
         OptimizationResult::unchanged()
@@ -29,13 +29,13 @@ pub trait OptimizationPass {
 pub struct OptimizationResult {
     /// Whether the IR was modified
     pub modified: bool,
-    
+
     /// Number of instructions eliminated
     pub instructions_eliminated: usize,
-    
+
     /// Number of blocks eliminated
     pub blocks_eliminated: usize,
-    
+
     /// Other statistics
     pub stats: HashMap<String, usize>,
 }
@@ -50,7 +50,7 @@ impl OptimizationResult {
             stats: HashMap::new(),
         }
     }
-    
+
     /// Create a result indicating changes
     pub fn changed() -> Self {
         Self {
@@ -60,17 +60,17 @@ impl OptimizationResult {
             stats: HashMap::new(),
         }
     }
-    
+
     /// Combine results
     pub fn combine(mut self, other: OptimizationResult) -> Self {
         self.modified |= other.modified;
         self.instructions_eliminated += other.instructions_eliminated;
         self.blocks_eliminated += other.blocks_eliminated;
-        
+
         for (key, value) in other.stats {
             *self.stats.entry(key).or_insert(0) += value;
         }
-        
+
         self
     }
 }
@@ -83,45 +83,43 @@ pub struct PassManager {
 impl PassManager {
     /// Create a new pass manager
     pub fn new() -> Self {
-        Self {
-            passes: Vec::new(),
-        }
+        Self { passes: Vec::new() }
     }
-    
+
     /// Add a pass to the manager
     pub fn add_pass<P: OptimizationPass + 'static>(&mut self, pass: P) {
         self.passes.push(Box::new(pass));
     }
-    
+
     /// Build a default optimization pipeline
     pub fn default_pipeline() -> Self {
         let mut manager = Self::new();
-        
+
         // Dead code elimination
         manager.add_pass(DeadCodeEliminationPass::new());
-        
+
         // Constant folding
         manager.add_pass(ConstantFoldingPass::new());
-        
+
         // Copy propagation
         manager.add_pass(CopyPropagationPass::new());
-        
+
         // Unreachable block elimination
         manager.add_pass(UnreachableBlockEliminationPass::new());
-        
+
         // Simplify control flow
         manager.add_pass(ControlFlowSimplificationPass::new());
-        
+
         manager
     }
-    
+
     /// Run all passes on a module
     pub fn run(&mut self, module: &mut IrModule) -> OptimizationResult {
         let mut total_result = OptimizationResult::unchanged();
-        
+
         loop {
             let mut changed = false;
-            
+
             for pass in &mut self.passes {
                 let result = pass.run_on_module(module);
                 if result.modified {
@@ -129,12 +127,12 @@ impl PassManager {
                 }
                 total_result = total_result.combine(result);
             }
-            
+
             if !changed {
                 break;
             }
         }
-        
+
         total_result
     }
 }
@@ -148,11 +146,11 @@ impl DeadCodeEliminationPass {
     pub fn new() -> Self {
         Self {}
     }
-    
+
     /// Find all used registers in a function
     fn find_used_registers(&self, function: &IrFunction) -> HashSet<IrId> {
         let mut used = HashSet::new();
-        
+
         for block in function.cfg.blocks.values() {
             // Mark phi node uses
             for phi in &block.phi_nodes {
@@ -160,28 +158,28 @@ impl DeadCodeEliminationPass {
                     used.insert(value);
                 }
             }
-            
+
             // Mark instruction uses
             for inst in &block.instructions {
                 used.extend(inst.uses());
             }
-            
+
             // Mark terminator uses
             used.extend(terminator_uses(&block.terminator));
         }
-        
+
         used
     }
-    
+
     /// Remove dead instructions from a function
     fn eliminate_dead_instructions(&self, function: &mut IrFunction) -> usize {
         let used = self.find_used_registers(function);
         let mut eliminated = 0;
-        
+
         for block in function.cfg.blocks.values_mut() {
             // Remove dead phi nodes
             block.phi_nodes.retain(|phi| used.contains(&phi.dest));
-            
+
             // Remove dead instructions
             let original_len = block.instructions.len();
             block.instructions.retain(|inst| {
@@ -193,7 +191,7 @@ impl DeadCodeEliminationPass {
             });
             eliminated += original_len - block.instructions.len();
         }
-        
+
         eliminated
     }
 }
@@ -202,10 +200,10 @@ impl OptimizationPass for DeadCodeEliminationPass {
     fn name(&self) -> &'static str {
         "dead-code-elimination"
     }
-    
+
     fn run_on_module(&mut self, module: &mut IrModule) -> OptimizationResult {
         let mut result = OptimizationResult::unchanged();
-        
+
         for function in module.functions.values_mut() {
             let eliminated = self.eliminate_dead_instructions(function);
             if eliminated > 0 {
@@ -213,7 +211,7 @@ impl OptimizationPass for DeadCodeEliminationPass {
                 result.instructions_eliminated += eliminated;
             }
         }
-        
+
         result
     }
 }
@@ -225,12 +223,12 @@ impl ConstantFoldingPass {
     pub fn new() -> Self {
         Self
     }
-    
+
     /// Try to fold a binary operation
     fn fold_binary_op(&self, op: BinaryOp, left: &IrValue, right: &IrValue) -> Option<IrValue> {
         use BinaryOp::*;
         use IrValue::*;
-        
+
         match (op, left, right) {
             // Integer arithmetic
             (Add, I32(a), I32(b)) => Some(I32(a.wrapping_add(*b))),
@@ -238,29 +236,29 @@ impl ConstantFoldingPass {
             (Mul, I32(a), I32(b)) => Some(I32(a.wrapping_mul(*b))),
             (Div, I32(a), I32(b)) if *b != 0 => Some(I32(a / b)),
             (Rem, I32(a), I32(b)) if *b != 0 => Some(I32(a % b)),
-            
+
             // Floating point arithmetic
             (FAdd, F64(a), F64(b)) => Some(F64(a + b)),
             (FSub, F64(a), F64(b)) => Some(F64(a - b)),
             (FMul, F64(a), F64(b)) => Some(F64(a * b)),
             (FDiv, F64(a), F64(b)) if *b != 0.0 => Some(F64(a / b)),
-            
+
             // Bitwise operations
             (And, I32(a), I32(b)) => Some(I32(a & b)),
             (Or, I32(a), I32(b)) => Some(I32(a | b)),
             (Xor, I32(a), I32(b)) => Some(I32(a ^ b)),
             (Shl, I32(a), I32(b)) if *b >= 0 && *b < 32 => Some(I32(a << b)),
             (Shr, I32(a), I32(b)) if *b >= 0 && *b < 32 => Some(I32(a >> b)),
-            
+
             _ => None,
         }
     }
-    
+
     /// Try to fold a comparison
     fn fold_comparison(&self, op: CompareOp, left: &IrValue, right: &IrValue) -> Option<IrValue> {
         use CompareOp::*;
         use IrValue::*;
-        
+
         match (op, left, right) {
             // Integer comparisons
             (Eq, I32(a), I32(b)) => Some(Bool(a == b)),
@@ -269,7 +267,7 @@ impl ConstantFoldingPass {
             (Le, I32(a), I32(b)) => Some(Bool(a <= b)),
             (Gt, I32(a), I32(b)) => Some(Bool(a > b)),
             (Ge, I32(a), I32(b)) => Some(Bool(a >= b)),
-            
+
             // Floating point comparisons
             (FEq, F64(a), F64(b)) => Some(Bool((a - b).abs() < f64::EPSILON)),
             (FNe, F64(a), F64(b)) => Some(Bool((a - b).abs() >= f64::EPSILON)),
@@ -277,11 +275,11 @@ impl ConstantFoldingPass {
             (FLe, F64(a), F64(b)) => Some(Bool(a <= b)),
             (FGt, F64(a), F64(b)) => Some(Bool(a > b)),
             (FGe, F64(a), F64(b)) => Some(Bool(a >= b)),
-            
+
             // Boolean comparisons
             (Eq, Bool(a), Bool(b)) => Some(Bool(a == b)),
             (Ne, Bool(a), Bool(b)) => Some(Bool(a != b)),
-            
+
             _ => None,
         }
     }
@@ -291,16 +289,16 @@ impl OptimizationPass for ConstantFoldingPass {
     fn name(&self) -> &'static str {
         "constant-folding"
     }
-    
+
     fn run_on_module(&mut self, module: &mut IrModule) -> OptimizationResult {
         let mut result = OptimizationResult::unchanged();
-        
+
         // Build constant value map
         let mut constants: HashMap<IrId, IrValue> = HashMap::new();
-        
+
         for function in module.functions.values_mut() {
             constants.clear();
-            
+
             // First pass: collect constants
             for block in function.cfg.blocks.values() {
                 for inst in &block.instructions {
@@ -309,36 +307,58 @@ impl OptimizationPass for ConstantFoldingPass {
                     }
                 }
             }
-            
+
             // Second pass: fold operations
             for block in function.cfg.blocks.values_mut() {
                 for inst in &mut block.instructions {
                     match inst {
-                        IrInstruction::BinOp { dest, op, left, right } => {
+                        IrInstruction::BinOp {
+                            dest,
+                            op,
+                            left,
+                            right,
+                        } => {
                             let dest_reg = *dest;
                             let op_val = *op;
                             let left_reg = *left;
                             let right_reg = *right;
-                            if let (Some(left_val), Some(right_val)) = 
-                                (constants.get(&left_reg), constants.get(&right_reg)) {
-                                if let Some(folded) = self.fold_binary_op(op_val, left_val, right_val) {
+                            if let (Some(left_val), Some(right_val)) =
+                                (constants.get(&left_reg), constants.get(&right_reg))
+                            {
+                                if let Some(folded) =
+                                    self.fold_binary_op(op_val, left_val, right_val)
+                                {
                                     // Replace with constant
-                                    *inst = IrInstruction::Const { dest: dest_reg, value: folded.clone() };
+                                    *inst = IrInstruction::Const {
+                                        dest: dest_reg,
+                                        value: folded.clone(),
+                                    };
                                     constants.insert(dest_reg, folded);
                                     result.modified = true;
                                 }
                             }
                         }
-                        IrInstruction::Cmp { dest, op, left, right } => {
+                        IrInstruction::Cmp {
+                            dest,
+                            op,
+                            left,
+                            right,
+                        } => {
                             let dest_reg = *dest;
                             let op_val = *op;
                             let left_reg = *left;
                             let right_reg = *right;
-                            if let (Some(left_val), Some(right_val)) = 
-                                (constants.get(&left_reg), constants.get(&right_reg)) {
-                                if let Some(folded) = self.fold_comparison(op_val, left_val, right_val) {
+                            if let (Some(left_val), Some(right_val)) =
+                                (constants.get(&left_reg), constants.get(&right_reg))
+                            {
+                                if let Some(folded) =
+                                    self.fold_comparison(op_val, left_val, right_val)
+                                {
                                     // Replace with constant
-                                    *inst = IrInstruction::Const { dest: dest_reg, value: folded.clone() };
+                                    *inst = IrInstruction::Const {
+                                        dest: dest_reg,
+                                        value: folded.clone(),
+                                    };
                                     constants.insert(dest_reg, folded);
                                     result.modified = true;
                                 }
@@ -349,7 +369,7 @@ impl OptimizationPass for ConstantFoldingPass {
                 }
             }
         }
-        
+
         result
     }
 }
@@ -367,13 +387,13 @@ impl OptimizationPass for CopyPropagationPass {
     fn name(&self) -> &'static str {
         "copy-propagation"
     }
-    
+
     fn run_on_module(&mut self, module: &mut IrModule) -> OptimizationResult {
         let mut result = OptimizationResult::unchanged();
-        
+
         for function in module.functions.values_mut() {
             let mut copies: HashMap<IrId, IrId> = HashMap::new();
-            
+
             // Find copy instructions
             for block in function.cfg.blocks.values() {
                 for inst in &block.instructions {
@@ -382,22 +402,22 @@ impl OptimizationPass for CopyPropagationPass {
                     }
                 }
             }
-            
+
             if !copies.is_empty() {
                 // Replace uses with original sources
                 for block in function.cfg.blocks.values_mut() {
                     for inst in &mut block.instructions {
                         inst.replace_uses(&copies);
                     }
-                    
+
                     // Replace terminator uses
                     replace_terminator_uses(&mut block.terminator, &copies);
                 }
-                
+
                 result.modified = true;
             }
         }
-        
+
         result
     }
 }
@@ -409,12 +429,12 @@ impl UnreachableBlockEliminationPass {
     pub fn new() -> Self {
         Self
     }
-    
+
     /// Find reachable blocks from entry
     fn find_reachable(&self, function: &IrFunction) -> HashSet<IrBlockId> {
         let mut reachable = HashSet::new();
         let mut worklist = vec![function.entry_block()];
-        
+
         while let Some(block_id) = worklist.pop() {
             if reachable.insert(block_id) {
                 if let Some(block) = function.cfg.get_block(block_id) {
@@ -422,7 +442,7 @@ impl UnreachableBlockEliminationPass {
                 }
             }
         }
-        
+
         reachable
     }
 }
@@ -431,24 +451,24 @@ impl OptimizationPass for UnreachableBlockEliminationPass {
     fn name(&self) -> &'static str {
         "unreachable-block-elimination"
     }
-    
+
     fn run_on_module(&mut self, module: &mut IrModule) -> OptimizationResult {
         let mut result = OptimizationResult::unchanged();
-        
+
         for function in module.functions.values_mut() {
             let reachable = self.find_reachable(function);
             let original_count = function.cfg.blocks.len();
-            
+
             // Remove unreachable blocks
             function.cfg.blocks.retain(|&id, _| reachable.contains(&id));
-            
+
             let eliminated = original_count - function.cfg.blocks.len();
             if eliminated > 0 {
                 result.modified = true;
                 result.blocks_eliminated += eliminated;
             }
         }
-        
+
         result
     }
 }
@@ -460,11 +480,11 @@ impl ControlFlowSimplificationPass {
     pub fn new() -> Self {
         Self
     }
-    
+
     /// Simplify branches with constant conditions
     fn simplify_conditional_branches(&self, function: &mut IrFunction) -> bool {
         let mut modified = false;
-        
+
         // Collect constant values
         let mut constants: HashMap<IrId, IrValue> = HashMap::new();
         for block in function.cfg.blocks.values() {
@@ -474,19 +494,28 @@ impl ControlFlowSimplificationPass {
                 }
             }
         }
-        
+
         // Simplify conditional branches
         for block in function.cfg.blocks.values_mut() {
-            if let IrTerminator::CondBranch { condition, true_target, false_target } = &block.terminator {
+            if let IrTerminator::CondBranch {
+                condition,
+                true_target,
+                false_target,
+            } = &block.terminator
+            {
                 if let Some(IrValue::Bool(cond_val)) = constants.get(condition) {
                     // Replace with unconditional branch
-                    let target = if *cond_val { *true_target } else { *false_target };
+                    let target = if *cond_val {
+                        *true_target
+                    } else {
+                        *false_target
+                    };
                     block.terminator = IrTerminator::Branch { target };
                     modified = true;
                 }
             }
         }
-        
+
         modified
     }
 }
@@ -495,16 +524,16 @@ impl OptimizationPass for ControlFlowSimplificationPass {
     fn name(&self) -> &'static str {
         "control-flow-simplification"
     }
-    
+
     fn run_on_module(&mut self, module: &mut IrModule) -> OptimizationResult {
         let mut result = OptimizationResult::unchanged();
-        
+
         for function in module.functions.values_mut() {
             if self.simplify_conditional_branches(function) {
                 result.modified = true;
             }
         }
-        
+
         result
     }
 }
@@ -562,7 +591,7 @@ impl InstructionExt for IrInstruction {
         // Use the inherent IrInstruction::uses() method which is complete
         IrInstruction::uses(self)
     }
-    
+
     fn dest(&self) -> Option<IrId> {
         // Use the inherent IrInstruction::dest() method which is complete
         IrInstruction::dest(self)
@@ -608,9 +637,13 @@ impl InstructionExt for IrInstruction {
                     replace(arg);
                 }
             }
-            IrInstruction::Cast { src, .. } |
-            IrInstruction::BitCast { src, .. } => replace(src),
-            IrInstruction::Select { condition, true_val, false_val, .. } => {
+            IrInstruction::Cast { src, .. } | IrInstruction::BitCast { src, .. } => replace(src),
+            IrInstruction::Select {
+                condition,
+                true_val,
+                false_val,
+                ..
+            } => {
                 replace(condition);
                 replace(true_val);
                 replace(false_val);
@@ -638,7 +671,9 @@ impl InstructionExt for IrInstruction {
                 replace(size);
             }
             IrInstruction::ExtractValue { aggregate, .. } => replace(aggregate),
-            IrInstruction::InsertValue { aggregate, value, .. } => {
+            IrInstruction::InsertValue {
+                aggregate, value, ..
+            } => {
                 replace(aggregate);
                 replace(value);
             }
@@ -647,8 +682,9 @@ impl InstructionExt for IrInstruction {
                     replace(v);
                 }
             }
-            IrInstruction::Throw { exception } |
-            IrInstruction::Resume { exception } => replace(exception),
+            IrInstruction::Throw { exception } | IrInstruction::Resume { exception } => {
+                replace(exception)
+            }
             IrInstruction::Phi { incoming, .. } => {
                 for (val, _) in incoming {
                     replace(val);
@@ -663,16 +699,16 @@ impl InstructionExt for IrInstruction {
                 // outputs contains IrType, not IrId, so no replacement needed
             }
             // Instructions with no uses to replace
-            IrInstruction::Const { .. } |
-            IrInstruction::Jump { .. } |
-            IrInstruction::ClosureEnv { .. } |
-            IrInstruction::BorrowImmutable { .. } |
-            IrInstruction::BorrowMutable { .. } |
-            IrInstruction::EndBorrow { .. } |
-            IrInstruction::LandingPad { .. } |
-            IrInstruction::Undef { .. } |
-            IrInstruction::FunctionRef { .. } |
-            IrInstruction::DebugLoc { .. } => {}
+            IrInstruction::Const { .. }
+            | IrInstruction::Jump { .. }
+            | IrInstruction::ClosureEnv { .. }
+            | IrInstruction::BorrowImmutable { .. }
+            | IrInstruction::BorrowMutable { .. }
+            | IrInstruction::EndBorrow { .. }
+            | IrInstruction::LandingPad { .. }
+            | IrInstruction::Undef { .. }
+            | IrInstruction::FunctionRef { .. }
+            | IrInstruction::DebugLoc { .. } => {}
             // Handle any other instructions by doing nothing (they may have no register uses)
             _ => {}
         }
@@ -748,7 +784,9 @@ impl LICMPass {
         let header_block = cfg.get_block(header).unwrap();
 
         // Find predecessors outside the loop
-        let outside_preds: Vec<IrBlockId> = header_block.predecessors.iter()
+        let outside_preds: Vec<IrBlockId> = header_block
+            .predecessors
+            .iter()
             .filter(|p| !loop_blocks.contains(p))
             .copied()
             .collect();
@@ -778,7 +816,11 @@ impl LICMPass {
                     IrTerminator::Branch { target } if *target == header => {
                         *target = preheader;
                     }
-                    IrTerminator::CondBranch { true_target, false_target, .. } => {
+                    IrTerminator::CondBranch {
+                        true_target,
+                        false_target,
+                        ..
+                    } => {
                         if *true_target == header {
                             *true_target = preheader;
                         }
@@ -803,7 +845,9 @@ impl LICMPass {
 
         // Update header's predecessors
         if let Some(header_block) = cfg.get_block_mut(header) {
-            header_block.predecessors.retain(|p| loop_blocks.contains(p));
+            header_block
+                .predecessors
+                .retain(|p| loop_blocks.contains(p));
             header_block.predecessors.push(preheader);
         }
 
@@ -875,10 +919,7 @@ impl OptimizationPass for LICMPass {
                                         &def_block,
                                         &invariant_defs,
                                     ) && Self::is_safe_to_hoist(
-                                        inst,
-                                        block_id,
-                                        loop_data,
-                                        &domtree,
+                                        inst, block_id, loop_data, &domtree,
                                     ) {
                                         invariant_defs.insert(dest);
                                         to_hoist.push((block_id, idx, inst.clone()));
@@ -895,11 +936,8 @@ impl OptimizationPass for LICMPass {
                 }
 
                 // Ensure we have a preheader
-                let preheader = Self::ensure_preheader(
-                    &mut function.cfg,
-                    loop_data.header,
-                    &loop_data.blocks,
-                );
+                let preheader =
+                    Self::ensure_preheader(&mut function.cfg, loop_data.header, &loop_data.blocks);
 
                 // Sort hoisted instructions by original position to maintain order
                 to_hoist.sort_by_key(|(block_id, idx, _)| (block_id.as_u32(), *idx));
@@ -929,7 +967,10 @@ impl OptimizationPass for LICMPass {
                     for (_, _, inst) in to_hoist {
                         preheader_block.instructions.push(inst);
                         result.modified = true;
-                        *result.stats.entry("instructions_hoisted".to_string()).or_insert(0) += 1;
+                        *result
+                            .stats
+                            .entry("instructions_hoisted".to_string())
+                            .or_insert(0) += 1;
                     }
                 }
             }
@@ -953,7 +994,9 @@ impl CSEPass {
     /// Generate a hash key for an instruction's computation.
     fn instruction_key(inst: &IrInstruction) -> Option<String> {
         match inst {
-            IrInstruction::BinOp { op, left, right, .. } => {
+            IrInstruction::BinOp {
+                op, left, right, ..
+            } => {
                 // For commutative ops, normalize operand order
                 let (l, r) = if Self::is_commutative(*op) && left.as_u32() > right.as_u32() {
                     (right, left)
@@ -965,9 +1008,9 @@ impl CSEPass {
             IrInstruction::UnOp { op, operand, .. } => {
                 Some(format!("unop:{:?}:{}", op, operand.as_u32()))
             }
-            IrInstruction::Cmp { op, left, right, .. } => {
-                Some(format!("cmp:{:?}:{}:{}", op, left.as_u32(), right.as_u32()))
-            }
+            IrInstruction::Cmp {
+                op, left, right, ..
+            } => Some(format!("cmp:{:?}:{}:{}", op, left.as_u32(), right.as_u32())),
             IrInstruction::Cast { src, to_ty, .. } => {
                 Some(format!("cast:{}:{:?}", src.as_u32(), to_ty))
             }
@@ -981,8 +1024,13 @@ impl CSEPass {
     fn is_commutative(op: BinaryOp) -> bool {
         matches!(
             op,
-            BinaryOp::Add | BinaryOp::Mul | BinaryOp::FAdd | BinaryOp::FMul |
-            BinaryOp::And | BinaryOp::Or | BinaryOp::Xor
+            BinaryOp::Add
+                | BinaryOp::Mul
+                | BinaryOp::FAdd
+                | BinaryOp::FMul
+                | BinaryOp::And
+                | BinaryOp::Or
+                | BinaryOp::Xor
         )
     }
 }
@@ -1008,7 +1056,10 @@ impl OptimizationPass for CSEPass {
                             if let Some(dest) = inst.dest() {
                                 replacements.insert(dest, existing);
                                 result.modified = true;
-                                *result.stats.entry("cse_eliminated".to_string()).or_insert(0) += 1;
+                                *result
+                                    .stats
+                                    .entry("cse_eliminated".to_string())
+                                    .or_insert(0) += 1;
                             }
                         } else if let Some(dest) = inst.dest() {
                             available.insert(key, dest);
@@ -1081,7 +1132,10 @@ impl OptimizationPass for GVNPass {
                                 if let Some(dest) = inst.dest() {
                                     replacements.insert(dest, existing);
                                     result.modified = true;
-                                    *result.stats.entry("gvn_eliminated".to_string()).or_insert(0) += 1;
+                                    *result
+                                        .stats
+                                        .entry("gvn_eliminated".to_string())
+                                        .or_insert(0) += 1;
                                 }
                             } else if let Some(dest) = inst.dest() {
                                 local_values.insert(key, dest);
@@ -1120,12 +1174,12 @@ impl GVNPass {
         inst: &IrInstruction,
         replacements: &HashMap<IrId, IrId>,
     ) -> Option<String> {
-        let resolve = |id: IrId| -> IrId {
-            *replacements.get(&id).unwrap_or(&id)
-        };
+        let resolve = |id: IrId| -> IrId { *replacements.get(&id).unwrap_or(&id) };
 
         match inst {
-            IrInstruction::BinOp { op, left, right, .. } => {
+            IrInstruction::BinOp {
+                op, left, right, ..
+            } => {
                 let l = resolve(*left);
                 let r = resolve(*right);
                 let (l, r) = if CSEPass::is_commutative(*op) && l.as_u32() > r.as_u32() {
@@ -1138,9 +1192,14 @@ impl GVNPass {
             IrInstruction::UnOp { op, operand, .. } => {
                 Some(format!("unop:{:?}:{}", op, resolve(*operand).as_u32()))
             }
-            IrInstruction::Cmp { op, left, right, .. } => {
-                Some(format!("cmp:{:?}:{}:{}", op, resolve(*left).as_u32(), resolve(*right).as_u32()))
-            }
+            IrInstruction::Cmp {
+                op, left, right, ..
+            } => Some(format!(
+                "cmp:{:?}:{}:{}",
+                op,
+                resolve(*left).as_u32(),
+                resolve(*right).as_u32()
+            )),
             IrInstruction::Cast { src, to_ty, .. } => {
                 Some(format!("cast:{}:{:?}", resolve(*src).as_u32(), to_ty))
             }
@@ -1172,9 +1231,12 @@ impl TailCallOptimizationPass {
             IrTerminator::Return { value } => {
                 // If returning a value, it must be the call's result
                 if let Some(ret_val) = value {
-                    if let Some(IrInstruction::CallDirect { dest: Some(dest), .. })
-                        | Some(IrInstruction::CallIndirect { dest: Some(dest), .. })
-                        = block.instructions.get(call_idx)
+                    if let Some(IrInstruction::CallDirect {
+                        dest: Some(dest), ..
+                    })
+                    | Some(IrInstruction::CallIndirect {
+                        dest: Some(dest), ..
+                    }) = block.instructions.get(call_idx)
                     {
                         return *ret_val == *dest;
                     }
@@ -1184,7 +1246,7 @@ impl TailCallOptimizationPass {
                     matches!(
                         block.instructions.get(call_idx),
                         Some(IrInstruction::CallDirect { dest: None, .. })
-                        | Some(IrInstruction::CallIndirect { dest: None, .. })
+                            | Some(IrInstruction::CallIndirect { dest: None, .. })
                     )
                 }
             }
@@ -1221,23 +1283,33 @@ impl OptimizationPass for TailCallOptimizationPass {
                 for idx in tail_call_indices {
                     if let Some(inst) = block.instructions.get_mut(idx) {
                         match inst {
-                            IrInstruction::CallDirect { func_id, is_tail_call, .. } => {
+                            IrInstruction::CallDirect {
+                                func_id,
+                                is_tail_call,
+                                ..
+                            } => {
                                 *is_tail_call = true;
                                 result.modified = true;
 
                                 // Track self-recursive tail calls separately
                                 if *func_id == current_func_id {
-                                    *result.stats.entry("self_recursive_tail_calls".to_string())
+                                    *result
+                                        .stats
+                                        .entry("self_recursive_tail_calls".to_string())
                                         .or_insert(0) += 1;
                                 } else {
-                                    *result.stats.entry("tail_calls_marked".to_string())
+                                    *result
+                                        .stats
+                                        .entry("tail_calls_marked".to_string())
                                         .or_insert(0) += 1;
                                 }
                             }
                             IrInstruction::CallIndirect { is_tail_call, .. } => {
                                 *is_tail_call = true;
                                 result.modified = true;
-                                *result.stats.entry("indirect_tail_calls_marked".to_string())
+                                *result
+                                    .stats
+                                    .entry("indirect_tail_calls_marked".to_string())
                                     .or_insert(0) += 1;
                             }
                             _ => {}
@@ -1319,48 +1391,48 @@ mod tests {
     use super::*;
     use crate::ir::builder::*;
     use crate::tast::SymbolId;
-    
+
     #[test]
     fn test_constant_folding() {
         let mut builder = IrBuilder::new("test".to_string(), "test.hx".to_string());
-        
+
         let sig = FunctionSignatureBuilder::new().returns(IrType::I32).build();
         builder.start_function(SymbolId::from_raw(1), "test".to_string(), sig);
-        
+
         // Build: 2 + 3
         let two = builder.build_int(2, IrType::I32).unwrap();
         let three = builder.build_int(3, IrType::I32).unwrap();
         let result = builder.build_add(two, three, false).unwrap();
         builder.build_return(Some(result));
-        
+
         builder.finish_function();
-        
+
         // Run constant folding
         let mut pass = ConstantFoldingPass::new();
         let opt_result = pass.run_on_module(&mut builder.module);
-        
+
         assert!(opt_result.modified);
     }
-    
+
     #[test]
     fn test_dead_code_elimination() {
         let mut builder = IrBuilder::new("test".to_string(), "test.hx".to_string());
-        
+
         let sig = FunctionSignatureBuilder::new().returns(IrType::I32).build();
         builder.start_function(SymbolId::from_raw(1), "test".to_string(), sig);
-        
+
         // Create dead code
         let _dead = builder.build_int(42, IrType::I32).unwrap(); // Not used
-        
+
         let live = builder.build_int(10, IrType::I32).unwrap();
         builder.build_return(Some(live));
-        
+
         builder.finish_function();
-        
+
         // Run DCE
         let mut pass = DeadCodeEliminationPass::new();
         let opt_result = pass.run_on_module(&mut builder.module);
-        
+
         assert!(opt_result.modified);
         assert!(opt_result.instructions_eliminated > 0);
     }

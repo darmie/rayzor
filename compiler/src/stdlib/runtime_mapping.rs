@@ -17,8 +17,8 @@
 //! var ch = s.charAt(0);  // Calls haxe_string_char_at(s, 0)
 //! ```
 
-use std::collections::HashMap;
 use crate::ir::IrType;
+use std::collections::HashMap;
 
 // ============================================================================
 // Type Descriptors for Function Signatures
@@ -157,7 +157,6 @@ pub struct RuntimeFunctionCall {
     // ========================================================================
     // NEW: Type information for eliminating hardcoded signature tables
     // ========================================================================
-
     /// Actual parameter types for this function.
     /// When Some, this is the authoritative source of type information.
     /// When None, falls back to legacy inference in hir_to_mir.rs.
@@ -248,24 +247,33 @@ impl StdlibMapping {
 
     /// Check if a method is a stdlib method with runtime mapping
     pub fn has_mapping(&self, class: &str, method: &str, is_static: bool) -> bool {
-        self.mappings.keys().any(|sig| {
-            sig.class == class && sig.method == method && sig.is_static == is_static
-        })
+        self.mappings
+            .keys()
+            .any(|sig| sig.class == class && sig.method == method && sig.is_static == is_static)
     }
 
     /// Find a stdlib method mapping by class and method name
     /// Returns the signature and runtime function call if found
-    pub fn find_by_name(&self, class: &str, method: &str) -> Option<(&MethodSignature, &RuntimeFunctionCall)> {
-        self.mappings.iter().find(|(sig, _)| {
-            sig.class == class && sig.method == method
-        })
+    pub fn find_by_name(
+        &self,
+        class: &str,
+        method: &str,
+    ) -> Option<(&MethodSignature, &RuntimeFunctionCall)> {
+        self.mappings
+            .iter()
+            .find(|(sig, _)| sig.class == class && sig.method == method)
     }
 
     /// Find a stdlib method mapping by class, method name, AND parameter count
     /// This enables overloaded mappings where the same method has different implementations
     /// based on the number of arguments (e.g., indexOf with 1 vs 2 params)
     /// Returns the signature and runtime function call if found
-    pub fn find_by_name_and_params(&self, class: &str, method: &str, param_count: usize) -> Option<(&MethodSignature, &RuntimeFunctionCall)> {
+    pub fn find_by_name_and_params(
+        &self,
+        class: &str,
+        method: &str,
+        param_count: usize,
+    ) -> Option<(&MethodSignature, &RuntimeFunctionCall)> {
         self.mappings.iter().find(|(sig, call)| {
             sig.class == class && sig.method == method && call.param_count == param_count
         })
@@ -273,17 +281,19 @@ impl StdlibMapping {
 
     /// Find a static method by class and method name
     /// Returns the signature and runtime function call if found
-    pub fn find_static_method(&self, class: &str, method: &str) -> Option<(&MethodSignature, &RuntimeFunctionCall)> {
-        self.mappings.iter().find(|(sig, _)| {
-            sig.class == class && sig.method == method && sig.is_static
-        })
+    pub fn find_static_method(
+        &self,
+        class: &str,
+        method: &str,
+    ) -> Option<(&MethodSignature, &RuntimeFunctionCall)> {
+        self.mappings
+            .iter()
+            .find(|(sig, _)| sig.class == class && sig.method == method && sig.is_static)
     }
 
     /// Get all unique stdlib class names that have registered methods
     pub fn get_all_classes(&self) -> Vec<&'static str> {
-        let mut classes: Vec<&'static str> = self.mappings.keys()
-            .map(|sig| sig.class)
-            .collect();
+        let mut classes: Vec<&'static str> = self.mappings.keys().map(|sig| sig.class).collect();
         classes.sort_unstable();
         classes.dedup();
         classes
@@ -297,7 +307,8 @@ impl StdlibMapping {
     /// Check if methods of this class are typically static
     /// Used to determine the default method type for a class
     pub fn class_has_static_methods(&self, class_name: &str) -> bool {
-        self.mappings.keys()
+        self.mappings
+            .keys()
             .filter(|sig| sig.class == class_name)
             .any(|sig| sig.is_static)
     }
@@ -305,7 +316,8 @@ impl StdlibMapping {
     /// Get the class name as a 'static str if it exists in the mapping
     /// This is useful for converting owned/borrowed strings to 'static references
     pub fn get_class_static_str(&self, class_name: &str) -> Option<&'static str> {
-        self.mappings.keys()
+        self.mappings
+            .keys()
             .find(|sig| sig.class == class_name)
             .map(|sig| sig.class)
     }
@@ -313,7 +325,9 @@ impl StdlibMapping {
     /// Get all classes that have registered constructors (method="new", is_constructor=true)
     /// Returns a deduplicated, sorted list of class names with constructors
     pub fn get_constructor_classes(&self) -> Vec<&'static str> {
-        let mut classes: Vec<&'static str> = self.mappings.keys()
+        let mut classes: Vec<&'static str> = self
+            .mappings
+            .keys()
             .filter(|sig| sig.is_constructor && sig.method == "new")
             .map(|sig| sig.class)
             .collect();
@@ -327,16 +341,19 @@ impl StdlibMapping {
     /// The results are ordered to prioritize more specific types dynamically:
     /// - Classes without constructors (return-only types like MutexGuard) have highest priority
     /// - Classes with fewer methods are more specific (MutexGuard < Arc)
-    pub fn find_classes_with_method(&self, method: &str) -> Vec<(&'static str, &MethodSignature, &RuntimeFunctionCall)> {
-        let mut results: Vec<_> = self.mappings.iter()
+    pub fn find_classes_with_method(
+        &self,
+        method: &str,
+    ) -> Vec<(&'static str, &MethodSignature, &RuntimeFunctionCall)> {
+        let mut results: Vec<_> = self
+            .mappings
+            .iter()
             .filter(|(sig, _)| sig.method == method && !sig.is_static && !sig.is_constructor)
             .map(|(sig, mapping)| (sig.class, sig, mapping))
             .collect();
 
         // Sort using dynamic priority based on class characteristics
-        results.sort_by(|a, b| {
-            self.class_priority(a.0).cmp(&self.class_priority(b.0))
-        });
+        results.sort_by(|a, b| self.class_priority(a.0).cmp(&self.class_priority(b.0)));
 
         results
     }
@@ -357,7 +374,10 @@ impl StdlibMapping {
     /// - Everything else: 20+
     fn class_priority(&self, class: &str) -> u32 {
         // Check if class has any constructor mappings
-        let has_constructor = self.mappings.keys().any(|sig| sig.class == class && sig.is_constructor);
+        let has_constructor = self
+            .mappings
+            .keys()
+            .any(|sig| sig.class == class && sig.is_constructor);
 
         // Check if class has any static "init" or "new" factory methods
         let has_factory = self.mappings.keys().any(|sig| {
@@ -365,7 +385,11 @@ impl StdlibMapping {
         });
 
         // Count total methods for this class (fewer = more specific)
-        let method_count = self.mappings.keys().filter(|sig| sig.class == class).count();
+        let method_count = self
+            .mappings
+            .keys()
+            .filter(|sig| sig.class == class)
+            .count();
 
         // Constructible types (can be created by user code) get highest priority
         // This includes Arc, Mutex, Channel, Thread, etc.
@@ -383,13 +407,17 @@ impl StdlibMapping {
     /// Check if any stdlib class has a method with the given name
     /// This is used to detect stdlib method calls on Dynamic receivers
     pub fn any_class_has_method(&self, method: &str) -> bool {
-        self.mappings.keys().any(|sig| sig.method == method && !sig.is_static && !sig.is_constructor)
+        self.mappings
+            .keys()
+            .any(|sig| sig.method == method && !sig.is_static && !sig.is_constructor)
     }
 
     /// Get all monomorphized variants of a generic class (e.g., Vec -> VecI32, VecI64, etc.)
     /// This is used for looking up methods on generic classes without type info
     pub fn get_monomorphized_variants(&self, base_class: &str) -> Vec<&'static str> {
-        let mut variants: Vec<&'static str> = self.mappings.keys()
+        let mut variants: Vec<&'static str> = self
+            .mappings
+            .keys()
             .filter(|sig| sig.class.starts_with(base_class) && sig.class != base_class)
             .map(|sig| sig.class)
             .collect();
@@ -400,16 +428,21 @@ impl StdlibMapping {
 
     /// Find a constructor mapping for a class (method="new", is_constructor=true)
     /// Returns the MethodSignature and RuntimeFunctionCall if found
-    pub fn find_constructor(&self, class: &str) -> Option<(&MethodSignature, &RuntimeFunctionCall)> {
-        self.mappings.iter().find(|(sig, _)| {
-            sig.class == class && sig.method == "new" && sig.is_constructor
-        })
+    pub fn find_constructor(
+        &self,
+        class: &str,
+    ) -> Option<(&MethodSignature, &RuntimeFunctionCall)> {
+        self.mappings
+            .iter()
+            .find(|(sig, _)| sig.class == class && sig.method == "new" && sig.is_constructor)
     }
 
     /// Find a runtime function call by runtime function name
     /// Returns the RuntimeFunctionCall metadata if found
     pub fn find_by_runtime_name(&self, runtime_name: &str) -> Option<&RuntimeFunctionCall> {
-        self.mappings.values().find(|call| call.runtime_name == runtime_name)
+        self.mappings
+            .values()
+            .find(|call| call.runtime_name == runtime_name)
     }
 
     /// Get the function signature (param types, return type) for a runtime function.
@@ -442,7 +475,8 @@ impl StdlibMapping {
 
     /// Get the source type of a runtime function.
     pub fn get_function_source(&self, runtime_name: &str) -> Option<FunctionSource> {
-        self.find_by_runtime_name(runtime_name).map(|call| call.source)
+        self.find_by_runtime_name(runtime_name)
+            .map(|call| call.source)
     }
 
     /// Check if a stdlib class uses MIR wrapper functions instead of direct extern calls.
@@ -499,7 +533,7 @@ macro_rules! map_method {
             MethodSignature {
                 class: $class,
                 method: $method,
-                is_static: true,  // Constructors are called like static methods
+                is_static: true, // Constructors are called like static methods
                 is_constructor: true,
                 param_count: $params,
             },
@@ -517,7 +551,7 @@ macro_rules! map_method {
                 return_type: None,
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 
@@ -528,7 +562,7 @@ macro_rules! map_method {
             MethodSignature {
                 class: $class,
                 method: $method,
-                is_static: true,  // Constructors are called like static methods
+                is_static: true, // Constructors are called like static methods
                 is_constructor: true,
                 param_count: $params,
             },
@@ -537,7 +571,7 @@ macro_rules! map_method {
                 needs_out_param: false,
                 has_self_param: false,
                 param_count: $params,
-                has_return: true,  // Returns pointer directly
+                has_return: true, // Returns pointer directly
                 params_need_ptr_conversion: 0,
                 raw_value_params: 0,
                 returns_raw_value: false,
@@ -546,7 +580,7 @@ macro_rules! map_method {
                 return_type: None,
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 
@@ -574,7 +608,7 @@ macro_rules! map_method {
                 return_type: None,
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 
@@ -603,7 +637,7 @@ macro_rules! map_method {
                 return_type: None,
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 
@@ -632,7 +666,7 @@ macro_rules! map_method {
                 return_type: None,
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 
@@ -661,7 +695,7 @@ macro_rules! map_method {
                 return_type: None,
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 
@@ -689,7 +723,7 @@ macro_rules! map_method {
                 return_type: None,
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 
@@ -717,7 +751,7 @@ macro_rules! map_method {
                 return_type: None,
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 
@@ -745,7 +779,7 @@ macro_rules! map_method {
                 return_type: None,
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 
@@ -773,7 +807,7 @@ macro_rules! map_method {
                 return_type: None,
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 
@@ -801,7 +835,7 @@ macro_rules! map_method {
                 return_type: None,
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 
@@ -830,7 +864,7 @@ macro_rules! map_method {
                 return_type: None,
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 
@@ -858,7 +892,7 @@ macro_rules! map_method {
                 return_type: None,
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 
@@ -886,7 +920,7 @@ macro_rules! map_method {
                 return_type: None,
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 
@@ -914,7 +948,7 @@ macro_rules! map_method {
                 return_type: None,
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 
@@ -947,7 +981,7 @@ macro_rules! map_method {
                 return_type: Some($ret_type),
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 
@@ -975,7 +1009,7 @@ macro_rules! map_method {
                 return_type: Some(IrTypeDescriptor::Void),
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 
@@ -1003,7 +1037,7 @@ macro_rules! map_method {
                 return_type: Some($ret_type),
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 
@@ -1031,7 +1065,7 @@ macro_rules! map_method {
                 return_type: Some($ret_type),
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 
@@ -1059,7 +1093,7 @@ macro_rules! map_method {
                 return_type: Some($ret_type),
                 is_mir_wrapper: true,
                 source: FunctionSource::MirWrapper,
-            }
+            },
         )
     };
 
@@ -1087,7 +1121,7 @@ macro_rules! map_method {
                 return_type: Some($ret_type),
                 is_mir_wrapper: true,
                 source: FunctionSource::MirWrapper,
-            }
+            },
         )
     };
 
@@ -1115,7 +1149,7 @@ macro_rules! map_method {
                 return_type: Some(IrTypeDescriptor::Void),
                 is_mir_wrapper: true,
                 source: FunctionSource::MirWrapper,
-            }
+            },
         )
     };
 
@@ -1143,7 +1177,7 @@ macro_rules! map_method {
                 return_type: Some($ret_type),
                 is_mir_wrapper: true,
                 source: FunctionSource::MirWrapper,
-            }
+            },
         )
     };
 
@@ -1171,7 +1205,7 @@ macro_rules! map_method {
                 return_type: Some(IrTypeDescriptor::Void),
                 is_mir_wrapper: true,
                 source: FunctionSource::MirWrapper,
-            }
+            },
         )
     };
 
@@ -1199,7 +1233,7 @@ macro_rules! map_method {
                 return_type: Some(IrTypeDescriptor::Void),
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 
@@ -1227,7 +1261,7 @@ macro_rules! map_method {
                 return_type: Some($ret_type),
                 is_mir_wrapper: false,
                 source: FunctionSource::Builtin,
-            }
+            },
         )
     };
 }
@@ -1250,11 +1284,9 @@ impl StdlibMapping {
             // Static methods
             map_method!(static "String", "fromCharCode" => "haxe_string_from_char_code", params: 1, returns: primitive,
                 types: &[I32] => PtrString),
-
             // Properties (treated as getters with 0 params)
             map_method!(instance "String", "length" => "string_length", params: 0, returns: primitive,
                 types: &[PtrString] => I32),
-
             // Instance methods - character access
             // charAt returns String pointer (empty string for out of bounds)
             // Uses MIR wrapper that forwards to haxe_string_char_at_ptr
@@ -1266,7 +1298,6 @@ impl StdlibMapping {
             // cca is an internal alias for charCodeAt used in StringTools.unsafeCodeAt
             map_method!(instance "String", "cca" => "haxe_string_char_code_at_ptr", params: 1, returns: primitive,
                 types: &[PtrString, I32] => I32),
-
             // Search operations
             // indexOf and lastIndexOf have optional startIndex parameter, so we have two mappings each:
             // - 1-arg versions use MIR wrappers that provide default startIndex (0 for indexOf, -1 for lastIndexOf)
@@ -1280,7 +1311,6 @@ impl StdlibMapping {
                 types: &[PtrString, PtrString] => I32),
             map_method!(instance "String", "lastIndexOf" => "String_lastIndexOf_2", params: 2, mir_wrapper,
                 types: &[PtrString, PtrString, I32] => I32),
-
             // String transformations
             map_method!(instance "String", "split" => "haxe_string_split_array", params: 1, returns: primitive,
                 types: &[PtrString, PtrString] => PtrVoid),
@@ -1351,7 +1381,6 @@ impl StdlibMapping {
         let mappings = vec![
             // Properties (treated as getters with 0 params)
             map_method!(instance "Array", "length" => "array_length", params: 0, returns: primitive),
-
             // Modification methods
             // push and pop use MIR wrappers that handle Any type parameters internally
             map_method!(instance "Array", "push" => "array_push", params: 1, returns: void),
@@ -1363,18 +1392,15 @@ impl StdlibMapping {
             // remove(x:T): arg[0]=array, arg[1]=value (needs ptr conversion)
             // Bitmask: 0b10 = bit 1 set
             map_method!(instance "Array", "remove" => "haxe_array_remove", params: 1, returns: primitive, ptr_params: 0b10),
-
             // Extraction methods
             // Array.slice uses MIR wrapper that handles out-param allocation
             map_method!(instance "Array", "slice" => "array_slice", params: 2, returns: primitive),
             map_method!(instance "Array", "copy" => "haxe_array_copy", params: 0, returns: complex),
-
             // Search methods
             // indexOf(x:T, fromIndex:Int): arg[0]=array, arg[1]=value (needs ptr), arg[2]=fromIndex
             // Bitmask: 0b10 = bit 1 set
             map_method!(instance "Array", "indexOf" => "haxe_array_index_of", params: 2, returns: primitive, ptr_params: 0b10),
             map_method!(instance "Array", "lastIndexOf" => "haxe_array_last_index_of", params: 2, returns: primitive, ptr_params: 0b10),
-
             // Array.join(sep: String) -> String
             // Joins array elements with separator, returns new string
             map_method!(instance "Array", "join" => "array_join", params: 1, returns: primitive),
@@ -1406,7 +1432,6 @@ impl StdlibMapping {
                 types: &[F64] => F64),
             map_method!(static "Math", "fround" => "haxe_math_fround", params: 1, returns: primitive,
                 types: &[F64] => F64),
-
             // Trigonometric
             map_method!(static "Math", "sin" => "haxe_math_sin", params: 1, returns: primitive,
                 types: &[F64] => F64),
@@ -1422,7 +1447,6 @@ impl StdlibMapping {
                 types: &[F64] => F64),
             map_method!(static "Math", "atan2" => "haxe_math_atan2", params: 2, returns: primitive,
                 types: &[F64, F64] => F64),
-
             // Exponential and logarithmic
             map_method!(static "Math", "exp" => "haxe_math_exp", params: 1, returns: primitive,
                 types: &[F64] => F64),
@@ -1432,7 +1456,6 @@ impl StdlibMapping {
                 types: &[F64, F64] => F64),
             map_method!(static "Math", "sqrt" => "haxe_math_sqrt", params: 1, returns: primitive,
                 types: &[F64] => F64),
-
             // Special
             map_method!(static "Math", "isNaN" => "haxe_math_is_nan", params: 1, returns: primitive,
                 types: &[F64] => Bool),
@@ -1683,27 +1706,22 @@ impl StdlibMapping {
             // MIR wrapper: takes closure (*u8), returns thread handle (*u8)
             map_method!(static "Thread", "spawn" => "Thread_spawn", params: 1, mir_wrapper,
                 types: &[PtrU8] => PtrU8),
-
             // Thread<T>::join() -> T
             // MIR wrapper: takes thread handle (*u8), returns result (*u8 for Dynamic)
             map_method!(instance "Thread", "join" => "Thread_join", params: 0, mir_wrapper,
                 types: &[PtrU8] => PtrU8),
-
             // Thread<T>::isFinished() -> Bool
             // MIR wrapper: takes thread handle (*u8), returns bool
             map_method!(instance "Thread", "isFinished" => "Thread_isFinished", params: 0, mir_wrapper,
                 types: &[PtrU8] => Bool),
-
             // Thread::sleep(millis: Int) -> Void
             // MIR wrapper: takes millis (i32), returns void
             map_method!(static "Thread", "sleep" => "Thread_sleep", params: 1, mir_wrapper,
                 types: &[I32]),
-
             // Thread::yieldNow() -> Void
             // MIR wrapper: no params, returns void
             map_method!(static "Thread", "yieldNow" => "Thread_yieldNow", params: 0, mir_wrapper,
                 types: &[]),
-
             // Thread::currentId() -> Int
             // MIR wrapper: no params, returns thread id (i64)
             map_method!(static "Thread", "currentId" => "Thread_currentId", params: 0, mir_wrapper,
@@ -2097,7 +2115,6 @@ impl StdlibMapping {
             map_method!(static "Date", "fromTime" => "haxe_date_from_time", params: 1, returns: primitive),
             // Date.fromString(s: String): Date
             map_method!(static "Date", "fromString" => "haxe_date_from_string", params: 1, returns: primitive),
-
             // Instance methods - local timezone
             // date.getTime(): Float
             map_method!(instance "Date", "getTime" => "haxe_date_get_time", params: 0, returns: primitive),
@@ -2115,7 +2132,6 @@ impl StdlibMapping {
             map_method!(instance "Date", "getDate" => "haxe_date_get_date", params: 0, returns: primitive),
             // date.getDay(): Int
             map_method!(instance "Date", "getDay" => "haxe_date_get_day", params: 0, returns: primitive),
-
             // Instance methods - UTC
             // date.getUTCHours(): Int
             map_method!(instance "Date", "getUTCHours" => "haxe_date_get_utc_hours", params: 0, returns: primitive),
@@ -2131,11 +2147,9 @@ impl StdlibMapping {
             map_method!(instance "Date", "getUTCDate" => "haxe_date_get_utc_date", params: 0, returns: primitive),
             // date.getUTCDay(): Int
             map_method!(instance "Date", "getUTCDay" => "haxe_date_get_utc_day", params: 0, returns: primitive),
-
             // Timezone
             // date.getTimezoneOffset(): Int
             map_method!(instance "Date", "getTimezoneOffset" => "haxe_date_get_timezone_offset", params: 0, returns: primitive),
-
             // String conversion
             // date.toString(): String
             map_method!(instance "Date", "toString" => "haxe_date_to_string", params: 0, returns: primitive),
@@ -2161,12 +2175,10 @@ impl StdlibMapping {
             // rayzor.Bytes.ofString(s: String): Bytes
             map_method!(static "rayzor_Bytes", "ofString" => "haxe_bytes_of_string", params: 1, returns: primitive,
                 types: &[IrTypeDescriptor::PtrString] => IrTypeDescriptor::PtrVoid),
-
             // Property accessor
             // bytes.length: Int
             map_method!(instance "rayzor_Bytes", "length" => "haxe_bytes_length", params: 0, returns: primitive,
                 types: &[IrTypeDescriptor::PtrVoid] => IrTypeDescriptor::I32),
-
             // Instance methods
             // bytes.get(pos: Int): Int
             map_method!(instance "rayzor_Bytes", "get" => "haxe_bytes_get", params: 1, returns: primitive,
@@ -2189,7 +2201,6 @@ impl StdlibMapping {
             // bytes.toString(): String
             map_method!(instance "rayzor_Bytes", "toString" => "haxe_bytes_to_string", params: 0, returns: primitive,
                 types: &[IrTypeDescriptor::PtrVoid] => IrTypeDescriptor::PtrString),
-
             // Integer getters (little-endian)
             // bytes.getInt16(pos: Int): Int
             map_method!(instance "rayzor_Bytes", "getInt16" => "haxe_bytes_get_int16", params: 1, returns: primitive,
@@ -2200,7 +2211,6 @@ impl StdlibMapping {
             // bytes.getInt64(pos: Int): Int64
             map_method!(instance "rayzor_Bytes", "getInt64" => "haxe_bytes_get_int64", params: 1, returns: primitive,
                 types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32] => IrTypeDescriptor::I64),
-
             // Float getters (little-endian)
             // bytes.getFloat(pos: Int): Float
             map_method!(instance "rayzor_Bytes", "getFloat" => "haxe_bytes_get_float", params: 1, returns: primitive,
@@ -2208,7 +2218,6 @@ impl StdlibMapping {
             // bytes.getDouble(pos: Int): Float
             map_method!(instance "rayzor_Bytes", "getDouble" => "haxe_bytes_get_double", params: 1, returns: primitive,
                 types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32] => IrTypeDescriptor::F64),
-
             // Integer setters (little-endian)
             // bytes.setInt16(pos: Int, value: Int): Void
             map_method!(instance "rayzor_Bytes", "setInt16" => "haxe_bytes_set_int16", params: 2, returns: void,
@@ -2219,7 +2228,6 @@ impl StdlibMapping {
             // bytes.setInt64(pos: Int, value: Int64): Void
             map_method!(instance "rayzor_Bytes", "setInt64" => "haxe_bytes_set_int64", params: 2, returns: void,
                 types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::I64]),
-
             // Float setters (little-endian)
             // bytes.setFloat(pos: Int, value: Float): Void
             map_method!(instance "rayzor_Bytes", "setFloat" => "haxe_bytes_set_float", params: 2, returns: void,
@@ -2227,7 +2235,6 @@ impl StdlibMapping {
             // bytes.setDouble(pos: Int, value: Float): Void
             map_method!(instance "rayzor_Bytes", "setDouble" => "haxe_bytes_set_double", params: 2, returns: void,
                 types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::F64]),
-
             // ==== haxe.io.Bytes (typedef to rayzor.Bytes) ====
             // When haxe.io.Bytes is used as a typedef, the type resolves to "haxe_io_Bytes"
             // so we need to map those as well. All point to the same runtime functions.
@@ -2271,7 +2278,6 @@ impl StdlibMapping {
                 types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::F32]),
             map_method!(instance "haxe_io_Bytes", "setDouble" => "haxe_bytes_set_double", params: 2, returns: void,
                 types: &[IrTypeDescriptor::PtrVoid, IrTypeDescriptor::I32, IrTypeDescriptor::F64]),
-
             // ==== Simple "Bytes" class name (fallback when qualified_name isn't available) ====
             // The symbol table may not always have the fully qualified name (rayzor_Bytes),
             // so we need to support lookup by simple class name "Bytes" as well.
@@ -2410,17 +2416,14 @@ impl StdlibMapping {
             // MIR wrapper: creates semaphore with initial value 0, returns handle
             map_method!(constructor "sys_thread_Lock", "new" => "Lock_init", params: 0, mir_wrapper,
                 types: &[] => PtrU8),
-
             // lock.wait() -> Bool (no timeout, blocks indefinitely until released)
             // MIR wrapper: takes handle, always returns true
             map_method!(instance "sys_thread_Lock", "wait" => "Lock_wait", params: 0, mir_wrapper,
                 types: &[PtrU8] => Bool),
-
             // lock.wait(timeout: Float) -> Bool (with timeout)
             // MIR wrapper: takes handle + timeout (f64), returns true if acquired
             map_method!(instance "sys_thread_Lock", "wait" => "Lock_wait_timeout", params: 1, mir_wrapper,
                 types: &[PtrU8, F64] => Bool),
-
             // lock.release() -> Void
             // Direct extern call: takes handle
             map_method!(instance "sys_thread_Lock", "release" => "rayzor_semaphore_release", params: 0, returns: void,
@@ -2444,22 +2447,18 @@ impl StdlibMapping {
             // Direct extern: takes initial count (i32), returns handle
             map_method!(constructor "sys_thread_Semaphore", "new" => "rayzor_semaphore_init", params: 1, returns: primitive,
                 types: &[I32] => PtrU8),
-
             // semaphore.acquire() -> Void
             // Direct extern: takes handle, blocks until acquired
             map_method!(instance "sys_thread_Semaphore", "acquire" => "rayzor_semaphore_acquire", params: 0, returns: void,
                 types: &[PtrU8]),
-
             // semaphore.tryAcquire() -> Bool (non-blocking, no timeout)
             // MIR wrapper: takes handle, returns true if acquired
             map_method!(instance "sys_thread_Semaphore", "tryAcquire" => "Semaphore_tryAcquire", params: 0, mir_wrapper,
                 types: &[PtrU8] => Bool),
-
             // semaphore.tryAcquire(timeout: Float) -> Bool (with timeout)
             // MIR wrapper: takes handle + timeout (f64), returns true if acquired
             map_method!(instance "sys_thread_Semaphore", "tryAcquire" => "Semaphore_tryAcquire_timeout", params: 1, mir_wrapper,
                 types: &[PtrU8, F64] => Bool),
-
             // semaphore.release() -> Void
             // Direct extern: takes handle
             map_method!(instance "sys_thread_Semaphore", "release" => "rayzor_semaphore_release", params: 0, returns: void,
@@ -2542,20 +2541,17 @@ impl StdlibMapping {
             map_method!(static "_Internal", "box_float" => "haxe_box_float_ptr", params: 1, returns: primitive,
                 types: &[F64] => PtrU8),
             map_method!(static "_Internal", "box_bool" => "haxe_box_bool_ptr", params: 1, returns: primitive,
-                types: &[I64] => PtrU8),  // Bool extended to i64 on ARM64
-
+                types: &[I64] => PtrU8), // Bool extended to i64 on ARM64
             // Unboxing functions - convert boxed Dynamic pointers back to primitives
             map_method!(static "_Internal", "unbox_int" => "haxe_unbox_int_ptr", params: 1, returns: primitive,
                 types: &[PtrU8] => I64),
             map_method!(static "_Internal", "unbox_float" => "haxe_unbox_float_ptr", params: 1, returns: primitive,
                 types: &[PtrU8] => F64),
             map_method!(static "_Internal", "unbox_bool" => "haxe_unbox_bool_ptr", params: 1, returns: primitive,
-                types: &[PtrU8] => I64),  // Bool extended to i64 on ARM64
-
+                types: &[PtrU8] => I64), // Bool extended to i64 on ARM64
             // String length (used directly, not always method-mapped)
             map_method!(static "_Internal", "string_length" => "string_length", params: 1, returns: primitive,
                 types: &[PtrString] => I32),
-
             // String index_of variants for MIR wrapper support
             map_method!(static "_Internal", "index_of_ptr" => "haxe_string_index_of_ptr", params: 2, returns: primitive,
                 types: &[PtrString, PtrString] => I32),
@@ -2565,13 +2561,11 @@ impl StdlibMapping {
                 types: &[PtrString, PtrString] => I32),
             map_method!(static "_Internal", "last_index_of_ptr_offset" => "haxe_string_last_index_of_ptr_offset", params: 3, returns: primitive,
                 types: &[PtrString, PtrString, I32] => I32),
-
             // String toLowerCase/toUpperCase backing functions
             map_method!(static "_Internal", "to_lower_case" => "haxe_string_to_lower_case", params: 1, returns: primitive,
                 types: &[PtrString] => PtrString),
             map_method!(static "_Internal", "to_upper_case" => "haxe_string_to_upper_case", params: 1, returns: primitive,
                 types: &[PtrString] => PtrString),
-
             // StringMap/IntMap count functions
             map_method!(static "_Internal", "stringmap_count" => "haxe_stringmap_count", params: 1, returns: primitive,
                 types: &[PtrVoid] => I64),
@@ -2681,9 +2675,11 @@ mod tests {
             method: "new",
             is_static: true,
             is_constructor: true,
-            param_count: 1
+            param_count: 1,
         };
-        let call = mapping.get(&sig).expect("Channel constructor should be mapped");
+        let call = mapping
+            .get(&sig)
+            .expect("Channel constructor should be mapped");
         assert_eq!(call.runtime_name, "Channel_init");
         assert!(!call.needs_out_param); // MIR wrapper returns pointer directly
         assert!(call.has_return); // Returns PtrU8
@@ -2701,9 +2697,11 @@ mod tests {
             method: "new",
             is_static: true,
             is_constructor: true,
-            param_count: 0
+            param_count: 0,
         };
-        let call = mapping.get(&sig).expect("VecI32 constructor should be mapped");
+        let call = mapping
+            .get(&sig)
+            .expect("VecI32 constructor should be mapped");
         assert_eq!(call.runtime_name, "VecI32_new");
         assert!(!call.needs_out_param); // MIR wrapper returns pointer directly
         assert!(call.has_return);

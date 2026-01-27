@@ -7,8 +7,7 @@
 /// Each test checks both:
 /// 1. That parsing completes without panicking
 /// 2. The specific diagnostics/errors encountered
-
-use compiler::compilation::{CompilationUnit, CompilationConfig};
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 use parser::parse_haxe_file_with_diagnostics;
 
 /// Helper function to parse Haxe source using CompilationUnit and return diagnostics
@@ -25,9 +24,7 @@ fn parse_and_get_diagnostics(source: &str, filename: &str) -> (bool, Vec<String>
                 .collect();
             (has_errors, error_messages)
         }
-        Err(err) => {
-            (true, vec![err])
-        }
+        Err(err) => (true, vec![err]),
     }
 }
 
@@ -41,7 +38,10 @@ fn parse_stdlib_file_and_get_diagnostics(filename: &str) -> (bool, Vec<String>) 
         Ok(_) => {
             // Stdlib loaded successfully - extract any parse errors from diagnostics
             // For now, we check if the specific file was loaded
-            let file_loaded = unit.stdlib_files.iter().any(|f| f.filename.contains(filename));
+            let file_loaded = unit
+                .stdlib_files
+                .iter()
+                .any(|f| f.filename.contains(filename));
             if file_loaded {
                 (false, Vec::new())
             } else {
@@ -500,7 +500,7 @@ fn test_parse_all_stdlib_files() {
     for entry in WalkDir::new(stdlib_path)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "hx"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "hx"))
     {
         let path = entry.path();
         let relative_path = path.strip_prefix(stdlib_path).unwrap();
@@ -508,7 +508,8 @@ fn test_parse_all_stdlib_files() {
         total_files += 1;
 
         if let Ok(source) = std::fs::read_to_string(path) {
-            let (has_errors, errors) = parse_and_get_diagnostics(&source, path.to_str().unwrap_or("unknown"));
+            let (has_errors, errors) =
+                parse_and_get_diagnostics(&source, path.to_str().unwrap_or("unknown"));
 
             if has_errors {
                 parse_errors += 1;
@@ -516,7 +517,10 @@ fn test_parse_all_stdlib_files() {
 
                 // Categorize errors
                 for error in &errors {
-                    let category = if error.contains("#if") || error.contains("#else") || error.contains("#end") {
+                    let category = if error.contains("#if")
+                        || error.contains("#else")
+                        || error.contains("#end")
+                    {
                         "conditional_compilation"
                     } else if error.contains("@:") {
                         "metadata"
@@ -536,8 +540,16 @@ fn test_parse_all_stdlib_files() {
 
     println!("\n=== RESULTS ===");
     println!("Total files: {}", total_files);
-    println!("Parsed successfully: {} ({:.1}%)", parsed_ok, (parsed_ok as f64 / total_files as f64) * 100.0);
-    println!("Parse errors: {} ({:.1}%)", parse_errors, (parse_errors as f64 / total_files as f64) * 100.0);
+    println!(
+        "Parsed successfully: {} ({:.1}%)",
+        parsed_ok,
+        (parsed_ok as f64 / total_files as f64) * 100.0
+    );
+    println!(
+        "Parse errors: {} ({:.1}%)",
+        parse_errors,
+        (parse_errors as f64 / total_files as f64) * 100.0
+    );
 
     println!("\n=== ERROR CATEGORIES ===");
     let mut sorted_categories: Vec<_> = error_categories.iter().collect();
@@ -571,7 +583,10 @@ class Foo {
     println!("  Errors: {:?}", errors);
 
     // This should work already
-    assert!(!has_errors, "Basic class syntax should still parse correctly");
+    assert!(
+        !has_errors,
+        "Basic class syntax should still parse correctly"
+    );
 }
 
 #[test]

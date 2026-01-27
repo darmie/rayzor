@@ -31,7 +31,11 @@ abstract UInt(Int) from Int to Int {
             }
 
             // Check the abstract was parsed
-            assert_eq!(parse_result.file.declarations.len(), 1, "Should have one declaration");
+            assert_eq!(
+                parse_result.file.declarations.len(),
+                1,
+                "Should have one declaration"
+            );
         }
         Err(e) => {
             panic!("Parse failed: {}", e);

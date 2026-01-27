@@ -1,3 +1,33 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    unreachable_patterns,
+    unused_mut,
+    unused_assignments,
+    unused_parens
+)]
+#![allow(
+    clippy::single_component_path_imports,
+    clippy::for_kv_map,
+    clippy::explicit_auto_deref
+)]
+#![allow(
+    clippy::println_empty_string,
+    clippy::len_zero,
+    clippy::useless_vec,
+    clippy::field_reassign_with_default
+)]
+#![allow(
+    clippy::needless_borrow,
+    clippy::redundant_closure,
+    clippy::bool_assert_comparison
+)]
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::useless_format,
+    clippy::clone_on_copy
+)]
 //! Test abstract types implementation
 //!
 //! This demonstrates:
@@ -7,7 +37,7 @@
 //! 4. Abstract type methods
 //! 5. Core types (@:coreType)
 
-use compiler::compilation::{CompilationUnit, CompilationConfig};
+use compiler::compilation::{CompilationConfig, CompilationUnit};
 
 fn main() {
     println!("=== Testing Abstract Types ===\n");
@@ -52,7 +82,8 @@ fn test_basic_abstract() {
         }
     "#;
 
-    unit.add_file(source, "test/Counter.hx").expect("Failed to add file");
+    unit.add_file(source, "test/Counter.hx")
+        .expect("Failed to add file");
 
     match unit.lower_to_tast() {
         Ok(typed_files) => {
@@ -69,7 +100,7 @@ fn test_basic_abstract() {
             }
         }
         Err(e) => {
-            println!("❌ FAILED: Compilation error: {}\n", e);
+            println!("FAILED: Compilation error: {:?}\n", e);
         }
     }
 }
@@ -110,16 +141,15 @@ fn test_implicit_casts() {
         }
     "#;
 
-    unit.add_file(source, "test/Kilometers.hx").expect("Failed to add file");
+    unit.add_file(source, "test/Kilometers.hx")
+        .expect("Failed to add file");
 
     match unit.lower_to_tast() {
         Ok(typed_files) => {
             println!("✓ Abstract with from/to compiled successfully");
 
             // Check for from/to types
-            let abstract_decl = typed_files.iter()
-                .flat_map(|f| &f.abstracts)
-                .next();
+            let abstract_decl = typed_files.iter().flat_map(|f| &f.abstracts).next();
 
             if let Some(abs) = abstract_decl {
                 println!("  From types: {}", abs.from_types.len());
@@ -136,7 +166,7 @@ fn test_implicit_casts() {
             }
         }
         Err(e) => {
-            println!("❌ FAILED: Compilation error: {}\n", e);
+            println!("FAILED: Compilation error: {:?}\n", e);
         }
     }
 }
@@ -177,16 +207,15 @@ fn test_operator_overloading() {
         }
     "#;
 
-    unit.add_file(source, "test/Vector2D.hx").expect("Failed to add file");
+    unit.add_file(source, "test/Vector2D.hx")
+        .expect("Failed to add file");
 
     match unit.lower_to_tast() {
         Ok(typed_files) => {
             println!("✓ Abstract with operators compiled successfully");
 
             // Check for operator metadata
-            let abstract_decl = typed_files.iter()
-                .flat_map(|f| &f.abstracts)
-                .next();
+            let abstract_decl = typed_files.iter().flat_map(|f| &f.abstracts).next();
 
             if let Some(abs) = abstract_decl {
                 let has_op_method = abs.methods.iter().any(|m| {
@@ -207,7 +236,7 @@ fn test_operator_overloading() {
             }
         }
         Err(e) => {
-            println!("❌ FAILED: Compilation error: {}\n", e);
+            println!("FAILED: Compilation error: {:?}\n", e);
         }
     }
 }
