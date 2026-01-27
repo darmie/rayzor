@@ -3449,7 +3449,7 @@ mod tests {
         // Call through simple FFI (without signature)
         let result = interp
             .call_ffi_ptr_simple(
-                test_add as usize,
+                test_add as *const () as usize,
                 &[InterpValue::I64(5), InterpValue::I64(3)],
             )
             .unwrap();
@@ -3470,7 +3470,7 @@ mod tests {
 
         let result = interp
             .call_ffi_ptr_with_types(
-                test_mul as usize,
+                test_mul as *const () as usize,
                 &[
                     InterpValue::I64(2),
                     InterpValue::I64(3),
@@ -3497,7 +3497,7 @@ mod tests {
 
         let result = interp
             .call_ffi_ptr_with_types(
-                test_f64_add as usize,
+                test_f64_add as *const () as usize,
                 &[InterpValue::F64(1.5), InterpValue::F64(2.5)],
                 &param_types,
                 &return_type,
