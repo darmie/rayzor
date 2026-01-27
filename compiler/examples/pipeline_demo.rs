@@ -141,6 +141,7 @@ fn main() {
         enable_flow_sensitive_analysis: true,
         enable_enhanced_flow_analysis: false,
         enable_memory_safety_analysis: false,
+        enable_macro_expansion: true,
     };
 
     let mut pipeline = HaxeCompilationPipeline::with_config(config);

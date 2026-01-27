@@ -109,6 +109,9 @@ pub struct PipelineConfig {
 
     /// Enable memory safety analysis (lifetime and ownership)
     pub enable_memory_safety_analysis: bool,
+
+    /// Enable macro expansion between parsing and TAST lowering
+    pub enable_macro_expansion: bool,
 }
 
 /// Target execution modes for the hybrid VM/compiler system
@@ -154,6 +157,9 @@ pub struct PipelineStats {
 
     /// Parse time in microseconds
     pub parse_time_us: u64,
+
+    /// Macro expansion time in microseconds
+    pub macro_expansion_time_us: u64,
 
     /// AST lowering time in microseconds
     pub lowering_time_us: u64,
@@ -423,6 +429,9 @@ pub enum ErrorCategory {
     /// Semantic analysis error
     SemanticAnalysisError,
 
+    /// Macro expansion error
+    MacroExpansionError,
+
     /// Internal compiler error
     InternalError,
 }
@@ -438,6 +447,7 @@ impl ErrorCategory {
     /// - E0400-E0499: Import/module errors
     /// - E0500-E0599: HIR errors
     /// - E0600-E0699: Semantic analysis errors
+    /// - E0700-E0799: Macro expansion errors
     /// - E9999: Internal compiler errors
     pub fn error_code(&self) -> &'static str {
         match self {
@@ -464,6 +474,9 @@ impl ErrorCategory {
 
             // Semantic analysis errors: E0600-E0699
             ErrorCategory::SemanticAnalysisError => "E0600",
+
+            // Macro expansion errors: E0700-E0799
+            ErrorCategory::MacroExpansionError => "E0700",
 
             // Internal compiler errors
             ErrorCategory::InternalError => "E9999",
@@ -512,6 +525,7 @@ impl Default for PipelineConfig {
             enable_flow_sensitive_analysis: true,
             enable_enhanced_flow_analysis: true,
             enable_memory_safety_analysis: true,
+            enable_macro_expansion: true,
         }
     }
 }
@@ -539,6 +553,7 @@ impl PipelineConfig {
             enable_flow_sensitive_analysis: true, // Keep flow analysis for safety
             enable_enhanced_flow_analysis: false,
             enable_memory_safety_analysis: true,
+            enable_macro_expansion: true,
         }
     }
 
@@ -564,6 +579,7 @@ impl PipelineConfig {
             enable_flow_sensitive_analysis: true,
             enable_enhanced_flow_analysis: true,
             enable_memory_safety_analysis: true,
+            enable_macro_expansion: true,
         }
     }
 
@@ -589,6 +605,7 @@ impl PipelineConfig {
             enable_flow_sensitive_analysis: true,
             enable_enhanced_flow_analysis: true,
             enable_memory_safety_analysis: true,
+            enable_macro_expansion: true,
         }
     }
 
@@ -639,6 +656,30 @@ impl HaxeCompilationPipeline {
         self.stats.parse_time_us += parse_start.elapsed().as_micros() as u64;
         match parse_result {
             Ok((ast_file, source_map)) => {
+                // Stage 1.5: Macro expansion (if enabled)
+                let ast_file = if self.config.enable_macro_expansion {
+                    let macro_start = std::time::Instant::now();
+                    let expansion = crate::macro_system::expand_macros(ast_file);
+                    self.stats.macro_expansion_time_us += macro_start.elapsed().as_micros() as u64;
+
+                    // Collect macro diagnostics
+                    for diag in &expansion.diagnostics {
+                        match diag.severity {
+                            crate::macro_system::MacroSeverity::Error => {
+                                result.errors.push(diag.to_compilation_error());
+                            }
+                            crate::macro_system::MacroSeverity::Warning
+                            | crate::macro_system::MacroSeverity::Info => {
+                                result.warnings.push(diag.to_compilation_warning());
+                            }
+                        }
+                    }
+
+                    expansion.file
+                } else {
+                    ast_file
+                };
+
                 // Stage 2: Lower AST to TAST
                 let lowering_start = std::time::Instant::now();
                 match self.lower_ast_to_tast(ast_file, file_path.as_ref(), source, source_map) {

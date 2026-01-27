@@ -101,10 +101,11 @@ pub mod error_codes;
 pub mod hxml;
 pub mod ir;
 pub mod logging;
+pub mod macro_system;
 pub mod pipeline;
 pub mod semantic_graph;
 pub mod stdlib; // MIR-based standard library
-pub mod tast; // Logging configuration utilities
+pub mod tast;
 
 // Re-export plugin system from separate crate (avoids cyclic dependency)
 pub use rayzor_plugin as plugin;
