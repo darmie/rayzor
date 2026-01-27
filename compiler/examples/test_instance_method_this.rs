@@ -81,8 +81,8 @@ fn main() {
     let mut symbol_table = SymbolTable::new();
     let type_table = Rc::new(RefCell::new(TypeTable::new()));
     let mut scope_tree = ScopeTree::new(ScopeId::from_raw(0));
-    let mut namespace_resolver = NamespaceResolver::new(&string_interner);
-    let mut import_resolver = compiler::tast::namespace::ImportResolver::new(&namespace_resolver);
+    let mut namespace_resolver = NamespaceResolver::new();
+    let mut import_resolver = compiler::tast::namespace::ImportResolver::new();
 
     let mut ast_lowering = AstLowering::new(
         &mut string_interner,

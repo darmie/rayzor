@@ -1252,8 +1252,6 @@ mod tests {
         "#;
         let file = parse(source);
         let result = expand_macros(file);
-        // Macro should have been registered
-        assert!(result.expansions_count > 0 || result.expansion_origins.is_empty() || true);
         // The structure should be preserved
         assert_eq!(result.file.declarations.len(), 2);
     }
