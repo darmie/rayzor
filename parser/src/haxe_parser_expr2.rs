@@ -874,6 +874,25 @@ pub fn switch_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
         |i| expression(full, i),
     )
     .parse(input)?;
+
+    // Handle type check syntax: switch (expr : Type) { ... }
+    let (input, expr) = if let Ok((rest, _)) = symbol(":").parse(input) {
+        let (rest, type_hint) = type_expr(full, rest)?;
+        let tc_end = position(full, rest);
+        (
+            rest,
+            Expr {
+                kind: ExprKind::TypeCheck {
+                    expr: Box::new(expr),
+                    type_hint,
+                },
+                span: Span::new(start, tc_end),
+            },
+        )
+    } else {
+        (input, expr)
+    };
+
     let (input, _) =
         context("[E0021] expected ')' after switch expression", symbol(")")).parse(input)?;
     let (input, _) = context(
