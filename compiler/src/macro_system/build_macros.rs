@@ -42,10 +42,7 @@ pub struct BuildMacroResult {
 ///
 /// This should be called before regular macro expansion so that
 /// generated fields are available for expression-level expansion.
-pub fn process_build_macros(
-    mut file: HaxeFile,
-    registry: &MacroRegistry,
-) -> BuildMacroResult {
+pub fn process_build_macros(mut file: HaxeFile, registry: &MacroRegistry) -> BuildMacroResult {
     let mut diagnostics = Vec::new();
     let mut applied_count = 0;
 
@@ -70,10 +67,7 @@ pub fn process_build_macros(
                         Ok(()) => {
                             applied_count += 1;
                             diagnostics.push(MacroDiagnostic::info(
-                                format!(
-                                    "@:build macro applied to class '{}'",
-                                    class.name
-                                ),
+                                format!("@:build macro applied to class '{}'", class.name),
                                 super::errors::span_to_location(meta.span),
                             ));
                         }
@@ -97,9 +91,7 @@ pub fn process_build_macros(
                                         "@:autoBuild from '{}' applied to class '{}'",
                                         auto_build.interface_name, class.name
                                     ),
-                                    super::errors::span_to_location(
-                                        auto_build.build_meta.span,
-                                    ),
+                                    super::errors::span_to_location(auto_build.build_meta.span),
                                 ));
                             }
                             Err(e) => {
@@ -263,21 +255,34 @@ fn class_fields_to_build_fields(fields: &[ClassField]) -> Vec<BuildField> {
 /// Convert a single ClassField to a BuildField
 fn class_field_to_build_field(field: &ClassField) -> BuildField {
     let (name, kind) = match &field.kind {
-        ClassFieldKind::Var { name, type_hint, expr } => {
+        ClassFieldKind::Var {
+            name,
+            type_hint,
+            expr,
+        } => {
             let kind = BuildFieldKind::Var {
                 type_hint: type_hint.as_ref().map(|t| format!("{:?}", t)),
                 expr: expr.as_ref().map(|e| Box::new(e.clone())),
             };
             (name.clone(), kind)
         }
-        ClassFieldKind::Final { name, type_hint, expr } => {
+        ClassFieldKind::Final {
+            name,
+            type_hint,
+            expr,
+        } => {
             let kind = BuildFieldKind::Var {
                 type_hint: type_hint.as_ref().map(|t| format!("{:?}", t)),
                 expr: expr.as_ref().map(|e| Box::new(e.clone())),
             };
             (name.clone(), kind)
         }
-        ClassFieldKind::Property { name, type_hint, getter, setter } => {
+        ClassFieldKind::Property {
+            name,
+            type_hint,
+            getter,
+            setter,
+        } => {
             let kind = BuildFieldKind::Property {
                 get: format!("{:?}", getter),
                 set: format!("{:?}", setter),
@@ -321,7 +326,11 @@ fn class_field_to_build_field(field: &ClassField) -> BuildField {
         .iter()
         .map(|m| FieldMeta {
             name: m.name.clone(),
-            params: m.params.iter().map(|p| MacroValue::Expr(Box::new(p.clone()))).collect(),
+            params: m
+                .params
+                .iter()
+                .map(|p| MacroValue::Expr(Box::new(p.clone())))
+                .collect(),
             pos: super::errors::span_to_location(m.span),
         })
         .collect();
@@ -509,7 +518,10 @@ mod tests {
             assert_eq!(build_fields[0].name, "x");
             assert!(matches!(build_fields[0].kind, BuildFieldKind::Var { .. }));
             assert_eq!(build_fields[1].name, "hello");
-            assert!(matches!(build_fields[1].kind, BuildFieldKind::Function { .. }));
+            assert!(matches!(
+                build_fields[1].kind,
+                BuildFieldKind::Function { .. }
+            ));
         } else {
             panic!("expected class declaration");
         }

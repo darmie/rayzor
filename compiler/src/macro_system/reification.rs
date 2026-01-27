@@ -63,10 +63,7 @@ impl ReificationEngine {
                 })
             }
 
-            ExprKind::Call {
-                expr: callee,
-                args,
-            } => {
+            ExprKind::Call { expr: callee, args } => {
                 let new_callee = Self::process_expr(callee, env)?;
                 let new_args: Result<Vec<Expr>, MacroError> =
                     args.iter().map(|a| Self::process_expr(a, env)).collect();
@@ -171,8 +168,10 @@ impl ReificationEngine {
             }
 
             ExprKind::Array(elements) => {
-                let new_elems: Result<Vec<Expr>, MacroError> =
-                    elements.iter().map(|e| Self::process_expr(e, env)).collect();
+                let new_elems: Result<Vec<Expr>, MacroError> = elements
+                    .iter()
+                    .map(|e| Self::process_expr(e, env))
+                    .collect();
                 Ok(Expr {
                     kind: ExprKind::Array(new_elems?),
                     span: expr.span,
@@ -192,10 +191,7 @@ impl ReificationEngine {
                 })
             }
 
-            ExprKind::Index {
-                expr: base,
-                index,
-            } => {
+            ExprKind::Index { expr: base, index } => {
                 let new_base = Self::process_expr(base, env)?;
                 let new_index = Self::process_expr(index, env)?;
                 Ok(Expr {
@@ -245,50 +241,46 @@ impl ReificationEngine {
                 // environment to get a MacroValue, then convert it to an AST literal.
                 // For now, we look up the expression and convert.
                 Err(MacroError::ReificationError {
-                    message: "$v{} requires interpreter evaluation (implemented in Phase 3)".to_string(),
+                    message: "$v{} requires interpreter evaluation (implemented in Phase 3)"
+                        .to_string(),
                     location,
                 })
             }
 
             // $i{expr} — identifier splice
-            ("i", Some(_arg_expr)) => {
-                Err(MacroError::ReificationError {
-                    message: "$i{} requires interpreter evaluation (implemented in Phase 3)".to_string(),
-                    location,
-                })
-            }
+            ("i", Some(_arg_expr)) => Err(MacroError::ReificationError {
+                message: "$i{} requires interpreter evaluation (implemented in Phase 3)"
+                    .to_string(),
+                location,
+            }),
 
             // $e{expr} — expression splice
-            ("e", Some(_arg_expr)) => {
-                Err(MacroError::ReificationError {
-                    message: "$e{} requires interpreter evaluation (implemented in Phase 3)".to_string(),
-                    location,
-                })
-            }
+            ("e", Some(_arg_expr)) => Err(MacroError::ReificationError {
+                message: "$e{} requires interpreter evaluation (implemented in Phase 3)"
+                    .to_string(),
+                location,
+            }),
 
             // $a{expr} — array splice
-            ("a", Some(_arg_expr)) => {
-                Err(MacroError::ReificationError {
-                    message: "$a{} requires interpreter evaluation (implemented in Phase 3)".to_string(),
-                    location,
-                })
-            }
+            ("a", Some(_arg_expr)) => Err(MacroError::ReificationError {
+                message: "$a{} requires interpreter evaluation (implemented in Phase 3)"
+                    .to_string(),
+                location,
+            }),
 
             // $p{expr} — path splice
-            ("p", Some(_arg_expr)) => {
-                Err(MacroError::ReificationError {
-                    message: "$p{} requires interpreter evaluation (implemented in Phase 3)".to_string(),
-                    location,
-                })
-            }
+            ("p", Some(_arg_expr)) => Err(MacroError::ReificationError {
+                message: "$p{} requires interpreter evaluation (implemented in Phase 3)"
+                    .to_string(),
+                location,
+            }),
 
             // $b{expr} — block splice
-            ("b", Some(_arg_expr)) => {
-                Err(MacroError::ReificationError {
-                    message: "$b{} requires interpreter evaluation (implemented in Phase 3)".to_string(),
-                    location,
-                })
-            }
+            ("b", Some(_arg_expr)) => Err(MacroError::ReificationError {
+                message: "$b{} requires interpreter evaluation (implemented in Phase 3)"
+                    .to_string(),
+                location,
+            }),
 
             // $name (no argument) — simple variable splice from environment
             (var_name, None) => {
@@ -314,11 +306,7 @@ impl ReificationEngine {
     ///
     /// This is the version called by the interpreter after evaluating the
     /// argument expression.
-    pub fn splice_value(
-        kind: &str,
-        value: MacroValue,
-        span: Span,
-    ) -> Result<Expr, MacroError> {
+    pub fn splice_value(kind: &str, value: MacroValue, span: Span) -> Result<Expr, MacroError> {
         let location = span_to_location(span);
 
         match kind {
@@ -332,10 +320,7 @@ impl ReificationEngine {
                     span,
                 }),
                 _ => Err(MacroError::ReificationError {
-                    message: format!(
-                        "$i{{}} expects a String value, got {}",
-                        value.type_name()
-                    ),
+                    message: format!("$i{{}} expects a String value, got {}", value.type_name()),
                     location,
                 }),
             },
@@ -344,10 +329,7 @@ impl ReificationEngine {
             "e" => match value {
                 MacroValue::Expr(expr) => Ok(*expr),
                 _ => Err(MacroError::ReificationError {
-                    message: format!(
-                        "$e{{}} expects an Expr value, got {}",
-                        value.type_name()
-                    ),
+                    message: format!("$e{{}} expects an Expr value, got {}", value.type_name()),
                     location,
                 }),
             },
@@ -368,10 +350,7 @@ impl ReificationEngine {
                     })
                 }
                 _ => Err(MacroError::ReificationError {
-                    message: format!(
-                        "$a{{}} expects an Array value, got {}",
-                        value.type_name()
-                    ),
+                    message: format!("$a{{}} expects an Array value, got {}", value.type_name()),
                     location,
                 }),
             },
@@ -404,10 +383,7 @@ impl ReificationEngine {
                     Ok(result)
                 }
                 _ => Err(MacroError::ReificationError {
-                    message: format!(
-                        "$p{{}} expects a String path, got {}",
-                        value.type_name()
-                    ),
+                    message: format!("$p{{}} expects a String path, got {}", value.type_name()),
                     location,
                 }),
             },
@@ -419,9 +395,9 @@ impl ReificationEngine {
                         .into_iter()
                         .map(|item| match item {
                             MacroValue::Expr(e) => Ok(parser::BlockElement::Expr(*e)),
-                            other => {
-                                Ok(parser::BlockElement::Expr(ast_bridge::value_to_expr(&other)))
-                            }
+                            other => Ok(parser::BlockElement::Expr(ast_bridge::value_to_expr(
+                                &other,
+                            ))),
                         })
                         .collect();
                     Ok(Expr {
@@ -430,10 +406,7 @@ impl ReificationEngine {
                     })
                 }
                 _ => Err(MacroError::ReificationError {
-                    message: format!(
-                        "$b{{}} expects an Array value, got {}",
-                        value.type_name()
-                    ),
+                    message: format!("$b{{}} expects an Array value, got {}", value.type_name()),
                     location,
                 }),
             },
@@ -521,8 +494,7 @@ mod tests {
 
     #[test]
     fn test_splice_value_i_type_error() {
-        let result =
-            ReificationEngine::splice_value("i", MacroValue::Int(42), Span::default());
+        let result = ReificationEngine::splice_value("i", MacroValue::Int(42), Span::default());
         assert!(result.is_err());
     }
 

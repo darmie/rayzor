@@ -12,8 +12,8 @@
 use super::ast_bridge::{self, span_to_location};
 use super::environment::Environment;
 use super::errors::MacroError;
-use super::reification::ReificationEngine;
 use super::registry::MacroRegistry;
+use super::reification::ReificationEngine;
 use super::value::{MacroFunction, MacroParam, MacroValue};
 use crate::tast::SourceLocation;
 use parser::{AssignOp, BinaryOp, Expr, ExprKind, Span, UnaryOp};
@@ -92,23 +92,30 @@ impl MacroInterpreter {
             ExprKind::String(s) => Ok(MacroValue::String(s.clone())),
             ExprKind::Bool(b) => Ok(MacroValue::Bool(*b)),
             ExprKind::Null => Ok(MacroValue::Null),
-            ExprKind::This => {
-                self.env.get("this").cloned().ok_or(MacroError::UndefinedVariable {
+            ExprKind::This => self
+                .env
+                .get("this")
+                .cloned()
+                .ok_or(MacroError::UndefinedVariable {
                     name: "this".to_string(),
                     location,
-                })
-            }
+                }),
 
             // --- Identifiers ---
             ExprKind::Ident(name) => {
-                self.env.get(name).cloned().ok_or(MacroError::UndefinedVariable {
-                    name: name.clone(),
-                    location,
-                })
+                self.env
+                    .get(name)
+                    .cloned()
+                    .ok_or(MacroError::UndefinedVariable {
+                        name: name.clone(),
+                        location,
+                    })
             }
 
             // --- Variable declarations ---
-            ExprKind::Var { name, expr: init, .. } => {
+            ExprKind::Var {
+                name, expr: init, ..
+            } => {
                 let value = if let Some(init_expr) = init {
                     self.eval_expr(init_expr)?
                 } else {
@@ -118,7 +125,9 @@ impl MacroInterpreter {
                 Ok(value)
             }
 
-            ExprKind::Final { name, expr: init, .. } => {
+            ExprKind::Final {
+                name, expr: init, ..
+            } => {
                 let value = if let Some(init_expr) = init {
                     self.eval_expr(init_expr)?
                 } else {
@@ -129,9 +138,7 @@ impl MacroInterpreter {
             }
 
             // --- Assignment ---
-            ExprKind::Assign { left, op, right } => {
-                self.eval_assignment(left, op, right)
-            }
+            ExprKind::Assign { left, op, right } => self.eval_assignment(left, op, right),
 
             // --- Binary operations ---
             ExprKind::Binary { left, op, right } => {
@@ -165,7 +172,11 @@ impl MacroInterpreter {
             }
 
             // --- Ternary ---
-            ExprKind::Ternary { cond, then_expr, else_expr } => {
+            ExprKind::Ternary {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
                 let cond_val = self.eval_expr(cond)?;
                 if cond_val.is_truthy() {
                     self.eval_expr(then_expr)
@@ -181,7 +192,11 @@ impl MacroInterpreter {
             ExprKind::Block(elements) => self.eval_block(elements),
 
             // --- If/else ---
-            ExprKind::If { cond, then_branch, else_branch } => {
+            ExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
                 let cond_val = self.eval_expr(cond)?;
                 if cond_val.is_truthy() {
                     self.eval_expr(then_branch)
@@ -227,7 +242,9 @@ impl MacroInterpreter {
             }
 
             // --- For loop (Haxe: for (x in iter)) ---
-            ExprKind::For { var, iter, body, .. } => {
+            ExprKind::For {
+                var, iter, body, ..
+            } => {
                 let iter_val = self.eval_expr(iter)?;
                 let items = self.get_iterable(&iter_val, location)?;
 
@@ -249,7 +266,11 @@ impl MacroInterpreter {
             }
 
             // --- Switch ---
-            ExprKind::Switch { expr: switch_expr, cases, default } => {
+            ExprKind::Switch {
+                expr: switch_expr,
+                cases,
+                default,
+            } => {
                 let val = self.eval_expr(switch_expr)?;
                 for case in cases {
                     for pattern in &case.patterns {
@@ -298,7 +319,11 @@ impl MacroInterpreter {
             }
 
             // --- Try/catch ---
-            ExprKind::Try { expr: try_expr, catches, finally_block } => {
+            ExprKind::Try {
+                expr: try_expr,
+                catches,
+                finally_block,
+            } => {
                 let result = self.eval_expr(try_expr);
                 match result {
                     Ok(val) => {
@@ -338,12 +363,12 @@ impl MacroInterpreter {
             }
 
             // --- Function call ---
-            ExprKind::Call { expr: callee, args } => {
-                self.eval_call(callee, args, location)
-            }
+            ExprKind::Call { expr: callee, args } => self.eval_call(callee, args, location),
 
             // --- Field access ---
-            ExprKind::Field { expr: base, field, .. } => {
+            ExprKind::Field {
+                expr: base, field, ..
+            } => {
                 let base_val = self.eval_expr(base)?;
                 self.field_access(&base_val, field, location)
             }
@@ -428,7 +453,9 @@ impl MacroInterpreter {
             }
 
             // --- New object construction ---
-            ExprKind::New { type_path, args, .. } => {
+            ExprKind::New {
+                type_path, args, ..
+            } => {
                 let name = if type_path.package.is_empty() {
                     type_path.name.clone()
                 } else {
@@ -442,7 +469,9 @@ impl MacroInterpreter {
 
                 // Special handling for known types
                 match name.as_str() {
-                    "Map" | "haxe.ds.Map" => Ok(MacroValue::Object(std::collections::HashMap::new())),
+                    "Map" | "haxe.ds.Map" => {
+                        Ok(MacroValue::Object(std::collections::HashMap::new()))
+                    }
                     "Array" => Ok(MacroValue::Array(Vec::new())),
                     _ => {
                         // Generic object construction
@@ -502,10 +531,13 @@ impl MacroInterpreter {
                     Ok(MacroValue::Expr(Box::new(result_expr)))
                 } else {
                     // $name — lookup in environment
-                    self.env.get(name).cloned().ok_or(MacroError::UndefinedVariable {
-                        name: format!("${}", name),
-                        location,
-                    })
+                    self.env
+                        .get(name)
+                        .cloned()
+                        .ok_or(MacroError::UndefinedVariable {
+                            name: format!("${}", name),
+                            location,
+                        })
                 }
             }
 
@@ -588,7 +620,9 @@ impl MacroInterpreter {
                 }
                 Ok(new_val)
             }
-            ExprKind::Field { expr: base, field, .. } => {
+            ExprKind::Field {
+                expr: base, field, ..
+            } => {
                 let mut base_val = self.eval_expr(base)?;
                 if let MacroValue::Object(ref mut map) = base_val {
                     map.insert(field.clone(), new_val.clone());
@@ -679,7 +713,9 @@ impl MacroInterpreter {
                     location,
                 })
             }
-            ExprKind::Field { expr: base, field, .. } => {
+            ExprKind::Field {
+                expr: base, field, ..
+            } => {
                 // Method call: base.field(args)
                 let base_val = self.eval_expr(base)?;
                 self.method_call(&base_val, field, arg_vals, location)
@@ -700,9 +736,7 @@ impl MacroInterpreter {
         location: SourceLocation,
     ) -> Result<MacroValue, MacroError> {
         match func {
-            MacroValue::Function(macro_func) => {
-                self.call_function(&macro_func, args, location)
-            }
+            MacroValue::Function(macro_func) => self.call_function(&macro_func, args, location),
             _ => Err(MacroError::TypeError {
                 message: format!("cannot call {}", func.type_name()),
                 location,
@@ -824,11 +858,7 @@ impl MacroInterpreter {
                 // Check for well-known static classes
                 // The base might be an identifier that represents a class
                 Err(MacroError::TypeError {
-                    message: format!(
-                        "cannot call method '{}' on {}",
-                        method,
-                        base.type_name()
-                    ),
+                    message: format!("cannot call method '{}' on {}", method, base.type_name()),
                     location,
                 })
             }
@@ -868,10 +898,7 @@ impl MacroInterpreter {
                 Ok(MacroValue::Array(new_arr))
             }
             "join" => {
-                let sep = args
-                    .first()
-                    .and_then(|a| a.as_string())
-                    .unwrap_or(",");
+                let sep = args.first().and_then(|a| a.as_string()).unwrap_or(",");
                 let parts: Vec<String> = arr.iter().map(|v| v.to_display_string()).collect();
                 Ok(MacroValue::String(parts.join(sep)))
             }
@@ -940,7 +967,10 @@ impl MacroInterpreter {
             "charAt" => {
                 let idx = args.first().and_then(|a| a.as_int()).unwrap_or(0) as usize;
                 Ok(MacroValue::String(
-                    s.chars().nth(idx).map(|c| c.to_string()).unwrap_or_default(),
+                    s.chars()
+                        .nth(idx)
+                        .map(|c| c.to_string())
+                        .unwrap_or_default(),
                 ))
             }
             "indexOf" => {
@@ -999,9 +1029,7 @@ impl MacroInterpreter {
         location: SourceLocation,
     ) -> Result<MacroValue, MacroError> {
         match base {
-            MacroValue::Object(map) => {
-                Ok(map.get(field).cloned().unwrap_or(MacroValue::Null))
-            }
+            MacroValue::Object(map) => Ok(map.get(field).cloned().unwrap_or(MacroValue::Null)),
             MacroValue::Array(arr) => match field {
                 "length" => Ok(MacroValue::Int(arr.len() as i64)),
                 _ => Err(MacroError::TypeError {
@@ -1055,7 +1083,10 @@ impl MacroInterpreter {
             (MacroValue::String(s), MacroValue::Int(i)) => {
                 let idx = *i as usize;
                 Ok(MacroValue::String(
-                    s.chars().nth(idx).map(|c| c.to_string()).unwrap_or_default(),
+                    s.chars()
+                        .nth(idx)
+                        .map(|c| c.to_string())
+                        .unwrap_or_default(),
                 ))
             }
             _ => Err(MacroError::TypeError {
@@ -1161,12 +1192,9 @@ mod tests {
     use super::*;
 
     fn eval(source: &str) -> Result<MacroValue, MacroError> {
-        let full_source = format!(
-            "class Test {{ static function main() {{ {} }} }}",
-            source
-        );
-        let file = parser::parse_haxe_file("test.hx", &full_source, false)
-            .expect("parse should succeed");
+        let full_source = format!("class Test {{ static function main() {{ {} }} }}", source);
+        let file =
+            parser::parse_haxe_file("test.hx", &full_source, false).expect("parse should succeed");
 
         let registry = MacroRegistry::new();
         let mut interp = MacroInterpreter::new(registry);
@@ -1233,10 +1261,7 @@ mod tests {
 
     #[test]
     fn test_variable_declaration() {
-        assert_eq!(
-            eval("var x = 42; return x;").unwrap(),
-            MacroValue::Int(42)
-        );
+        assert_eq!(eval("var x = 42; return x;").unwrap(), MacroValue::Int(42));
     }
 
     #[test]
@@ -1302,9 +1327,10 @@ mod tests {
 
     #[test]
     fn test_trace() {
-        let full_source = "class Test { static function main() { trace(\"hello\"); return null; } }";
-        let file = parser::parse_haxe_file("test.hx", full_source, false)
-            .expect("parse should succeed");
+        let full_source =
+            "class Test { static function main() { trace(\"hello\"); return null; } }";
+        let file =
+            parser::parse_haxe_file("test.hx", full_source, false).expect("parse should succeed");
 
         let registry = MacroRegistry::new();
         let mut interp = MacroInterpreter::new(registry);
@@ -1361,14 +1387,8 @@ mod tests {
 
     #[test]
     fn test_ternary() {
-        assert_eq!(
-            eval("return true ? 1 : 2;").unwrap(),
-            MacroValue::Int(1)
-        );
-        assert_eq!(
-            eval("return false ? 1 : 2;").unwrap(),
-            MacroValue::Int(2)
-        );
+        assert_eq!(eval("return true ? 1 : 2;").unwrap(), MacroValue::Int(1));
+        assert_eq!(eval("return false ? 1 : 2;").unwrap(), MacroValue::Int(2));
     }
 
     #[test]
@@ -1450,10 +1470,7 @@ mod tests {
 
     #[test]
     fn test_null_handling() {
-        assert_eq!(
-            eval("return null;").unwrap(),
-            MacroValue::Null
-        );
+        assert_eq!(eval("return null;").unwrap(), MacroValue::Null);
         assert_eq!(
             eval("return null == null;").unwrap(),
             MacroValue::Bool(true)
@@ -1462,22 +1479,13 @@ mod tests {
 
     #[test]
     fn test_boolean_negation() {
-        assert_eq!(
-            eval("return !true;").unwrap(),
-            MacroValue::Bool(false)
-        );
-        assert_eq!(
-            eval("return !false;").unwrap(),
-            MacroValue::Bool(true)
-        );
+        assert_eq!(eval("return !true;").unwrap(), MacroValue::Bool(false));
+        assert_eq!(eval("return !false;").unwrap(), MacroValue::Bool(true));
     }
 
     #[test]
     fn test_numeric_negation() {
-        assert_eq!(
-            eval("return -42;").unwrap(),
-            MacroValue::Int(-42)
-        );
+        assert_eq!(eval("return -42;").unwrap(), MacroValue::Int(-42));
     }
 
     #[test]
@@ -1507,10 +1515,7 @@ mod tests {
 
     #[test]
     fn test_float_arithmetic() {
-        assert_eq!(
-            eval("return 3.14 * 2.0;").unwrap(),
-            MacroValue::Float(6.28)
-        );
+        assert_eq!(eval("return 3.14 * 2.0;").unwrap(), MacroValue::Float(6.28));
     }
 
     #[test]

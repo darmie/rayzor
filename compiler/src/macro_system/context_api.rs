@@ -8,9 +8,7 @@
 
 use super::errors::{MacroDiagnostic, MacroError, MacroSeverity};
 use super::value::MacroValue;
-use crate::tast::{
-    SourceLocation, SymbolId, SymbolTable, TypeId, TypeTable,
-};
+use crate::tast::{SourceLocation, SymbolId, SymbolTable, TypeId, TypeTable};
 use parser::HaxeFile;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -22,7 +20,6 @@ use std::rc::Rc;
 /// point (which class, which method, what position, etc.).
 pub struct MacroContext {
     // --- Compiler state references ---
-
     /// Symbol table for resolving names and looking up symbols
     symbol_table: Option<SymbolTableRef>,
 
@@ -30,7 +27,6 @@ pub struct MacroContext {
     type_table: Option<Rc<RefCell<TypeTable>>>,
 
     // --- Current expansion context ---
-
     /// Position where the macro was invoked
     pub call_position: SourceLocation,
 
@@ -47,12 +43,10 @@ pub struct MacroContext {
     pub current_class: Option<String>,
 
     // --- Conditional compilation ---
-
     /// Conditional compilation defines (-D flags)
     pub defines: HashMap<String, String>,
 
     // --- Output collectors ---
-
     /// Diagnostics emitted by the macro
     pub diagnostics: Vec<MacroDiagnostic>,
 
@@ -74,7 +68,9 @@ impl SymbolTableRef {
     /// # Safety
     /// The caller must ensure the SymbolTable outlives this reference.
     pub unsafe fn new(table: &SymbolTable) -> Self {
-        Self { ptr: table as *const SymbolTable }
+        Self {
+            ptr: table as *const SymbolTable,
+        }
     }
 
     fn get(&self) -> &SymbolTable {
@@ -248,11 +244,7 @@ impl MacroContext {
     /// `Context.error(msg, pos)` — Emit a compilation error
     ///
     /// Adds an error diagnostic and returns a MacroError to abort the macro.
-    pub fn error(
-        &mut self,
-        msg: &str,
-        pos: SourceLocation,
-    ) -> MacroError {
+    pub fn error(&mut self, msg: &str, pos: SourceLocation) -> MacroError {
         self.diagnostics.push(MacroDiagnostic::error(msg, pos));
         MacroError::ContextError {
             method: "error".to_string(),
@@ -262,15 +254,9 @@ impl MacroContext {
     }
 
     /// `Context.fatalError(msg, pos)` — Emit a fatal compilation error
-    pub fn fatal_error(
-        &mut self,
-        msg: &str,
-        pos: SourceLocation,
-    ) -> MacroError {
-        self.diagnostics.push(MacroDiagnostic::error(
-            format!("[fatal] {}", msg),
-            pos,
-        ));
+    pub fn fatal_error(&mut self, msg: &str, pos: SourceLocation) -> MacroError {
+        self.diagnostics
+            .push(MacroDiagnostic::error(format!("[fatal] {}", msg), pos));
         MacroError::ContextError {
             method: "fatalError".to_string(),
             message: msg.to_string(),
@@ -347,11 +333,7 @@ impl MacroContext {
     /// `Context.getType(name)` — Resolve a type by its qualified name
     ///
     /// Returns a MacroValue::Type(TypeId) or an error if not found.
-    pub fn get_type(
-        &self,
-        name: &str,
-        location: SourceLocation,
-    ) -> Result<MacroValue, MacroError> {
+    pub fn get_type(&self, name: &str, location: SourceLocation) -> Result<MacroValue, MacroError> {
         let Some(ref sym_table_ref) = self.symbol_table else {
             return Err(MacroError::ContextError {
                 method: "getType".to_string(),
@@ -412,11 +394,7 @@ impl MacroContext {
     /// `Context.parse(expr, pos)` — Parse a string as Haxe code
     ///
     /// Returns the parsed expression as a MacroValue::Expr.
-    pub fn parse(
-        &self,
-        code: &str,
-        location: SourceLocation,
-    ) -> Result<MacroValue, MacroError> {
+    pub fn parse(&self, code: &str, location: SourceLocation) -> Result<MacroValue, MacroError> {
         // Wrap in a class/function context so the parser can handle it
         let wrapper = format!(
             "class __MacroParse__ {{ static function __parse__() {{ {}; }} }}",
@@ -456,15 +434,15 @@ impl MacroContext {
     /// `Context.getBuildFields()` — Get fields of the class being built
     ///
     /// Only available in @:build macro context.
-    pub fn get_build_fields(
-        &self,
-        location: SourceLocation,
-    ) -> Result<MacroValue, MacroError> {
-        let fields = self.build_fields.as_ref().ok_or_else(|| MacroError::ContextError {
-            method: "getBuildFields".to_string(),
-            message: "getBuildFields() is only available in @:build macro context".to_string(),
-            location,
-        })?;
+    pub fn get_build_fields(&self, location: SourceLocation) -> Result<MacroValue, MacroError> {
+        let fields = self
+            .build_fields
+            .as_ref()
+            .ok_or_else(|| MacroError::ContextError {
+                method: "getBuildFields".to_string(),
+                message: "getBuildFields() is only available in @:build macro context".to_string(),
+                location,
+            })?;
 
         // Convert build fields to an array of objects
         let field_values: Vec<MacroValue> = fields.iter().map(build_field_to_value).collect();
@@ -513,30 +491,20 @@ impl MacroContext {
         let mut obj = HashMap::new();
         obj.insert("file".to_string(), MacroValue::Int(pos.file_id as i64));
         obj.insert("min".to_string(), MacroValue::Int(pos.byte_offset as i64));
-        obj.insert(
-            "max".to_string(),
-            MacroValue::Int(pos.byte_offset as i64),
-        );
+        obj.insert("max".to_string(), MacroValue::Int(pos.byte_offset as i64));
         MacroValue::Object(obj)
     }
 
     /// `Context.makePosition(inf)` — Build a position from info object
     pub fn make_position(&self, info: &MacroValue) -> Result<MacroValue, MacroError> {
         if let MacroValue::Object(obj) = info {
-            let file_id = obj
-                .get("file")
-                .and_then(|v| v.as_int())
-                .unwrap_or(0) as u32;
-            let min = obj
-                .get("min")
-                .and_then(|v| v.as_int())
-                .unwrap_or(0) as u32;
-            let _max = obj
-                .get("max")
-                .and_then(|v| v.as_int())
-                .unwrap_or(0);
+            let file_id = obj.get("file").and_then(|v| v.as_int()).unwrap_or(0) as u32;
+            let min = obj.get("min").and_then(|v| v.as_int()).unwrap_or(0) as u32;
+            let _max = obj.get("max").and_then(|v| v.as_int()).unwrap_or(0);
 
-            Ok(MacroValue::Position(SourceLocation::new(file_id, 0, 0, min)))
+            Ok(MacroValue::Position(SourceLocation::new(
+                file_id, 0, 0, min,
+            )))
         } else {
             Err(MacroError::TypeError {
                 message: "makePosition expects an object with {file, min, max}".to_string(),
@@ -871,10 +839,9 @@ fn value_to_defined_type(
 
     // Extract fields (simplified — full implementation in Phase 6)
     let fields = match obj.get("fields") {
-        Some(MacroValue::Array(arr)) => arr
-            .iter()
-            .filter_map(|v| value_to_build_field(v))
-            .collect(),
+        Some(MacroValue::Array(arr)) => {
+            arr.iter().filter_map(|v| value_to_build_field(v)).collect()
+        }
         _ => Vec::new(),
     };
 
@@ -899,7 +866,10 @@ fn value_to_build_field(value: &MacroValue) -> Option<BuildField> {
     Some(BuildField {
         name,
         kind: BuildFieldKind::Var {
-            type_hint: obj.get("type").and_then(|v| v.as_string()).map(String::from),
+            type_hint: obj
+                .get("type")
+                .and_then(|v| v.as_string())
+                .map(String::from),
             expr: None,
         },
         access: Vec::new(),
@@ -1052,7 +1022,8 @@ mod tests {
             fields: Vec::new(),
             pos: SourceLocation::unknown(),
         };
-        ctx.define_type(td.clone(), SourceLocation::unknown()).unwrap();
+        ctx.define_type(td.clone(), SourceLocation::unknown())
+            .unwrap();
         let result = ctx.define_type(td, SourceLocation::unknown());
         assert!(result.is_err());
     }

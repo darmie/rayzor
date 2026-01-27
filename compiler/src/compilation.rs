@@ -2531,10 +2531,7 @@ impl CompilationUnit {
             // Log macro diagnostics as warnings (non-fatal in multi-file context)
             for diag in &expansion.diagnostics {
                 if matches!(diag.severity, crate::macro_system::MacroSeverity::Error) {
-                    debug!(
-                        "Macro expansion error in {}: {}",
-                        filename, diag.message
-                    );
+                    debug!("Macro expansion error in {}: {}", filename, diag.message);
                 }
             }
             if expansion.expansions_count > 0 {

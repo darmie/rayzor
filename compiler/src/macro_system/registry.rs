@@ -1,9 +1,7 @@
 use super::errors::{MacroDiagnostic, MacroError};
 use super::value::MacroParam;
 use crate::tast::SourceLocation;
-use parser::{
-    ClassDecl, ClassField, ClassFieldKind, Expr, HaxeFile, Modifier, TypeDeclaration,
-};
+use parser::{ClassDecl, ClassField, ClassFieldKind, Expr, HaxeFile, Modifier, TypeDeclaration};
 use std::collections::HashMap;
 
 /// Default maximum macro expansion depth
@@ -169,16 +167,8 @@ impl MacroRegistry {
                 Some(body) => body.clone(),
                 None => {
                     return Err(MacroError::InvalidDefinition {
-                        message: format!(
-                            "macro function '{}' must have a body",
-                            qualified_name
-                        ),
-                        location: SourceLocation::new(
-                            0,
-                            0,
-                            0,
-                            field.span.start as u32,
-                        ),
+                        message: format!("macro function '{}' must have a body", qualified_name),
+                        location: SourceLocation::new(0, 0, 0, field.span.start as u32),
                     });
                 }
             };
@@ -215,9 +205,7 @@ impl MacroRegistry {
         match &expr.kind {
             ExprKind::Ident(name) => name.clone(),
             ExprKind::Field {
-                expr: base,
-                field,
-                ..
+                expr: base, field, ..
             } => {
                 let base_name = self.expr_to_qualified_name(base);
                 format!("{}.{}", base_name, field)
@@ -305,8 +293,7 @@ impl MacroRegistry {
 
     /// Check if a name refers to a registered macro
     pub fn is_macro(&self, name: &str) -> bool {
-        self.macros.contains_key(name)
-            || self.macros.values().any(|def| def.name == name)
+        self.macros.contains_key(name) || self.macros.values().any(|def| def.name == name)
     }
 }
 
@@ -358,10 +345,7 @@ class MacroTools {
             .get_macro("test.MacroTools.buildFields")
             .expect("macro should be registered");
         assert_eq!(macro_def.name, "buildFields");
-        assert_eq!(
-            macro_def.qualified_name,
-            "test.MacroTools.buildFields"
-        );
+        assert_eq!(macro_def.qualified_name, "test.MacroTools.buildFields");
     }
 
     #[test]

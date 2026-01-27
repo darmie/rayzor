@@ -18,11 +18,12 @@ pub mod environment;
 pub mod errors;
 pub mod expander;
 pub mod interpreter;
-pub mod reification;
 pub mod registry;
+pub mod reification;
 pub mod value;
 
 pub use ast_bridge::{apply_binary_op, expr_to_value, value_to_expr};
+pub use build_macros::{process_build_macros, BuildMacroResult};
 pub use context_api::{
     BuildClassContext, BuildField, BuildFieldKind, DefinedType, DefinedTypeKind, FieldAccess,
     FieldMeta, MacroContext,
@@ -31,7 +32,6 @@ pub use environment::Environment;
 pub use errors::{MacroDiagnostic, MacroError, MacroSeverity, PipelineDiagnostic};
 pub use expander::{expand_macros, expand_macros_with_registry, ExpansionResult, MacroExpander};
 pub use interpreter::MacroInterpreter;
-pub use reification::ReificationEngine;
 pub use registry::{BuildMacroEntry, MacroDefinition, MacroRegistry};
-pub use build_macros::{process_build_macros, BuildMacroResult};
+pub use reification::ReificationEngine;
 pub use value::{MacroFunction, MacroParam, MacroValue};

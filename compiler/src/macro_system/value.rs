@@ -210,8 +210,7 @@ impl MacroValue {
             }
             MacroValue::String(s) => s.clone(),
             MacroValue::Array(items) => {
-                let parts: Vec<String> =
-                    items.iter().map(|v| v.to_display_string()).collect();
+                let parts: Vec<String> = items.iter().map(|v| v.to_display_string()).collect();
                 format!("[{}]", parts.join(","))
             }
             MacroValue::Object(fields) => {
@@ -225,8 +224,7 @@ impl MacroValue {
                 if args.is_empty() {
                     format!("{}.{}", enum_name, variant)
                 } else {
-                    let parts: Vec<String> =
-                        args.iter().map(|v| v.to_display_string()).collect();
+                    let parts: Vec<String> = args.iter().map(|v| v.to_display_string()).collect();
                     format!("{}.{}({})", enum_name, variant, parts.join(", "))
                 }
             }

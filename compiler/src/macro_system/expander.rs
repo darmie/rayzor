@@ -138,7 +138,10 @@ impl MacroExpander {
         let build_macros = collect_build_macros(&file);
         for bm in &build_macros {
             self.context.diagnostics.push(MacroDiagnostic::info(
-                format!("@:build macro '{}' registered for class '{}'", bm.macro_name, bm.class_name),
+                format!(
+                    "@:build macro '{}' registered for class '{}'",
+                    bm.macro_name, bm.class_name
+                ),
                 bm.location,
             ));
         }
@@ -196,10 +199,7 @@ impl MacroExpander {
     // Declaration-level expansion
     // =====================================================
 
-    fn expand_declaration(
-        &mut self,
-        decl: TypeDeclaration,
-    ) -> (TypeDeclaration, bool) {
+    fn expand_declaration(&mut self, decl: TypeDeclaration) -> (TypeDeclaration, bool) {
         match decl {
             TypeDeclaration::Class(mut class) => {
                 let mut changed = false;
@@ -232,10 +232,7 @@ impl MacroExpander {
         }
     }
 
-    fn expand_class_field(
-        &mut self,
-        mut field: parser::ClassField,
-    ) -> (parser::ClassField, bool) {
+    fn expand_class_field(&mut self, mut field: parser::ClassField) -> (parser::ClassField, bool) {
         let mut changed = false;
 
         // Skip fields marked as `macro` — they're macro definitions, not calls
@@ -255,7 +252,10 @@ impl MacroExpander {
                         Err(e) => {
                             if !e.is_control_flow() {
                                 self.context.diagnostics.push(MacroDiagnostic::error(
-                                    format!("macro expansion failed in function '{}': {}", func.name, e),
+                                    format!(
+                                        "macro expansion failed in function '{}': {}",
+                                        func.name, e
+                                    ),
                                     e.location(),
                                 ));
                             }
@@ -772,9 +772,7 @@ impl MacroExpander {
 
         let expanded = match result {
             Ok(value) => Ok(super::ast_bridge::value_to_expr(&value)),
-            Err(MacroError::Return { value: Some(v) }) => {
-                Ok(super::ast_bridge::value_to_expr(&*v))
-            }
+            Err(MacroError::Return { value: Some(v) }) => Ok(super::ast_bridge::value_to_expr(&*v)),
             Err(MacroError::Return { value: None }) => {
                 Ok(super::ast_bridge::value_to_expr(&MacroValue::Null))
             }
@@ -874,9 +872,7 @@ impl MacroExpander {
         // Convert result to expression and record expansion origin
         let expanded = match result {
             Ok(value) => Ok(super::ast_bridge::value_to_expr(&value)),
-            Err(MacroError::Return { value: Some(v) }) => {
-                Ok(super::ast_bridge::value_to_expr(&*v))
-            }
+            Err(MacroError::Return { value: Some(v) }) => Ok(super::ast_bridge::value_to_expr(&*v)),
             Err(MacroError::Return { value: None }) => {
                 Ok(super::ast_bridge::value_to_expr(&MacroValue::Null))
             }
@@ -1004,10 +1000,7 @@ pub fn expand_macros(file: HaxeFile) -> ExpansionResult {
 /// Expand macros using an existing registry (for multi-file compilation).
 ///
 /// The registry may contain macro definitions from previously compiled files.
-pub fn expand_macros_with_registry(
-    file: HaxeFile,
-    registry: MacroRegistry,
-) -> ExpansionResult {
+pub fn expand_macros_with_registry(file: HaxeFile, registry: MacroRegistry) -> ExpansionResult {
     let mut expander = MacroExpander::with_state(registry, MacroContext::new());
     expander.expand_file(file)
 }
@@ -1026,7 +1019,10 @@ mod tests {
         let file = parse("class Test { static function main() { var x = 1 + 2; } }");
         let result = expand_macros(file);
         assert_eq!(result.expansions_count, 0);
-        assert!(result.diagnostics.iter().all(|d| d.severity != super::super::errors::MacroSeverity::Error));
+        assert!(result
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != super::super::errors::MacroSeverity::Error));
     }
 
     #[test]
@@ -1136,7 +1132,10 @@ mod tests {
     #[test]
     fn test_expander_with_context() {
         let mut expander = MacroExpander::new();
-        expander.context_mut().defines.insert("debug".to_string(), "1".to_string());
+        expander
+            .context_mut()
+            .defines
+            .insert("debug".to_string(), "1".to_string());
         assert_eq!(
             expander.context().defines.get("debug"),
             Some(&"1".to_string())

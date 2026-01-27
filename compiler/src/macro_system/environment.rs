@@ -71,7 +71,10 @@ impl Environment {
 
     /// Check if a variable exists in any scope
     pub fn contains(&self, name: &str) -> bool {
-        self.scopes.iter().rev().any(|scope| scope.contains_key(name))
+        self.scopes
+            .iter()
+            .rev()
+            .any(|scope| scope.contains_key(name))
     }
 
     /// Get the current scope depth (0 = global only)

@@ -144,7 +144,10 @@ fn test_macro_value_display_string() {
     assert_eq!(MacroValue::Null.to_display_string(), "null");
     assert_eq!(MacroValue::Bool(true).to_display_string(), "true");
     assert_eq!(MacroValue::Int(42).to_display_string(), "42");
-    assert_eq!(MacroValue::String("hi".to_string()).to_display_string(), "hi");
+    assert_eq!(
+        MacroValue::String("hi".to_string()).to_display_string(),
+        "hi"
+    );
 
     let arr = MacroValue::Array(vec![MacroValue::Int(1), MacroValue::Int(2)]);
     assert_eq!(arr.to_display_string(), "[1,2]");
@@ -451,36 +454,74 @@ fn test_binary_operations_comprehensive() {
 
     // Arithmetic
     assert_eq!(
-        apply_binary_op(&BinaryOp::Add, &MacroValue::Int(3), &MacroValue::Int(4), loc).unwrap(),
+        apply_binary_op(
+            &BinaryOp::Add,
+            &MacroValue::Int(3),
+            &MacroValue::Int(4),
+            loc
+        )
+        .unwrap(),
         MacroValue::Int(7)
     );
     assert_eq!(
-        apply_binary_op(&BinaryOp::Sub, &MacroValue::Int(10), &MacroValue::Int(3), loc).unwrap(),
+        apply_binary_op(
+            &BinaryOp::Sub,
+            &MacroValue::Int(10),
+            &MacroValue::Int(3),
+            loc
+        )
+        .unwrap(),
         MacroValue::Int(7)
     );
     assert_eq!(
-        apply_binary_op(&BinaryOp::Mul, &MacroValue::Int(6), &MacroValue::Int(7), loc).unwrap(),
+        apply_binary_op(
+            &BinaryOp::Mul,
+            &MacroValue::Int(6),
+            &MacroValue::Int(7),
+            loc
+        )
+        .unwrap(),
         MacroValue::Int(42)
     );
     assert_eq!(
-        apply_binary_op(&BinaryOp::Div, &MacroValue::Int(20), &MacroValue::Int(4), loc).unwrap(),
+        apply_binary_op(
+            &BinaryOp::Div,
+            &MacroValue::Int(20),
+            &MacroValue::Int(4),
+            loc
+        )
+        .unwrap(),
         MacroValue::Int(5)
     );
     assert_eq!(
-        apply_binary_op(&BinaryOp::Mod, &MacroValue::Int(10), &MacroValue::Int(3), loc).unwrap(),
+        apply_binary_op(
+            &BinaryOp::Mod,
+            &MacroValue::Int(10),
+            &MacroValue::Int(3),
+            loc
+        )
+        .unwrap(),
         MacroValue::Int(1)
     );
 
     // Float arithmetic
-    let result =
-        apply_binary_op(&BinaryOp::Add, &MacroValue::Float(1.5), &MacroValue::Float(2.5), loc)
-            .unwrap();
+    let result = apply_binary_op(
+        &BinaryOp::Add,
+        &MacroValue::Float(1.5),
+        &MacroValue::Float(2.5),
+        loc,
+    )
+    .unwrap();
     assert_eq!(result, MacroValue::Float(4.0));
 
     // Mixed int/float
-    let result =
-        apply_binary_op(&BinaryOp::Add, &MacroValue::Int(1), &MacroValue::Float(2.5), loc)
-            .unwrap();
+    let result = apply_binary_op(
+        &BinaryOp::Add,
+        &MacroValue::Int(1),
+        &MacroValue::Float(2.5),
+        loc,
+    )
+    .unwrap();
     assert_eq!(result, MacroValue::Float(3.5));
 
     // String concatenation
@@ -513,7 +554,13 @@ fn test_binary_operations_comprehensive() {
         MacroValue::Bool(true)
     );
     assert_eq!(
-        apply_binary_op(&BinaryOp::NotEq, &MacroValue::Int(1), &MacroValue::Int(2), loc).unwrap(),
+        apply_binary_op(
+            &BinaryOp::NotEq,
+            &MacroValue::Int(1),
+            &MacroValue::Int(2),
+            loc
+        )
+        .unwrap(),
         MacroValue::Bool(true)
     );
     assert_eq!(
@@ -549,17 +596,33 @@ fn test_binary_operations_comprehensive() {
 
     // Bitwise
     assert_eq!(
-        apply_binary_op(&BinaryOp::BitAnd, &MacroValue::Int(0xFF), &MacroValue::Int(0x0F), loc)
-            .unwrap(),
+        apply_binary_op(
+            &BinaryOp::BitAnd,
+            &MacroValue::Int(0xFF),
+            &MacroValue::Int(0x0F),
+            loc
+        )
+        .unwrap(),
         MacroValue::Int(0x0F)
     );
     assert_eq!(
-        apply_binary_op(&BinaryOp::BitOr, &MacroValue::Int(0xF0), &MacroValue::Int(0x0F), loc)
-            .unwrap(),
+        apply_binary_op(
+            &BinaryOp::BitOr,
+            &MacroValue::Int(0xF0),
+            &MacroValue::Int(0x0F),
+            loc
+        )
+        .unwrap(),
         MacroValue::Int(0xFF)
     );
     assert_eq!(
-        apply_binary_op(&BinaryOp::Shl, &MacroValue::Int(1), &MacroValue::Int(4), loc).unwrap(),
+        apply_binary_op(
+            &BinaryOp::Shl,
+            &MacroValue::Int(1),
+            &MacroValue::Int(4),
+            loc
+        )
+        .unwrap(),
         MacroValue::Int(16)
     );
 
@@ -605,13 +668,23 @@ fn test_binary_operations_comprehensive() {
     );
 
     // Division by zero
-    let err =
-        apply_binary_op(&BinaryOp::Div, &MacroValue::Int(1), &MacroValue::Int(0), loc).unwrap_err();
+    let err = apply_binary_op(
+        &BinaryOp::Div,
+        &MacroValue::Int(1),
+        &MacroValue::Int(0),
+        loc,
+    )
+    .unwrap_err();
     assert!(matches!(err, MacroError::DivisionByZero { .. }));
 
     // Modulo by zero
-    let err =
-        apply_binary_op(&BinaryOp::Mod, &MacroValue::Int(1), &MacroValue::Int(0), loc).unwrap_err();
+    let err = apply_binary_op(
+        &BinaryOp::Mod,
+        &MacroValue::Int(1),
+        &MacroValue::Int(0),
+        loc,
+    )
+    .unwrap_err();
     assert!(matches!(err, MacroError::DivisionByZero { .. }));
 }
 
@@ -977,10 +1050,8 @@ fn test_context_diagnostics() {
 #[test]
 fn test_context_defines() {
     let mut ctx = MacroContext::new();
-    ctx.defines
-        .insert("debug".to_string(), "true".to_string());
-    ctx.defines
-        .insert("version".to_string(), "1.0".to_string());
+    ctx.defines.insert("debug".to_string(), "true".to_string());
+    ctx.defines.insert("version".to_string(), "1.0".to_string());
 
     assert!(ctx.defines.contains_key("debug"));
     assert_eq!(ctx.defines.get("version"), Some(&"1.0".to_string()));
@@ -1175,10 +1246,7 @@ fn test_error_display_messages() {
         chain: vec!["a".to_string(), "b".to_string(), "a".to_string()],
         location: loc,
     };
-    assert_eq!(
-        format!("{}", err),
-        "circular macro dependency: a -> b -> a"
-    );
+    assert_eq!(format!("{}", err), "circular macro dependency: a -> b -> a");
 
     let err = MacroError::DivisionByZero { location: loc };
     assert_eq!(format!("{}", err), "division by zero in macro evaluation");

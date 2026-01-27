@@ -96,9 +96,7 @@ pub enum MacroError {
     },
 
     /// Division by zero during macro evaluation
-    DivisionByZero {
-        location: SourceLocation,
-    },
+    DivisionByZero { location: SourceLocation },
 
     /// Return from macro function
     Return {
@@ -179,40 +177,30 @@ impl MacroError {
     /// Generate a suggestion string for this error
     fn suggestion(&self) -> Option<String> {
         match self {
-            MacroError::UndefinedMacro { name, .. } => {
-                Some(format!(
-                    "Check that macro '{}' is defined and imported correctly",
-                    name
-                ))
-            }
+            MacroError::UndefinedMacro { name, .. } => Some(format!(
+                "Check that macro '{}' is defined and imported correctly",
+                name
+            )),
             MacroError::ArgumentCountMismatch {
                 macro_name,
                 expected,
                 ..
-            } => {
-                Some(format!(
-                    "Macro '{}' requires {} argument(s)",
-                    macro_name, expected
-                ))
-            }
-            MacroError::RecursionLimitExceeded { macro_name, .. } => {
-                Some(format!(
-                    "Check for infinite recursion in macro '{}', or increase the recursion limit",
-                    macro_name
-                ))
-            }
-            MacroError::CircularDependency { chain, .. } => {
-                Some(format!(
-                    "Break the circular dependency chain: {}",
-                    chain.join(" -> ")
-                ))
-            }
-            MacroError::UndefinedVariable { name, .. } => {
-                Some(format!(
-                    "Ensure '{}' is defined before use in the macro body",
-                    name
-                ))
-            }
+            } => Some(format!(
+                "Macro '{}' requires {} argument(s)",
+                macro_name, expected
+            )),
+            MacroError::RecursionLimitExceeded { macro_name, .. } => Some(format!(
+                "Check for infinite recursion in macro '{}', or increase the recursion limit",
+                macro_name
+            )),
+            MacroError::CircularDependency { chain, .. } => Some(format!(
+                "Break the circular dependency chain: {}",
+                chain.join(" -> ")
+            )),
+            MacroError::UndefinedVariable { name, .. } => Some(format!(
+                "Ensure '{}' is defined before use in the macro body",
+                name
+            )),
             MacroError::DivisionByZero { .. } => {
                 Some("Check divisor value before division".to_string())
             }

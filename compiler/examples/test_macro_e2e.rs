@@ -65,10 +65,7 @@ struct TestResult {
 
 /// Parse source, run macro expansion via MacroExpander.
 /// Returns (declarations_found, macros_registered, expansions, builds, error_diagnostics).
-fn run_macro_expansion(
-    name: &str,
-    source: &str,
-) -> (usize, usize, usize, usize, Vec<String>) {
+fn run_macro_expansion(name: &str, source: &str) -> (usize, usize, usize, usize, Vec<String>) {
     let parsed = parser::parse_haxe_file(&format!("{}.hx", name), source, false)
         .expect("parse should not crash");
 

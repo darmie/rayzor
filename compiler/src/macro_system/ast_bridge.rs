@@ -251,29 +251,33 @@ pub fn apply_binary_op(
             // Check for division by zero
             match right {
                 MacroValue::Int(0) => Err(MacroError::DivisionByZero { location }),
-                MacroValue::Float(f) if *f == 0.0 => {
-                    Err(MacroError::DivisionByZero { location })
-                }
+                MacroValue::Float(f) if *f == 0.0 => Err(MacroError::DivisionByZero { location }),
                 _ => apply_numeric_op(left, right, |a, b| a / b, |a, b| a / b, location),
             }
         }
-        BinaryOp::Mod => {
-            match right {
-                MacroValue::Int(0) => Err(MacroError::DivisionByZero { location }),
-                _ => apply_numeric_op(left, right, |a, b| a % b, |a, b| a % b, location),
-            }
-        }
+        BinaryOp::Mod => match right {
+            MacroValue::Int(0) => Err(MacroError::DivisionByZero { location }),
+            _ => apply_numeric_op(left, right, |a, b| a % b, |a, b| a % b, location),
+        },
 
         // Comparison
         BinaryOp::Eq => Ok(MacroValue::Bool(values_equal(left, right))),
         BinaryOp::NotEq => Ok(MacroValue::Bool(!values_equal(left, right))),
-        BinaryOp::Lt => compare_values(left, right, |ord| ord == std::cmp::Ordering::Less, location),
-        BinaryOp::Le => {
-            compare_values(left, right, |ord| ord != std::cmp::Ordering::Greater, location)
+        BinaryOp::Lt => {
+            compare_values(left, right, |ord| ord == std::cmp::Ordering::Less, location)
         }
-        BinaryOp::Gt => {
-            compare_values(left, right, |ord| ord == std::cmp::Ordering::Greater, location)
-        }
+        BinaryOp::Le => compare_values(
+            left,
+            right,
+            |ord| ord != std::cmp::Ordering::Greater,
+            location,
+        ),
+        BinaryOp::Gt => compare_values(
+            left,
+            right,
+            |ord| ord == std::cmp::Ordering::Greater,
+            location,
+        ),
         BinaryOp::Ge => {
             compare_values(left, right, |ord| ord != std::cmp::Ordering::Less, location)
         }
@@ -288,9 +292,12 @@ pub fn apply_binary_op(
         BinaryOp::BitXor => apply_int_op(left, right, |a, b| a ^ b, location),
         BinaryOp::Shl => apply_int_op(left, right, |a, b| a << b, location),
         BinaryOp::Shr => apply_int_op(left, right, |a, b| a >> b, location),
-        BinaryOp::Ushr => {
-            apply_int_op(left, right, |a, b| ((a as u64) >> (b as u64)) as i64, location)
-        }
+        BinaryOp::Ushr => apply_int_op(
+            left,
+            right,
+            |a, b| ((a as u64) >> (b as u64)) as i64,
+            location,
+        ),
 
         // Range (a...b)
         BinaryOp::Range => {
@@ -338,8 +345,16 @@ fn apply_add(
 ) -> Result<MacroValue, MacroError> {
     match (left, right) {
         // String concatenation
-        (MacroValue::String(a), b) => Ok(MacroValue::String(format!("{}{}", a, b.to_display_string()))),
-        (a, MacroValue::String(b)) => Ok(MacroValue::String(format!("{}{}", a.to_display_string(), b))),
+        (MacroValue::String(a), b) => Ok(MacroValue::String(format!(
+            "{}{}",
+            a,
+            b.to_display_string()
+        ))),
+        (a, MacroValue::String(b)) => Ok(MacroValue::String(format!(
+            "{}{}",
+            a.to_display_string(),
+            b
+        ))),
         // Numeric addition
         (MacroValue::Int(a), MacroValue::Int(b)) => Ok(MacroValue::Int(a + b)),
         (MacroValue::Float(a), MacroValue::Float(b)) => Ok(MacroValue::Float(a + b)),
@@ -352,11 +367,7 @@ fn apply_add(
             Ok(MacroValue::Array(result))
         }
         _ => Err(MacroError::TypeError {
-            message: format!(
-                "cannot add {} and {}",
-                left.type_name(),
-                right.type_name()
-            ),
+            message: format!("cannot add {} and {}", left.type_name(), right.type_name()),
             location,
         }),
     }
@@ -400,7 +411,10 @@ fn apply_int_op(
         location,
     })?;
     let b = right.as_int().ok_or_else(|| MacroError::TypeError {
-        message: format!("bitwise operation requires Int, found {}", right.type_name()),
+        message: format!(
+            "bitwise operation requires Int, found {}",
+            right.type_name()
+        ),
         location,
     })?;
     Ok(MacroValue::Int(op(a, b)))
@@ -418,9 +432,9 @@ fn compare_values(
 ) -> Result<MacroValue, MacroError> {
     let ordering = match (left, right) {
         (MacroValue::Int(a), MacroValue::Int(b)) => a.cmp(b),
-        (MacroValue::Float(a), MacroValue::Float(b)) => a
-            .partial_cmp(b)
-            .unwrap_or(std::cmp::Ordering::Equal),
+        (MacroValue::Float(a), MacroValue::Float(b)) => {
+            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+        }
         (MacroValue::Int(a), MacroValue::Float(b)) => (*a as f64)
             .partial_cmp(b)
             .unwrap_or(std::cmp::Ordering::Equal),
@@ -553,19 +567,43 @@ mod tests {
 
         // Int arithmetic
         assert_eq!(
-            apply_binary_op(&BinaryOp::Add, &MacroValue::Int(3), &MacroValue::Int(4), loc).unwrap(),
+            apply_binary_op(
+                &BinaryOp::Add,
+                &MacroValue::Int(3),
+                &MacroValue::Int(4),
+                loc
+            )
+            .unwrap(),
             MacroValue::Int(7)
         );
         assert_eq!(
-            apply_binary_op(&BinaryOp::Sub, &MacroValue::Int(10), &MacroValue::Int(3), loc).unwrap(),
+            apply_binary_op(
+                &BinaryOp::Sub,
+                &MacroValue::Int(10),
+                &MacroValue::Int(3),
+                loc
+            )
+            .unwrap(),
             MacroValue::Int(7)
         );
         assert_eq!(
-            apply_binary_op(&BinaryOp::Mul, &MacroValue::Int(3), &MacroValue::Int(4), loc).unwrap(),
+            apply_binary_op(
+                &BinaryOp::Mul,
+                &MacroValue::Int(3),
+                &MacroValue::Int(4),
+                loc
+            )
+            .unwrap(),
             MacroValue::Int(12)
         );
         assert_eq!(
-            apply_binary_op(&BinaryOp::Div, &MacroValue::Int(10), &MacroValue::Int(3), loc).unwrap(),
+            apply_binary_op(
+                &BinaryOp::Div,
+                &MacroValue::Int(10),
+                &MacroValue::Int(3),
+                loc
+            )
+            .unwrap(),
             MacroValue::Int(3)
         );
 
@@ -576,7 +614,8 @@ mod tests {
                 &MacroValue::String("hello".to_string()),
                 &MacroValue::String(" world".to_string()),
                 loc
-            ).unwrap(),
+            )
+            .unwrap(),
             MacroValue::String("hello world".to_string())
         );
 
@@ -592,11 +631,23 @@ mod tests {
 
         // Logical
         assert_eq!(
-            apply_binary_op(&BinaryOp::And, &MacroValue::Bool(true), &MacroValue::Bool(false), loc).unwrap(),
+            apply_binary_op(
+                &BinaryOp::And,
+                &MacroValue::Bool(true),
+                &MacroValue::Bool(false),
+                loc
+            )
+            .unwrap(),
             MacroValue::Bool(false)
         );
         assert_eq!(
-            apply_binary_op(&BinaryOp::Or, &MacroValue::Bool(false), &MacroValue::Bool(true), loc).unwrap(),
+            apply_binary_op(
+                &BinaryOp::Or,
+                &MacroValue::Bool(false),
+                &MacroValue::Bool(true),
+                loc
+            )
+            .unwrap(),
             MacroValue::Bool(true)
         );
     }
@@ -604,20 +655,40 @@ mod tests {
     #[test]
     fn test_division_by_zero() {
         let loc = SourceLocation::unknown();
-        let result = apply_binary_op(&BinaryOp::Div, &MacroValue::Int(10), &MacroValue::Int(0), loc);
+        let result = apply_binary_op(
+            &BinaryOp::Div,
+            &MacroValue::Int(10),
+            &MacroValue::Int(0),
+            loc,
+        );
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), MacroError::DivisionByZero { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            MacroError::DivisionByZero { .. }
+        ));
     }
 
     #[test]
     fn test_null_coalescing() {
         let loc = SourceLocation::unknown();
         assert_eq!(
-            apply_binary_op(&BinaryOp::NullCoal, &MacroValue::Null, &MacroValue::Int(42), loc).unwrap(),
+            apply_binary_op(
+                &BinaryOp::NullCoal,
+                &MacroValue::Null,
+                &MacroValue::Int(42),
+                loc
+            )
+            .unwrap(),
             MacroValue::Int(42)
         );
         assert_eq!(
-            apply_binary_op(&BinaryOp::NullCoal, &MacroValue::Int(1), &MacroValue::Int(42), loc).unwrap(),
+            apply_binary_op(
+                &BinaryOp::NullCoal,
+                &MacroValue::Int(1),
+                &MacroValue::Int(42),
+                loc
+            )
+            .unwrap(),
             MacroValue::Int(1)
         );
     }
