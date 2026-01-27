@@ -144,29 +144,20 @@ class ProductService {
     let mut pipeline = HaxeCompilationPipeline::new();
 
     // Compile both files
-    let result1 = pipeline.compile_file("Product.hx", source1);
-    let result2 = pipeline.compile_file("ProductService.hx", source2);
+    let result = pipeline.compile_files(&[
+        ("Product.hx", source1.to_string()),
+        ("ProductService.hx", source2.to_string()),
+    ]);
 
     // Check first file
-    if result1.errors.is_empty() {
-        println!("✅ Product.hx compiled successfully");
+    if result.errors.is_empty() {
+        println!("✅ Product.hx & ProductService.hx compiled successfully");
     } else {
-        println!("❌ Product.hx failed:");
-        for error in &result1.errors {
+        println!("❌ failed:");
+        for error in &result.errors {
             println!("  - {}", error.message);
         }
-        panic!("Product.hx should compile");
-    }
-
-    // Check second file
-    if result2.errors.is_empty() {
-        println!("✅ ProductService.hx compiled successfully");
-    } else {
-        println!("❌ ProductService.hx failed:");
-        for error in &result2.errors {
-            println!("  - {}", error.message);
-        }
-        panic!("ProductService.hx should compile with imports");
+        panic!("Product.hx & ProductService.hx should compile");
     }
 }
 

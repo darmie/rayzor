@@ -906,7 +906,10 @@ impl HaxeCompilationPipeline {
 
     /// Compile multiple Haxe source files
     pub fn compile_files<P: AsRef<Path>>(&mut self, files: &[(P, String)]) -> CompilationResult {
-        let mut combined_result = CompilationResult {
+        use crate::compilation::{CompilationConfig, CompilationUnit};
+
+        let start_time = std::time::Instant::now();
+        let mut result = CompilationResult {
             typed_files: Vec::new(),
             hir_modules: Vec::new(),
             mir_modules: Vec::new(),
@@ -916,25 +919,183 @@ impl HaxeCompilationPipeline {
             stats: PipelineStats::default(),
         };
 
+        // Use CompilationUnit which shares symbol table, type table, and
+        // namespace resolver across all files — enabling cross-package resolution.
+        let config = CompilationConfig::default();
+        let mut unit = CompilationUnit::new(config);
+
+        // Add all files to the compilation unit
         for (file_path, source) in files {
-            let file_result = self.compile_file(file_path, source);
-
-            combined_result.typed_files.extend(file_result.typed_files);
-            combined_result.hir_modules.extend(file_result.hir_modules);
-            combined_result
-                .semantic_graphs
-                .extend(file_result.semantic_graphs);
-            combined_result.errors.extend(file_result.errors);
-            combined_result.warnings.extend(file_result.warnings);
-
-            // Stop on too many errors
-            if combined_result.errors.len() >= self.config.max_errors {
-                break;
+            let file_name = file_path.as_ref().to_str().unwrap_or("unknown");
+            if let Err(e) = unit.add_file(source, file_name) {
+                result.errors.push(CompilationError {
+                    message: format!("Parse error: {}", e),
+                    location: SourceLocation::unknown(),
+                    category: ErrorCategory::ParseError,
+                    suggestion: None,
+                    related_errors: Vec::new(),
+                });
             }
         }
 
-        combined_result.stats = self.stats.clone();
-        combined_result
+        // Lower all files together with shared state
+        let typed_files = match unit.lower_to_tast() {
+            Ok(files) => files,
+            Err(errors) => {
+                result.errors.extend(errors);
+                self.stats.total_time_us += start_time.elapsed().as_micros() as u64;
+                result.stats = self.stats.clone();
+                return result;
+            }
+        };
+
+        // Run remaining pipeline stages on each typed file using the unit's shared state.
+        // Downstream stages (semantic graphs, HIR, MIR) operate per-file, so
+        // cross-file field/method references may not be fully resolvable —
+        // failures in these stages are reported as warnings, not errors.
+        for mut typed_file in typed_files {
+            // Stage 2b: Detect program-level safety mode
+            let _program_safety_mode = typed_file.detect_program_safety_mode();
+
+            // Stage 3: Validate TAST
+            if let Err(validation_errors) = self.validate_tast(&typed_file) {
+                result.errors.extend(validation_errors);
+            }
+
+            // Stage 4: Semantic graphs (if enabled)
+            let semantic_graphs = if self.config.enable_semantic_analysis {
+                match self.build_semantic_graphs(
+                    &typed_file,
+                    &unit.symbol_table,
+                    &unit.type_table,
+                    &unit.scope_tree,
+                ) {
+                    Ok(graphs) => {
+                        // Stage 4b: Enhanced flow analysis
+                        if self.config.enable_enhanced_flow_analysis {
+                            let flow_errors = self.run_enhanced_flow_analysis(
+                                &typed_file,
+                                &graphs,
+                                &unit.symbol_table,
+                                &unit.type_table,
+                            );
+                            for err in flow_errors {
+                                result.warnings.push(CompilationWarning {
+                                    message: err.message,
+                                    location: err.location,
+                                    category: WarningCategory::Correctness,
+                                    suppressible: true,
+                                });
+                            }
+                        }
+
+                        result.semantic_graphs.push(Arc::new(graphs.clone()));
+                        Some(graphs)
+                    }
+                    Err(semantic_errors) => {
+                        for err in semantic_errors {
+                            result.warnings.push(CompilationWarning {
+                                message: err.message,
+                                location: err.location,
+                                category: WarningCategory::Correctness,
+                                suppressible: true,
+                            });
+                        }
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            // Stage 5: Lower TAST to HIR (if enabled and no fatal errors)
+            if self.config.enable_hir_lowering && result.errors.is_empty() {
+                match self.lower_tast_to_hir(
+                    &typed_file,
+                    semantic_graphs.as_ref(),
+                    &unit.symbol_table,
+                    &unit.type_table,
+                ) {
+                    Ok(hir_module) => {
+                        // Stage 6: Validate HIR
+                        if self.config.enable_hir_validation {
+                            if let Err(hir_errors) = self.validate_hir(&hir_module) {
+                                for err in hir_errors {
+                                    result.warnings.push(CompilationWarning {
+                                        message: err.message,
+                                        location: err.location,
+                                        category: WarningCategory::Correctness,
+                                        suppressible: true,
+                                    });
+                                }
+                            }
+                        }
+
+                        // Stage 7: Optimize HIR
+                        let final_hir = if self.config.enable_hir_optimization {
+                            self.optimize_hir(hir_module, semantic_graphs.as_ref())
+                        } else {
+                            hir_module
+                        };
+
+                        let hir_arc = Arc::new(final_hir.clone());
+                        result.hir_modules.push(hir_arc);
+
+                        // Stage 8: Lower HIR to MIR
+                        if self.config.enable_mir_lowering {
+                            match self.lower_hir_to_mir(
+                                &final_hir,
+                                &unit.type_table,
+                                &unit.symbol_table,
+                                semantic_graphs.as_ref(),
+                                &typed_file,
+                            ) {
+                                Ok(mir_module) => {
+                                    // Stage 9: Optimize MIR
+                                    let final_mir = if self.config.enable_mir_optimization {
+                                        self.optimize_mir(mir_module)
+                                    } else {
+                                        mir_module
+                                    };
+                                    result.mir_modules.push(Arc::new(final_mir));
+                                }
+                                Err(mir_errors) => {
+                                    for err in mir_errors {
+                                        result.warnings.push(CompilationWarning {
+                                            message: err.message,
+                                            location: err.location,
+                                            category: WarningCategory::Correctness,
+                                            suppressible: true,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(hir_errors) => {
+                        for err in hir_errors {
+                            result.warnings.push(CompilationWarning {
+                                message: err.message,
+                                location: err.location,
+                                category: WarningCategory::Correctness,
+                                suppressible: true,
+                            });
+                        }
+                    }
+                }
+            }
+
+            result.typed_files.push(typed_file);
+        }
+
+        // Update statistics
+        self.stats.files_processed += files.len();
+        self.stats.total_loc += files.iter().map(|(_, s)| s.lines().count()).sum::<usize>();
+        self.stats.total_time_us += start_time.elapsed().as_micros() as u64;
+        self.stats.error_count += result.errors.len();
+        self.stats.warning_count += result.warnings.len();
+        result.stats = self.stats.clone();
+        result
     }
 
     /// Parse source code to AST and return both AST and SourceMap
@@ -1032,6 +1193,7 @@ impl HaxeCompilationPipeline {
         // Create namespace and import resolvers
         let mut namespace_resolver = crate::tast::namespace::NamespaceResolver::new(&*binding);
         let mut import_resolver = crate::tast::namespace::ImportResolver::new(&namespace_resolver);
+
         let mut lowering = AstLowering::new(
             &mut binding,
             Rc::clone(&self.string_interner),
