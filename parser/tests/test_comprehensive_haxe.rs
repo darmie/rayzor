@@ -528,13 +528,15 @@ class BaseClass { public function new() {} }
 interface IComparable { function compareTo(other:Dynamic):Int; }
 "#;
 
-
     match parse_haxe_file_with_diagnostics("test.hx", input) {
         Ok(res) => {
             if res.diagnostics.has_errors() {
                 for diagnostic in &res.diagnostics.diagnostics {
-                    println!("{}", diagnostics::ErrorFormatter::new()
-                        .format_diagnostic(diagnostic, &res.source_map));
+                    println!(
+                        "{}",
+                        diagnostics::ErrorFormatter::new()
+                            .format_diagnostic(diagnostic, &res.source_map)
+                    );
                 }
             }
             let file = res.file;

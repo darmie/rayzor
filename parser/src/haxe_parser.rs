@@ -81,11 +81,10 @@ pub fn parse_haxe_file_with_debug(
         )
     } else {
         // Use enhanced incremental parser with diagnostics for better error reporting
-        let incremental_result =
-            crate::incremental_parser_enhanced::parse_incrementally_enhanced(
-                file_name,
-                &preprocessed,
-            );
+        let incremental_result = crate::incremental_parser_enhanced::parse_incrementally_enhanced(
+            file_name,
+            &preprocessed,
+        );
 
         // Convert enhanced result to HaxeFile
         convert_enhanced_incremental_to_haxe_file(
@@ -141,9 +140,7 @@ fn convert_enhanced_incremental_to_haxe_file(
     // See: https://haxe.org/manual/type-system-import-defaults.html
     if is_import_file {
         if package.is_some() {
-            return Err(
-                "import.hx files cannot contain package declarations".to_string(),
-            );
+            return Err("import.hx files cannot contain package declarations".to_string());
         }
         if !declarations.is_empty() {
             return Err(
@@ -152,9 +149,7 @@ fn convert_enhanced_incremental_to_haxe_file(
             );
         }
         if !module_fields.is_empty() {
-            return Err(
-                "import.hx files cannot contain module-level fields".to_string(),
-            );
+            return Err("import.hx files cannot contain module-level fields".to_string());
         }
         Ok(HaxeFile {
             filename: file_name.to_string(),
@@ -233,9 +228,7 @@ fn convert_incremental_to_haxe_file(
     // For import.hx files, only imports and using statements are allowed
     if is_import_file {
         if package.is_some() {
-            return Err(
-                "import.hx files cannot contain package declarations".to_string(),
-            );
+            return Err("import.hx files cannot contain package declarations".to_string());
         }
         if !declarations.is_empty() {
             return Err(
@@ -244,9 +237,7 @@ fn convert_incremental_to_haxe_file(
             );
         }
         if !module_fields.is_empty() {
-            return Err(
-                "import.hx files cannot contain module-level fields".to_string(),
-            );
+            return Err("import.hx files cannot contain module-level fields".to_string());
         }
         Ok(HaxeFile {
             filename: file_name.to_string(),

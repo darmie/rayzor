@@ -132,7 +132,9 @@ class UniqueResource {
                     if managed_default == 1 && managed_explicit == 1 && safety_classes == 2 {
                         println!("\n✅ All classes correctly categorized!");
                         println!("   - ManagedClass uses runtime-managed memory (default)");
-                        println!("   - ExplicitManagedClass uses runtime-managed memory (@:managed)");
+                        println!(
+                            "   - ExplicitManagedClass uses runtime-managed memory (@:managed)"
+                        );
                         println!("   - SafetyClass uses manual memory (@:safety)");
                         println!("   - UniqueResource uses manual memory (@:safety)");
                     } else {
