@@ -87,8 +87,7 @@ class Main {
     let mut symbol_table = SymbolTable::new();
     let type_table = Rc::new(RefCell::new(TypeTable::new()));
     let mut scope_tree = ScopeTree::new(compiler::tast::ScopeId::from_raw(0));
-    let mut namespace_resolver =
-        compiler::tast::namespace::NamespaceResolver::new();
+    let mut namespace_resolver = compiler::tast::namespace::NamespaceResolver::new();
     let mut import_resolver = compiler::tast::namespace::ImportResolver::new();
 
     // Step 3: AST to TAST lowering
