@@ -1262,12 +1262,11 @@ mod tests {
     #[test]
     fn test_thread_spawn_join() {
         unsafe {
-            let handle =
-                rayzor_thread_spawn(test_thread_fn as *const u8, ptr::null());
+            let handle = rayzor_thread_spawn(test_thread_fn as *const u8, ptr::null());
             assert!(!handle.is_null());
 
             let result = rayzor_thread_join(handle);
-            assert_eq!(result as usize, 42);
+            assert_eq!(result as *const () as usize, 42);
         }
     }
 
