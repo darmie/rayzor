@@ -1255,13 +1255,19 @@ pub extern "C" fn rayzor_jit_cleanup() {
 mod tests {
     use super::*;
 
+    extern "C" fn test_thread_fn(_env: *const u8) -> i32 {
+        42
+    }
+
     #[test]
     fn test_thread_spawn_join() {
         unsafe {
-            let handle = rayzor_thread_spawn(ptr::null(), ptr::null());
+            let handle =
+                rayzor_thread_spawn(test_thread_fn as *const u8, ptr::null());
             assert!(!handle.is_null());
 
-            rayzor_thread_join(handle);
+            let result = rayzor_thread_join(handle);
+            assert_eq!(result as usize, 42);
         }
     }
 
