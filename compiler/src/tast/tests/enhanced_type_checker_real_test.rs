@@ -45,8 +45,8 @@ class ProblematicCode {
         let mut symbol_table = SymbolTable::new();
         let mut scope_tree = ScopeTree::new(ScopeId::first());
         let type_table = Rc::new(RefCell::new(TypeTable::new()));
-        let mut namespace_resolver = NamespaceResolver::new(&string_interner);
-        let mut import_resolver = ImportResolver::new(&namespace_resolver);
+        let mut namespace_resolver = NamespaceResolver::new();
+        let mut import_resolver = ImportResolver::new();
 
         // Parse the code
         match parse_haxe_file("problematic_code.hx", problematic_haxe_code, true) {

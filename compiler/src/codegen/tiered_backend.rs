@@ -22,7 +22,7 @@
 //! - RwLock for function pointer map: Fast reads, infrequent writes
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread;
@@ -1845,7 +1845,7 @@ impl TieredBackend {
     ///
     /// Returns error if no linker is available - caller should fall back to Cranelift
     #[cfg(feature = "llvm-backend")]
-    fn link_to_dylib(&self, obj_path: &PathBuf, dylib_path: &PathBuf) -> Result<(), String> {
+    fn link_to_dylib(&self, obj_path: &Path, dylib_path: &Path) -> Result<(), String> {
         // Try to find a suitable linker
         let linker = Self::find_linker()?;
 

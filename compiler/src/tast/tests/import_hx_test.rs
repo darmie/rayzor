@@ -63,10 +63,8 @@ mod tests {
         // Lower the test file - it should have access to import.hx types
         {
             // Create namespace and import resolvers
-            let mut namespace_resolver =
-                crate::tast::namespace::NamespaceResolver::new(&string_interner);
-            let mut import_resolver =
-                crate::tast::namespace::ImportResolver::new(&namespace_resolver);
+            let mut namespace_resolver = crate::tast::namespace::NamespaceResolver::new();
+            let mut import_resolver = crate::tast::namespace::ImportResolver::new();
 
             // Create AST lowering instance
             let string_interner_rc = Rc::new(RefCell::new(StringInterner::new()));
@@ -162,10 +160,8 @@ typedef StringDict = StringMap<Dynamic>;"#;
         // Lower the test file
         {
             // Create namespace and import resolvers
-            let mut namespace_resolver =
-                crate::tast::namespace::NamespaceResolver::new(&string_interner);
-            let mut import_resolver =
-                crate::tast::namespace::ImportResolver::new(&namespace_resolver);
+            let mut namespace_resolver = crate::tast::namespace::NamespaceResolver::new();
+            let mut import_resolver = crate::tast::namespace::ImportResolver::new();
 
             let string_interner_rc = Rc::new(RefCell::new(StringInterner::new()));
             let mut lowering = AstLowering::new(

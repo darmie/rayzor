@@ -1,0 +1,8 @@
+target/
+cranelift-fork/
+.git/
+.claude/
+.DS_Store
+ci/thread-test/logs/
+*.md
+docs/

@@ -78,9 +78,8 @@ class TestGenericConstraints {
         );
 
         // Create namespace and import resolvers
-        let mut namespace_resolver =
-            crate::tast::namespace::NamespaceResolver::new(&string_interner);
-        let mut import_resolver = crate::tast::namespace::ImportResolver::new(&namespace_resolver);
+        let mut namespace_resolver = crate::tast::namespace::NamespaceResolver::new();
+        let mut import_resolver = crate::tast::namespace::ImportResolver::new();
 
         // Lower to TAST
         let string_interner_rc = Rc::new(RefCell::new(StringInterner::new()));
@@ -163,9 +162,8 @@ class TestSimpleGeneric {
             source_map.add_file("simple_generic_test.hx".to_string(), haxe_code.to_string());
 
         // Create namespace and import resolvers
-        let mut namespace_resolver =
-            crate::tast::namespace::NamespaceResolver::new(&string_interner);
-        let mut import_resolver = crate::tast::namespace::ImportResolver::new(&namespace_resolver);
+        let mut namespace_resolver = crate::tast::namespace::NamespaceResolver::new();
+        let mut import_resolver = crate::tast::namespace::ImportResolver::new();
 
         // Lower to TAST
         let string_interner_rc = Rc::new(RefCell::new(StringInterner::new()));

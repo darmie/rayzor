@@ -45,3 +45,6 @@ compiler/haxe-std/python/
 cranelift-fork/
 
 .claude/
+
+# Thread stress test logs
+ci/thread-test/logs/

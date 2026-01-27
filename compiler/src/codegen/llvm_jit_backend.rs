@@ -799,12 +799,10 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             IrType::F32 => Ok(self.context.f32_type().into()),
             IrType::F64 => Ok(self.context.f64_type().into()),
 
-            // Pointers become i8* in LLVM (opaque pointers)
-            IrType::Ptr(_) | IrType::Ref(_) => Ok(self
-                .context
-                .i8_type()
-                .ptr_type(AddressSpace::default())
-                .into()),
+            // Pointers become opaque pointers in LLVM 15+
+            IrType::Ptr(_) | IrType::Ref(_) => {
+                Ok(self.context.ptr_type(AddressSpace::default()).into())
+            }
 
             // Arrays
             IrType::Array(elem_ty, count) => {
@@ -814,7 +812,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
             // Slices are represented as {ptr, len}
             IrType::Slice(_) | IrType::String => {
-                let ptr_ty = self.context.i8_type().ptr_type(AddressSpace::default());
+                let ptr_ty = self.context.ptr_type(AddressSpace::default());
                 let len_ty = self.context.i64_type();
                 Ok(self
                     .context
@@ -823,11 +821,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             }
 
             // Functions become function pointers
-            IrType::Function { .. } => Ok(self
-                .context
-                .i8_type()
-                .ptr_type(AddressSpace::default())
-                .into()),
+            IrType::Function { .. } => Ok(self.context.ptr_type(AddressSpace::default()).into()),
 
             // Structs
             IrType::Struct { fields, .. } => {
@@ -869,7 +863,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             IrType::Any => {
                 // Any type is {i64 type_id, i8* value_ptr}
                 let type_id = self.context.i64_type();
-                let value_ptr = self.context.i8_type().ptr_type(AddressSpace::default());
+                let value_ptr = self.context.ptr_type(AddressSpace::default());
                 Ok(self
                     .context
                     .struct_type(&[type_id.into(), value_ptr.into()], false)
@@ -1598,7 +1592,6 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     None => {
                         let malloc_fn_type = self
                             .context
-                            .i8_type()
                             .ptr_type(AddressSpace::default())
                             .fn_type(&[self.context.i64_type().into()], false);
                         self.module.add_function("malloc", malloc_fn_type, None)
@@ -1791,11 +1784,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     Some(f) => f,
                     None => {
                         let free_fn_type = self.context.void_type().fn_type(
-                            &[self
-                                .context
-                                .i8_type()
-                                .ptr_type(AddressSpace::default())
-                                .into()],
+                            &[self.context.ptr_type(AddressSpace::default()).into()],
                             false,
                         );
                         self.module.add_function("free", free_fn_type, None)
@@ -2081,7 +2070,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     .map_err(|e| format!("Failed to store value: {}", e))?;
 
                 // Memcpy value to data area
-                let i8_ptr_ty = self.context.i8_type().ptr_type(AddressSpace::default());
+                let i8_ptr_ty = self.context.ptr_type(AddressSpace::default());
                 let data_ptr_cast = self
                     .builder
                     .build_pointer_cast(data_ptr, i8_ptr_ty, "data_ptr_cast")
@@ -2128,7 +2117,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                         &format!("tag_{}", dest.as_u32()),
                     )
                     .map_err(|e| format!("Failed to extract tag: {}", e))?;
-                self.value_map.insert(*dest, tag.into());
+                self.value_map.insert(*dest, tag);
             }
 
             IrInstruction::ExtractUnionValue {
@@ -2159,7 +2148,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     .map_err(|e| format!("Failed to get data ptr for extract: {}", e))?;
 
                 // Cast data pointer to target type pointer and load
-                let target_ptr_ty = target_ty.ptr_type(AddressSpace::default());
+                let target_ptr_ty = self.context.ptr_type(AddressSpace::default());
                 let typed_ptr = self
                     .builder
                     .build_pointer_cast(data_ptr, target_ptr_ty, "typed_data_ptr")
@@ -2807,7 +2796,6 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             IrValue::Void | IrValue::Undef => Err("Cannot compile void/undef as value".to_string()),
             IrValue::Null => Ok(self
                 .context
-                .i8_type()
                 .ptr_type(AddressSpace::default())
                 .const_null()
                 .into()),
@@ -2837,10 +2825,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 let str_len = self.context.i64_type().const_int(s.len() as u64, false);
                 let str_ty = self.context.struct_type(
                     &[
-                        self.context
-                            .i8_type()
-                            .ptr_type(AddressSpace::default())
-                            .into(),
+                        self.context.ptr_type(AddressSpace::default()).into(),
                         self.context.i64_type().into(),
                     ],
                     false,

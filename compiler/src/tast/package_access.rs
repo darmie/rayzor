@@ -477,7 +477,7 @@ mod tests {
     fn test_package_access_validation() {
         let mut interner = StringInterner::new();
         let mut symbol_table = SymbolTable::new();
-        let mut namespace = NamespaceResolver::new(&interner);
+        let mut namespace = NamespaceResolver::new();
 
         // Create packages
         let com = interner.intern("com");
@@ -502,7 +502,7 @@ mod tests {
     fn test_sub_package_detection() {
         let mut interner = StringInterner::new();
         let symbol_table = SymbolTable::new();
-        let mut namespace = NamespaceResolver::new(&interner);
+        let mut namespace = NamespaceResolver::new();
 
         let com = interner.intern("com");
         let example = interner.intern("example");

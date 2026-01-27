@@ -146,6 +146,21 @@ impl MacroExpander {
             ));
         }
 
+        // Fast path: if no macros are registered and no build macros found,
+        // skip the expression walk entirely to avoid unnecessary AST reconstruction.
+        // This is critical for performance and stability: the walk drains and rebuilds
+        // every declaration, which is wasteful for the vast majority of files that
+        // contain no macro invocations.
+        if self.registry.macro_count() == 0 && build_macros.is_empty() {
+            let diagnostics = self.context.take_diagnostics();
+            return ExpansionResult {
+                file,
+                diagnostics,
+                expansions_count: 0,
+                expansion_origins: Vec::new(),
+            };
+        }
+
         // Phase 3: Walk and expand expressions in all declarations
         let mut iteration = 0;
         let mut changed = true;

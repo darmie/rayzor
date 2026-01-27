@@ -348,7 +348,7 @@ fn run_file(
     verbose: bool,
     stats: bool,
     _tier: u8,
-    llvm: bool,
+    _llvm: bool,
     preset: Preset,
     cache: bool,
     cache_dir: Option<PathBuf>,
@@ -366,7 +366,7 @@ fn run_file(
     );
 
     #[cfg(not(feature = "llvm-backend"))]
-    if llvm {
+    if _llvm {
         return Err(
             "LLVM backend not available. Recompile with --features llvm-backend".to_string(),
         );

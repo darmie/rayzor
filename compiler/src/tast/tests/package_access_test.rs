@@ -59,7 +59,7 @@ class HealthBar {
     let type_table = Rc::new(RefCell::new(TypeTable::new(&string_interner)));
     let mut symbol_table = SymbolTable::new();
     let mut scope_tree = ScopeTree::new();
-    let mut namespace_resolver = NamespaceResolver::new(&string_interner);
+    let mut namespace_resolver = NamespaceResolver::new();
     let mut import_resolver = ImportResolver::new();
 
     // Lower ASTs
@@ -146,7 +146,7 @@ class Combat {
     let type_table = Rc::new(RefCell::new(TypeTable::new(&string_interner)));
     let mut symbol_table = SymbolTable::new();
     let mut scope_tree = ScopeTree::new();
-    let mut namespace_resolver = NamespaceResolver::new(&string_interner);
+    let mut namespace_resolver = NamespaceResolver::new();
     let mut import_resolver = ImportResolver::new();
 
     let string_interner_rc = Rc::new(RefCell::new(StringInterner::new()));
@@ -217,7 +217,7 @@ class Derived {
     let type_table = Rc::new(RefCell::new(TypeTable::new(&string_interner)));
     let mut symbol_table = SymbolTable::new();
     let mut scope_tree = ScopeTree::new();
-    let mut namespace_resolver = NamespaceResolver::new(&string_interner);
+    let mut namespace_resolver = NamespaceResolver::new();
     let mut import_resolver = ImportResolver::new();
 
     let string_interner_rc = Rc::new(RefCell::new(StringInterner::new()));

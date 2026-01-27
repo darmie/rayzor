@@ -1232,8 +1232,8 @@ impl HaxeCompilationPipeline {
         let mut binding = self.string_interner.borrow_mut();
 
         // Create namespace and import resolvers
-        let mut namespace_resolver = crate::tast::namespace::NamespaceResolver::new(&*binding);
-        let mut import_resolver = crate::tast::namespace::ImportResolver::new(&namespace_resolver);
+        let mut namespace_resolver = crate::tast::namespace::NamespaceResolver::new();
+        let mut import_resolver = crate::tast::namespace::ImportResolver::new();
 
         let mut lowering = AstLowering::new(
             &mut binding,

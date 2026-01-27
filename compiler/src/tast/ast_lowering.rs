@@ -3963,10 +3963,11 @@ impl<'a> AstLowering<'a> {
                 // IMPORTANT: First try to resolve through the import system.
                 // This ensures we get the symbol with the correct qualified_name (e.g., "rayzor.Bytes")
                 // rather than a duplicate symbol that may have been created without package context.
-                let import_candidates = self
-                    .context
-                    .import_resolver
-                    .resolve_type(interned_name, self.context.current_scope);
+                let import_candidates = self.context.import_resolver.resolve_type(
+                    interned_name,
+                    self.context.current_scope,
+                    self.context.namespace_resolver,
+                );
 
                 let import_resolved_symbol = import_candidates
                     .first()
@@ -4174,10 +4175,11 @@ impl<'a> AstLowering<'a> {
 
         // Try to resolve using the import resolver first
         let name_interned = self.context.string_interner.intern(&type_path.name);
-        let candidates = self
-            .context
-            .import_resolver
-            .resolve_type(name_interned, self.context.current_scope);
+        let candidates = self.context.import_resolver.resolve_type(
+            name_interned,
+            self.context.current_scope,
+            self.context.namespace_resolver,
+        );
 
         if !candidates.is_empty() {
             // Use the first candidate (in a full implementation, we'd handle ambiguity)

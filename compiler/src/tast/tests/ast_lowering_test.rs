@@ -40,8 +40,8 @@ fn parse_and_lower(haxe_code: &str) -> Result<TypedFile, String> {
     let (mut string_interner, mut symbol_table, type_table, mut scope_tree) = create_test_context();
 
     // Create namespace and import resolvers
-    let mut namespace_resolver = crate::tast::namespace::NamespaceResolver::new(&string_interner);
-    let mut import_resolver = crate::tast::namespace::ImportResolver::new(&namespace_resolver);
+    let mut namespace_resolver = crate::tast::namespace::NamespaceResolver::new();
+    let mut import_resolver = crate::tast::namespace::ImportResolver::new();
 
     // Create AST lowering instance
     let string_interner_rc = Rc::new(RefCell::new(StringInterner::new()));

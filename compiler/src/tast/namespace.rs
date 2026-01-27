@@ -149,9 +149,6 @@ pub struct NamespaceResolver {
     /// Next package ID
     next_package_id: u32,
 
-    /// String interner reference
-    string_interner: *const StringInterner,
-
     /// Files that have been loaded (to avoid reloading)
     loaded_files: HashSet<PathBuf>,
 
@@ -164,13 +161,12 @@ pub struct NamespaceResolver {
 
 impl NamespaceResolver {
     /// Create a new namespace resolver
-    pub fn new(string_interner: &StringInterner) -> Self {
+    pub fn new() -> Self {
         let mut resolver = NamespaceResolver {
             packages: HashMap::new(),
             package_paths: HashMap::new(),
             current_package: None,
             next_package_id: 1, // 0 is reserved for root
-            string_interner: string_interner as *const _,
             loaded_files: HashSet::new(),
             source_paths: Vec::new(),
             stdlib_paths: Vec::new(),
@@ -404,18 +400,14 @@ pub struct ImportResolver {
 
     /// Type aliases by scope and name
     aliases: HashMap<(ScopeId, InternedString), QualifiedPath>,
-
-    /// Namespace resolver reference
-    namespace_resolver: *const NamespaceResolver,
 }
 
 impl ImportResolver {
     /// Create a new import resolver
-    pub fn new(namespace_resolver: &NamespaceResolver) -> Self {
+    pub fn new() -> Self {
         ImportResolver {
             imports_by_scope: HashMap::new(),
             aliases: HashMap::new(),
-            namespace_resolver: namespace_resolver as *const _,
         }
     }
 
@@ -434,7 +426,12 @@ impl ImportResolver {
     }
 
     /// Resolve a type name in the context of imports
-    pub fn resolve_type(&self, name: InternedString, scope: ScopeId) -> Vec<QualifiedPath> {
+    pub fn resolve_type(
+        &self,
+        name: InternedString,
+        scope: ScopeId,
+        ns: &NamespaceResolver,
+    ) -> Vec<QualifiedPath> {
         let mut candidates = Vec::new();
 
         // Check aliases first (check current scope and root scope)
@@ -449,8 +446,6 @@ impl ImportResolver {
         }
 
         // Check current package (types in same package are automatically visible)
-        // SAFETY: The namespace_resolver pointer is valid for the lifetime of ImportResolver
-        let ns = unsafe { &*self.namespace_resolver };
         if let Some(pkg_id) = ns.current_package() {
             if let Some(package) = ns.get_package(pkg_id) {
                 let path = QualifiedPath::new(package.full_path.clone(), name);
@@ -515,7 +510,7 @@ mod tests {
     #[test]
     fn test_package_hierarchy() {
         let mut interner = StringInterner::new();
-        let mut resolver = NamespaceResolver::new(&interner);
+        let mut resolver = NamespaceResolver::new();
 
         let com = interner.intern("com");
         let example = interner.intern("example");
@@ -531,7 +526,7 @@ mod tests {
     #[test]
     fn test_symbol_registration() {
         let mut interner = StringInterner::new();
-        let mut resolver = NamespaceResolver::new(&interner);
+        let mut resolver = NamespaceResolver::new();
 
         let com = interner.intern("com");
         let example = interner.intern("example");

@@ -119,9 +119,8 @@ class Main {
         let mut scope_tree = ScopeTree::new(ScopeId::first());
 
         // Create namespace and import resolvers
-        let mut namespace_resolver =
-            crate::tast::namespace::NamespaceResolver::new(&string_interner);
-        let mut import_resolver = crate::tast::namespace::ImportResolver::new(&namespace_resolver);
+        let mut namespace_resolver = crate::tast::namespace::NamespaceResolver::new();
+        let mut import_resolver = crate::tast::namespace::ImportResolver::new();
 
         let string_interner_rc = Rc::new(RefCell::new(StringInterner::new()));
         let mut lowering = AstLowering::new(

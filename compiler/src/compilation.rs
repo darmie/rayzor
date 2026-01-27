@@ -375,8 +375,8 @@ impl CompilationUnit {
     /// Create a new compilation unit with the given configuration
     pub fn new(config: CompilationConfig) -> Self {
         let string_interner = StringInterner::new();
-        let namespace_resolver = NamespaceResolver::new(&string_interner);
-        let import_resolver = ImportResolver::new(&namespace_resolver);
+        let namespace_resolver = NamespaceResolver::new();
+        let import_resolver = ImportResolver::new();
 
         // Create pipeline with config
         let pipeline = HaxeCompilationPipeline::with_config(config.pipeline_config.clone());
