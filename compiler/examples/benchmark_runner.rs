@@ -826,8 +826,8 @@ fn save_results(suite: &BenchmarkSuite) -> Result<BenchmarkSuite, String> {
     let merged = if path.exists() {
         let existing =
             fs::read_to_string(&path).map_err(|e| format!("read existing results: {}", e))?;
-        let mut existing_suite: BenchmarkSuite =
-            serde_json::from_str(&existing).map_err(|e| format!("parse existing results: {}", e))?;
+        let mut existing_suite: BenchmarkSuite = serde_json::from_str(&existing)
+            .map_err(|e| format!("parse existing results: {}", e))?;
 
         for new_bench in &suite.benchmarks {
             if let Some(pos) = existing_suite
@@ -848,8 +848,7 @@ fn save_results(suite: &BenchmarkSuite) -> Result<BenchmarkSuite, String> {
         suite.clone()
     };
 
-    let json =
-        serde_json::to_string_pretty(&merged).map_err(|e| format!("serialize: {}", e))?;
+    let json = serde_json::to_string_pretty(&merged).map_err(|e| format!("serialize: {}", e))?;
 
     fs::write(&path, json).map_err(|e| format!("write: {}", e))?;
     println!("Results saved to: {}", path.display());
