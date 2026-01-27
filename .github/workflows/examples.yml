@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
 
 jobs:
   examples:
@@ -16,18 +17,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install LLVM 18
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+          sudo add-apt-repository -y "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-18 main"
+          sudo apt-get update
+          sudo apt-get install -y llvm-18 llvm-18-dev libpolly-18-dev
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Core Types E2E
-        run: cargo run --release --package compiler --example test_core_types_e2e
+        run: cargo run --release --package compiler --features all-backends --example test_core_types_e2e
 
       - name: sys.thread stdlib
-        run: cargo run --release --package compiler --example test_sys_thread
+        run: cargo run --release --package compiler --features all-backends --example test_sys_thread
 
       - name: Rayzor stdlib E2E
-        run: cargo run --release --package compiler --example test_rayzor_stdlib_e2e
+        run: cargo run --release --package compiler --features all-backends --example test_rayzor_stdlib_e2e
 
       - name: Haxe stdlib
-        run: cargo run --release --package compiler --example test_haxe_stdlib
+        run: cargo run --release --package compiler --features all-backends --example test_haxe_stdlib

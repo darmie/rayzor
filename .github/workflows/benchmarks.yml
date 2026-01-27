@@ -7,6 +7,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
 
 jobs:
   benchmark:
@@ -15,15 +16,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install LLVM 18
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+          sudo add-apt-repository -y "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-18 main"
+          sudo apt-get update
+          sudo apt-get install -y llvm-18 llvm-18-dev libpolly-18-dev
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Run nbody benchmark
-        run: cargo run --release --package compiler --example benchmark_runner -- nbody --json
+        run: cargo run --release --package compiler --features all-backends --example benchmark_runner -- nbody --json
 
       - name: Run mandelbrot benchmark
-        run: cargo run --release --package compiler --example benchmark_runner -- mandelbrot --json
+        run: cargo run --release --package compiler --features all-backends --example benchmark_runner -- mandelbrot --json
 
       - name: Upload benchmark results
         if: always()
