@@ -113,6 +113,12 @@ pub fn preprocess(source: &str, config: &PreprocessorConfig) -> String {
         }
     }
 
+    // Preserve original trailing newline behavior: if source didn't end
+    // with newline, don't add one; if it did, keep it.
+    if !source.ends_with('\n') && result.ends_with('\n') {
+        result.pop();
+    }
+
     result
 }
 

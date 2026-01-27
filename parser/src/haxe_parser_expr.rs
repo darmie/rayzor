@@ -64,7 +64,7 @@ pub fn assignment_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let start = position(full, input);
 
     // Try arrow function first (higher precedence than assignment)
-    if let Ok((rest, params)) = arrow_params(input) {
+    if let Ok((rest, params)) = arrow_params(full, input) {
         let (rest, _) = ws(rest)?; // Skip whitespace before arrow
         if let Ok((rest, _)) = symbol("->")(rest) {
             let (rest, _) = ws(rest)?; // Skip whitespace after arrow
@@ -401,8 +401,21 @@ pub fn postfix_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
 
         let input_before = input;
         // Try each postfix operation
-        // Check for field access but ensure we don't consume ... operator
-        if let Ok((rest, _)) = symbol(".").parse(input) {
+        // Check for optional chaining `?.` before regular field access
+        if let Ok((rest, _)) = symbol("?.").parse(input) {
+            // Optional chaining field access: obj?.field
+            let (rest, field) = identifier(rest)?;
+            let end = position(full, rest);
+            expr = Expr {
+                kind: ExprKind::Field {
+                    expr: Box::new(expr),
+                    field,
+                    is_optional: true,
+                },
+                span: Span::new(start, end),
+            };
+            input = rest;
+        } else if let Ok((rest, _)) = symbol(".").parse(input) {
             // Make sure this isn't part of a ... operator
             if rest.starts_with("..") {
                 // This is part of ..., don't consume it
@@ -415,6 +428,7 @@ pub fn postfix_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
                 kind: ExprKind::Field {
                     expr: Box::new(expr),
                     field,
+                    is_optional: false,
                 },
                 span: Span::new(start, end),
             };

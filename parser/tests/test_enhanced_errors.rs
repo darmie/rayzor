@@ -20,7 +20,8 @@ class TestClass {
 
             // Check that the error message is helpful
             assert!(e.contains("semicolon") || e.contains("';'"));
-            assert!(e.contains("line") || e.contains("column"));
+            // Error format uses `-->  file:line:column`, not literal "line"/"column" words
+            assert!(e.contains("-->") || e.contains("line") || e.contains("column"));
         }
     }
 }

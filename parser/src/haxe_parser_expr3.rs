@@ -103,7 +103,7 @@ pub fn function_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let start = position(full, input);
 
     // Try arrow function first
-    if let Ok((rest, params)) = arrow_params(input) {
+    if let Ok((rest, params)) = arrow_params(full, input) {
         let (rest, _) = ws(rest)?; // Skip whitespace before arrow
         if let Ok((rest, _)) = symbol("->")(rest) {
             let (rest, _) = ws(rest)?; // Skip whitespace after arrow
@@ -154,10 +154,10 @@ pub fn function_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     ))
 }
 
-pub fn arrow_params(input: &str) -> PResult<Vec<String>> {
+pub fn arrow_params<'a>(full: &'a str, input: &'a str) -> PResult<'a, Vec<String>> {
     let (input, _) = ws(input)?; // Skip leading whitespace
     alt((
-        // Single parameter without parentheses
+        // Single parameter without parentheses (no type annotation allowed)
         map(
             |i| {
                 let (i, _) = ws(i)?;
@@ -165,12 +165,16 @@ pub fn arrow_params(input: &str) -> PResult<Vec<String>> {
             },
             |id| vec![id],
         ),
-        // Multiple parameters in parentheses
+        // Multiple parameters in parentheses, with optional type annotations
+        // Supports: (x), (x:Int), (x:Int, y:String), etc.
         delimited(
             symbol("("),
             separated_list0(symbol(","), |i| {
                 let (i, _) = ws(i)?;
-                identifier(i)
+                let (i, name) = identifier(i)?;
+                // Skip optional type annotation `:Type` (parsed but discarded)
+                let (i, _) = opt(preceded(symbol(":"), |i| type_expr(full, i))).parse(i)?;
+                Ok((i, name))
             }),
             symbol(")"),
         ),

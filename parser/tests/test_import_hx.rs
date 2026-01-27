@@ -49,6 +49,7 @@ using StringTools;
 
 #[test]
 fn test_import_hx_with_conditionals() {
+    // Preprocessor has `sys` defined by default, so only the #elseif sys branch is kept
     let input = r#"
 #if js
 import js.Browser;
@@ -67,11 +68,15 @@ using Lambda;
         Ok(ast) => {
             println!("Successfully parsed import.hx with conditionals!");
 
-            // The parser should flatten conditional imports for now
-            assert!(
-                ast.imports.len() >= 5,
-                "Should have imported all conditional branches"
+            // With sys defined, only the #elseif sys branch is active
+            assert_eq!(
+                ast.imports.len(),
+                2,
+                "Should have 2 imports from the sys branch, got {:?}",
+                ast.imports.iter().map(|i| &i.path).collect::<Vec<_>>()
             );
+            assert_eq!(ast.imports[0].path, vec!["sys", "FileSystem"]);
+            assert_eq!(ast.imports[1].path, vec!["sys", "io", "File"]);
             assert_eq!(ast.using.len(), 1);
             assert_eq!(ast.using[0].path, vec!["Lambda"]);
         }

@@ -565,6 +565,8 @@ pub enum ExprKind {
     Field {
         expr: Box<Expr>,
         field: String,
+        /// True for optional chaining: `obj?.field`
+        is_optional: bool,
     },
 
     /// Array/Map access: `arr[0]`, `map["key"]`

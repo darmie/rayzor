@@ -68,6 +68,7 @@ class Test {
                                                             parser::haxe_ast::ExprKind::Field {
                                                                 expr,
                                                                 field,
+                                                                ..
                                                             } => {
                                                                 assert_eq!(field, "length");
                                                                 match &expr.kind {

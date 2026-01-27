@@ -4900,7 +4900,7 @@ impl<'a> AstLowering<'a> {
             ExprKind::Call { expr, args } => {
                 return self.lower_call_expression(expression, expr, args);
             }
-            ExprKind::Field { expr, field } => {
+            ExprKind::Field { expr, field, .. } => {
                 return self.lower_field_expression(expression, expr, field);
             }
             ExprKind::Index { expr, index } => {
@@ -5818,6 +5818,7 @@ impl<'a> AstLowering<'a> {
             ExprKind::Field {
                 expr: obj_expr,
                 field,
+                ..
             } => {
                 // Check if this is a static method call (Class.method)
                 if let ExprKind::Ident(class_name) = &obj_expr.kind {
@@ -6202,6 +6203,7 @@ impl<'a> AstLowering<'a> {
                 ExprKind::Field {
                     expr: inner_expr,
                     field,
+                    ..
                 } => {
                     let mut path = extract_qualified_path(inner_expr)?;
                     path.push(field.clone());

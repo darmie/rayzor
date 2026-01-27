@@ -3,6 +3,9 @@
 
 use parser::haxe_ast::*;
 use parser::parse_haxe_file;
+use parser::parse_haxe_file_with_diagnostics;
+use parser::Diagnostic;
+use parser::SourceMap;
 
 #[test]
 fn test_comprehensive_haxe_features() {
@@ -525,8 +528,16 @@ class BaseClass { public function new() {} }
 interface IComparable { function compareTo(other:Dynamic):Int; }
 "#;
 
-    match parse_haxe_file("test.hx", input, false) {
-        Ok(file) => {
+
+    match parse_haxe_file_with_diagnostics("test.hx", input) {
+        Ok(res) => {
+            if res.diagnostics.has_errors() {
+                for diagnostic in &res.diagnostics.diagnostics {
+                    println!("{}", diagnostics::ErrorFormatter::new()
+                        .format_diagnostic(diagnostic, &res.source_map));
+                }
+            }
+            let file = res.file;
             // Basic structure tests
             assert!(file.package.is_some());
             let package = file.package.as_ref().unwrap();

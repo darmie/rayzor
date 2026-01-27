@@ -93,11 +93,27 @@ pub fn reify_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
 fn dollar_identifier<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let start = position(full, input);
 
-    // Parse the identifier name - only allow specific known dollar identifiers
+    // Try `$type` first — a standalone keyword that doesn't require braces.
+    // Must check that 'type' is a complete word (not prefix of 'typeCheck' etc.).
+    if let Ok((rest, _)) = tag::<&str, &str, ContextualError<&str>>("type")(input) {
+        if rest.is_empty() || !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_') {
+            let end = position(full, rest);
+            return Ok((
+                rest,
+                Expr {
+                    kind: ExprKind::DollarIdent {
+                        name: "type".to_string(),
+                        arg: None,
+                    },
+                    span: Span::new(start, end),
+                },
+            ));
+        }
+    }
+
+    // Macro reification identifiers: $v{...}, $i{...}, $a{...}, $b{...}, $p{...}, $e{...}
+    // These MUST be followed by `{` to distinguish from regular $identifier references.
     let (input, name) = alt((
-        // Special compiler intrinsic identifiers
-        map(tag("type"), |_| "type".to_string()),
-        // Macro reification identifiers
         map(tag("v"), |_| "v".to_string()),
         map(tag("i"), |_| "i".to_string()),
         map(tag("a"), |_| "a".to_string()),
@@ -107,21 +123,20 @@ fn dollar_identifier<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     ))
     .parse(input)?;
 
-    // Check if there's an argument in braces
-    let (input, arg) = if let Ok((rest, _)) = symbol("{").parse(input) {
-        let (rest, expr) = expression(full, rest)?;
-        let (rest, _) = symbol("}")(rest)?;
-        (rest, Some(Box::new(expr)))
-    } else {
-        (input, None)
-    };
+    // Reification identifiers require braces: $e{expr}, $v{value}, etc.
+    let (input, _) = symbol("{").parse(input)?;
+    let (input, expr) = expression(full, input)?;
+    let (input, _) = symbol("}")(input)?;
 
     let end = position(full, input);
 
     Ok((
         input,
         Expr {
-            kind: ExprKind::DollarIdent { name, arg },
+            kind: ExprKind::DollarIdent {
+                name,
+                arg: Some(Box::new(expr)),
+            },
             span: Span::new(start, end),
         },
     ))
@@ -292,18 +307,17 @@ pub fn cast_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
                 }
             },
         ),
-        // cast expr : Type - type annotation without parentheses
+        // cast expr - unsafe cast without type annotation (no parentheses)
+        // Note: type-annotated casts require parentheses: cast(expr, Type) or cast(expr : Type)
+        // The `: Type` form is NOT supported here because it's ambiguous with the ternary operator's `:`
         map(
-            pair(
-                |i| postfix_expr(full, i), // Use postfix_expr to avoid infinite recursion with unary
-                opt(preceded(symbol(":"), |i| type_expr(full, i))),
-            ),
-            move |(expr, type_hint)| {
+            |i| postfix_expr(full, i), // Use postfix_expr to avoid infinite recursion with unary
+            move |expr| {
                 let end = position(full, input);
                 Expr {
                     kind: ExprKind::Cast {
                         expr: Box::new(expr),
-                        type_hint,
+                        type_hint: None,
                     },
                     span: Span::new(start, end),
                 }
@@ -776,16 +790,20 @@ fn block_element<'a>(full: &'a str, input: &'a str) -> PResult<'a, BlockElement>
                             | ExprKind::DoWhile { .. }
                             | ExprKind::Try { .. }
                             | ExprKind::Block(_)
+                            | ExprKind::Function(_)
                     )
                 }
 
                 let needs_semicolon = match &expr.kind {
                     // Direct control flow statements don't need semicolon
                     k if is_brace_terminated(k) => false,
-                    // Return/throw with brace-terminated expression don't need semicolon
-                    // e.g., return switch { } or return if (cond) { } else { }
+                    // Wrapper expressions with brace-terminated inner don't need semicolon
+                    // e.g., return switch { }, throw if (cond) { } else { },
+                    // untyped { ... }, macro { ... }
                     ExprKind::Return(Some(inner)) if is_brace_terminated(&inner.kind) => false,
                     ExprKind::Throw(inner) if is_brace_terminated(&inner.kind) => false,
+                    ExprKind::Untyped(inner) if is_brace_terminated(&inner.kind) => false,
+                    ExprKind::Macro(inner) if is_brace_terminated(&inner.kind) => false,
                     _ => true,
                 };
 

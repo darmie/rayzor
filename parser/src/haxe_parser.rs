@@ -44,6 +44,16 @@ enum ImportUsingOrConditional {
     Conditional(ConditionalCompilation<ImportOrUsing>),
 }
 
+/// Check if a filename represents an import.hx file (Haxe import defaults)
+/// Only the exact filename "import.hx" (lowercase) qualifies, not "notimport.hx" etc.
+fn is_import_hx_file(file_name: &str) -> bool {
+    let basename = file_name
+        .rsplit(|c: char| c == '/' || c == '\\')
+        .next()
+        .unwrap_or(file_name);
+    basename == "import.hx"
+}
+
 /// Parse a complete Haxe file
 pub fn parse_haxe_file(file_name: &str, input: &str, recovery: bool) -> Result<HaxeFile, String> {
     parse_haxe_file_with_debug(file_name, input, recovery, false)
@@ -56,13 +66,14 @@ pub fn parse_haxe_file_with_debug(
     recovery: bool,
     debug: bool,
 ) -> Result<HaxeFile, String> {
-    // Check if this is an import.hx file
-    let is_import_file = file_name.ends_with("import.hx")
-        || file_name.ends_with("/import.hx")
-        || file_name == "import.hx";
+    let is_import_file = is_import_hx_file(file_name);
+
+    // Preprocess to handle conditional compilation directives
+    let preprocessor_config = crate::preprocessor::PreprocessorConfig::default();
+    let preprocessed = crate::preprocessor::preprocess(input, &preprocessor_config);
 
     if recovery {
-        parse_haxe_file_with_enhanced_errors(input, file_name, is_import_file).map_err(
+        parse_haxe_file_with_enhanced_errors(&preprocessed, file_name, is_import_file).map_err(
             |(diagnostics, source_map)| {
                 let formatter = diagnostics::ErrorFormatter::with_colors();
                 formatter.format_diagnostics(&diagnostics, &source_map)
@@ -71,13 +82,16 @@ pub fn parse_haxe_file_with_debug(
     } else {
         // Use enhanced incremental parser with diagnostics for better error reporting
         let incremental_result =
-            crate::incremental_parser_enhanced::parse_incrementally_enhanced(file_name, input);
+            crate::incremental_parser_enhanced::parse_incrementally_enhanced(
+                file_name,
+                &preprocessed,
+            );
 
         // Convert enhanced result to HaxeFile
         convert_enhanced_incremental_to_haxe_file(
             incremental_result,
             file_name,
-            input,
+            &preprocessed,
             is_import_file,
             debug,
         )
@@ -123,17 +137,34 @@ fn convert_enhanced_incremental_to_haxe_file(
         }
     }
 
-    // For import.hx files, only imports are relevant
+    // For import.hx files, only imports and using statements are allowed
+    // See: https://haxe.org/manual/type-system-import-defaults.html
     if is_import_file {
+        if package.is_some() {
+            return Err(
+                "import.hx files cannot contain package declarations".to_string(),
+            );
+        }
+        if !declarations.is_empty() {
+            return Err(
+                "import.hx files cannot contain type declarations (class, interface, enum, etc.)"
+                    .to_string(),
+            );
+        }
+        if !module_fields.is_empty() {
+            return Err(
+                "import.hx files cannot contain module-level fields".to_string(),
+            );
+        }
         Ok(HaxeFile {
             filename: file_name.to_string(),
             input: if debug { Some(input.to_string()) } else { None },
             package: None,
             imports,
-            using: Vec::new(),
+            using,
             module_fields: Vec::new(),
             declarations: Vec::new(),
-            span: Span::default(),
+            span: Span::new(0, input.len()),
         })
     } else {
         // If we have errors but managed to parse some content, we can still return a partial result
@@ -146,7 +177,7 @@ fn convert_enhanced_incremental_to_haxe_file(
             using,
             module_fields,
             declarations,
-            span: Span::default(),
+            span: Span::new(0, input.len()),
         })
     }
 }
@@ -199,17 +230,33 @@ fn convert_incremental_to_haxe_file(
         }
     }
 
-    // For import.hx files, only imports are relevant
+    // For import.hx files, only imports and using statements are allowed
     if is_import_file {
+        if package.is_some() {
+            return Err(
+                "import.hx files cannot contain package declarations".to_string(),
+            );
+        }
+        if !declarations.is_empty() {
+            return Err(
+                "import.hx files cannot contain type declarations (class, interface, enum, etc.)"
+                    .to_string(),
+            );
+        }
+        if !module_fields.is_empty() {
+            return Err(
+                "import.hx files cannot contain module-level fields".to_string(),
+            );
+        }
         Ok(HaxeFile {
             filename: file_name.to_string(),
             input: if debug { Some(input.to_string()) } else { None },
             package: None,
             imports,
-            using: Vec::new(),
+            using,
             module_fields: Vec::new(),
             declarations: Vec::new(),
-            span: Span::default(),
+            span: Span::new(0, input.len()),
         })
     } else {
         // If we have errors but managed to parse some content, we can still return a partial result
@@ -221,7 +268,7 @@ fn convert_incremental_to_haxe_file(
             using,
             module_fields,
             declarations,
-            span: Span::default(),
+            span: Span::new(0, input.len()),
         })
     }
 }
@@ -265,9 +312,7 @@ pub fn parse_haxe_file_with_diagnostics(
     let preprocessed_source = crate::preprocessor::preprocess(input, &preprocessor_config);
 
     // Check if this is an import.hx file
-    let is_import_file = file_name.ends_with("import.hx")
-        || file_name.ends_with("/import.hx")
-        || file_name == "import.hx";
+    let is_import_file = is_import_hx_file(file_name);
 
     // Use enhanced incremental parser for better error recovery with diagnostics
     // Parse the preprocessed source instead of the original
@@ -1086,7 +1131,11 @@ pub fn keyword<'a>(kw: &'static str) -> impl FnMut(&'a str) -> PResult<'a, &'a s
     move |input| {
         let (input, _) = ws(input)?;
         let (input, word) = verify(
-            recognize(pair(tag(kw), peek(not(alphanumeric1)))),
+            recognize(pair(
+                tag(kw),
+                // Word boundary: keyword must not be followed by identifier characters
+                peek(not(alt((alphanumeric1, tag("_"))))),
+            )),
             |s: &str| s == kw,
         )
         .parse(input)?;
@@ -1411,8 +1460,8 @@ pub fn metadata_list<'a>(full: &'a str, input: &'a str) -> PResult<'a, Vec<Metad
 
 /// Parse single metadata: `@:native("foo")` or `@author("name")`
 fn metadata<'a>(full: &'a str, input: &'a str) -> PResult<'a, Metadata> {
-    let start = position(full, input);
     let (input, _) = ws(input)?;
+    let start = position(full, input);
     let (input, _) = char('@')(input)?;
     let (input, has_colon) = opt(char(':')).parse(input)?;
     let (input, name) = if has_colon.is_some() {
