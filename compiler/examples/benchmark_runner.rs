@@ -815,19 +815,46 @@ fn print_results(results: &[BenchmarkResult]) {
     println!();
 }
 
-fn save_results(suite: &BenchmarkSuite) -> Result<(), String> {
+fn save_results(suite: &BenchmarkSuite) -> Result<BenchmarkSuite, String> {
     let results_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/results");
     fs::create_dir_all(&results_dir).map_err(|e| format!("mkdir: {}", e))?;
 
     let filename = format!("results_{}.json", suite.date);
     let path = results_dir.join(&filename);
 
-    let json = serde_json::to_string_pretty(suite).map_err(|e| format!("serialize: {}", e))?;
+    // If a results file for today already exists, merge new benchmarks into it
+    let merged = if path.exists() {
+        let existing =
+            fs::read_to_string(&path).map_err(|e| format!("read existing results: {}", e))?;
+        let mut existing_suite: BenchmarkSuite =
+            serde_json::from_str(&existing).map_err(|e| format!("parse existing results: {}", e))?;
+
+        for new_bench in &suite.benchmarks {
+            if let Some(pos) = existing_suite
+                .benchmarks
+                .iter()
+                .position(|b| b.name == new_bench.name)
+            {
+                // Replace existing benchmark with updated results
+                existing_suite.benchmarks[pos] = new_bench.clone();
+            } else {
+                // Append new benchmark
+                existing_suite.benchmarks.push(new_bench.clone());
+            }
+        }
+
+        existing_suite
+    } else {
+        suite.clone()
+    };
+
+    let json =
+        serde_json::to_string_pretty(&merged).map_err(|e| format!("serialize: {}", e))?;
 
     fs::write(&path, json).map_err(|e| format!("write: {}", e))?;
     println!("Results saved to: {}", path.display());
 
-    Ok(())
+    Ok(merged)
 }
 
 fn generate_chart_html(suite: &BenchmarkSuite) -> Result<(), String> {
@@ -1196,11 +1223,15 @@ fn main() {
     println!("\n{}", "=".repeat(70));
     println!("Saving results...");
 
-    if let Err(e) = save_results(&suite) {
-        eprintln!("Failed to save results: {}", e);
-    }
+    let merged_suite = match save_results(&suite) {
+        Ok(merged) => merged,
+        Err(e) => {
+            eprintln!("Failed to save results: {}", e);
+            suite.clone()
+        }
+    };
 
-    if let Err(e) = generate_chart_html(&suite) {
+    if let Err(e) = generate_chart_html(&merged_suite) {
         eprintln!("Failed to generate charts: {}", e);
     }
 
@@ -1208,7 +1239,7 @@ fn main() {
         println!("\nJSON Output:");
         println!(
             "{}",
-            serde_json::to_string_pretty(&suite).unwrap_or_default()
+            serde_json::to_string_pretty(&merged_suite).unwrap_or_default()
         );
     }
 }
