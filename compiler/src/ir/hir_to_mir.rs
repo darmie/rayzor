@@ -212,6 +212,14 @@ struct SavedLoweringState {
     current_block: Option<IrBlockId>,
     symbol_map: HashMap<SymbolId, IrId>,
     current_env_layout: Option<EnvironmentLayout>,
+    // Drop tracking state - must be saved/restored to prevent lambda bodies
+    // from inheriting (and freeing) the parent function's owned values
+    owned_heap_values: HashMap<SymbolId, IrId>,
+    drop_scope_stack: Vec<Vec<(SymbolId, IrId)>>,
+    temp_heap_values: Vec<IrId>,
+    reassigned_in_scope: HashSet<SymbolId>,
+    current_drop_points: Option<DropPoints>,
+    current_stmt_index: usize,
 }
 
 impl<'a> HirToMirContext<'a> {
@@ -477,11 +485,16 @@ impl<'a> HirToMirContext<'a> {
                 TypeKind::GenericInstance { base_type, .. } => {
                     if let Some(base_info) = type_table.get(*base_type) {
                         if let Some(symbol_id) = base_info.symbol_id() {
-                            // Use SymbolFlags::EXTERN from the TypedAST - set during parsing
-                            // for all `extern class` declarations (Deque, Channel, Arc, Vec, etc.)
                             if let Some(symbol) = self.symbol_table.get_symbol(symbol_id) {
+                                // Use SymbolFlags::EXTERN from the TypedAST
                                 if symbol.flags.contains(SymbolFlags::EXTERN) {
                                     return DropBehavior::RuntimeManaged;
+                                }
+                                // Fallback: Check stdlib class name
+                                if let Some(class_name) = self.string_interner.get(symbol.name) {
+                                    if self.stdlib_mapping.is_stdlib_class(class_name) {
+                                        return DropBehavior::RuntimeManaged;
+                                    }
                                 }
                             }
                         }
@@ -497,6 +510,15 @@ impl<'a> HirToMirContext<'a> {
                     if let Some(symbol) = self.symbol_table.get_symbol(*symbol_id) {
                         if symbol.flags.contains(SymbolFlags::EXTERN) {
                             return DropBehavior::RuntimeManaged;
+                        }
+                        // Fallback: Check if it's a known stdlib class by name.
+                        // This handles cases where the EXTERN flag wasn't propagated
+                        // through the symbol table (e.g., stdlib types loaded via imports
+                        // where the local symbol doesn't carry the extern flag).
+                        if let Some(class_name) = self.string_interner.get(symbol.name) {
+                            if self.stdlib_mapping.is_stdlib_class(class_name) {
+                                return DropBehavior::RuntimeManaged;
+                            }
                         }
                     }
                     // User-defined (non-extern) classes need AutoDrop
@@ -1800,9 +1822,12 @@ impl<'a> HirToMirContext<'a> {
                         // Register heap-allocated value for drop tracking
                         // Only register AutoDrop types (user-defined classes), not RuntimeManaged
                         // extern types (Thread, Channel, Arc, Mutex) or NoDrop types
-                        if is_heap_alloc && self.type_needs_drop(init_expr.ty) {
-                            if let HirPattern::Variable { symbol, .. } = pattern {
-                                self.register_owned_value(*symbol, final_value);
+                        if is_heap_alloc {
+                            let needs_drop = self.type_needs_drop(init_expr.ty);
+                            if needs_drop {
+                                if let HirPattern::Variable { symbol, .. } = pattern {
+                                    self.register_owned_value(*symbol, final_value);
+                                }
                             }
                         }
                     }
@@ -10346,6 +10371,13 @@ impl<'a> HirToMirContext<'a> {
             current_block: self.builder.current_block,
             symbol_map: self.symbol_map.clone(),
             current_env_layout: self.current_env_layout.clone(),
+            // Save drop tracking state so lambda bodies don't inherit parent's owned values
+            owned_heap_values: self.owned_heap_values.clone(),
+            drop_scope_stack: self.drop_scope_stack.clone(),
+            temp_heap_values: self.temp_heap_values.clone(),
+            reassigned_in_scope: self.reassigned_in_scope.clone(),
+            current_drop_points: self.current_drop_points.clone(),
+            current_stmt_index: self.current_stmt_index,
         }
     }
 
@@ -10354,6 +10386,13 @@ impl<'a> HirToMirContext<'a> {
         self.builder.current_block = state.current_block;
         self.symbol_map = state.symbol_map;
         self.current_env_layout = state.current_env_layout;
+        // Restore drop tracking state
+        self.owned_heap_values = state.owned_heap_values;
+        self.drop_scope_stack = state.drop_scope_stack;
+        self.temp_heap_values = state.temp_heap_values;
+        self.reassigned_in_scope = state.reassigned_in_scope;
+        self.current_drop_points = state.current_drop_points;
+        self.current_stmt_index = state.current_stmt_index;
     }
 
     /// PASS 1: Create lambda skeleton with placeholder signature
@@ -10448,6 +10487,18 @@ impl<'a> HirToMirContext<'a> {
         self.builder.current_block = Some(entry_block);
         self.symbol_map.clear();
         self.current_env_layout = env_layout.clone();
+
+        // Clear drop tracking state for the lambda body.
+        // Lambda bodies are separate functions with their own register namespace.
+        // Without this, cleanup_all_scopes (called on return) would try to free
+        // the parent function's owned heap values using IrIds that refer to
+        // different registers in the lambda's context, causing heap corruption.
+        self.owned_heap_values.clear();
+        self.drop_scope_stack.clear();
+        self.temp_heap_values.clear();
+        self.reassigned_in_scope.clear();
+        self.current_drop_points = None;
+        self.current_stmt_index = 0;
 
         // Map lambda parameters to registers
         for (i, param) in params.iter().enumerate() {
