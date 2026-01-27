@@ -47,10 +47,7 @@ enum ImportUsingOrConditional {
 /// Check if a filename represents an import.hx file (Haxe import defaults)
 /// Only the exact filename "import.hx" (lowercase) qualifies, not "notimport.hx" etc.
 fn is_import_hx_file(file_name: &str) -> bool {
-    let basename = file_name
-        .rsplit(|c: char| c == '/' || c == '\\')
-        .next()
-        .unwrap_or(file_name);
+    let basename = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
     basename == "import.hx"
 }
 

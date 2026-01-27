@@ -4,8 +4,6 @@
 use parser::haxe_ast::*;
 use parser::parse_haxe_file;
 use parser::parse_haxe_file_with_diagnostics;
-use parser::Diagnostic;
-use parser::SourceMap;
 
 #[test]
 fn test_comprehensive_haxe_features() {
