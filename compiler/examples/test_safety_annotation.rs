@@ -36,7 +36,7 @@ fn main() {
 
     let source = r#"package test;
 
-// Regular class - uses garbage collection (default)
+// Regular class - uses runtime-managed memory (default)
 class ManagedClass {
     public var value:Int;
     public function new() {
@@ -44,7 +44,7 @@ class ManagedClass {
     }
 }
 
-// Explicitly managed class - uses garbage collection
+// Explicitly managed class - uses runtime-managed memory
 @:managed
 class ExplicitManagedClass {
     public var data:String;
@@ -123,7 +123,7 @@ class UniqueResource {
                     }
 
                     println!(
-                        "Classes using default garbage collection: {}",
+                        "Classes using default runtime-managed memory: {}",
                         managed_default
                     );
                     println!("Classes explicitly marked @:managed: {}", managed_explicit);
@@ -131,8 +131,8 @@ class UniqueResource {
 
                     if managed_default == 1 && managed_explicit == 1 && safety_classes == 2 {
                         println!("\n✅ All classes correctly categorized!");
-                        println!("   - ManagedClass uses GC (default)");
-                        println!("   - ExplicitManagedClass uses GC (@:managed)");
+                        println!("   - ManagedClass uses runtime-managed memory (default)");
+                        println!("   - ExplicitManagedClass uses runtime-managed memory (@:managed)");
                         println!("   - SafetyClass uses manual memory (@:safety)");
                         println!("   - UniqueResource uses manual memory (@:safety)");
                     } else {

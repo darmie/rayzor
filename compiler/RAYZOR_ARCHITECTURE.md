@@ -414,7 +414,7 @@ cargo run --release --example benchmark_bundle -- app.rzb
 **Benefits:**
 - Pattern matching knows enum discriminants
 - Reflection/RTTI available
-- GC can traverse object graphs
+- Runtime can traverse object graphs
 - Enables devirtualization
 
 **Implementation:** `IrTypeDef` system in `modules.rs`
@@ -475,7 +475,7 @@ Already have SSA infrastructure from `semantic_graph`:
 
 5. **Escape Analysis**
    - Stack-allocate non-escaping objects
-   - Reduce GC pressure
+   - Reduce heap allocation pressure
 
 ### Backend-Specific Optimizations
 
@@ -499,22 +499,22 @@ Already have SSA infrastructure from `semantic_graph`:
 
 ## Memory Management
 
-### Garbage Collection Strategy
+### Memory Management Strategy
 
-**Phase 1:** Conservative GC (Boehm GC)
-- Easy integration
-- Proven performance
-- No language changes needed
+Rayzor uses **ownership-based memory management** instead of garbage collection. The compiler performs compile-time analysis to determine when objects should be freed.
 
-**Phase 2:** Precise GC
-- Stack maps from MIR
-- Generational collection
-- Better performance for long-running apps
+**Ownership Model:**
+- `@:safety @:move` -- Move semantics (ownership transfer)
+- `@:safety @:unique` -- Unique ownership (no aliasing)
+- `@:safety @:rc` -- Reference counting (single-thread)
+- `@:safety @:arc` -- Atomic reference counting (thread-safe)
 
-**Phase 3:** Reference Counting (optional)
-- Deterministic cleanup
-- Better for resource management
-- Cycle collection for circular refs
+**Drop Analysis:**
+- `AutoDrop` -- Compiler inserts Free at last use (heap-allocated classes meeting drop conditions)
+- `RuntimeManaged` -- Runtime handles cleanup (Thread, Channel, Arc, Mutex)
+- `NoDrop` -- No cleanup needed (primitives, Dynamic)
+
+GC is only used for `Dynamic` types or objects with unknown compile-time sizes. See `MEMORY_MANAGEMENT.md` for full details.
 
 ### Object Layout
 
@@ -528,7 +528,7 @@ class Point {
 
 Native Layout (64-bit):
 ┌────────────┐
-│ GC Header  │ 8 bytes (type info, mark bits)
+│ Type Info  │ 8 bytes (type info, drop behavior)
 ├────────────┤
 │ vtable ptr │ 8 bytes (for virtual dispatch)
 ├────────────┤
@@ -729,7 +729,7 @@ See `IMPLEMENTATION_ROADMAP.md` for current status and next tasks.
 **Key areas needing work:**
 1. Cranelift backend (MIR → Cranelift IR)
 2. Runtime library (String, Array, etc.)
-3. Garbage collector integration
+3. Memory management and drop analysis
 4. Standard library bindings
 
 ---

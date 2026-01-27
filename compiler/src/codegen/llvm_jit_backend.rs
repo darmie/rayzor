@@ -1989,7 +1989,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 self.value_map.insert(*dest, val);
             }
             IrInstruction::EndBorrow { .. } => {
-                // End borrow is a no-op in LLVM (GC handles cleanup)
+                // End borrow is a no-op in LLVM (ownership system handles cleanup)
             }
             IrInstruction::Clone { dest, src } => {
                 // Clone is a copy in LLVM

@@ -773,7 +773,7 @@ impl HaxeCompilationPipeline {
                                                 });
                                             }
                                         } else {
-                                            // GC mode: no safety analysis was run anyway
+                                            // Default mode: no safety analysis was run anyway
                                             result.errors.extend(memory_safety_errors);
                                         }
 
@@ -2319,7 +2319,7 @@ impl HaxeCompilationPipeline {
         });
 
         if typed_file.program_safety_mode.is_none() && !uses_concurrency {
-            // Program uses GC and doesn't use threads, skip memory safety analysis
+            // Program uses default runtime-managed memory and doesn't use threads, skip memory safety analysis
             return errors;
         }
 

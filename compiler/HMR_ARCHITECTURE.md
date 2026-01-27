@@ -140,7 +140,7 @@ impl CraneliftBackend {
         self.function_map.insert(mir_func_id, new_func_id);
 
         // 3. Old version still exists for in-flight calls
-        // 4. Can GC old version later when safe
+        // 4. Can free old version later when safe
 
         Ok(())
     }
@@ -243,8 +243,8 @@ impl VersionedBackend {
         let new_funcid = self.compile(new_version);
         self.active_functions.insert(func_id, new_funcid);
 
-        // Schedule GC of old version after 100ms
-        schedule_gc(old_funcid, Duration::from_millis(100));
+        // Schedule cleanup of old version after 100ms
+        schedule_cleanup(old_funcid, Duration::from_millis(100));
     }
 }
 ```
@@ -321,7 +321,7 @@ impl HMRSystem {
 
 ### Memory Overhead
 - **function_map**: ~100 bytes per function
-- **Old versions**: Kept until GC (grace period)
+- **Old versions**: Kept until cleanup (grace period)
 - **Total**: Minimal overhead
 
 ### Runtime Overhead
@@ -366,7 +366,7 @@ Our approach: Works for any code, minimal overhead
 - [ ] Live object state migration
 - [ ] Version history and rollback
 - [ ] Smoke testing
-- [ ] GC for old function versions
+- [ ] Cleanup for old function versions
 
 ## Example: HMR in Action
 

@@ -59,7 +59,7 @@ pub struct TypedFile {
     pub metadata: FileMetadata,
 
     /// Program-level safety mode (determined by main class annotation)
-    /// None means GC runtime, Some(mode) means manual memory management
+    /// None means runtime-managed memory (default), Some(mode) means manual memory management
     pub program_safety_mode: Option<SafetyMode>,
 
     /// String interner for efficient string management throughout compilation
@@ -123,7 +123,7 @@ impl TypedFile {
     }
 
     /// Detect and set the program-level safety mode by checking for a Main class with @:safety annotation
-    /// Returns the detected safety mode (None for GC, Some(mode) for manual memory)
+    /// Returns the detected safety mode (None for default/runtime-managed, Some(mode) for manual memory)
     pub fn detect_program_safety_mode(&mut self) -> Option<SafetyMode> {
         // SIMPLIFIED APPROACH: Just find the first class with @:safety annotation
         // In practice, this should only be on the Main class anyway
@@ -325,7 +325,7 @@ pub enum MemoryAnnotation {
     /// - strict=false (default): Unannotated classes auto-wrapped in Rc
     SafetyWithMode(SafetyMode),
 
-    /// @:managed - Explicitly mark class as garbage collected (this is the default)
+    /// @:managed - Explicitly mark class as runtime-managed (this is the default)
     /// Use this to be explicit about memory management strategy
     Managed,
 
@@ -1492,13 +1492,13 @@ impl TypedClass {
             .any(|a| a.is_manual_memory_management())
     }
 
-    /// Check if this class is explicitly marked as @:managed (garbage collected)
+    /// Check if this class is explicitly marked as @:managed (runtime-managed memory)
     pub fn is_managed(&self) -> bool {
         self.memory_annotations.contains(&MemoryAnnotation::Managed)
     }
 
     /// Check if this class uses manual memory management
-    /// Returns true if @:safety is present, false if @:managed or no annotation (default is GC)
+    /// Returns true if @:safety is present, false if @:managed or no annotation (default is runtime-managed)
     pub fn uses_manual_memory(&self) -> bool {
         self.has_safety_annotation()
     }

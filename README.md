@@ -14,19 +14,21 @@
 
 **Rayzor** is a complete reimplementation of a Haxe compiler in Rust, designed for:
 
-- **High Performance**: Native compilation via Cranelift and LLVM
+- **High Performance**: Native compilation via Cranelift and LLVM backends
 - **Fast Compilation**: 50-200ms JIT compilation vs 2-5s C++ compilation
-- **Tiered JIT**: Adaptive optimization like V8, PyPy, and JVM HotSpot
-- **Production Ready**: AOT compilation to optimized native binaries
-- **Modern Architecture**: SSA-based analysis and optimization infrastructure
+- **Tiered JIT**: 5-tier adaptive optimization (Interpreter, Baseline, Standard, Optimized, LLVM)
+- **Ownership-Based Memory**: Rust-inspired ownership, lifetime analysis, and automatic drop insertion instead of garbage collection
+- **Incremental Compilation**: BLADE module cache and RayzorBundle (.rzb) single-file executables
+- **Modern Architecture**: SSA-based IR with optimization passes, monomorphization, and SIMD vectorization infrastructure
 
 ### What Makes Rayzor Different?
 
 Unlike the official Haxe compiler which excels at language transpilation (JavaScript, Python, PHP), **Rayzor focuses exclusively on native code generation**:
 
-- **Cranelift** for fast JIT compilation (cold paths)
-- **LLVM** for maximum optimization (hot paths + AOT)
-- **WebAssembly** for cross-platform deployment
+- **Cranelift** for fast JIT compilation (Tiers 0-2)
+- **LLVM** for maximum optimization (Tier 3 + AOT object files)
+- **MIR Interpreter** with NaN-boxing for instant startup (Tier 0)
+- **Ownership-based memory management** with compile-time drop analysis, not garbage collection
 
 **Not a goal:** Language transpilation - the official Haxe compiler already excels at this.
 
@@ -45,9 +47,14 @@ cargo build --release
 # Run tests
 cargo test
 
-# Compile a Haxe file (once backends are implemented)
-rayzor compile hello.hx --mode=jit
-rayzor compile hello.hx --mode=aot --optimize=3
+# Run a Haxe file with tiered JIT
+rayzor run hello.hx --preset application
+
+# Compile to native (shows MIR pipeline)
+rayzor compile hello.hx --stage native
+
+# Check syntax and types
+rayzor check hello.hx
 ```
 
 ---
@@ -57,82 +64,79 @@ rayzor compile hello.hx --mode=aot --optimize=3
 Rayzor implements a **multi-stage compilation pipeline** with sophisticated analysis and optimization:
 
 ```
-┌─────────────┐
-│ Haxe Source │
-└──────┬──────┘
-       │
-       ▼
+                    ┌─────────────┐
+                    │ Haxe Source │
+                    └──────┬──────┘
+                           │
+                           v
 ┌─────────────────────────────────────────────────────────┐
-│                  Parser (parser/ crate)                 │
-│  • Nom-based parser combinators                         │
-│  • Incremental parsing with error recovery              │
-│  • Precise source location tracking                     │
+│                  Parser (parser/ crate)                  │
+│  Nom-based combinators, incremental parsing,            │
+│  error recovery, precise source location tracking       │
 └────────────────────────┬────────────────────────────────┘
                          │
-                         ▼
+                         v
                    ┌──────────┐
-                   │   AST    │ (Abstract Syntax Tree)
+                   │   AST    │
                    └─────┬────┘
                          │
-                         ▼
+                         v
 ┌─────────────────────────────────────────────────────────┐
-│            Type Checker (compiler/src/tast/)            │
-│  • Symbol resolution & type inference                   │
-│  • Constraint solving & unification                     │
-│  • Type checking with rich diagnostics                  │
+│            Type Checker (compiler/src/tast/)             │
+│  Symbol resolution, type inference, constraint solving,  │
+│  generics, nullables, abstract types, send/sync traits  │
 └────────────────────────┬────────────────────────────────┘
                          │
-                         ▼
+                         v
                    ┌──────────┐
                    │   TAST   │ (Typed AST)
                    └─────┬────┘
                          │
-                         ▼
+                         v
 ┌─────────────────────────────────────────────────────────┐
-│      Semantic Analysis (compiler/src/semantic_graph/)   │
-│  • Control Flow Graph (CFG)                             │
-│  • Data Flow Graph (DFG) in SSA form                    │
-│  • Call Graph (inter-procedural)                        │
-│  • Ownership & Lifetime tracking                        │
-│  • TypeFlowGuard (flow-sensitive checking)              │
+│      Semantic Analysis (compiler/src/semantic_graph/)    │
+│  CFG, DFG (SSA), Call Graph, Ownership & Lifetime       │
+│  tracking, Escape Analysis, TypeFlowGuard               │
 └────────────────────────┬────────────────────────────────┘
                          │
-                         ▼
+                         v
                    ┌──────────┐
                    │   HIR    │ (High-level IR)
                    └─────┬────┘
-                         │ (TAST → HIR lowering)
-                         │ • Preserve language semantics
-                         │ • Attach optimization hints
+                         │  TAST -> HIR lowering (3,875 LOC)
+                         │  Preserve semantics + optimization hints
                          │
-                         ▼
+                         v
                    ┌──────────┐
                    │   MIR    │ (Mid-level IR - SSA form)
-                   └─────┬────┘  ✅ 98% Complete
-                         │ (HIR → MIR lowering)
-                         │ • Platform-independent IR
-                         │ • Optimization target
+                   └─────┬────┘
+                         │  HIR -> MIR lowering (12,994 LOC)
+                         │  Platform-independent SSA with phi nodes
+                         │  Optimization passes (DCE, const fold,
+                         │  copy prop, inlining, loop analysis)
                          │
-       ├─────────────────┼─────────────────┐
+       ┌─────────────────┼─────────────────┐
        │                 │                 │
-       ▼                 ▼                 ▼
+       v                 v                 v
 ┌────────────┐    ┌────────────┐    ┌────────────┐
-│ Cranelift  │    │    LLVM    │    │  WebAsm    │
-│ (JIT Cold) │    │ (Hot + AOT)│    │   (AOT)    │
-└─────┬──────┘    └─────┬──────┘    └─────┬──────┘
-      │ (tier-up)       │                 │
-      ▼                 ▼                 ▼
-┌────────────┐    ┌────────────┐    ┌────────────┐
-│    LLVM    │    │   Native   │    │   .wasm    │
-│   (Hot)    │    │   Binary   │    │   Module   │
+│ MIR Interp │    │ Cranelift  │    │    LLVM    │
+│  (Tier 0)  │    │(Tier 1-2)  │    │  (Tier 3)  │
+│  NaN-boxed │    │  JIT Fast  │    │  -O3 / AOT │
 └────────────┘    └────────────┘    └────────────┘
-      │                 │
-      └────────┬────────┘
-               ▼
-        ┌────────────┐
-        │   Native   │
-        │    Code    │
-        └────────────┘
+       │                 │                 │
+       └────────┬────────┘                 │
+                │                          │
+                v                          v
+         ┌────────────┐           ┌────────────┐
+         │   Native   │           │   Object   │
+         │    Code    │           │   Files    │
+         └────────────┘           └────────────┘
+                │
+                v
+         ┌────────────┐
+         │   BLADE    │ (.blade module cache)
+         │   RZB      │ (.rzb single-file bundle)
+         └────────────┘
 ```
 
 ### Key Components
@@ -140,13 +144,14 @@ Rayzor implements a **multi-stage compilation pipeline** with sophisticated anal
 #### 1. Parser (`parser/` crate)
 
 - **Technology**: Nom parser combinators for composability
-- **Features**: Incremental parsing, error recovery, precise source location tracking
+- **Features**: Incremental parsing, error recovery, precise source location tracking, enhanced diagnostics
 
 #### 2. Type Checker (`compiler/src/tast/`)
 
 - Bidirectional type checking with constraint-based type inference
 - Rich type system: Generics, nullables, abstract types, function types
-- Hierarchical symbol management with shadowing support
+- Send/Sync trait validation for concurrency safety
+- Memory annotations: `@:move`, `@:unique`, `@:borrow`, `@:owned`, `@:arc`, `@:rc`
 
 #### 3. Semantic Analysis (`compiler/src/semantic_graph/`)
 
@@ -155,26 +160,61 @@ Production-ready analysis infrastructure built in SSA form:
 - **Control Flow Graph (CFG)**: Basic blocks, dominance, loop detection
 - **Data Flow Graph (DFG)**: SSA form, def-use chains, value numbering
 - **Call Graph**: Inter-procedural analysis, recursion detection
-- **Ownership Graph**: Memory safety tracking (Rust-inspired)
+- **Ownership Graph**: Move semantics, borrow checking, aliasing violation detection
+- **Lifetime Analysis**: Constraint-based solver with region inference
+- **Escape Analysis**: Stack vs heap allocation optimization
 
 #### 4. HIR (High-level IR)
 
-Preserves high-level language features (closures, pattern matching, try-catch) with resolved symbols and optimization hints.
+Preserves high-level language features (closures, pattern matching, try-catch) with resolved symbols, optimization hints, and lambda capture modes (ByValue/ByRef/ByMutableRef).
 
-#### 5. MIR (Mid-level IR)
+#### 5. MIR (Mid-level IR) - ~31,000 LOC
 
-Platform-independent optimization target in SSA form with standard IR instructions, explicit control flow, type metadata, and string pooling.
+Platform-independent optimization target in full SSA form:
 
-#### 6. Cranelift Backend
+- **Instructions**: Value ops, memory ops (Alloc/Free/BorrowImmutable/BorrowMutable), closure ops (MakeClosure/CallIndirect), SIMD vector ops
+- **Optimization Passes**: Dead code elimination, constant folding, copy propagation, unreachable block elimination, control flow simplification
+- **Advanced Infrastructure**: Function inlining with cost model, loop analysis with trip count estimation, SIMD vectorization (V4F32, V2F64, V4I32)
+- **Validation**: Ownership state tracking, SSA invariants, borrow overlap detection
 
-JIT compilation backend with:
-- MIR → Cranelift IR translation
-- Runtime function calling (Thread, Channel, Mutex, Arc)
-- Monomorphization for generic type specialization
+#### 6. Code Generation Backends
 
-#### 7. Diagnostics System
+| Backend | Tier | Compilation | Speed | Status |
+|---------|------|-------------|-------|--------|
+| **MIR Interpreter** | 0 | Instant | ~5-10x native | Complete |
+| **Cranelift (none)** | 1 | ~3ms/function | ~15x native | Complete |
+| **Cranelift (speed)** | 2 | ~10ms/function | ~20x native | Complete |
+| **Cranelift (speed_and_size)** | 2 | ~30ms/function | ~25x native | Complete |
+| **LLVM (-O3)** | 3 | ~500ms/function | ~50x native | Complete |
 
-Rich error messages with source locations and suggestions.
+#### 7. Tiered JIT System
+
+HotSpot JVM-inspired adaptive compilation with safe tier promotion:
+
+- **PromotionBarrier**: Atomic function pointer replacement with execution draining
+- **Background Worker**: Async optimization on separate thread with Rayon parallelism
+- **Presets**: Script, Application, Server, Benchmark, Development, Embedded
+- **BailoutStrategy**: Configurable interpreter-to-JIT transition thresholds (10 to 10,000 block executions)
+
+#### 8. Incremental Compilation (BLADE)
+
+- **BLADE Cache** (`.blade`): Per-module binary cache with source hash validation and dependency tracking. ~30x faster incremental builds.
+- **RayzorBundle** (`.rzb`): Single-file executable format containing all compiled modules, symbol manifest for O(1) startup, and build metadata.
+
+#### 9. Memory Management
+
+Rayzor uses **ownership-based memory management** with compile-time analysis, not garbage collection:
+
+- **Drop Analysis**: Automatic `Free` insertion at last-use points with escape tracking
+- **Three Drop Behaviors**: AutoDrop (heap-allocated classes meeting drop conditions), RuntimeManaged (Thread/Arc/Channel), NoDrop (primitives)
+- **Ownership Tracking**: Move semantics, borrow checking, use-after-move detection
+- **Lifetime Analysis**: Constraint-based solver, region inference, inter-procedural analysis
+
+See [MEMORY_MANAGEMENT.md](MEMORY_MANAGEMENT.md) for the complete strategy.
+
+#### 10. Diagnostics System
+
+Rich error messages with source locations, suggestions, and error codes.
 
 ---
 
@@ -185,48 +225,48 @@ Rayzor supports **three compilation strategies** optimized for different use cas
 ### 1. Development Mode (JIT)
 
 ```bash
-rayzor dev --watch --hot-reload
+rayzor run main.hx --preset development
 ```
 
 - **Fast iteration**: 50-200ms compilation via Cranelift JIT
-- **Hot-reload**: Instant code updates without restart
+- **MIR Interpreter**: Instant startup for cold paths
 - **Good performance**: 15-25x interpreter speed
 - **Use case**: Rapid prototyping, development
 
 ### 2. JIT Runtime Mode (Tiered)
 
 ```bash
-rayzor run --jit --profile
+rayzor run main.hx --preset application
 ```
 
-- **Adaptive optimization**: Cranelift for cold paths, LLVM for hot paths
-- **Profile-guided**: Auto-detect hot functions (>5% runtime or >1000 calls)
+- **Adaptive optimization**: MIR interpreter -> Cranelift -> LLVM
+- **Profile-guided**: Auto-detect hot functions via execution counters
 - **Background compilation**: LLVM optimizes hot code while running
-- **Best of both**: Fast startup + maximum performance
+- **Safe promotion**: PromotionBarrier ensures atomic function pointer swap
 - **Use case**: Long-running applications, servers
 
 **Execution Flow:**
 ```
 Function First Call:
-  1. Compile with Cranelift (fast: ~50-200ms)
-  2. Execute and profile
-  3. If becomes hot → compile with LLVM in background (1-5s)
-  4. Swap to optimized version when ready
+  1. Interpret with NaN-boxed MIR interpreter (instant)
+  2. Profile execution via atomic counters
+  3. At threshold → compile with Cranelift (~3-30ms)
+  4. If stays hot → compile with LLVM in background (~500ms)
+  5. PromotionBarrier drains execution, swaps pointer atomically
 
-Result: 15-25x speed (cold) → 45-50x speed (hot)
+Result: Instant start → 15-25x (Cranelift) → 45-50x (LLVM)
 ```
 
 ### 3. AOT Production Mode
 
 ```bash
-rayzor build --aot --optimize=3 --target=native
-rayzor build --aot --target=wasm --optimize=size
+rayzor compile main.hx --stage native
 ```
 
-- **Maximum optimization**: LLVM -O3 for all code
-- **Single binary**: No runtime dependencies
-- **Cross-compilation**: x64, ARM, WASM targets
-- **Use case**: Production deployments, embedded systems
+- **LLVM -O3**: Maximum optimization for all code
+- **Object file generation**: `.o` files for system linker integration
+- **BLADE caching**: `--cache` flag for incremental builds
+- **Use case**: Production deployments, CI/CD pipelines
 
 ---
 
@@ -236,68 +276,144 @@ rayzor build --aot --target=wasm --optimize=size
 
 | Mode | Target | Goal | vs. Haxe/C++ |
 |------|--------|------|--------------|
-| **JIT** | Cranelift (cold) | 50-200ms/function | ~20x faster |
-| **JIT** | LLVM (hot) | 1-5s/function | Similar |
-| **AOT** | Cranelift | < 500ms | ~5x faster |
+| **JIT** | MIR Interpreter | Instant | N/A |
+| **JIT** | Cranelift (Tier 1) | ~3ms/function | ~100x faster |
+| **JIT** | Cranelift (Tier 2) | ~30ms/function | ~20x faster |
+| **JIT** | LLVM (Tier 3) | ~500ms/function | Similar |
 | **AOT** | LLVM | 10-30s | Similar |
-| **AOT** | WASM | 100-500ms | N/A |
 
 ### Runtime Performance
 
 | Target | Goal | Use Case |
 |--------|------|----------|
-| Cranelift (cold paths) | 15-25x interpreter | Fast startup |
-| LLVM (hot paths + AOT) | 45-50x interpreter | Maximum speed |
-| WASM | 30-40x interpreter | Browser/WASI |
-
-**Goal:** Match or exceed Haxe/C++ runtime performance with dramatically faster compilation.
+| MIR Interpreter | ~5-10x native | Instant startup |
+| Cranelift (Tiers 1-2) | 15-25x interpreter | Fast compilation |
+| LLVM (Tier 3 + AOT) | 45-50x interpreter | Maximum speed |
 
 ---
 
 ## Project Status
 
-### ✅ Completed (Production Ready)
+### Complete
 
-- **Parser**: Incremental parsing with error recovery
-- **Type Checker**: Full type inference and checking
-- **Semantic Graphs**: SSA/DFG/CFG/ownership analysis
-- **TypeFlowGuard**: Flow-sensitive safety checking
-- **HIR**: High-level IR with semantic preservation
-- **MIR**: Complete lowering pipeline with validation
-- **Cranelift Backend**: JIT compilation working
-- **Runtime**: Thread, Channel, Mutex, Arc concurrency primitives
-- **Generics**: Monomorphization with type specialization
+| Component | Coverage | LOC |
+|-----------|----------|-----|
+| Parser | ~95% | Incremental, error recovery, enhanced diagnostics |
+| Type Checker | ~85% | Inference, generics, abstract types, Send/Sync |
+| Semantic Analysis | ~90% | CFG, DFG/SSA, call graph, ownership, lifetime, escape |
+| HIR | ~95% | All Haxe features, lambda captures, optimization hints |
+| MIR | ~95% | Full SSA, phi nodes, 31k LOC across IR modules |
+| Optimization Passes | ~70% | 5 core passes + inlining, loop analysis, vectorization |
+| Cranelift Backend | ~90% | JIT compilation, 3 optimization levels, ARM64 support |
+| LLVM Backend | ~85% | -O3 optimization, object file generation |
+| MIR Interpreter | ~90% | NaN-boxing, all MIR instructions |
+| Tiered JIT | ~90% | 5 tiers, safe promotion, background worker, presets |
+| BLADE/RZB | ~80% | Module cache, bundle format, source hash validation |
+| Drop Analysis | ~85% | Last-use analysis, escape tracking, 3 drop behaviors |
+| Monomorphization | ~85% | Lazy instantiation, caching, recursive generics |
+| Runtime | ~80% | Thread, Channel, Mutex, Arc, Vec, String, Math, File I/O |
 
-### 🚧 In Progress
+### In Progress
 
-- **Generics**: Standard library generic types (Vec<T>, Option<T>)
-- **Optimization Passes**: DCE, constant folding, CSE
-- **LLVM Backend**: Hot path tier-up support
+- **AOT Binary Output**: Object file generation works via LLVM; full binary linking pipeline pending
+- **Standard Library Expansion**: Generic collections (Vec\<T\>, Option\<T\>, Result\<T,E\>)
+- **Optimization Tuning**: Tier promotion thresholds and bailout strategy profiling
 
-### 📋 Next Steps
+### Next Steps
 
-1. **Standard Library Expansion**
-   - Generic collections (Vec<T>, Map<K,V>)
-   - Option<T> and Result<T,E> types
-   - More I/O primitives
+1. **AOT Codegen Pipeline**: Integrate LLVM object file output with system linker for standalone binaries
+2. **WebAssembly Backend**: Direct WASM compilation target
+3. **IDE Support**: LSP server for editor integration
+4. **Full Haxe Standard Library**: Complete API coverage
 
-2. **LLVM Backend**
-   - MIR → LLVM IR translation
-   - Hot path tier-up support
-   - Full optimization pipeline
+---
 
-3. **WebAssembly** (Phase 3 - TBD)
-   - Direct WASM compilation
-   - WasmGC for object model
-   - Browser + WASI support
+## Incremental Compilation
+
+### BLADE Module Cache
+
+The **BLADE** (Blazing Language Artifact Deployment Environment) system provides per-module binary caching:
+
+```bash
+# Enable caching for incremental builds
+rayzor run main.hx --cache
+
+# Specify cache directory
+rayzor compile main.hx --cache --cache-dir ./build-cache
+
+# View cache statistics
+rayzor cache stats
+
+# Clear cache
+rayzor cache clear
+```
+
+**How it works:**
+- Each module is serialized to a `.blade` file using postcard binary format
+- Source file hash validates cache freshness (more reliable than timestamps)
+- Dependency tracking enables transitive cache invalidation
+- ~30x faster incremental builds for unchanged modules
+
+### RayzorBundle (.rzb)
+
+Single-file executable format for deployment:
+
+```
+┌─────────────────────────────────┐
+│ Header: RZBF magic, version     │
+│ Metadata: entry module/function │
+│ Module Table: name → offset     │
+│ Modules: serialized IrModules   │
+│ Symbol Manifest (optional)      │
+│ Build Info: compiler, platform  │
+└─────────────────────────────────┘
+```
+
+- **O(1) startup**: Entry module/function index stored in header
+- **Symbol Manifest**: Pre-resolved symbols eliminate re-parsing
+- **Reproducible**: Build info captures compiler version and platform
+
+See [BLADE_FORMAT_SPEC.md](BLADE_FORMAT_SPEC.md) and [RZB_FORMAT_SPEC.md](RZB_FORMAT_SPEC.md) for format details.
+
+---
+
+## Memory Management
+
+Rayzor uses **ownership-based memory management** instead of garbage collection. The compiler performs static analysis to determine when objects should be freed, inserting `Free` instructions at compile time.
+
+### Key Principles
+
+1. **Ownership Tracking**: Each heap allocation has a single owner. Ownership transfers via move semantics.
+2. **Drop Analysis**: The compiler identifies the last use of each variable and inserts `Free` after it.
+3. **Escape Analysis**: Objects that escape their scope (returned, captured by lambdas) are not freed prematurely.
+4. **Three Drop Behaviors**:
+   - `AutoDrop` - Heap-allocated classes: compiler inserts `Free` when drop conditions are met
+   - `RuntimeManaged` - Concurrency types (Thread, Arc, Channel): runtime handles cleanup
+   - `NoDrop` - Primitives and Dynamic values: no cleanup needed
+
+### Opt-In Annotations
+
+```haxe
+@:move class UniqueResource { ... }     // Move semantics, no aliasing
+@:arc class SharedState { ... }          // Atomic reference counting
+@:derive([Send, Sync]) class Data { ... } // Thread-safe marker traits
+```
+
+GC is reserved only for `Dynamic` typed values or types whose size cannot be determined at compile time.
+
+See [MEMORY_MANAGEMENT.md](MEMORY_MANAGEMENT.md) for the complete strategy.
 
 ---
 
 ## Documentation
 
+- **[MEMORY_MANAGEMENT.md](MEMORY_MANAGEMENT.md)** - Memory management strategy (ownership, lifetimes, drops)
 - **[ARCHITECTURE.md](compiler/ARCHITECTURE.md)** - Complete system architecture
 - **[SSA_ARCHITECTURE.md](compiler/SSA_ARCHITECTURE.md)** - SSA integration details
 - **[RAYZOR_ARCHITECTURE.md](compiler/RAYZOR_ARCHITECTURE.md)** - Vision, roadmap, tiered JIT
+- **[BLADE_FORMAT_SPEC.md](BLADE_FORMAT_SPEC.md)** - BLADE module cache format
+- **[RZB_FORMAT_SPEC.md](RZB_FORMAT_SPEC.md)** - RayzorBundle executable format
+- **[RUNTIME_ARCHITECTURE.md](RUNTIME_ARCHITECTURE.md)** - Runtime library and extern functions
 - **[BACKLOG.md](BACKLOG.md)** - Feature backlog and progress tracking
 
 ---
@@ -307,7 +423,7 @@ rayzor build --aot --target=wasm --optimize=size
 ### 1. Correctness First
 
 ```
-Correctness → Safety → Clarity → Performance
+Correctness -> Safety -> Clarity -> Performance
 ```
 
 The compiler prioritizes generating correct code. Performance optimizations come after correctness is proven.
@@ -318,22 +434,27 @@ Each layer has a single, well-defined responsibility. Information flows forward 
 
 ### 3. Analysis as Infrastructure
 
-Complex analyses (SSA, CFG, DFG, ownership) are built once and queried by multiple passes. This enables sophisticated optimizations without code duplication.
+Complex analyses (SSA, CFG, DFG, ownership, lifetime, escape) are built once and queried by multiple passes. This enables sophisticated optimizations without code duplication.
 
-### 4. Incremental Everything
+### 4. Ownership Over GC
+
+Memory is managed through compile-time ownership analysis and automatic drop insertion. Garbage collection is not used for statically-typed code. Only `Dynamic` values or types with unknown compile-time sizes fall back to runtime-managed memory.
+
+### 5. Incremental Everything
 
 Support incremental operations at every level:
 - Incremental parsing (re-parse only changed regions)
 - Incremental type checking (re-check only affected code)
 - Incremental analysis (re-analyze only dependencies)
 - Incremental codegen (re-generate only changed functions)
+- BLADE cache (skip unchanged modules entirely)
 
-### 5. Developer Experience
+### 6. Developer Experience
 
-- **Fast feedback**: 50-200ms JIT compilation
+- **Fast feedback**: Instant MIR interpretation, 3-30ms Cranelift JIT
 - **Rich diagnostics**: Helpful error messages with suggestions
-- **Hot-reload**: Instant code updates during development
-- **Modern tooling**: IDE support, debugging, profiling
+- **Tiered presets**: Script, Application, Server, Development, Embedded
+- **Modern tooling**: Profiling, caching, bundle deployment
 
 ---
 
@@ -342,23 +463,16 @@ Support incremental operations at every level:
 | Feature | Haxe (official) | Rayzor |
 |---------|-----------------|--------|
 | **Language Support** | Full Haxe 4.x | Haxe 4.x (in progress) |
-| **JS/Python/PHP** | ✅ Excellent | ❌ Not a goal |
-| **C++ Target** | ✅ Slow compile, fast runtime | 🎯 Fast compile, fast runtime |
-| **Native Perf** | ~1.0x baseline | 🎯 45-50x interpreter (LLVM) |
-| **Compile Speed** | 2-5s (C++) | 🎯 50-200ms (Cranelift JIT) |
-| **JIT Runtime** | ❌ No | ✅ Tiered (Cranelift→LLVM) |
-| **Hot Path Optimization** | ❌ No | ✅ Profile-guided tier-up |
-| **WASM** | ⚠️ Via C++ | ✅ Direct native target |
-| **Type Checking** | Production | ✅ Production (0 errors) |
-| **Optimizations** | Backend-specific | ✅ SSA-based (universal) |
-
-### Rayzor's Niche
-
-- **Instant iteration**: 50-200ms JIT vs 2-5s C++ compilation
-- **Adaptive optimization**: Auto-optimize hot paths like V8, PyPy, JVM HotSpot
-- **Native performance**: Match C++ speed without compile-time cost
-- **Cross-platform**: Direct WASM target for browser, WASI, edge
-- **Modern runtime**: Tiered JIT with profile-guided optimization
+| **JS/Python/PHP** | Excellent | Not a goal |
+| **C++ Target** | Slow compile, fast runtime | Fast compile, fast runtime |
+| **Native Perf** | ~1.0x baseline | 45-50x interpreter (LLVM) |
+| **Compile Speed** | 2-5s (C++) | ~3ms (Cranelift Tier 1) |
+| **JIT Runtime** | No | 5-tier (Interp->Cranelift->LLVM) |
+| **Hot Path Optimization** | No | Profile-guided tier-up |
+| **Memory Model** | Garbage collected | Ownership-based (compile-time) |
+| **Incremental Builds** | Limited | BLADE cache (~30x speedup) |
+| **Type Checking** | Production | Production |
+| **Optimizations** | Backend-specific | SSA-based (universal) |
 
 ---
 
@@ -383,7 +497,7 @@ Rayzor is under active development. Contributions are welcome!
 3. **Read the architecture docs**:
    - Start with [ARCHITECTURE.md](compiler/ARCHITECTURE.md)
    - Understand SSA integration in [SSA_ARCHITECTURE.md](compiler/SSA_ARCHITECTURE.md)
-   - Review the roadmap in [RAYZOR_ARCHITECTURE.md](compiler/RAYZOR_ARCHITECTURE.md)
+   - Review memory management in [MEMORY_MANAGEMENT.md](MEMORY_MANAGEMENT.md)
 
 ### Development Workflow
 
@@ -397,26 +511,34 @@ See [ARCHITECTURE.md](compiler/ARCHITECTURE.md#contributing) for:
 
 ## Roadmap
 
-### ✅ Completed
+### Complete
 
-- Complete MIR lowering pipeline
-- Cranelift JIT backend with native code execution
-- Concurrency runtime (Thread, Channel, Mutex, Arc)
-- Generics with monomorphization
+- Full MIR lowering pipeline (TAST -> HIR -> MIR) with SSA, phi nodes, validation
+- 5 optimization passes (DCE, constant folding, copy propagation, unreachable block elimination, control flow simplification)
+- Advanced optimization infrastructure (function inlining, loop analysis, SIMD vectorization)
+- Cranelift JIT backend with 3 optimization levels
+- LLVM backend with -O3 optimization and object file generation
+- MIR interpreter with NaN-boxing optimization
+- 5-tier JIT system with safe promotion barrier and background optimization
+- BLADE module cache and RayzorBundle (.rzb) format
+- Drop analysis with last-use tracking and escape analysis
+- Monomorphization with lazy instantiation and caching
+- Concurrency runtime (Thread, Channel, Mutex, Arc) with Send/Sync validation
+- Pure Rust runtime (~250 extern symbols: String, Array, Math, File I/O, Vec, Collections)
 
-### 🚧 Near-term
+### Near-term
 
-- Generic stdlib types (Vec<T>, Option<T>, Result<T,E>)
-- Optimization pipeline (DCE, CSE, inlining)
-- LLVM backend for hot path tier-up
+- AOT binary output pipeline (LLVM object files -> system linker -> standalone executable)
+- Generic stdlib types (Vec\<T\>, Option\<T\>, Result\<T,E\>)
+- Optimization pass tuning and benchmarking
 
-### 🎯 Medium-term
+### Medium-term
 
-- WebAssembly target (browser + WASI)
+- WebAssembly compilation target (browser + WASI)
 - Full Haxe standard library coverage
 - IDE support (LSP server)
 
-### 🔮 Long-term
+### Long-term
 
 - Production-ready for real projects
 - Performance parity with Haxe/C++
@@ -441,9 +563,9 @@ Apache License 2.0 - See [LICENSE](LICENSE) file for details
 
 ## Contact
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/rayzor/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/rayzor/discussions)
+- **Issues**: [GitHub Issues](https://github.com/darmie/rayzor/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/darmie/rayzor/discussions)
 
 ---
 
-**Rayzor**: Fast compilation, native performance, modern architecture. The future of Haxe compilation.
+**Rayzor**: Fast compilation, native performance, ownership-based memory. The future of Haxe compilation.

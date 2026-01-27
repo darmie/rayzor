@@ -13,7 +13,7 @@ This document outlines performance optimization opportunities identified in the 
 - Type parameter processing
 - Symbol name handling
 
-**Impact**: High memory allocation pressure and GC overhead
+**Impact**: High memory allocation pressure and allocator overhead
 
 **Solution**:
 - Maximize use of `InternedString` throughout the codebase

@@ -229,7 +229,7 @@ std::alloc::Global:
 - ✅ Uses platform-specific optimized allocators
 
 ### 5. Extensible
-- ✅ Easy to add GC support later
+- ✅ Ownership-based memory management (no GC for typed code)
 - ✅ Can swap allocators (arena, pool, etc.)
 - ✅ Runtime can provide other services (reflection, etc.)
 
@@ -297,12 +297,12 @@ Tests Vec<u8> through full pipeline:
 
 ## Future Enhancements
 
-### 1. Garbage Collection
-Add GC support alongside manual memory management:
+### 1. Dynamic Type Runtime Management
+For `Dynamic` types and objects with unknown compile-time sizes, provide runtime-managed allocation:
 
 ```rust
-rayzor_gc_alloc(size) -> *u8  // GC-managed allocation
-rayzor_gc_collect()           // Force collection
+rayzor_dynamic_alloc(size) -> *u8  // Runtime-managed allocation for Dynamic types
+rayzor_dynamic_release(ptr)        // Release when refcount reaches zero
 ```
 
 ### 2. Arena Allocators

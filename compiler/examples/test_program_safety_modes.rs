@@ -35,7 +35,7 @@ use compiler::pipeline::compile_haxe_source;
 fn main() {
     println!("=== Program Safety Modes Test ===\n");
 
-    test_gc_mode();
+    test_default_mode();
     test_non_strict_mode();
     test_strict_mode_valid();
     test_strict_mode_invalid();
@@ -43,9 +43,9 @@ fn main() {
     println!("\n✅ All program safety mode tests completed!");
 }
 
-/// Test 1: No @:safety on Main = GC mode (default)
-fn test_gc_mode() {
-    println!("Test 1: GC Mode (no @:safety on Main)");
+/// Test 1: No @:safety on Main = runtime-managed mode (default)
+fn test_default_mode() {
+    println!("Test 1: Default Mode (no @:safety on Main)");
     let source = r#"
         class Main {
             static function main() {
@@ -64,10 +64,10 @@ fn test_gc_mode() {
         let safety_mode = typed_file.get_program_safety_mode();
         assert!(
             safety_mode.is_none(),
-            "Expected GC mode (None), got {:?}",
+            "Expected default mode (None), got {:?}",
             safety_mode
         );
-        println!("  ✅ Program uses GC (no manual memory management)");
+        println!("  ✅ Program uses runtime-managed memory (no manual memory management)");
     } else {
         println!("  ❌ Failed to compile");
     }

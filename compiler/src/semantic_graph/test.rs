@@ -846,7 +846,7 @@ mod integration_tests {
             module_fields: vec![],
             using_statements: vec![],
             string_interner: Rc::new(RefCell::new(StringInterner::new())),
-            program_safety_mode: None, // Tests use GC by default
+            program_safety_mode: None, // Tests use default runtime-managed mode
         };
 
         let cfgs = builder.build_file(&file).unwrap();
