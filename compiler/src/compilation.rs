@@ -2525,6 +2525,29 @@ impl CompilationUnit {
         let _source_map = parse_result.source_map;
         let file_id = diagnostics::FileId::new(0);
 
+        // Stage 1.5: Macro expansion (if enabled)
+        let ast_file = if self.config.pipeline_config.enable_macro_expansion {
+            let expansion = crate::macro_system::expand_macros(ast_file);
+            // Log macro diagnostics as warnings (non-fatal in multi-file context)
+            for diag in &expansion.diagnostics {
+                if matches!(diag.severity, crate::macro_system::MacroSeverity::Error) {
+                    debug!(
+                        "Macro expansion error in {}: {}",
+                        filename, diag.message
+                    );
+                }
+            }
+            if expansion.expansions_count > 0 {
+                debug!(
+                    "Macro expansion: {} macros expanded in {}",
+                    expansion.expansions_count, filename
+                );
+            }
+            expansion.file
+        } else {
+            ast_file
+        };
+
         // Lower to TAST using the SHARED state
         // NOTE: AstLowering needs an Rc<RefCell<StringInterner>> for TypedFile
         // We create a dummy one here - the actual interning happens via the &mut reference

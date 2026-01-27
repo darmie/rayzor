@@ -83,6 +83,19 @@ Rayzor implements a **multi-stage compilation pipeline** with sophisticated anal
                          │
                          v
 ┌─────────────────────────────────────────────────────────┐
+│       Macro Expansion (compiler/src/macro_system/)       │
+│  Tree-walking interpreter, reification ($v,$i,$e,$a,     │
+│  $p,$b), @:build/@:autoBuild, Context API, registry     │
+└────────────────────────┬────────────────────────────────┘
+                         │
+                         v
+                   ┌──────────┐
+                   │ Expanded │
+                   │   AST    │
+                   └─────┬────┘
+                         │
+                         v
+┌─────────────────────────────────────────────────────────┐
 │            Type Checker (compiler/src/tast/)             │
 │  Symbol resolution, type inference, constraint solving,  │
 │  generics, nullables, abstract types, send/sync traits  │
@@ -147,14 +160,24 @@ Rayzor implements a **multi-stage compilation pipeline** with sophisticated anal
 - **Technology**: Nom parser combinators for composability
 - **Features**: Incremental parsing, error recovery, precise source location tracking, enhanced diagnostics
 
-#### 2. Type Checker (`compiler/src/tast/`)
+#### 2. Macro System (`compiler/src/macro_system/`)
+
+- **Tree-walking interpreter** for compile-time macro function evaluation
+- **Reification engine**: `$v{}`, `$i{}`, `$e{}`, `$a{}`, `$p{}`, `$b{}` dollar-identifier splicing
+- **Build macros**: `@:build` and `@:autoBuild` metadata-driven class field generation
+- **Context API**: `haxe.macro.Context` methods (error, getType, getBuildFields, defineType, parse)
+- **Pipeline integration**: Expansion stage between parsing and type checking
+- **Error recovery**: Per-field error handling preserves original AST on failure
+- **Expansion origin tracking**: Traces errors through macro expansions to call sites
+
+#### 3. Type Checker (`compiler/src/tast/`)
 
 - Bidirectional type checking with constraint-based type inference
 - Rich type system: Generics, nullables, abstract types, function types
 - Send/Sync trait validation for concurrency safety
 - Memory annotations: `@:move`, `@:unique`, `@:borrow`, `@:owned`, `@:arc`, `@:rc`
 
-#### 3. Semantic Analysis (`compiler/src/semantic_graph/`)
+#### 4. Semantic Analysis (`compiler/src/semantic_graph/`)
 
 Production-ready analysis infrastructure built in SSA form:
 
@@ -165,11 +188,11 @@ Production-ready analysis infrastructure built in SSA form:
 - **Lifetime Analysis**: Constraint-based solver with region inference
 - **Escape Analysis**: Stack vs heap allocation optimization
 
-#### 4. HIR (High-level IR)
+#### 5. HIR (High-level IR)
 
 Preserves high-level language features (closures, pattern matching, try-catch) with resolved symbols, optimization hints, and lambda capture modes (ByValue/ByRef/ByMutableRef).
 
-#### 5. MIR (Mid-level IR) - ~31,000 LOC
+#### 6. MIR (Mid-level IR) - ~31,000 LOC
 
 Platform-independent optimization target in full SSA form:
 
@@ -178,7 +201,7 @@ Platform-independent optimization target in full SSA form:
 - **Advanced Infrastructure**: Function inlining with cost model, loop analysis with trip count estimation, SIMD vectorization (V4F32, V2F64, V4I32)
 - **Validation**: Ownership state tracking, SSA invariants, borrow overlap detection
 
-#### 6. Code Generation Backends
+#### 7. Code Generation Backends
 
 | Backend | Tier | Compilation | Speed | Status |
 |---------|------|-------------|-------|--------|
@@ -188,7 +211,7 @@ Platform-independent optimization target in full SSA form:
 | **Cranelift (speed_and_size)** | 2 | ~30ms/function | ~25x native | Complete |
 | **LLVM (-O3)** | 3 | ~500ms/function | ~50x native | Complete |
 
-#### 7. Tiered JIT System
+#### 8. Tiered JIT System
 
 HotSpot JVM-inspired adaptive compilation with safe tier promotion:
 
@@ -197,12 +220,12 @@ HotSpot JVM-inspired adaptive compilation with safe tier promotion:
 - **Presets**: Script, Application, Server, Benchmark, Development, Embedded
 - **BailoutStrategy**: Configurable interpreter-to-JIT transition thresholds (10 to 10,000 block executions)
 
-#### 8. Incremental Compilation (BLADE)
+#### 9. Incremental Compilation (BLADE)
 
 - **BLADE Cache** (`.blade`): Per-module binary cache with source hash validation and dependency tracking. ~30x faster incremental builds.
 - **RayzorBundle** (`.rzb`): Single-file executable format containing all compiled modules, symbol manifest for O(1) startup, and build metadata.
 
-#### 9. Memory Management
+#### 10. Memory Management
 
 Rayzor uses **ownership-based memory management** with compile-time analysis, not garbage collection:
 
@@ -213,7 +236,7 @@ Rayzor uses **ownership-based memory management** with compile-time analysis, no
 
 See [MEMORY_MANAGEMENT.md](MEMORY_MANAGEMENT.md) for the complete strategy.
 
-#### 10. Diagnostics System
+#### 11. Diagnostics System
 
 Rich error messages with source locations, suggestions, and error codes.
 
@@ -312,6 +335,7 @@ rayzor compile main.hx --stage native
 | BLADE/RZB | ~80% | Module cache, bundle format, source hash validation |
 | Drop Analysis | ~85% | Last-use analysis, escape tracking, 3 drop behaviors |
 | Monomorphization | ~85% | Lazy instantiation, caching, recursive generics |
+| Macro System | ~85% | Interpreter, reification, @:build/@:autoBuild, Context API |
 | Runtime | ~80% | Thread, Channel, Mutex, Arc, Vec, String, Math, File I/O |
 
 ### In Progress
@@ -473,6 +497,7 @@ Support incremental operations at every level:
 | **Memory Model** | Garbage collected | Ownership-based (compile-time) |
 | **Incremental Builds** | Limited | BLADE cache (~30x speedup) |
 | **Type Checking** | Production | Production |
+| **Macro System** | Full (eval-based) | Interpreter, reification, @:build |
 | **Optimizations** | Backend-specific | SSA-based (universal) |
 
 ---
@@ -526,6 +551,7 @@ See [ARCHITECTURE.md](compiler/ARCHITECTURE.md#contributing) for:
 - Monomorphization with lazy instantiation and caching
 - Concurrency runtime (Thread, Channel, Mutex, Arc) with Send/Sync validation
 - Pure Rust runtime (~250 extern symbols: String, Array, Math, File I/O, Vec, Collections)
+- Compile-time macro system: tree-walking interpreter, reification engine ($v/$i/$e/$a/$p/$b), @:build/@:autoBuild, Context API, pipeline integration
 
 ### Near-term
 
