@@ -255,6 +255,10 @@ register_symbol!(
     crate::type_system::haxe_enum_variant_name
 );
 register_symbol!("haxe_trace_enum", crate::type_system::haxe_trace_enum);
+register_symbol!(
+    "haxe_trace_enum_boxed",
+    crate::type_system::haxe_trace_enum_boxed
+);
 
 // Std.string() - Type-specific conversions
 register_symbol!(

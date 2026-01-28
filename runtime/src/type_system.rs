@@ -76,6 +76,17 @@ pub struct StringPtr {
     pub len: usize,
 }
 
+/// Parameter type tag for RTTI
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ParamType {
+    Int = 0,    // i64
+    Float = 1,  // f64
+    Bool = 2,   // bool
+    String = 3, // HaxeString pointer
+    Object = 4, // Generic pointer
+}
+
 /// Enum variant metadata
 #[derive(Clone)]
 pub struct EnumVariantInfo {
@@ -83,7 +94,8 @@ pub struct EnumVariantInfo {
     pub name: &'static str,
     /// Number of parameters (0 for simple variants like Color.Red)
     pub param_count: usize,
-    // TODO: Add parameter type info for full RTTI
+    /// Parameter types for this variant (empty for parameterless variants)
+    pub param_types: &'static [ParamType],
 }
 
 /// Enum type metadata
@@ -287,9 +299,12 @@ pub extern "C" fn haxe_register_enum(
 // Simpler per-variant registration API (easier to call from generated code)
 // ============================================================================
 
+/// Variant data collected during registration: (name, param_count, param_types)
+type EnumVariantBuilder = (String, usize, Vec<ParamType>);
+
 /// Storage for enum registrations in progress
-/// Maps type_id -> (enum_name, variant_names, expected_count)
-static ENUM_BUILDER: RwLock<Option<HashMap<u32, (String, Vec<(String, usize)>, usize)>>> =
+/// Maps type_id -> (enum_name, variants, expected_count)
+static ENUM_BUILDER: RwLock<Option<HashMap<u32, (String, Vec<EnumVariantBuilder>, usize)>>> =
     RwLock::new(None);
 
 /// Start registering an enum type - call this first, then call register_enum_variant for each variant
@@ -316,15 +331,16 @@ pub extern "C" fn haxe_register_enum_start(
         if builder.is_none() {
             *builder = Some(HashMap::new());
         }
-        builder
-            .as_mut()
-            .unwrap()
-            .insert(type_id, (name, Vec::with_capacity(variant_count), variant_count));
+        builder.as_mut().unwrap().insert(
+            type_id,
+            (name, Vec::with_capacity(variant_count), variant_count),
+        );
     }
 }
 
 /// Register a single enum variant - call after register_enum_start for each variant
 /// Note: name_str is a HaxeString pointer (from IrValue::String), not raw *const u8
+/// param_types_ptr: pointer to array of ParamType (u8), or null if no params
 #[no_mangle]
 pub extern "C" fn haxe_register_enum_variant(
     type_id: u32,
@@ -332,6 +348,7 @@ pub extern "C" fn haxe_register_enum_variant(
     name_str: *const crate::string::HaxeString,
     _name_len: usize, // Kept for ABI compatibility, but we use HaxeString.len
     param_count: usize,
+    param_types_ptr: *const u8, // Array of ParamType (u8) values
 ) {
     unsafe {
         // Extract the actual string data from HaxeString
@@ -343,10 +360,27 @@ pub extern "C" fn haxe_register_enum_variant(
             String::from_utf8_lossy(name_slice).to_string()
         };
 
+        // Extract param types
+        let param_types: Vec<ParamType> = if param_types_ptr.is_null() || param_count == 0 {
+            Vec::new()
+        } else {
+            let types_slice = std::slice::from_raw_parts(param_types_ptr, param_count);
+            types_slice
+                .iter()
+                .map(|&t| match t {
+                    0 => ParamType::Int,
+                    1 => ParamType::Float,
+                    2 => ParamType::Bool,
+                    3 => ParamType::String,
+                    _ => ParamType::Object,
+                })
+                .collect()
+        };
+
         let mut builder = ENUM_BUILDER.write().unwrap();
         if let Some(ref mut map) = *builder {
             if let Some((_, variants, _)) = map.get_mut(&type_id) {
-                variants.push((name, param_count));
+                variants.push((name, param_count, param_types));
             }
         }
     }
@@ -365,13 +399,15 @@ pub extern "C" fn haxe_register_enum_finish(type_id: u32) {
             // Build static variant info array
             let variant_infos: Vec<EnumVariantInfo> = variants
                 .into_iter()
-                .map(|(name, param_count)| EnumVariantInfo {
+                .map(|(name, param_count, param_types)| EnumVariantInfo {
                     name: Box::leak(name.into_boxed_str()),
                     param_count,
+                    param_types: Box::leak(param_types.into_boxed_slice()),
                 })
                 .collect();
 
-            let variants_static: &'static [EnumVariantInfo] = Box::leak(variant_infos.into_boxed_slice());
+            let variants_static: &'static [EnumVariantInfo] =
+                Box::leak(variant_infos.into_boxed_slice());
 
             let enum_info = Box::leak(Box::new(EnumInfo {
                 name: enum_name_static,
@@ -388,8 +424,12 @@ pub extern "C" fn haxe_register_enum_finish(type_id: u32) {
 
             register_type(TypeId(type_id), type_info);
 
-            debug!("Registered enum '{}' with {} variants at type_id {}",
-                   enum_name_static, variants_static.len(), type_id);
+            debug!(
+                "Registered enum '{}' with {} variants at type_id {}",
+                enum_name_static,
+                variants_static.len(),
+                type_id
+            );
         }
     }
 }
@@ -444,6 +484,87 @@ pub extern "C" fn haxe_trace_enum(type_id: i64, discriminant: i64) {
     } else {
         // Fallback to discriminant if enum not registered
         println!("{}", discriminant);
+    }
+}
+
+/// Trace a boxed enum value (heap-allocated with parameters)
+/// Memory layout: [tag:i32][pad:i32][field0:i64][field1:i64]...
+/// Prints "VariantName(param1, param2, ...)" format
+#[no_mangle]
+pub extern "C" fn haxe_trace_enum_boxed(type_id: u32, ptr: *const u8) {
+    if ptr.is_null() {
+        println!("null");
+        return;
+    }
+
+    unsafe {
+        // Read tag (discriminant) from offset 0
+        let tag = *(ptr as *const i32);
+
+        // Look up variant info from RTTI
+        let variant_info = match get_enum_variant_info(TypeId(type_id), tag as i64) {
+            Some(info) => info,
+            None => {
+                // Fallback if enum not registered
+                println!("<enum {}::{}>", type_id, tag);
+                return;
+            }
+        };
+
+        let variant_name = variant_info.name;
+        let param_count = variant_info.param_count;
+        let param_types = variant_info.param_types;
+
+        if param_count == 0 {
+            println!("{}", variant_name);
+        } else {
+            print!("{}(", variant_name);
+            for i in 0..param_count {
+                if i > 0 {
+                    print!(", ");
+                }
+                // Read field at offset 8 + i * 8
+                let field_ptr = ptr.add(8 + i * 8);
+
+                // Get param type (default to Int if not available)
+                let param_type = param_types.get(i).copied().unwrap_or(ParamType::Int);
+
+                match param_type {
+                    ParamType::Int => {
+                        let val = *(field_ptr as *const i64);
+                        print!("{}", val);
+                    }
+                    ParamType::Float => {
+                        let val = *(field_ptr as *const f64);
+                        print!("{}", val);
+                    }
+                    ParamType::Bool => {
+                        let val = *(field_ptr as *const i64) != 0;
+                        print!("{}", val);
+                    }
+                    ParamType::String => {
+                        // Field is a pointer to HaxeString
+                        let str_ptr = *(field_ptr as *const *const crate::haxe_string::HaxeString);
+                        if str_ptr.is_null() {
+                            print!("null");
+                        } else {
+                            let haxe_str = &*str_ptr;
+                            let bytes =
+                                std::slice::from_raw_parts(haxe_str.ptr as *const u8, haxe_str.len);
+                            match std::str::from_utf8(bytes) {
+                                Ok(s) => print!("{}", s),
+                                Err(_) => print!("<invalid utf8>"),
+                            }
+                        }
+                    }
+                    ParamType::Object => {
+                        let val = *(field_ptr as *const i64);
+                        print!("<object@0x{:x}>", val);
+                    }
+                }
+            }
+            println!(")");
+        }
     }
 }
 

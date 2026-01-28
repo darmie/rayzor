@@ -3033,6 +3033,34 @@ impl<'a> HirToMirContext<'a> {
         &self.enums_for_registration
     }
 
+    /// Get the number of fields for a specific enum variant
+    fn get_enum_variant_field_count(&self, enum_symbol: SymbolId, variant_idx: usize) -> usize {
+        // Find the enum in HIR types by symbol ID
+        for (_type_id, type_decl) in self.current_hir_types.iter() {
+            if let HirTypeDecl::Enum(enum_decl) = type_decl {
+                if enum_decl.symbol_id == enum_symbol {
+                    if let Some(variant) = enum_decl.variants.get(variant_idx) {
+                        return variant.fields.len();
+                    }
+                }
+            }
+        }
+        0 // Default: no fields
+    }
+
+    /// Check if an enum has any parameterized variants (requires boxed representation)
+    fn enum_is_boxed(&self, enum_symbol: SymbolId) -> bool {
+        for (_type_id, type_decl) in self.current_hir_types.iter() {
+            if let HirTypeDecl::Enum(enum_decl) = type_decl {
+                if enum_decl.symbol_id == enum_symbol {
+                    // Enum is boxed if any variant has parameters
+                    return enum_decl.variants.iter().any(|v| !v.fields.is_empty());
+                }
+            }
+        }
+        false
+    }
+
     /// Lower a HIR expression to MIR value
     fn lower_expression(&mut self, expr: &HirExpr) -> Option<IrId> {
         // debug!("lower_expression - {:?}", std::mem::discriminant(&expr.kind));
@@ -3914,9 +3942,7 @@ impl<'a> HirToMirContext<'a> {
                     if let Some(sym) = self.symbol_table.get_symbol(*symbol) {
                         use crate::tast::SymbolKind;
                         if sym.kind == SymbolKind::EnumVariant {
-                            // This is an enum constructor call with parameters
-                            // For now, just return the discriminant to make trace work
-                            // TODO: Properly allocate enum struct and store parameters
+                            // Find the parent enum and variant index
                             if let Some(parent_enum_id) =
                                 self.symbol_table.find_parent_enum_for_constructor(*symbol)
                             {
@@ -3925,11 +3951,78 @@ impl<'a> HirToMirContext<'a> {
                                 {
                                     for (idx, variant_id) in variants.iter().enumerate() {
                                         if *variant_id == *symbol {
-                                            // Return discriminant as i64
-                                            // NOTE: Parameters are ignored for now - this is a temporary workaround
-                                            return self
+                                            // Get variant field count from HIR
+                                            let field_count =
+                                                self.get_enum_variant_field_count(parent_enum_id, idx);
+
+                                            if field_count == 0 {
+                                                // No parameters - return discriminant directly
+                                                return self
+                                                    .builder
+                                                    .build_const(IrValue::I64(idx as i64));
+                                            }
+
+                                            // Has parameters - allocate boxed enum struct
+                                            // Layout: [tag:i32][pad:i32][field0:i64][field1:i64]...
+                                            let struct_size = 8 + 8 * field_count; // 8 for tag+pad, 8 per field
+
+                                            // Allocate memory
+                                            let size_const = self
                                                 .builder
-                                                .build_const(IrValue::I64(idx as i64));
+                                                .build_const(IrValue::I64(struct_size as i64))?;
+                                            let alloc_func = self.get_or_register_extern_function(
+                                                "rayzor_tracked_alloc",
+                                                vec![IrType::I64],
+                                                IrType::Ptr(Box::new(IrType::I8)),
+                                            );
+                                            let ptr = self.builder.build_call_direct(
+                                                alloc_func,
+                                                vec![size_const],
+                                                IrType::Ptr(Box::new(IrType::I8)),
+                                            )?;
+
+                                            // Store tag at offset 0 (as i32)
+                                            // Note: GEP multiplies index by element size, so we use I8 elements
+                                            // for byte-based addressing, then bitcast to the target type
+                                            let zero_offset =
+                                                self.builder.build_const(IrValue::I64(0))?;
+                                            let tag_ptr = self.builder.build_gep(
+                                                ptr,
+                                                vec![zero_offset],
+                                                IrType::Ptr(Box::new(IrType::I8)), // Byte-based
+                                            )?;
+                                            let tag_ptr_i32 = self.builder.build_bitcast(
+                                                tag_ptr,
+                                                IrType::Ptr(Box::new(IrType::I32)),
+                                            )?;
+                                            let tag_val = self
+                                                .builder
+                                                .build_const(IrValue::I32(idx as i32))?;
+                                            self.builder.build_store(tag_ptr_i32, tag_val)?;
+
+                                            // Store each parameter at byte offset 8 + i*8
+                                            for (i, arg) in args.iter().enumerate() {
+                                                let arg_reg = self.lower_expression(arg)?;
+                                                let field_offset = self.builder.build_const(
+                                                    IrValue::I64((8 + i * 8) as i64),
+                                                )?;
+                                                // Use I8 element type for byte-based addressing
+                                                let field_ptr = self.builder.build_gep(
+                                                    ptr,
+                                                    vec![field_offset],
+                                                    IrType::Ptr(Box::new(IrType::I8)),
+                                                )?;
+                                                // Bitcast to i64 ptr for the store
+                                                let field_ptr_i64 = self.builder.build_bitcast(
+                                                    field_ptr,
+                                                    IrType::Ptr(Box::new(IrType::I64)),
+                                                )?;
+                                                self.builder.build_store(field_ptr_i64, arg_reg)?;
+                                            }
+
+                                            // Return pointer as i64 for uniform handling
+                                            // (bitcast pointer to i64)
+                                            return self.builder.build_bitcast(ptr, IrType::I64);
                                         }
                                     }
                                 }
@@ -4290,19 +4383,44 @@ impl<'a> HirToMirContext<'a> {
                                     .builder
                                     .build_const(IrValue::I32(enum_type_id.0 as i32))?;
 
-                                // arg_reg already holds the discriminant (i64)
-                                // Call haxe_trace_enum(type_id: u32, discriminant: i64)
-                                let trace_enum_id = self.get_or_register_extern_function(
-                                    "haxe_trace_enum",
-                                    vec![IrType::I32, IrType::I64],
-                                    IrType::Void,
-                                );
+                                // Check if enum is boxed (has parameterized variants)
+                                // Boxed enums store a pointer to heap-allocated struct
+                                // Unboxed enums store just the discriminant as i64
+                                if self.enum_is_boxed(*symbol_id) {
+                                    // Boxed enum: arg_reg is a pointer to [tag:i32][pad:i32][fields...]
+                                    // Call haxe_trace_enum_boxed(type_id: u32, ptr: *const u8)
+                                    let trace_enum_boxed_id = self.get_or_register_extern_function(
+                                        "haxe_trace_enum_boxed",
+                                        vec![IrType::I32, IrType::Ptr(Box::new(IrType::I8))],
+                                        IrType::Void,
+                                    );
 
-                                return self.builder.build_call_direct(
-                                    trace_enum_id,
-                                    vec![type_id_const, arg_reg],
-                                    IrType::Void,
-                                );
+                                    // Convert i64 back to pointer
+                                    let ptr_reg = self.builder.build_bitcast(
+                                        arg_reg,
+                                        IrType::Ptr(Box::new(IrType::I8)),
+                                    )?;
+
+                                    return self.builder.build_call_direct(
+                                        trace_enum_boxed_id,
+                                        vec![type_id_const, ptr_reg],
+                                        IrType::Void,
+                                    );
+                                } else {
+                                    // Unboxed enum: arg_reg holds the discriminant (i64)
+                                    // Call haxe_trace_enum(type_id: u32, discriminant: i64)
+                                    let trace_enum_id = self.get_or_register_extern_function(
+                                        "haxe_trace_enum",
+                                        vec![IrType::I32, IrType::I64],
+                                        IrType::Void,
+                                    );
+
+                                    return self.builder.build_call_direct(
+                                        trace_enum_id,
+                                        vec![type_id_const, arg_reg],
+                                        IrType::Void,
+                                    );
+                                }
                             }
                         }
 
@@ -12994,11 +13112,12 @@ impl<'a> HirToMirContext<'a> {
         let variant_func_id = self.get_or_register_extern_function(
             "haxe_register_enum_variant",
             vec![
-                IrType::I32, // type_id
-                IrType::I64, // variant_index
+                IrType::I32,                       // type_id
+                IrType::I64,                       // variant_index
                 IrType::Ptr(Box::new(IrType::I8)), // name_ptr
-                IrType::I64, // name_len
-                IrType::I64, // param_count
+                IrType::I64,                       // name_len
+                IrType::I64,                       // param_count
+                IrType::Ptr(Box::new(IrType::I8)), // param_types_ptr (array of u8)
             ],
             IrType::Void,
         );
@@ -13059,6 +13178,25 @@ impl<'a> HirToMirContext<'a> {
                     .to_string();
                 let param_count = variant.fields.len();
 
+                // Build param_types array: map each field's TypeId to ParamType (u8)
+                // ParamType: Int=0, Float=1, Bool=2, String=3, Object=4
+                let param_types: Vec<u8> = {
+                    let type_table = self.type_table.borrow();
+                    variant
+                        .fields
+                        .iter()
+                        .map(|field| {
+                            match type_table.get(field.ty).map(|ti| &ti.kind) {
+                                Some(crate::tast::core::TypeKind::Int) => 0u8,
+                                Some(crate::tast::core::TypeKind::Float) => 1u8,
+                                Some(crate::tast::core::TypeKind::Bool) => 2u8,
+                                Some(crate::tast::core::TypeKind::String) => 3u8,
+                                _ => 4u8, // Object/Unknown
+                            }
+                        })
+                        .collect()
+                };
+
                 let idx_reg = self
                     .builder
                     .build_const(IrValue::I64(idx as i64))
@@ -13076,9 +13214,66 @@ impl<'a> HirToMirContext<'a> {
                     .build_const(IrValue::I64(param_count as i64))
                     .unwrap_or(IrId::invalid());
 
+                // Build param_types_ptr: allocate and store param types, or null if no params
+                let param_types_ptr = if param_types.is_empty() {
+                    // Null pointer - use iconst 0 then bitcast to ptr
+                    let null_val = self
+                        .builder
+                        .build_const(IrValue::I64(0))
+                        .unwrap_or(IrId::invalid());
+                    self.builder
+                        .build_bitcast(null_val, IrType::Ptr(Box::new(IrType::I8)))
+                        .unwrap_or(IrId::invalid())
+                } else {
+                    // Allocate memory for param types array
+                    let alloc_size = self
+                        .builder
+                        .build_const(IrValue::I64(param_types.len() as i64))
+                        .unwrap_or(IrId::invalid());
+                    let alloc_func = self.get_or_register_extern_function(
+                        "rayzor_tracked_alloc",
+                        vec![IrType::I64],
+                        IrType::Ptr(Box::new(IrType::I8)),
+                    );
+                    let ptr = self
+                        .builder
+                        .build_call_direct(
+                            alloc_func,
+                            vec![alloc_size],
+                            IrType::Ptr(Box::new(IrType::I8)),
+                        )
+                        .unwrap_or(IrId::invalid());
+
+                    // Store each param type byte
+                    for (i, &ptype) in param_types.iter().enumerate() {
+                        let offset = self
+                            .builder
+                            .build_const(IrValue::I64(i as i64))
+                            .unwrap_or(IrId::invalid());
+                        let elem_ptr = self
+                            .builder
+                            .build_gep(ptr, vec![offset], IrType::Ptr(Box::new(IrType::I8)))
+                            .unwrap_or(IrId::invalid());
+                        let val = self
+                            .builder
+                            .build_const(IrValue::I8(ptype as i8))
+                            .unwrap_or(IrId::invalid());
+                        let _ = self.builder.build_store(elem_ptr, val);
+                    }
+
+                    ptr // Keep as pointer type
+                };
+
                 let _ = self.builder.build_call_direct(
                     variant_func_id,
-                    vec![type_id_reg, idx_reg, var_name_ptr, var_name_len, param_count_reg],
+                    vec![
+                        type_id_reg,
+                        idx_reg,
+                        var_name_ptr,
+                        var_name_len,
+                        param_count_reg,
+                        param_types_ptr,
+                    ],
                     IrType::Void,
                 );
             }

@@ -2595,8 +2595,14 @@ impl CraneliftBackend {
                     .get(&index_id)
                     .ok_or_else(|| format!("GEP index {:?} not found in value_map", index_id))?;
 
-                // Get the size of the element type
-                let elem_size = Self::type_size(ty);
+                // Get the size of the ELEMENT type, not the pointer type
+                // ty is Ptr(ElementType), so we need to unwrap it to get the element size
+                let elem_size = match ty {
+                    crate::ir::IrType::Ptr(inner) | crate::ir::IrType::Ref(inner) => {
+                        Self::type_size(inner)
+                    }
+                    _ => Self::type_size(ty), // Fallback for non-pointer types
+                };
                 let size_val = builder.ins().iconst(types::I64, elem_size as i64);
 
                 // Convert index to i64 if needed (only if not already i64)
@@ -3550,6 +3556,18 @@ impl CraneliftBackend {
     /// This function also waits for all spawned threads to complete before returning,
     /// ensuring that JIT code memory remains valid while threads are executing.
     pub fn call_main(&mut self, module: &crate::ir::IrModule) -> Result<(), String> {
+        // First, look for and call __init__ function if it exists
+        // __init__ handles module initialization like registering enum RTTI
+        if let Some(init_func) = module.functions.values().find(|f| f.name == "__init__") {
+            if let Ok(init_ptr) = self.get_function_ptr(init_func.id) {
+                debug!("  🔧 Calling __init__() for module initialization...");
+                unsafe {
+                    let init_fn: extern "C" fn(i64) = std::mem::transmute(init_ptr);
+                    init_fn(0); // null environment pointer
+                }
+            }
+        }
+
         // Find the main function in the MIR module
         // Try various naming conventions: main, Main_main, Main.main, etc.
         let main_func = module
