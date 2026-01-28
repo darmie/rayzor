@@ -3952,8 +3952,8 @@ impl<'a> HirToMirContext<'a> {
                                     for (idx, variant_id) in variants.iter().enumerate() {
                                         if *variant_id == *symbol {
                                             // Get variant field count from HIR
-                                            let field_count =
-                                                self.get_enum_variant_field_count(parent_enum_id, idx);
+                                            let field_count = self
+                                                .get_enum_variant_field_count(parent_enum_id, idx);
 
                                             if field_count == 0 {
                                                 // No parameters - return discriminant directly
@@ -13101,10 +13101,10 @@ impl<'a> HirToMirContext<'a> {
         let start_func_id = self.get_or_register_extern_function(
             "haxe_register_enum_start",
             vec![
-                IrType::I32, // type_id
+                IrType::I32,                       // type_id
                 IrType::Ptr(Box::new(IrType::I8)), // name_ptr
-                IrType::I64, // name_len
-                IrType::I64, // variant_count
+                IrType::I64,                       // name_len
+                IrType::I64,                       // variant_count
             ],
             IrType::Void,
         );
@@ -13279,11 +13279,9 @@ impl<'a> HirToMirContext<'a> {
             }
 
             // Finish: haxe_register_enum_finish(type_id)
-            let _ = self.builder.build_call_direct(
-                finish_func_id,
-                vec![type_id_reg],
-                IrType::Void,
-            );
+            let _ = self
+                .builder
+                .build_call_direct(finish_func_id, vec![type_id_reg], IrType::Void);
         }
     }
 

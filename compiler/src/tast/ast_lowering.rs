@@ -769,13 +769,17 @@ impl<'a> AstLowering<'a> {
                     if type_args.is_empty() {
                         // Non-generic enum - ensure function type has enum as return type
                         // This is critical for type inference of parameterized enum constructors
-                        let constructor_sym = self.context.symbol_table.get_symbol(constructor_symbol);
+                        let constructor_sym =
+                            self.context.symbol_table.get_symbol(constructor_symbol);
                         if let Some(sym) = constructor_sym {
                             // Extract params first, then drop the borrow
                             let params_opt = {
                                 let type_table = self.context.type_table.borrow();
                                 if let Some(func_type_info) = type_table.get(sym.type_id) {
-                                    if let crate::tast::core::TypeKind::Function { params, .. } = &func_type_info.kind {
+                                    if let crate::tast::core::TypeKind::Function {
+                                        params, ..
+                                    } = &func_type_info.kind
+                                    {
                                         Some(params.clone())
                                     } else {
                                         None
@@ -6052,9 +6056,10 @@ impl<'a> AstLowering<'a> {
                                                 };
 
                                                 // Instantiate the enum constructor type for proper return type
-                                                func_expr = self.instantiate_enum_constructor_type(
-                                                    variant_id, &arg_exprs, func_expr,
-                                                )?;
+                                                func_expr = self
+                                                    .instantiate_enum_constructor_type(
+                                                        variant_id, &arg_exprs, func_expr,
+                                                    )?;
 
                                                 let kind = TypedExpressionKind::FunctionCall {
                                                     function: Box::new(func_expr),
@@ -6062,7 +6067,8 @@ impl<'a> AstLowering<'a> {
                                                     type_arguments: Vec::new(),
                                                 };
 
-                                                let expr_type = self.infer_expression_type(&kind)?;
+                                                let expr_type =
+                                                    self.infer_expression_type(&kind)?;
                                                 let usage = self.determine_variable_usage(&kind);
                                                 let lifetime_id =
                                                     self.assign_lifetime(&kind, &expr_type);
@@ -6636,8 +6642,7 @@ impl<'a> AstLowering<'a> {
                     let variant_name = self.context.intern_string(field);
 
                     // Look up enum variants
-                    if let Some(variants) =
-                        self.context.symbol_table.get_enum_variants(enum_symbol)
+                    if let Some(variants) = self.context.symbol_table.get_enum_variants(enum_symbol)
                     {
                         for &variant_id in variants {
                             if let Some(variant_sym) =
