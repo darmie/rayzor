@@ -592,8 +592,8 @@ impl TierPreset {
                 enable_background_optimization: false, // Sync for deterministic results
                 optimization_check_interval_ms: 1,
                 max_parallel_optimizations: 4,
-                verbosity: 1, // Show tier transitions
-                start_interpreted: true,
+                verbosity: 1,            // Show tier transitions
+                start_interpreted: true, // Start with interpreter for instant startup
                 bailout_strategy: BailoutStrategy::Immediate,
             },
 

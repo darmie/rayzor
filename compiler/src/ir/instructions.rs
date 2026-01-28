@@ -587,7 +587,8 @@ impl IrInstruction {
     pub fn has_side_effects(&self) -> bool {
         matches!(
             self,
-            IrInstruction::Store { .. }
+            IrInstruction::Alloc { .. }
+                | IrInstruction::Store { .. }
                 | IrInstruction::StoreGlobal { .. }
                 | IrInstruction::CallDirect { .. }
                 | IrInstruction::CallIndirect { .. }

@@ -1081,6 +1081,13 @@ register_symbol!("free", libc::free);
 register_symbol!("rayzor_global_store", crate::rayzor_global_store);
 register_symbol!("rayzor_global_load", crate::rayzor_global_load);
 
+// ============================================================================
+// Tracked Heap Allocator (Rust allocator with double-free protection)
+// ============================================================================
+register_symbol!("rayzor_tracked_alloc", crate::rayzor_tracked_alloc);
+register_symbol!("rayzor_tracked_realloc", crate::rayzor_tracked_realloc);
+register_symbol!("rayzor_tracked_free", crate::rayzor_tracked_free);
+
 /// Rayzor Runtime Plugin
 pub struct RayzorRuntimePlugin;
 

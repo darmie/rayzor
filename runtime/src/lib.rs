@@ -24,6 +24,8 @@
 #![allow(clippy::missing_safety_doc)]
 
 use std::alloc::{alloc, dealloc, realloc, Layout};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ptr;
 
 // Export Vec module (old API - keeping for backward compat)
@@ -167,6 +169,141 @@ pub unsafe extern "C" fn rayzor_free(ptr: *mut u8, size: u64) {
     dealloc(ptr, layout);
 }
 
+// ============================================================================
+// Tracked Heap Allocator
+// ============================================================================
+// Inline-header allocator for JIT-compiled code.
+// Uses Rust's global allocator with an 8-byte size header prepended to each
+// allocation. This avoids the overhead of a HashMap while still providing
+// the Layout info needed by Rust's dealloc.
+//
+// Memory layout: [size: u64][user data (aligned_size bytes)]
+//                           ^-- returned pointer
+//
+// Double-free protection: after dealloc we can't reliably read the header,
+// but we check for obviously invalid sizes (0 or > 1TB) as a safety net.
+// The MIR drop-tracking system is the primary double-free prevention mechanism.
+
+/// Header size prepended to each tracked allocation (16 bytes for alignment).
+/// Uses 16-byte header to ensure user pointer is 16-byte aligned (required for SIMD).
+const TRACKED_HEADER_SIZE: usize = 16;
+
+/// Alignment for tracked allocations (16 bytes for SIMD compatibility).
+const TRACKED_ALIGNMENT: usize = 16;
+
+/// Maximum sane allocation size (1 TB) — anything larger is treated as corrupt.
+const TRACKED_MAX_SIZE: usize = 1 << 40;
+
+/// Allocate tracked heap memory using Rust's global allocator.
+///
+/// Compatible with libc malloc signature: fn(size) -> *mut u8
+/// Prepends a 16-byte header (size in first 8 bytes, padding in next 8).
+/// Returns 16-byte aligned pointer for SIMD compatibility.
+#[no_mangle]
+pub unsafe extern "C" fn rayzor_tracked_alloc(size: u64) -> *mut u8 {
+    if size == 0 {
+        return ptr::null_mut();
+    }
+
+    // Round up to 16-byte alignment
+    let aligned_size = ((size as usize) + (TRACKED_ALIGNMENT - 1)) & !(TRACKED_ALIGNMENT - 1);
+    let total = aligned_size + TRACKED_HEADER_SIZE;
+    let layout = match Layout::from_size_align(total, TRACKED_ALIGNMENT) {
+        Ok(layout) => layout,
+        Err(_) => return ptr::null_mut(),
+    };
+
+    let base = alloc(layout);
+    if base.is_null() {
+        return ptr::null_mut();
+    }
+
+    // Write size header at base (first 8 bytes of the 16-byte header)
+    *(base as *mut u64) = aligned_size as u64;
+
+    base.add(TRACKED_HEADER_SIZE)
+}
+
+/// Free tracked heap memory using Rust's global allocator.
+///
+/// Compatible with libc free signature: fn(*mut u8)
+/// Reads the size from the 16-byte header prepended by `rayzor_tracked_alloc`.
+/// Rejects obviously invalid sizes as a safety net against double-free.
+#[no_mangle]
+pub unsafe extern "C" fn rayzor_tracked_free(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+
+    // Read the size header (first 8 bytes of 16-byte header before the user pointer)
+    let base = ptr.sub(TRACKED_HEADER_SIZE);
+    let aligned_size = *(base as *const u64) as usize;
+
+    // Sanity check: reject zero or impossibly large sizes
+    // Zero size indicates this was already freed or never a valid tracked allocation.
+    // Sizes > 1TB are clearly corrupt metadata.
+    if aligned_size == 0 || aligned_size > TRACKED_MAX_SIZE {
+        return;
+    }
+
+    // Clear the size header to help catch double-frees
+    // (subsequent free of this address will see size=0 and return early)
+    *(base as *mut u64) = 0;
+
+    let total = aligned_size + TRACKED_HEADER_SIZE;
+    let layout = Layout::from_size_align_unchecked(total, TRACKED_ALIGNMENT);
+    dealloc(base, layout);
+}
+
+/// Reallocate tracked heap memory using Rust's global allocator.
+///
+/// Compatible with libc realloc signature: fn(*mut u8, u64) -> *mut u8
+/// Handles the 16-byte size header correctly by allocating a new block,
+/// copying data, and freeing the old block.
+#[no_mangle]
+pub unsafe extern "C" fn rayzor_tracked_realloc(ptr: *mut u8, new_size: u64) -> *mut u8 {
+    if ptr.is_null() {
+        return rayzor_tracked_alloc(new_size);
+    }
+    if new_size == 0 {
+        rayzor_tracked_free(ptr);
+        return ptr::null_mut();
+    }
+
+    // Read old size from header
+    let old_base = ptr.sub(TRACKED_HEADER_SIZE);
+    let old_aligned_size = *(old_base as *const u64) as usize;
+
+    // Sanity check old size
+    if old_aligned_size == 0 || old_aligned_size > TRACKED_MAX_SIZE {
+        // Corrupt or already freed — just do a fresh alloc
+        return rayzor_tracked_alloc(new_size);
+    }
+
+    let new_aligned_size =
+        ((new_size as usize) + (TRACKED_ALIGNMENT - 1)) & !(TRACKED_ALIGNMENT - 1);
+
+    // If same size, nothing to do
+    if new_aligned_size == old_aligned_size {
+        return ptr;
+    }
+
+    // Allocate new block with header
+    let new_ptr = rayzor_tracked_alloc(new_size);
+    if new_ptr.is_null() {
+        return ptr::null_mut();
+    }
+
+    // Copy old data (up to the smaller of old and new sizes)
+    let copy_size = old_aligned_size.min(new_aligned_size);
+    ptr::copy_nonoverlapping(ptr, new_ptr, copy_size);
+
+    // Free old block
+    rayzor_tracked_free(ptr);
+
+    new_ptr
+}
+
 /// Initialize RTTI (Runtime Type Information) for user-defined types.
 ///
 /// Note: Primitive types (Int, Float, Bool, String, etc.) are automatically
@@ -182,9 +319,6 @@ pub fn init_rtti() {
 // ============================================================================
 // Thread-local storage for global variables used by JIT-compiled code.
 // Global IDs are i64 values that map to pointer values (stored as u64).
-
-use std::cell::RefCell;
-use std::collections::HashMap;
 
 thread_local! {
     static GLOBAL_STORE: RefCell<HashMap<i64, u64>> = RefCell::new(HashMap::new());

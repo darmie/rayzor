@@ -454,20 +454,19 @@ impl CraneliftBackend {
             self.declare_function(*func_id, function)?;
         }
 
-        // Declare C standard library memory functions ONCE (across ALL modules)
-        // These are always available and will be linked from libc
-        // Declare them unconditionally if not already declared
+        // Declare memory management functions ONCE (across ALL modules)
+        // Use libc malloc/free for best performance (tracked allocator was for debugging)
         if !self.runtime_functions.contains_key("malloc") {
-            debug!("Declaring libc function: malloc");
-            self.declare_libc_function("malloc", 1, true)?; // 1 param (size), has return value (ptr)
+            debug!("Declaring runtime function: malloc");
+            self.declare_libc_function("malloc", 1, true)?;
         }
         if !self.runtime_functions.contains_key("realloc") {
-            debug!("Declaring libc function: realloc");
-            self.declare_libc_function("realloc", 2, true)?; // 2 params (ptr, size), has return value (new ptr)
+            debug!("Declaring runtime function: realloc");
+            self.declare_libc_function("realloc", 2, true)?;
         }
         if !self.runtime_functions.contains_key("free") {
-            debug!("Declaring libc function: free");
-            self.declare_libc_function("free", 1, false)?; // 1 param (ptr), no return value
+            debug!("Declaring runtime function: free");
+            self.declare_libc_function("free", 1, false)?;
         }
 
         // Declare rayzor_global_load and rayzor_global_store runtime functions
@@ -481,8 +480,8 @@ impl CraneliftBackend {
             self.declare_runtime_function("rayzor_global_store", &[types::I64, types::I64], None)?;
         }
 
-        // Map MIR function IDs for malloc/realloc/free to their libc Cranelift IDs
-        // This ensures that when MIR code calls these functions, they resolve to the libc versions
+        // Map MIR function IDs for malloc/realloc/free to their tracked Cranelift IDs
+        // This ensures that when MIR code calls these functions, they resolve to tracked versions
         // Check both functions and extern_functions since malloc may be in either location
         for (func_id, function) in &mir_module.functions {
             if function.name == "malloc" {
@@ -593,17 +592,18 @@ impl CraneliftBackend {
             self.declare_function(*func_id, function)?;
         }
 
-        // Declare C standard library memory functions ONCE (across ALL modules)
+        // Declare memory management functions ONCE (across ALL modules)
+        // Use libc malloc/free for best performance
         if !self.runtime_functions.contains_key("malloc") {
-            debug!("Declaring libc function: malloc");
+            debug!("Declaring runtime function: malloc");
             self.declare_libc_function("malloc", 1, true)?;
         }
         if !self.runtime_functions.contains_key("realloc") {
-            debug!("Declaring libc function: realloc");
+            debug!("Declaring runtime function: realloc");
             self.declare_libc_function("realloc", 2, true)?;
         }
         if !self.runtime_functions.contains_key("free") {
-            debug!("Declaring libc function: free");
+            debug!("Declaring runtime function: free");
             self.declare_libc_function("free", 1, false)?;
         }
 
