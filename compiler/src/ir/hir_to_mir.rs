@@ -2131,9 +2131,22 @@ impl<'a> HirToMirContext<'a> {
                         );
                     }
 
+                    // CRITICAL: Save drop state before cleanup. The break path emits Free
+                    // instructions and modifies drop_scope_stack/owned_heap_values, but these
+                    // mutations must NOT persist for the non-break code path. Without this
+                    // save/restore, the scope stack is corrupted: the normal loop exit code
+                    // (exit_drop_scope at the back-edge) pops the WRONG scope, causing
+                    // variables from outer scopes to be freed prematurely → double-free.
+                    let saved_scope_stack = self.drop_scope_stack.clone();
+                    let saved_owned = self.owned_heap_values.clone();
+
                     // Free loop body allocations before breaking out
                     self.exit_drop_scope();
                     self.builder.build_branch(break_block);
+
+                    // Restore drop state for non-break path code generation
+                    self.drop_scope_stack = saved_scope_stack;
+                    self.owned_heap_values = saved_owned;
                 } else {
                     self.add_error("Break outside of loop", SourceLocation::unknown());
                 }
@@ -2143,9 +2156,20 @@ impl<'a> HirToMirContext<'a> {
                 if let Some(loop_ctx) = self.find_loop_context(label.as_ref()) {
                     // Copy continue_block before mutable borrow
                     let continue_block = loop_ctx.continue_block;
+
+                    // CRITICAL: Save drop state before cleanup (same reason as break above).
+                    // Continue emits Free instructions for the current scope, but these
+                    // mutations must not persist for the non-continue code path.
+                    let saved_scope_stack = self.drop_scope_stack.clone();
+                    let saved_owned = self.owned_heap_values.clone();
+
                     // Free loop body allocations before continuing to next iteration
                     self.exit_drop_scope();
                     self.builder.build_branch(continue_block);
+
+                    // Restore drop state for non-continue path code generation
+                    self.drop_scope_stack = saved_scope_stack;
+                    self.owned_heap_values = saved_owned;
                 } else {
                     self.add_error("Continue outside of loop", SourceLocation::unknown());
                 }
@@ -7855,6 +7879,18 @@ impl<'a> HirToMirContext<'a> {
         for (symbol_id, exit_param_reg) in &exit_phi_nodes {
             self.symbol_map.insert(*symbol_id, *exit_param_reg);
         }
+
+        // CRITICAL: Also update owned_heap_values to use exit phi values.
+        // Without this, owned_heap_values retains IrIds from the loop body block
+        // that don't dominate post-loop blocks. When an outer scope's exit_drop_scope
+        // later emits Free instructions using these stale IrIds, it creates an SSA
+        // dominance violation — at runtime, this causes double-free crashes because
+        // the stale register may hold an already-freed pointer.
+        for (symbol_id, exit_param_reg) in &exit_phi_nodes {
+            if self.owned_heap_values.contains_key(symbol_id) {
+                self.owned_heap_values.insert(*symbol_id, *exit_param_reg);
+            }
+        }
     }
 
     // Helper methods...
@@ -10739,6 +10775,13 @@ impl<'a> HirToMirContext<'a> {
                 // Update symbol map to use phi node
                 phi_nodes.insert(*symbol_id, phi_reg);
                 self.symbol_map.insert(*symbol_id, phi_reg);
+
+                // Also update owned_heap_values so drop tracking uses the phi result
+                // This ensures that when a loop variable is reassigned, we free the
+                // current iteration's value (from phi), not the initial value
+                if self.owned_heap_values.contains_key(symbol_id) {
+                    self.owned_heap_values.insert(*symbol_id, phi_reg);
+                }
             }
         }
 
@@ -10852,8 +10895,17 @@ impl<'a> HirToMirContext<'a> {
         self.builder.switch_to_block(exit_block);
 
         // Update symbol map to use exit phi nodes after the loop
-        for (symbol_id, exit_reg) in exit_phi_nodes {
-            self.symbol_map.insert(symbol_id, exit_reg);
+        for (symbol_id, exit_reg) in &exit_phi_nodes {
+            self.symbol_map.insert(*symbol_id, *exit_reg);
+        }
+
+        // CRITICAL: Also update owned_heap_values to use exit phi values.
+        // Same fix as in lower_while_loop — prevents SSA dominance violations
+        // and double-free crashes when outer scopes free loop-carried heap values.
+        for (symbol_id, exit_reg) in &exit_phi_nodes {
+            if self.owned_heap_values.contains_key(symbol_id) {
+                self.owned_heap_values.insert(*symbol_id, *exit_reg);
+            }
         }
     }
 
