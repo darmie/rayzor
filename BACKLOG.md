@@ -265,48 +265,69 @@ fn foo_state_machine(state: &mut State) -> ControlFlow {
 
 ---
 
-## 3. Concurrency: Lightweight Threads & Message Passing 🔴
+## 3. Concurrency: Lightweight Threads & Message Passing 🟢
 
 **Priority:** Medium-High
 **Complexity:** Very High
-**Dependencies:** Async/Await, Memory Safety (Send/Sync)
+**Status:** ✅ Core Implementation Complete (2026-01-28)
 **Design:** Rayzor Standard Library (extern classes) - See [STDLIB_DESIGN.md](STDLIB_DESIGN.md)
 
-### 3.1 Lightweight Thread System (Goroutine-like)
+### Implementation Summary
 
-**Status:** 🔴 Not Started
+Two threading APIs are fully implemented and tested:
 
-**Design Note:**
+1. **`rayzor.concurrent.*`** - Rayzor's native concurrent primitives
+   - Thread, Channel, Arc, Mutex, MutexGuard
+   - 29 runtime functions implemented
+   - See `test_rayzor_stdlib_e2e.rs` for tests
 
-- **STDLIB APPROACH** - Pure Haxe API with extern classes
-- `rayzor.concurrent.Thread` extern class maps to runtime primitives
-- `Thread.spawn()` for spawning, `handle.join()` for waiting
-- Compiler validates Send trait during extern call lowering
-- Goroutine-style lightweight threads (M:N model)
+2. **`sys.thread.*`** - Standard Haxe threading API
+   - Thread, Mutex, Lock, Semaphore, Deque, Condition
+   - 21 tests covering all primitives
+   - See `test_sys_thread.rs` for tests
 
-**Tasks:**
+### 3.1 Lightweight Thread System
+
+**Status:** 🟢 Complete
+
+**Implemented APIs:**
+
+**rayzor.concurrent.Thread:**
+- [x] `Thread.spawn(() -> T)` - spawn thread with closure
+- [x] `handle.join()` - wait for thread completion and get result
+- [x] Runtime: `rayzor_thread_spawn()`, `rayzor_thread_join()`
+
+**sys.thread.Thread:**
+- [x] `Thread.create(() -> Void)` - create thread
+- [x] `Thread.yield()` - yield execution
+- [x] `Thread.sleep(seconds)` - sleep for duration
+- [x] `handle.join()` - wait for thread
+- [x] `handle.isFinished()` - check completion status
+- [x] Runtime: `sys_thread_*` functions
+
+**Closure Capture Semantics:**
+- Variables captured by **value** (like Rust), not reference
+- Primitives (Int, Bool, Float) are copied
+- Objects/Arrays captured as pointer copies (same object)
+- Use Deque/Channel for thread-safe communication
 
 **Stdlib (Haxe):**
-- [ ] Create `stdlib/rayzor/concurrent/Thread.hx` extern class
-- [ ] Document Thread API with examples
-- [ ] Add type parameters for thread return values
+- [x] `rayzor/concurrent/Thread.hx` extern class
+- [x] `sys/thread/Thread.hx` extern class
+- [x] Type parameters for thread return values
 
 **Compiler Integration:**
-- [ ] Add Thread intrinsic type to compiler
-- [ ] Implement `lower_thread_spawn()` in stdlib lowering
-- [ ] Implement `lower_thread_join()` in stdlib lowering
-- [ ] Validate Send trait on closure captures
-- [ ] Add MIR instructions: ThreadSpawn, ThreadJoin
-- [ ] Integrate with Cranelift/LLVM codegen
+- [x] Thread intrinsic type in compiler
+- [x] `lower_thread_spawn()` in stdlib lowering
+- [x] `lower_thread_join()` in stdlib lowering
+- [ ] Validate Send trait on closure captures (parsing works, validation not enforced)
+- [x] MIR instructions for thread operations
+- [x] Cranelift codegen integration
 
 **Runtime:**
-- [ ] Design green thread / M:N threading model
-- [ ] Implement thread scheduler
-- [ ] Stack allocation for threads (fixed or growable?)
-- [ ] Context switching mechanism
-- [ ] Thread-local storage
-- [ ] Cooperative vs preemptive scheduling
-- [ ] FFI: `rayzor_thread_spawn()`, `rayzor_thread_join()`
+- [x] Native OS threads (1:1 model, not M:N green threads)
+- [x] FFI: `rayzor_thread_spawn()`, `rayzor_thread_join()`, `rayzor_thread_is_finished()`
+- [x] FFI: `sys_thread_create()`, `sys_thread_yield()`, `sys_thread_sleep()`
 
 **API Design (Pure Haxe):**
 ```haxe
@@ -340,171 +361,122 @@ Thread.spawn(() -> {
 
 ### 3.2 Channel System (Message Passing)
 
-**Status:** 🔴 Not Started
+**Status:** 🟢 Complete
 
-**Design Note:**
+**rayzor.concurrent.Channel:**
+- [x] `new Channel<T>(capacity)` - create bounded channel
+- [x] `channel.send(value)` - blocking send
+- [x] `channel.tryReceive()` - non-blocking receive
+- [x] `channel.close()` - close channel
+- [x] Runtime: `rayzor_channel_init()`, `rayzor_channel_send()`, `rayzor_channel_try_receive()`, `rayzor_channel_close()`
 
-- **STDLIB APPROACH** - Pure Haxe API with extern classes
-- `rayzor.concurrent.Channel<T>` extern class maps to runtime primitives
-- `new Channel<T>(capacity)` for creation
-- `ch.send(value)`, `ch.receive()`, `ch.tryReceive()` methods
-- Compiler validates Send trait on channel element type during extern lowering
-
-**Tasks:**
+**sys.thread.Deque<T>:** (Thread-safe double-ended queue)
+- [x] `new Deque<T>()` - create deque
+- [x] `deque.add(value)` - add to back
+- [x] `deque.push(value)` - add to front
+- [x] `deque.pop(blocking)` - remove from front
+- [x] Runtime: `sys_deque_alloc()`, `sys_deque_add()`, `sys_deque_push()`, `sys_deque_pop()`
 
 **Stdlib (Haxe):**
-- [ ] Create `stdlib/rayzor/concurrent/Channel.hx` extern class
-- [ ] Document Channel API with examples
-- [ ] Add Select class/macro for multi-channel select
-- [ ] Create `stdlib/rayzor/collections/Option.hx` for tryReceive
+- [x] `rayzor/concurrent/Channel.hx` extern class
+- [x] `sys/thread/Deque.hx` extern class
+- [ ] Select class/macro for multi-channel select (future enhancement)
 
 **Compiler Integration:**
-- [ ] Add Channel<T> intrinsic type to compiler
-- [ ] Implement `lower_channel_new()` in stdlib lowering
-- [ ] Implement `lower_channel_send()` in stdlib lowering
-- [ ] Implement `lower_channel_receive()` in stdlib lowering
-- [ ] Implement `lower_channel_try_receive()` in stdlib lowering
-- [ ] Implement `lower_channel_close()` in stdlib lowering
-- [ ] Validate Send trait on channel element type
-- [ ] Add MIR instructions for channel operations
-- [ ] Integrate with Cranelift/LLVM codegen
+- [x] Channel<T> type in compiler
+- [x] `lower_channel_*()` functions in stdlib lowering
+- [ ] Validate Send trait on channel element type (parsing works, validation not enforced)
+- [x] MIR instructions for channel operations
+- [x] Cranelift codegen integration
 
 **Runtime:**
-- [ ] Design channel types (unbounded, bounded, rendezvous)
-- [ ] Implement channel data structure
-- [ ] Implement blocking send/receive
-- [ ] Implement non-blocking try_receive
-- [ ] Implement select over multiple channels
-- [ ] Channel closing semantics
-- [ ] Buffering strategy
-- [ ] FFI: `rayzor_channel_new()`, `rayzor_channel_send()`, etc.
+- [x] Bounded channels with capacity
+- [x] Blocking send/receive
+- [x] Non-blocking try_receive
+- [x] Channel closing semantics
+- [x] FFI: `rayzor_channel_*()` functions (10 total)
 
-**API Design (Pure Haxe):**
-```haxe
-import rayzor.concurrent.*;
-import rayzor.collections.Option;
+### 3.3 Synchronization Primitives
 
-@:derive([Send])
-class Message {
-    public var data: String;
-    public function new(d: String) { data = d; }
-}
+**Status:** 🟢 Complete
 
-// Create channel with capacity
-var ch = new Channel<Message>(10);
+**rayzor.concurrent.Mutex:**
+- [x] `new Mutex<T>(value)` - create mutex wrapping value
+- [x] `mutex.lock()` - acquire lock, returns MutexGuard
+- [x] `mutex.tryLock()` - non-blocking lock attempt
+- [x] `guard.get()` - access inner value
+- [x] `guard.unlock()` - release lock
+- [x] Runtime: `rayzor_mutex_init()`, `rayzor_mutex_lock()`, `rayzor_mutex_try_lock()`, `rayzor_mutex_unlock()`
 
-// Sender thread
-Thread.spawn(() -> {
-    ch.send(new Message("hello"));
-    ch.send(new Message("world"));
-    ch.close();
-});
+**rayzor.concurrent.Arc:**
+- [x] `new Arc<T>(value)` - create atomic reference counted pointer
+- [x] `arc.clone()` - increment ref count
+- [x] `arc.get()` - access inner value
+- [x] `arc.strongCount()` - get reference count
+- [x] Runtime: `rayzor_arc_init()`, `rayzor_arc_clone()`, `rayzor_arc_get()`, `rayzor_arc_strong_count()`
 
-// Receiver thread - blocking receive
-Thread.spawn(() -> {
-    var msg = ch.receive();
-    trace(msg.data);
-});
+**sys.thread.Mutex:**
+- [x] `new Mutex()` - create mutex
+- [x] `mutex.acquire()` - blocking acquire
+- [x] `mutex.tryAcquire()` - non-blocking acquire
+- [x] `mutex.release()` - release lock
+- [x] Runtime: `Mutex_init()`, `Mutex_lock()`, `Mutex_tryLock()`
 
-// Non-blocking receive
-Thread.spawn(() -> {
-    switch (ch.tryReceive()) {
-        case Some(msg): trace(msg.data);
-        case None: trace("no message");
-    }
-});
+**sys.thread.Lock:** (One-shot synchronization)
+- [x] `new Lock()` - create lock
+- [x] `lock.wait()` - blocking wait
+- [x] `lock.wait(timeout)` - wait with timeout
+- [x] `lock.release()` - signal waiting thread
+- [x] Runtime: `Lock_init()`, `Lock_wait()`, `Lock_wait_timeout()`
 
-// Select over multiple channels (using macro)
-var ch1 = new Channel<Int>(5);
-var ch2 = new Channel<String>(5);
+**sys.thread.Semaphore:**
+- [x] `new Semaphore(count)` - create counting semaphore
+- [x] `sem.acquire()` - decrement (blocking)
+- [x] `sem.tryAcquire()` - non-blocking decrement
+- [x] `sem.release()` - increment
+- [x] Runtime: `rayzor_semaphore_init()`, `rayzor_semaphore_acquire()`, `rayzor_semaphore_release()`
 
-Thread.spawn(() -> {
-    Select.wait([
-        SelectCase.receive(ch1, (x) -> trace("ch1: " + x)),
-        SelectCase.receive(ch2, (s) -> trace("ch2: " + s)),
-    ]);
-});
+**sys.thread.Condition:**
+- [x] `new Condition()` - create condition variable
+- [x] `cond.acquire()` / `cond.release()` - lock management
+- [x] `cond.wait()` - wait for signal
+- [x] `cond.signal()` - wake one waiter
+- [x] `cond.broadcast()` - wake all waiters
+- [x] Runtime: `sys_condition_*()` functions
 
-// Compiler validates Send trait
-class NonSendable {
-    var data: String;
-}
+### 3.4 Send and Sync Traits
 
-var badChannel = new Channel<NonSendable>(10);
-badChannel.send(new NonSendable());  // ERROR: NonSendable does not implement Send
-```
-
-### 3.3 Send and Sync Traits
-
-**Status:** 🔴 Not Started
+**Status:** 🟡 Parsing Complete, Validation Not Enforced
 **Dependencies:** Derived Traits System
 **Design:** See [SEND_SYNC_VALIDATION.md](SEND_SYNC_VALIDATION.md) for validation strategy
 
-**Tasks:**
+**Completed:**
+- [x] `Send` and `Sync` in `DerivedTrait` enum
+- [x] `@:derive([Send, Sync])` parsing works
+- [x] Classes can be annotated with Send/Sync
 
-**Phase 1: Foundation**
-- [ ] Add `Send` and `Sync` to `DerivedTrait` enum
-- [ ] Update `DerivedTrait::from_str()` to parse "Send" and "Sync"
-- [ ] Test @:derive([Send, Sync]) parsing
+**Not Yet Enforced:**
+- [ ] Compile-time validation that captured variables are Send
+- [ ] Compile-time validation that channel element types are Send
+- [ ] Auto-derivation rules (struct is Send if all fields are Send)
+- [ ] Closure capture analysis for Send validation
 
-**Phase 2: Trait Checker**
-- [ ] Create `TraitChecker` struct in compiler/src/tast/trait_checker.rs
-- [ ] Implement `is_send()` for all type kinds (primitives, classes, arrays, etc.)
-- [ ] Implement `is_sync()` for all type kinds
-- [ ] Implement auto-derivation rules (struct is Send if all fields are Send)
-- [ ] Add tests for trait checking
+**Note:** The threading system works correctly at runtime. Send/Sync annotations are parsed but not enforced at compile time. This is a future enhancement for compile-time safety guarantees.
 
-**Phase 3: Capture Analysis**
-- [ ] Create `CaptureAnalyzer` struct in compiler/src/tast/closure_analysis.rs
-- [ ] Implement `find_captures()` for closure expressions
-- [ ] Walk all expression types to find captured variables
-- [ ] Distinguish local vs captured variables via scope analysis
-- [ ] Test closure capture detection
+### 3.5 Memory Safety Integration
 
-**Phase 4: Validation in Extern Lowering**
-- [ ] Implement `lower_thread_spawn()` with Send validation for captures
-- [ ] Implement `lower_channel_new()` with Send validation for element type
-- [ ] Implement `lower_arc_new()` with Send+Sync validation
-- [ ] Add detailed error messages with suggestions
-- [ ] Test validation errors and error messages
+**Status:** 🟢 Runtime Complete, Compile-time Validation Partial
 
-**Phase 5: Integration**
-- [ ] Integrate TraitChecker into compilation pipeline
-- [ ] Add Send/Sync validation to MirSafetyValidator
-- [ ] Update error reporting with type names
-- [ ] Write comprehensive validation tests
+**Completed:**
+- [x] Arc for shared ownership across threads
+- [x] Mutex for interior mutability
+- [x] MutexGuard for RAII-style lock management
+- [x] Channel for ownership transfer between threads
 
-**Example:**
-```haxe
-@:derive([Send, Sync])
-class SharedCounter {
-    @:atomic var count: Int;  // Thread-safe
-}
-
-@:derive([Send])  // NOT Sync (contains RefCell-like interior mutability)
-class ThreadLocalData {
-    var data: Array<Int>;
-}
-
-// Compiler error: String is not Send
-spawn(() -> {
-    var s: String = getExternalString();  // ERROR: String not marked Send
-});
-```
-
-### 3.4 Memory Safety Integration
-
-**Status:** 🔴 Not Started
-**Dependencies:** MIR Safety Validator
-
-**Tasks:**
+**Not Yet Enforced:**
 - [ ] Validate Send/Sync at MIR level
-- [ ] Prevent data races through ownership
-- [ ] Enforce "no shared mutable state" rule
-- [ ] Add thread-safety validation errors
-- [ ] Channel ownership transfer validation
-- [ ] Arc<T> for shared ownership across threads
-- [ ] Mutex<T> for interior mutability
+- [ ] Compile-time data race prevention
+- [ ] Enforce "no shared mutable state" rule at compile time
 
 ---
 
@@ -630,7 +602,7 @@ map.set(new Key(1, "foo"), "value");
 
 ## 5. Memory Safety Enhancements 🟢
 
-**Status:** 🟢 Infrastructure Complete, Analysis Ongoing
+**Status:** 🟢 Infrastructure Complete, Critical Fixes Applied
 
 ### 5.1 Completed
 
@@ -639,6 +611,9 @@ map.set(new Key(1, "foo"), "value");
 - [x] Pipeline integration
 - [x] Use-after-move detection (infrastructure)
 - [x] @:derive([Clone, Copy]) validation
+- [x] **Alloc instruction side effects** - Fixed LICM hoisting allocations out of loops (2026-01-28)
+- [x] **Break/continue drop scope preservation** - Fixed scope stack corruption on control flow (2026-01-28)
+- [x] **Tracked allocator for debugging** - Available in runtime but using libc malloc/free in production
 
 ### 5.2 Enhancement Needed
 
@@ -963,16 +938,28 @@ inventory::submit! { RayzorSymbol::new("haxe_std_parse_int", haxe_std_parse_int 
 
 ## 9. Testing Infrastructure 🟡
 
-**Status:** Basic Tests Exist
+**Status:** Comprehensive Test Suite with CI Infrastructure
+
+### 9.1 Completed
+
+- [x] **600/600 tests passing** (100% pass rate as of 2026-01-28)
+- [x] **Docker stress test environment** (`ci/bench-test/`) for reproducible amd64 testing
+- [x] **SIGSEGV signal handler** for crash diagnosis with stack traces
+- [x] **Automated stress testing** (20-iteration default, configurable)
+- [x] Comprehensive unit tests across parser, runtime, compiler
+- [x] E2E integration tests (test_rayzor_stdlib_e2e, test_core_types_e2e)
+- [x] Macro system tests (113 unit tests)
+- [x] Tiered JIT stress tests (20/20 stability)
+
+### 9.2 In Progress / Needed
 
 **Tasks:**
 - [ ] Comprehensive generics test suite
 - [ ] Async/await integration tests
-- [ ] Concurrency stress tests
-- [ ] Memory safety violation tests
-- [ ] Performance benchmarks
+- [ ] Memory safety violation tests (edge cases)
+- [ ] Performance benchmarks (formal suite)
 - [ ] Fuzzing infrastructure
-- [ ] CI/CD pipeline improvements
+- [ ] CI/CD GitHub Actions integration
 
 ---
 
@@ -1000,10 +987,11 @@ inventory::submit! { RayzorSymbol::new("haxe_std_parse_int", haxe_std_parse_int 
 3. 🟡 Derived traits (Clone, Copy, Send, Sync parsing)
 4. 🔴 Generic metadata pipeline integration
 
-### Phase 2: JIT Execution (CURRENT PRIORITY)
-5. 🟡 **JIT Execution - Runtime concurrency primitives (BLOCKER)**
-6. 🟡 **JIT Execution - Cranelift integration**
-7. 🔴 **JIT Execution - E2E test execution (L5/L6)**
+### Phase 2: JIT Execution ✅ COMPLETE (2026-01-28)
+
+5. ✅ **JIT Execution - Runtime concurrency primitives** (29 functions implemented)
+6. ✅ **JIT Execution - Cranelift integration** (plugin system working)
+7. ✅ **JIT Execution - E2E test execution** (tiered backend 20/20 stress tests)
 
 ### Phase 3: Core Features
 8. 🔴 Generics type system
@@ -1028,15 +1016,22 @@ inventory::submit! { RayzorSymbol::new("haxe_std_parse_int", haxe_std_parse_int 
 
 ### Current Blockers
 
-**For JIT Execution (highest priority):**
-1. Missing runtime concurrency primitives (thread, arc, mutex, channel)
-2. Missing Cranelift symbol registration for runtime functions
-3. Broken test examples (API changes)
+**For JIT Execution:** ✅ RESOLVED (2026-01-28)
+- ~~Missing runtime concurrency primitives~~ ✅ All 29 functions implemented
+- ~~Missing Cranelift symbol registration~~ ✅ Plugin system working
+- ~~Broken test examples~~ ✅ Fixed and passing
+- ~~Alloc instruction LICM hoisting~~ ✅ Fixed - Alloc now has side effects
+- ~~Break/continue drop scope corruption~~ ✅ Fixed - State preserved across branches
 
 **For Full Concurrency Support:**
-1. JIT execution must work first
-2. Send/Sync trait validation (design exists, not implemented)
-3. Capture analysis for closures
+1. ✅ JIT execution works (tiered backend 20/20 stress tests passing)
+2. 🔴 Send/Sync trait validation (design exists, not implemented)
+3. 🔴 Capture analysis for closures
+
+**Remaining Work:**
+1. Generics constraint validation and abstract types
+2. Async/await state machine transformation
+3. Full RTTI for Type/Reflect classes
 
 ---
 
@@ -1172,11 +1167,11 @@ For @:coreType extern classes in stdlib:
 
 ---
 
-## 12. JIT Execution (Cranelift Backend) 🟡
+## 12. JIT Execution (Cranelift Backend) 🟢
 
 **Priority:** High
 **Complexity:** Medium-High
-**Status:** Codegen Infrastructure Complete, Runtime Integration Needed
+**Status:** ✅ Complete - Tiered JIT Working (2026-01-28)
 
 **Related Files:**
 - `compiler/src/codegen/cranelift_backend.rs` - Cranelift JIT backend ✅
@@ -1315,8 +1310,10 @@ E2E test infrastructure now supports all levels:
 - ✅ MIR lowering (complete)
 - ✅ Stdlib mapping (complete)
 - ✅ Property access (complete)
-- ❌ Runtime concurrency primitives (blocker)
-- ❌ Cranelift symbol registration (blocker)
+- ✅ Runtime concurrency primitives (complete - 29 functions)
+- ✅ Cranelift symbol registration (complete - plugin system)
+- ✅ Alloc instruction side effects (fixed 2026-01-28)
+- ✅ Break/continue drop scope state (fixed 2026-01-28)
 
 ---
 
@@ -1358,11 +1355,13 @@ trace(v.length());  // Works fine
 
 - [ ] Remove DEBUG log statements cleanly (without breaking code)
 - [ ] Consolidate error handling (CompilationError vs custom errors)
-- [ ] Reduce warnings in codebase (491 warnings in compiler)
+- [ ] Reduce warnings in codebase
 - [ ] Improve type inference completeness
 - [ ] Refactor HIR/MIR distinction (clarify naming)
 - [ ] Performance profiling and bottleneck identification
-- [ ] Fix test_full_pipeline_cranelift.rs API usage
+- [x] Fix test_full_pipeline_cranelift.rs API usage ✅
+- [x] Fix Alloc instruction LICM hoisting ✅ (2026-01-28)
+- [x] Fix break/continue drop scope corruption ✅ (2026-01-28)
 
 ---
 
@@ -1373,7 +1372,38 @@ trace(v.length());  // Works fine
 - **Async state machines** build on generics and memory safety
 - Implementation should follow dependency order to avoid rework
 
-**Last Updated:** 2025-11-27
+**Last Updated:** 2026-01-28
+
+## Recent Progress (Session 2026-01-28)
+
+**Critical Bug Fixes:**
+- ✅ **Fixed Alloc instruction side effects** - `IrInstruction::Alloc` was not marked as having side effects in `has_side_effects()`, allowing LICM (Loop-Invariant Code Motion) to hoist allocations out of loops. This caused all loop iterations to reuse the same pointer, leading to double-frees and heap corruption (SIGSEGV at 0xf0 in pthread_mutex_lock).
+  - **File:** `compiler/src/ir/instructions.rs`
+  - **Fix:** Added `IrInstruction::Alloc { .. }` to the `has_side_effects()` match expression
+  - **Verification:** 20/20 stress test runs passing on Docker/QEMU amd64 emulation
+
+- ✅ **Fixed break/continue drop scope state** - Break and continue statements were not preserving drop scope state across branches, causing scope stack corruption and invalid SSA phi node updates.
+  - **File:** `compiler/src/ir/hir_to_mir.rs`
+  - **Fix:** Save/restore drop state around break/continue paths, update phi nodes with exit values
+  - **Commit:** b08c502
+
+- ✅ **Reverted to libc malloc/free** - After the Alloc side-effects fix was verified, switched back from tracked allocator to libc malloc/free for optimal performance.
+  - **File:** `compiler/src/codegen/cranelift_backend.rs`
+  - **Impact:** Restored performance while maintaining stability
+
+**CI Infrastructure:**
+- ✅ **Added Docker stress test environment** (`ci/bench-test/`)
+  - `Dockerfile`: Alpine Linux + Rust + LLVM 18 for reproducible amd64 testing
+  - `seghandler.c`: Signal handler for capturing SIGSEGV with stack traces
+  - `stress-test.sh`: Automated stress test script (20 iterations default)
+  - Usage: `docker build --platform linux/amd64 -t rayzor-bench-test -f ci/bench-test/Dockerfile .`
+
+**Test Status:**
+- ✅ **600/600 tests passing** (100% pass rate)
+- ✅ **576 total commits** in repository
+- ✅ All tiered backend stress tests pass (20/20 runs on Docker/QEMU)
+
+---
 
 ## Recent Progress (Session 2025-11-27)
 
