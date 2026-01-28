@@ -239,6 +239,18 @@ register_symbol!("haxe_trace_any", crate::haxe_sys::haxe_trace_any);
 // Enum RTTI
 register_symbol!("haxe_register_enum", crate::type_system::haxe_register_enum);
 register_symbol!(
+    "haxe_register_enum_start",
+    crate::type_system::haxe_register_enum_start
+);
+register_symbol!(
+    "haxe_register_enum_variant",
+    crate::type_system::haxe_register_enum_variant
+);
+register_symbol!(
+    "haxe_register_enum_finish",
+    crate::type_system::haxe_register_enum_finish
+);
+register_symbol!(
     "haxe_enum_variant_name",
     crate::type_system::haxe_enum_variant_name
 );

@@ -283,6 +283,117 @@ pub extern "C" fn haxe_register_enum(
     }
 }
 
+// ============================================================================
+// Simpler per-variant registration API (easier to call from generated code)
+// ============================================================================
+
+/// Storage for enum registrations in progress
+/// Maps type_id -> (enum_name, variant_names, expected_count)
+static ENUM_BUILDER: RwLock<Option<HashMap<u32, (String, Vec<(String, usize)>, usize)>>> =
+    RwLock::new(None);
+
+/// Start registering an enum type - call this first, then call register_enum_variant for each variant
+/// Finally call register_enum_finish to complete registration
+/// Note: name_str is a HaxeString pointer (from IrValue::String), not raw *const u8
+#[no_mangle]
+pub extern "C" fn haxe_register_enum_start(
+    type_id: u32,
+    name_str: *const crate::string::HaxeString,
+    _name_len: usize, // Kept for ABI compatibility, but we use HaxeString.len
+    variant_count: usize,
+) {
+    unsafe {
+        // Extract the actual string data from HaxeString
+        let name = if name_str.is_null() {
+            String::from("<null>")
+        } else {
+            let haxe_str = &*name_str;
+            let name_slice = std::slice::from_raw_parts(haxe_str.ptr as *const u8, haxe_str.len);
+            String::from_utf8_lossy(name_slice).to_string()
+        };
+
+        let mut builder = ENUM_BUILDER.write().unwrap();
+        if builder.is_none() {
+            *builder = Some(HashMap::new());
+        }
+        builder
+            .as_mut()
+            .unwrap()
+            .insert(type_id, (name, Vec::with_capacity(variant_count), variant_count));
+    }
+}
+
+/// Register a single enum variant - call after register_enum_start for each variant
+/// Note: name_str is a HaxeString pointer (from IrValue::String), not raw *const u8
+#[no_mangle]
+pub extern "C" fn haxe_register_enum_variant(
+    type_id: u32,
+    _variant_index: usize,
+    name_str: *const crate::string::HaxeString,
+    _name_len: usize, // Kept for ABI compatibility, but we use HaxeString.len
+    param_count: usize,
+) {
+    unsafe {
+        // Extract the actual string data from HaxeString
+        let name = if name_str.is_null() {
+            String::from("<null>")
+        } else {
+            let haxe_str = &*name_str;
+            let name_slice = std::slice::from_raw_parts(haxe_str.ptr as *const u8, haxe_str.len);
+            String::from_utf8_lossy(name_slice).to_string()
+        };
+
+        let mut builder = ENUM_BUILDER.write().unwrap();
+        if let Some(ref mut map) = *builder {
+            if let Some((_, variants, _)) = map.get_mut(&type_id) {
+                variants.push((name, param_count));
+            }
+        }
+    }
+}
+
+/// Finish enum registration - call after all variants have been registered
+/// This creates the final TypeInfo and registers it
+#[no_mangle]
+pub extern "C" fn haxe_register_enum_finish(type_id: u32) {
+    let mut builder = ENUM_BUILDER.write().unwrap();
+    if let Some(ref mut map) = *builder {
+        if let Some((enum_name, variants, _)) = map.remove(&type_id) {
+            // Convert to static storage
+            let enum_name_static: &'static str = Box::leak(enum_name.into_boxed_str());
+
+            // Build static variant info array
+            let variant_infos: Vec<EnumVariantInfo> = variants
+                .into_iter()
+                .map(|(name, param_count)| EnumVariantInfo {
+                    name: Box::leak(name.into_boxed_str()),
+                    param_count,
+                })
+                .collect();
+
+            let variants_static: &'static [EnumVariantInfo] = Box::leak(variant_infos.into_boxed_slice());
+
+            let enum_info = Box::leak(Box::new(EnumInfo {
+                name: enum_name_static,
+                variants: variants_static,
+            }));
+
+            let type_info = TypeInfo {
+                name: enum_name_static,
+                size: std::mem::size_of::<i64>(),
+                align: std::mem::align_of::<i64>(),
+                to_string: enum_to_string,
+                enum_info: Some(enum_info),
+            };
+
+            register_type(TypeId(type_id), type_info);
+
+            debug!("Registered enum '{}' with {} variants at type_id {}",
+                   enum_name_static, variants_static.len(), type_id);
+        }
+    }
+}
+
 /// toString implementation for enum types
 /// Takes a pointer to (type_id: u32, discriminant: i64) tuple
 unsafe extern "C" fn enum_to_string(value_ptr: *const u8) -> StringPtr {

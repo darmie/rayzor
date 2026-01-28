@@ -74,22 +74,31 @@ class Main {
 "#;
     run_test(source2, "enum_var_trace");
 
-    // Test 3: Enum with parameters (disabled for now - parameterized enums not yet supported)
-    // println!("\nTest 3: Enum with parameters");
-    // let source3 = r#"
-    // enum Result {
-    //     Ok(value:Int);
-    //     Error(msg:String);
-    // }
-    //
-    // class Main {
-    //     static function main() {
-    //         var r = Result.Ok(42);
-    //         trace(r);  // Should print "Ok(42)" or similar
-    //     }
-    // }
-    // "#;
-    // run_test(source3, "enum_with_params");
+    // Test 3: Enum with parameters
+    println!("\nTest 3: Enum with parameters");
+    let source3 = r#"
+enum MyResult {
+    Ok(value:Int);
+    Error(msg:String);
+}
+
+class Main {
+    static function main() {
+        trace("Before ok");
+        var ok = MyResult.Ok(42);
+        trace("After ok creation, before trace(ok)");
+        trace(ok);  // Should print "Ok"
+        trace("After trace(ok)");
+
+        trace("Before err");
+        var err = MyResult.Error("oops");
+        trace("After err creation, before trace(err)");
+        trace(err);  // Should print "Error"
+        trace("After trace(err)");
+    }
+}
+"#;
+    run_test(source3, "enum_with_params");
 }
 
 fn run_test(source: &str, name: &str) {

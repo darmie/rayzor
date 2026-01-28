@@ -767,8 +767,33 @@ impl<'a> AstLowering<'a> {
             match &enum_type_info.kind {
                 crate::tast::core::TypeKind::Enum { type_args, .. } => {
                     if type_args.is_empty() {
-                        // Non-generic enum, no instantiation needed
-                        // println!("DEBUG: Non-generic enum, no instantiation needed");
+                        // Non-generic enum - ensure function type has enum as return type
+                        // This is critical for type inference of parameterized enum constructors
+                        let constructor_sym = self.context.symbol_table.get_symbol(constructor_symbol);
+                        if let Some(sym) = constructor_sym {
+                            // Extract params first, then drop the borrow
+                            let params_opt = {
+                                let type_table = self.context.type_table.borrow();
+                                if let Some(func_type_info) = type_table.get(sym.type_id) {
+                                    if let crate::tast::core::TypeKind::Function { params, .. } = &func_type_info.kind {
+                                        Some(params.clone())
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            };
+                            // Now create the function type with the enum as return type
+                            if let Some(params) = params_opt {
+                                let corrected_func_type = self
+                                    .context
+                                    .type_table
+                                    .borrow_mut()
+                                    .create_function_type(params, enum_symbol.type_id);
+                                func_expr.expr_type = corrected_func_type;
+                            }
+                        }
                         return Ok(func_expr);
                     }
 
@@ -5998,6 +6023,67 @@ impl<'a> AstLowering<'a> {
                                     metadata,
                                 });
                             }
+
+                            // Check if this is an enum constructor call like MyResult.Ok(42)
+                            if symbol.kind == crate::tast::symbols::SymbolKind::Enum {
+                                let enum_symbol = symbol_id;
+                                let variant_name = self.context.intern_string(field);
+
+                                // Look up the enum variant
+                                if let Some(variants) =
+                                    self.context.symbol_table.get_enum_variants(enum_symbol)
+                                {
+                                    for &variant_id in variants {
+                                        if let Some(variant_sym) =
+                                            self.context.symbol_table.get_symbol(variant_id)
+                                        {
+                                            if variant_sym.name == variant_name {
+                                                // This is an enum constructor call
+                                                // Create a func_expr representing the enum variant
+                                                let mut func_expr = TypedExpression {
+                                                    expr_type: variant_sym.type_id,
+                                                    kind: TypedExpressionKind::Variable {
+                                                        symbol_id: variant_id,
+                                                    },
+                                                    usage: VariableUsage::Borrow,
+                                                    lifetime_id: crate::tast::LifetimeId::first(),
+                                                    source_location: self.context.create_location(),
+                                                    metadata: ExpressionMetadata::default(),
+                                                };
+
+                                                // Instantiate the enum constructor type for proper return type
+                                                func_expr = self.instantiate_enum_constructor_type(
+                                                    variant_id, &arg_exprs, func_expr,
+                                                )?;
+
+                                                let kind = TypedExpressionKind::FunctionCall {
+                                                    function: Box::new(func_expr),
+                                                    arguments: arg_exprs,
+                                                    type_arguments: Vec::new(),
+                                                };
+
+                                                let expr_type = self.infer_expression_type(&kind)?;
+                                                let usage = self.determine_variable_usage(&kind);
+                                                let lifetime_id =
+                                                    self.assign_lifetime(&kind, &expr_type);
+                                                let metadata =
+                                                    self.analyze_expression_metadata(&kind);
+
+                                                return Ok(TypedExpression {
+                                                    expr_type,
+                                                    kind,
+                                                    usage,
+                                                    lifetime_id,
+                                                    source_location: self
+                                                        .context
+                                                        .span_to_location(&expression.span),
+                                                    metadata,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -6481,61 +6567,103 @@ impl<'a> AstLowering<'a> {
         if let ExprKind::Ident(class_name) = &expr.kind {
             let class_name_interned = self.context.intern_string(class_name);
 
-            // Try to resolve as a class symbol
+            // Try to resolve as a class or enum symbol
             if let Some(symbol_id) = self.resolve_symbol_in_scope_hierarchy(class_name_interned) {
-                if let Some(symbol) = self.context.symbol_table.get_symbol(symbol_id) {
-                    // Check if this symbol represents a class declaration (not just a variable of class type)
-                    if symbol.kind == crate::tast::symbols::SymbolKind::Class {
-                        // This is a class name, so this is static field access
-                        let class_symbol = symbol_id;
-                        let field_name = self.context.intern_string(field);
+                // Extract symbol kind to release the borrow before calling intern_string
+                let symbol_kind = self
+                    .context
+                    .symbol_table
+                    .get_symbol(symbol_id)
+                    .map(|s| s.kind);
 
-                        // Look for the field in this class and check if it's static
-                        let field_info = if let Some(fields) = self.class_fields.get(&class_symbol)
+                // Check if this symbol represents a class declaration (not just a variable of class type)
+                if symbol_kind == Some(crate::tast::symbols::SymbolKind::Class) {
+                    // This is a class name, so this is static field access
+                    let class_symbol = symbol_id;
+                    let field_name = self.context.intern_string(field);
+
+                    // Look for the field in this class and check if it's static
+                    let field_info = if let Some(fields) = self.class_fields.get(&class_symbol) {
+                        fields
+                            .iter()
+                            .find(|(name, _, _)| *name == field_name)
+                            .map(|(_, symbol, is_static)| (*symbol, *is_static))
+                    } else {
+                        None
+                    };
+
+                    if let Some((field_symbol, _is_static)) = field_info {
+                        // Create StaticFieldAccess for any Class.field syntax
+                        // The type checker will validate if it's allowed
+                        let expr_type = if let Some(field) =
+                            self.find_field_in_class(&class_symbol, field_symbol)
                         {
-                            fields
-                                .iter()
-                                .find(|(name, _, _)| *name == field_name)
-                                .map(|(_, symbol, is_static)| (*symbol, *is_static))
+                            field.1 // field type
                         } else {
-                            None
+                            self.context.type_table.borrow().dynamic_type()
                         };
 
-                        if let Some((field_symbol, is_static)) = field_info {
-                            // Create StaticFieldAccess for any Class.field syntax
-                            // The type checker will validate if it's allowed
-                            let expr_type = if let Some(field) =
-                                self.find_field_in_class(&class_symbol, field_symbol)
+                        let kind = TypedExpressionKind::StaticFieldAccess {
+                            class_symbol,
+                            field_symbol,
+                        };
+
+                        let usage = VariableUsage::Copy;
+                        let lifetime_id = self.assign_lifetime(&kind, &expr_type);
+                        let metadata = self.analyze_expression_metadata(&kind);
+
+                        // Calculate the span for the field name specifically
+                        // The field appears after the object expression and a dot
+                        let field_span = parser::haxe_ast::Span::new(
+                            expr.span.end + 1, // +1 for the dot
+                            expr.span.end + 1 + field.len(),
+                        );
+
+                        return Ok(TypedExpression {
+                            expr_type,
+                            kind,
+                            usage,
+                            lifetime_id,
+                            source_location: self.context.span_to_location(&field_span),
+                            metadata,
+                        });
+                    }
+                }
+
+                // Check if this is an enum and the field is a variant
+                if symbol_kind == Some(crate::tast::symbols::SymbolKind::Enum) {
+                    let enum_symbol = symbol_id;
+                    let variant_name = self.context.intern_string(field);
+
+                    // Look up enum variants
+                    if let Some(variants) =
+                        self.context.symbol_table.get_enum_variants(enum_symbol)
+                    {
+                        for &variant_id in variants {
+                            if let Some(variant_sym) =
+                                self.context.symbol_table.get_symbol(variant_id)
                             {
-                                field.1 // field type
-                            } else {
-                                self.context.type_table.borrow().dynamic_type()
-                            };
+                                if variant_sym.name == variant_name {
+                                    let variant_type = variant_sym.type_id;
+                                    let kind = TypedExpressionKind::Variable {
+                                        symbol_id: variant_id,
+                                    };
+                                    let usage = VariableUsage::Borrow;
+                                    let lifetime_id = self.assign_lifetime(&kind, &variant_type);
+                                    let metadata = self.analyze_expression_metadata(&kind);
 
-                            let kind = TypedExpressionKind::StaticFieldAccess {
-                                class_symbol,
-                                field_symbol,
-                            };
-
-                            let usage = VariableUsage::Copy;
-                            let lifetime_id = self.assign_lifetime(&kind, &expr_type);
-                            let metadata = self.analyze_expression_metadata(&kind);
-
-                            // Calculate the span for the field name specifically
-                            // The field appears after the object expression and a dot
-                            let field_span = parser::haxe_ast::Span::new(
-                                expr.span.end + 1, // +1 for the dot
-                                expr.span.end + 1 + field.len(),
-                            );
-
-                            return Ok(TypedExpression {
-                                expr_type,
-                                kind,
-                                usage,
-                                lifetime_id,
-                                source_location: self.context.span_to_location(&field_span),
-                                metadata,
-                            });
+                                    return Ok(TypedExpression {
+                                        expr_type: variant_type,
+                                        kind,
+                                        usage,
+                                        lifetime_id,
+                                        source_location: self
+                                            .context
+                                            .create_location_from_span(expression.span),
+                                        metadata,
+                                    });
+                                }
+                            }
                         }
                     }
                 }
@@ -8232,6 +8360,23 @@ impl<'a> AstLowering<'a> {
                     *key_type,
                     *value_type,
                 ))
+            }
+            TypedExpressionKind::FunctionCall { function, .. } => {
+                // Extract return type from the function's type
+                // For enum constructors, the function has a Function type where return_type is the enum type
+                let type_table = self.context.type_table.borrow();
+                if let Some(func_type) = type_table.get(function.expr_type) {
+                    match &func_type.kind {
+                        crate::tast::core::TypeKind::Function { return_type, .. } => {
+                            Ok(*return_type)
+                        }
+                        // If it's already an enum type (for simple enum variants), use it directly
+                        crate::tast::core::TypeKind::Enum { .. } => Ok(function.expr_type),
+                        _ => Ok(type_table.dynamic_type()),
+                    }
+                } else {
+                    Ok(type_table.dynamic_type())
+                }
             }
             _ => {
                 // Log unhandled case as warning but continue with dynamic type

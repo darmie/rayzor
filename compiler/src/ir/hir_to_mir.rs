@@ -930,8 +930,13 @@ impl<'a> HirToMirContext<'a> {
             self.lower_global(*symbol_id, global);
         }
 
-        // Generate __init__ function for dynamic global initialization
-        if !self.dynamic_globals.is_empty() {
+        // Generate __init__ function for dynamic global initialization and enum RTTI
+        // Also generate if we have enums to register (even without dynamic globals)
+        let has_enums = self
+            .current_hir_types
+            .values()
+            .any(|decl| matches!(decl, HirTypeDecl::Enum(_)));
+        if !self.dynamic_globals.is_empty() || has_enums {
             self.generate_module_init_function();
         }
 
@@ -3903,6 +3908,36 @@ impl<'a> HirToMirContext<'a> {
                     }
                 }
 
+                // Check if callee is an enum constructor (EnumVariant symbol kind)
+                // Handle enum constructors with parameters like MyResult.Ok(42)
+                if let HirExprKind::Variable { symbol, .. } = &callee.kind {
+                    if let Some(sym) = self.symbol_table.get_symbol(*symbol) {
+                        use crate::tast::SymbolKind;
+                        if sym.kind == SymbolKind::EnumVariant {
+                            // This is an enum constructor call with parameters
+                            // For now, just return the discriminant to make trace work
+                            // TODO: Properly allocate enum struct and store parameters
+                            if let Some(parent_enum_id) =
+                                self.symbol_table.find_parent_enum_for_constructor(*symbol)
+                            {
+                                if let Some(variants) =
+                                    self.symbol_table.get_enum_variants(parent_enum_id)
+                                {
+                                    for (idx, variant_id) in variants.iter().enumerate() {
+                                        if *variant_id == *symbol {
+                                            // Return discriminant as i64
+                                            // NOTE: Parameters are ignored for now - this is a temporary workaround
+                                            return self
+                                                .builder
+                                                .build_const(IrValue::I64(idx as i64));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Check if callee is a direct function reference
                 if let HirExprKind::Variable { symbol, .. } = &callee.kind {
                     let symbol_name = self
@@ -4241,9 +4276,35 @@ impl<'a> HirToMirContext<'a> {
                         }
                         drop(type_table);
 
-                        // For enum variables, the discriminant will be printed as an integer
+                        // Handle enum variables - use RTTI-based trace with compile-time type_id
                         // Direct enum variant expressions (Color.Red) are handled above and print variant names
-                        // TODO: Implement RTTI registration to print variant names for enum variables
+                        if let Some(crate::tast::core::TypeKind::Enum { symbol_id, .. }) =
+                            &hir_type_kind
+                        {
+                            // Get the enum's TypeId from its symbol
+                            if let Some(enum_sym) = self.symbol_table.get_symbol(*symbol_id) {
+                                let enum_type_id = enum_sym.type_id;
+
+                                // Build type_id constant (u32)
+                                let type_id_const = self
+                                    .builder
+                                    .build_const(IrValue::I32(enum_type_id.0 as i32))?;
+
+                                // arg_reg already holds the discriminant (i64)
+                                // Call haxe_trace_enum(type_id: u32, discriminant: i64)
+                                let trace_enum_id = self.get_or_register_extern_function(
+                                    "haxe_trace_enum",
+                                    vec![IrType::I32, IrType::I64],
+                                    IrType::Void,
+                                );
+
+                                return self.builder.build_call_direct(
+                                    trace_enum_id,
+                                    vec![type_id_const, arg_reg],
+                                    IrType::Void,
+                                );
+                            }
+                        }
 
                         // Get the actual MIR type from the register (not the HIR type)
                         // This is important because HIR types may be vague (Ptr(Void)) but
@@ -12899,6 +12960,138 @@ impl<'a> HirToMirContext<'a> {
         self.builder.module.add_type(typedef);
     }
 
+    /// Emit runtime type information registration for all enum types
+    fn emit_enum_rtti_registrations(&mut self) {
+        // Collect enums from current_hir_types
+        let enums_to_register: Vec<_> = self
+            .current_hir_types
+            .iter()
+            .filter_map(|(type_id, decl)| {
+                if let HirTypeDecl::Enum(enum_decl) = decl {
+                    Some((*type_id, enum_decl.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if enums_to_register.is_empty() {
+            return;
+        }
+
+        // Get or register the RTTI functions
+        let start_func_id = self.get_or_register_extern_function(
+            "haxe_register_enum_start",
+            vec![
+                IrType::I32, // type_id
+                IrType::Ptr(Box::new(IrType::I8)), // name_ptr
+                IrType::I64, // name_len
+                IrType::I64, // variant_count
+            ],
+            IrType::Void,
+        );
+
+        let variant_func_id = self.get_or_register_extern_function(
+            "haxe_register_enum_variant",
+            vec![
+                IrType::I32, // type_id
+                IrType::I64, // variant_index
+                IrType::Ptr(Box::new(IrType::I8)), // name_ptr
+                IrType::I64, // name_len
+                IrType::I64, // param_count
+            ],
+            IrType::Void,
+        );
+
+        let finish_func_id = self.get_or_register_extern_function(
+            "haxe_register_enum_finish",
+            vec![IrType::I32], // type_id
+            IrType::Void,
+        );
+
+        // Register each enum
+        for (_hir_type_id, enum_decl) in enums_to_register {
+            // Use the symbol's type_id for consistency with haxe_trace_enum
+            let symbol_type_id = self
+                .symbol_table
+                .get_symbol(enum_decl.symbol_id)
+                .map(|sym| sym.type_id.0 as i64)
+                .unwrap_or(0);
+            // Resolve the interned string to get the actual enum name
+            let enum_name = self
+                .string_interner
+                .get(enum_decl.name)
+                .unwrap_or("<unknown>")
+                .to_string();
+            let variant_count = enum_decl.variants.len();
+
+            // Build: haxe_register_enum_start(type_id, name_ptr, name_len, variant_count)
+            let type_id_reg = self
+                .builder
+                .build_const(IrValue::I32(symbol_type_id as i32))
+                .unwrap_or(IrId::invalid());
+            let name_ptr = self
+                .builder
+                .build_const(IrValue::String(enum_name.clone()))
+                .unwrap_or(IrId::invalid());
+            let name_len = self
+                .builder
+                .build_const(IrValue::I64(enum_name.len() as i64))
+                .unwrap_or(IrId::invalid());
+            let variant_count_reg = self
+                .builder
+                .build_const(IrValue::I64(variant_count as i64))
+                .unwrap_or(IrId::invalid());
+
+            let _ = self.builder.build_call_direct(
+                start_func_id,
+                vec![type_id_reg, name_ptr, name_len, variant_count_reg],
+                IrType::Void,
+            );
+
+            // Register each variant
+            for (idx, variant) in enum_decl.variants.iter().enumerate() {
+                // Resolve the interned string to get the actual variant name
+                let variant_name = self
+                    .string_interner
+                    .get(variant.name)
+                    .unwrap_or("<unknown>")
+                    .to_string();
+                let param_count = variant.fields.len();
+
+                let idx_reg = self
+                    .builder
+                    .build_const(IrValue::I64(idx as i64))
+                    .unwrap_or(IrId::invalid());
+                let var_name_ptr = self
+                    .builder
+                    .build_const(IrValue::String(variant_name.clone()))
+                    .unwrap_or(IrId::invalid());
+                let var_name_len = self
+                    .builder
+                    .build_const(IrValue::I64(variant_name.len() as i64))
+                    .unwrap_or(IrId::invalid());
+                let param_count_reg = self
+                    .builder
+                    .build_const(IrValue::I64(param_count as i64))
+                    .unwrap_or(IrId::invalid());
+
+                let _ = self.builder.build_call_direct(
+                    variant_func_id,
+                    vec![type_id_reg, idx_reg, var_name_ptr, var_name_len, param_count_reg],
+                    IrType::Void,
+                );
+            }
+
+            // Finish: haxe_register_enum_finish(type_id)
+            let _ = self.builder.build_call_direct(
+                finish_func_id,
+                vec![type_id_reg],
+                IrType::Void,
+            );
+        }
+    }
+
     fn generate_module_init_function(&mut self) {
         // Generate __init__ function that initializes dynamic globals
         // This function is called once at module load time
@@ -12934,6 +13127,9 @@ impl<'a> HirToMirContext<'a> {
             // 1. Get the global's address
             // 2. Store init_value to that address
         }
+
+        // Register enum types with runtime RTTI
+        self.emit_enum_rtti_registrations();
 
         // Return void
         self.builder.build_return(None);
