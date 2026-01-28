@@ -74,6 +74,10 @@ pub struct CraneliftBackend {
     /// Used to link forward references to actual implementations
     /// Key is qualified name (e.g., "StringTools.unsafeCodeAt")
     qualified_name_to_func: HashMap<String, FuncId>,
+
+    /// Cranelift FuncIds for __init__ functions from each compiled module.
+    /// Used by `initialize_modules` to call all module initializers.
+    init_functions: Vec<FuncId>,
 }
 
 impl CraneliftBackend {
@@ -230,6 +234,7 @@ impl CraneliftBackend {
             string_data: HashMap::new(),
             string_counter: 0,
             qualified_name_to_func: HashMap::new(),
+            init_functions: Vec::new(),
         })
     }
 
@@ -543,6 +548,13 @@ impl CraneliftBackend {
                 continue;
             }
             self.compile_function(*func_id, mir_module, function)?;
+
+            // Track __init__ functions for initialize_modules
+            if function.name == "__init__" {
+                if let Some(&cranelift_id) = self.function_map.get(func_id) {
+                    self.init_functions.push(cranelift_id);
+                }
+            }
         }
 
         // Finalize the module
@@ -3555,6 +3567,29 @@ impl CraneliftBackend {
     ///
     /// This function also waits for all spawned threads to complete before returning,
     /// ensuring that JIT code memory remains valid while threads are executing.
+    /// Initialize all modules by calling their `__init__` functions.
+    /// This registers enum RTTI and other module-level initialization.
+    /// Should be called before `call_main`.
+    /// Initialize all modules by calling their `__init__` functions.
+    /// This registers enum RTTI and other module-level initialization.
+    /// Should be called before `call_main`.
+    ///
+    /// Uses tracked cranelift FuncIds since MIR function IDs collide across modules.
+    pub fn initialize_modules(
+        &mut self,
+        _modules: &[std::sync::Arc<crate::ir::IrModule>],
+    ) -> Result<(), String> {
+        for &func_id in &self.init_functions.clone() {
+            let code_ptr = self.module.get_finalized_function(func_id);
+            debug!("Calling __init__ (cranelift {:?})", func_id);
+            unsafe {
+                let init_fn: extern "C" fn(i64) = std::mem::transmute(code_ptr);
+                init_fn(0);
+            }
+        }
+        Ok(())
+    }
+
     pub fn call_main(&mut self, module: &crate::ir::IrModule) -> Result<(), String> {
         // First, look for and call __init__ function if it exists
         // __init__ handles module initialization like registering enum RTTI

@@ -958,6 +958,9 @@ impl CompilationUnit {
         symbol_id
     }
 
+    /// Pre-register type declarations from default stdlib files (e.g. StdTypes.hx).
+    /// This is lightweight: it parses the files and registers enum/class symbols
+    /// into the symbol table without full TAST lowering, preserving lazy stdlib performance.
     /// Register a type alias from BLADE symbol info
     fn register_type_alias_from_blade(&mut self, alias_info: &BladeTypeAliasInfo) -> SymbolId {
         let short_name = self.string_interner.intern(&alias_info.name);
@@ -3079,6 +3082,28 @@ impl CompilationUnit {
         let mut all_imports = imports_to_load;
         all_imports.extend(usings_to_load);
         let _ = self.load_imports_efficiently(&all_imports);
+
+        // Step 2.5: Fully compile StdTypes.hx so its enums (e.g. Result<T,E>) get
+        // proper variant function types and RTTI codegen. Only this one tiny file
+        // is compiled eagerly — all other stdlib files remain lazy.
+        if let Some(stdtypes) = self
+            .stdlib_files
+            .iter()
+            .find(|f| f.filename.ends_with("StdTypes.hx"))
+        {
+            if let Some(source) = stdtypes.input.clone() {
+                let filename = stdtypes.filename.clone();
+                match self.compile_file_with_shared_state(&filename, &source) {
+                    Ok(typed_file) => {
+                        debug!("Fully compiled StdTypes.hx for enum RTTI");
+                        self.loaded_stdlib_typed_files.push(typed_file);
+                    }
+                    Err(e) => {
+                        warn!("Failed to compile StdTypes.hx: {:?}", e);
+                    }
+                }
+            }
+        }
 
         // Step 3: Compile import.hx files using SHARED state
         let import_sources: Vec<(String, String)> = self

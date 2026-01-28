@@ -3035,7 +3035,7 @@ impl<'a> HirToMirContext<'a> {
 
     /// Get the number of fields for a specific enum variant
     fn get_enum_variant_field_count(&self, enum_symbol: SymbolId, variant_idx: usize) -> usize {
-        // Find the enum in HIR types by symbol ID
+        // First check current module's HIR types
         for (_type_id, type_decl) in self.current_hir_types.iter() {
             if let HirTypeDecl::Enum(enum_decl) = type_decl {
                 if enum_decl.symbol_id == enum_symbol {
@@ -3045,16 +3045,45 @@ impl<'a> HirToMirContext<'a> {
                 }
             }
         }
+        // Fallback: check symbol table for enums from other modules (e.g. StdTypes.hx)
+        if let Some(variants) = self.symbol_table.get_enum_variants(enum_symbol) {
+            if let Some(&variant_id) = variants.get(variant_idx) {
+                if let Some(variant_sym) = self.symbol_table.get_symbol(variant_id) {
+                    let type_table = self.type_table.borrow();
+                    if let Some(type_info) = type_table.get(variant_sym.type_id) {
+                        if let crate::tast::core::TypeKind::Function { params, .. } =
+                            &type_info.kind
+                        {
+                            return params.len();
+                        }
+                    }
+                }
+            }
+        }
         0 // Default: no fields
     }
 
     /// Check if an enum has any parameterized variants (requires boxed representation)
     fn enum_is_boxed(&self, enum_symbol: SymbolId) -> bool {
+        // First check current module's HIR types
         for (_type_id, type_decl) in self.current_hir_types.iter() {
             if let HirTypeDecl::Enum(enum_decl) = type_decl {
                 if enum_decl.symbol_id == enum_symbol {
-                    // Enum is boxed if any variant has parameters
                     return enum_decl.variants.iter().any(|v| !v.fields.is_empty());
+                }
+            }
+        }
+        // Fallback: check symbol table for enums from other modules (e.g. StdTypes.hx)
+        if let Some(variants) = self.symbol_table.get_enum_variants(enum_symbol) {
+            let type_table = self.type_table.borrow();
+            for &variant_id in variants {
+                if let Some(variant_sym) = self.symbol_table.get_symbol(variant_id) {
+                    // A variant with parameters has a Function type
+                    if let Some(type_info) = type_table.get(variant_sym.type_id) {
+                        if matches!(type_info.kind, crate::tast::core::TypeKind::Function { .. }) {
+                            return true;
+                        }
+                    }
                 }
             }
         }
@@ -4371,11 +4400,13 @@ impl<'a> HirToMirContext<'a> {
 
                         // Handle enum variables - use RTTI-based trace with compile-time type_id
                         // Direct enum variant expressions (Color.Red) are handled above and print variant names
-                        if let Some(crate::tast::core::TypeKind::Enum { symbol_id, .. }) =
-                            &hir_type_kind
+                        if let Some(crate::tast::core::TypeKind::Enum {
+                            symbol_id,
+                            ref type_args,
+                        }) = hir_type_kind
                         {
                             // Get the enum's TypeId from its symbol
-                            if let Some(enum_sym) = self.symbol_table.get_symbol(*symbol_id) {
+                            if let Some(enum_sym) = self.symbol_table.get_symbol(symbol_id) {
                                 let enum_type_id = enum_sym.type_id;
 
                                 // Build type_id constant (u32)
@@ -4386,16 +4417,94 @@ impl<'a> HirToMirContext<'a> {
                                 // Check if enum is boxed (has parameterized variants)
                                 // Boxed enums store a pointer to heap-allocated struct
                                 // Unboxed enums store just the discriminant as i64
-                                if self.enum_is_boxed(*symbol_id) {
-                                    // Boxed enum: arg_reg is a pointer to [tag:i32][pad:i32][fields...]
-                                    // Call haxe_trace_enum_boxed(type_id: u32, ptr: *const u8)
+                                if self.enum_is_boxed(symbol_id) {
+                                    // Resolve concrete param types from type_args (type inference)
+                                    // type_args maps type parameters to concrete types
+                                    let concrete_type_args: Vec<u8> = {
+                                        let type_table = self.type_table.borrow();
+                                        type_args.iter().map(|&ta| {
+                                            match type_table.get(ta).map(|ti| &ti.kind) {
+                                                Some(crate::tast::core::TypeKind::Int) => 0u8,
+                                                Some(crate::tast::core::TypeKind::Float) => 1u8,
+                                                Some(crate::tast::core::TypeKind::Bool) => 2u8,
+                                                Some(crate::tast::core::TypeKind::String) => 3u8,
+                                                Some(crate::tast::core::TypeKind::TypeParameter { .. }) => 5u8,
+                                                Some(crate::tast::core::TypeKind::Dynamic) => 5u8,
+                                                _ => 4u8,
+                                            }
+                                        }).collect()
+                                    };
+
+                                    // If we have concrete type args, use the typed trace
+                                    if !concrete_type_args.is_empty()
+                                        && concrete_type_args.iter().any(|&t| t != 5)
+                                    {
+                                        let trace_typed_id = self.get_or_register_extern_function(
+                                            "haxe_trace_enum_boxed_typed",
+                                            vec![
+                                                IrType::I32,
+                                                IrType::Ptr(Box::new(IrType::I8)),
+                                                IrType::Ptr(Box::new(IrType::I8)),
+                                                IrType::I64,
+                                            ],
+                                            IrType::Void,
+                                        );
+
+                                        let ptr_reg = self.builder.build_bitcast(
+                                            arg_reg,
+                                            IrType::Ptr(Box::new(IrType::I8)),
+                                        )?;
+
+                                        // Build param types data via heap alloc + stores
+                                        let alloc_size = self.builder.build_const(IrValue::I64(
+                                            concrete_type_args.len() as i64,
+                                        ))?;
+                                        let alloc_func = self.get_or_register_extern_function(
+                                            "rayzor_tracked_alloc",
+                                            vec![IrType::I64],
+                                            IrType::Ptr(Box::new(IrType::I8)),
+                                        );
+                                        let param_types_data = self.builder.build_call_direct(
+                                            alloc_func,
+                                            vec![alloc_size],
+                                            IrType::Ptr(Box::new(IrType::I8)),
+                                        )?;
+                                        for (i, &ptype) in concrete_type_args.iter().enumerate() {
+                                            let offset =
+                                                self.builder.build_const(IrValue::I64(i as i64))?;
+                                            let elem_ptr = self.builder.build_gep(
+                                                param_types_data,
+                                                vec![offset],
+                                                IrType::Ptr(Box::new(IrType::I8)),
+                                            )?;
+                                            let val = self
+                                                .builder
+                                                .build_const(IrValue::I8(ptype as i8))?;
+                                            self.builder.build_store(elem_ptr, val);
+                                        }
+                                        let param_count = self.builder.build_const(
+                                            IrValue::I64(concrete_type_args.len() as i64),
+                                        )?;
+
+                                        return self.builder.build_call_direct(
+                                            trace_typed_id,
+                                            vec![
+                                                type_id_const,
+                                                ptr_reg,
+                                                param_types_data,
+                                                param_count,
+                                            ],
+                                            IrType::Void,
+                                        );
+                                    }
+
+                                    // Fallback: use untyped boxed trace
                                     let trace_enum_boxed_id = self.get_or_register_extern_function(
                                         "haxe_trace_enum_boxed",
                                         vec![IrType::I32, IrType::Ptr(Box::new(IrType::I8))],
                                         IrType::Void,
                                     );
 
-                                    // Convert i64 back to pointer
                                     let ptr_reg = self.builder.build_bitcast(
                                         arg_reg,
                                         IrType::Ptr(Box::new(IrType::I8)),
@@ -13191,7 +13300,9 @@ impl<'a> HirToMirContext<'a> {
                                 Some(crate::tast::core::TypeKind::Float) => 1u8,
                                 Some(crate::tast::core::TypeKind::Bool) => 2u8,
                                 Some(crate::tast::core::TypeKind::String) => 3u8,
-                                _ => 4u8, // Object/Unknown
+                                Some(crate::tast::core::TypeKind::TypeParameter { .. }) => 5u8, // Dynamic/generic
+                                Some(crate::tast::core::TypeKind::Dynamic) => 5u8,
+                                _ => 4u8, // Object
                             }
                         })
                         .collect()

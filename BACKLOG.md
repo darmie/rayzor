@@ -1372,9 +1372,34 @@ trace(v.length());  // Works fine
 - **Async state machines** build on generics and memory safety
 - Implementation should follow dependency order to avoid rework
 
-**Last Updated:** 2026-01-28
+**Last Updated:** 2026-01-28 (Enum Trace with RTTI)
 
-## Recent Progress (Session 2026-01-28)
+## Recent Progress (Session 2026-01-28 - Enum Trace)
+
+**Enum Trace & RTTI:**
+- ✅ **Enum trace with RTTI variant name lookup** - Simple enums: `trace(Color.Red)` → "Red"
+  - Registered enum types in runtime type system with variant names
+  - `haxe_trace_enum(type_id, discriminant)` looks up variant name from RTTI
+  - **Commit:** d4ea44c
+
+- ✅ **Boxed enum representation for parameterized variants** - `trace(MyResult.Ok(42))` → "Ok(42)"
+  - Heap-allocated enums with layout: `[tag:i32][pad:i32][field0:i64][field1:i64]...`
+  - Simple enums (no params) remain as plain i64 discriminants
+  - GEP element size fix in Cranelift backend for correct field offset calculation
+  - `haxe_trace_enum_boxed(type_id, ptr)` reads tag + parameters from memory
+  - ParamType RTTI for type-aware parameter printing (Int, Float, Bool, String, Object)
+  - EnumVariantBuilder type alias for clippy compliance
+  - **Commit:** 5cef9ee
+
+- ✅ **Rustfmt formatting cleanup** in hir_to_mir.rs and ast_lowering.rs
+  - **Commit:** dd623f3
+
+**Test Status:**
+- ✅ **600/600 tests passing** (100% pass rate)
+
+---
+
+## Recent Progress (Session 2026-01-28 - Bug Fixes)
 
 **Critical Bug Fixes:**
 - ✅ **Fixed Alloc instruction side effects** - `IrInstruction::Alloc` was not marked as having side effects in `has_side_effects()`, allowing LICM (Loop-Invariant Code Motion) to hoist allocations out of loops. This caused all loop iterations to reuse the same pointer, leading to double-frees and heap corruption (SIGSEGV at 0xf0 in pthread_mutex_lock).

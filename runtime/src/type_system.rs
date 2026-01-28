@@ -80,11 +80,12 @@ pub struct StringPtr {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ParamType {
-    Int = 0,    // i64
-    Float = 1,  // f64
-    Bool = 2,   // bool
-    String = 3, // HaxeString pointer
-    Object = 4, // Generic pointer
+    Int = 0,     // i64
+    Float = 1,   // f64
+    Bool = 2,    // bool
+    String = 3,  // HaxeString pointer
+    Object = 4,  // Generic pointer
+    Dynamic = 5, // Unknown/generic type parameter — print as i64
 }
 
 /// Enum variant metadata
@@ -374,6 +375,7 @@ pub extern "C" fn haxe_register_enum_variant(
                     1 => ParamType::Float,
                     2 => ParamType::Bool,
                     3 => ParamType::String,
+                    5 => ParamType::Dynamic,
                     _ => ParamType::Object,
                 })
                 .collect()
@@ -554,7 +556,7 @@ pub extern "C" fn haxe_trace_enum_boxed(type_id: u32, ptr: *const u8) {
                             let bytes =
                                 std::slice::from_raw_parts(haxe_str.ptr as *const u8, haxe_str.len);
                             match std::str::from_utf8(bytes) {
-                                Ok(s) => print!("{}", s),
+                                Ok(s) => print!("\"{}\"", s),
                                 Err(_) => print!("<invalid utf8>"),
                             }
                         }
@@ -562,6 +564,101 @@ pub extern "C" fn haxe_trace_enum_boxed(type_id: u32, ptr: *const u8) {
                     ParamType::Object => {
                         let val = *(field_ptr as *const i64);
                         print!("<object@0x{:x}>", val);
+                    }
+                    ParamType::Dynamic => {
+                        // Generic type parameter — print raw i64 value
+                        let val = *(field_ptr as *const i64);
+                        print!("{}", val);
+                    }
+                }
+            }
+            println!(")");
+        }
+    }
+}
+
+/// Trace a boxed enum value with explicit param types from type inference.
+/// Called when the compiler knows the concrete types at the call site (e.g. Result<Int, String>).
+/// param_types_ptr: pointer to array of ParamType (u8) values, one per variant field.
+/// param_count: number of entries in param_types_ptr.
+#[no_mangle]
+pub extern "C" fn haxe_trace_enum_boxed_typed(
+    type_id: u32,
+    ptr: *const u8,
+    param_types_ptr: *const u8,
+    param_count: usize,
+) {
+    if ptr.is_null() {
+        println!("null");
+        return;
+    }
+
+    unsafe {
+        let tag = *(ptr as *const i32);
+
+        // Look up variant name from RTTI (we still need the name)
+        let variant_name = get_enum_variant_info(TypeId(type_id), tag as i64)
+            .map(|info| info.name.to_string())
+            .unwrap_or_else(|| format!("variant{}", tag));
+
+        // Build param types from the caller-provided array
+        let caller_types: Vec<ParamType> = if param_types_ptr.is_null() || param_count == 0 {
+            Vec::new()
+        } else {
+            let types_slice = std::slice::from_raw_parts(param_types_ptr, param_count);
+            types_slice
+                .iter()
+                .map(|&t| match t {
+                    0 => ParamType::Int,
+                    1 => ParamType::Float,
+                    2 => ParamType::Bool,
+                    3 => ParamType::String,
+                    5 => ParamType::Dynamic,
+                    _ => ParamType::Object,
+                })
+                .collect()
+        };
+
+        if caller_types.is_empty() {
+            println!("{}", variant_name);
+        } else {
+            print!("{}(", variant_name);
+            for (i, &param_type) in caller_types.iter().enumerate() {
+                if i > 0 {
+                    print!(", ");
+                }
+                let field_ptr = ptr.add(8 + i * 8);
+
+                match param_type {
+                    ParamType::Int => {
+                        let val = *(field_ptr as *const i64);
+                        print!("{}", val);
+                    }
+                    ParamType::Float => {
+                        let val = *(field_ptr as *const f64);
+                        print!("{}", val);
+                    }
+                    ParamType::Bool => {
+                        let val = *(field_ptr as *const i64) != 0;
+                        print!("{}", val);
+                    }
+                    ParamType::String => {
+                        let str_ptr = *(field_ptr as *const *const crate::haxe_string::HaxeString);
+                        if str_ptr.is_null() {
+                            print!("null");
+                        } else {
+                            let haxe_str = &*str_ptr;
+                            let bytes =
+                                std::slice::from_raw_parts(haxe_str.ptr as *const u8, haxe_str.len);
+                            match std::str::from_utf8(bytes) {
+                                Ok(s) => print!("\"{}\"", s),
+                                Err(_) => print!("<invalid utf8>"),
+                            }
+                        }
+                    }
+                    ParamType::Object | ParamType::Dynamic => {
+                        let val = *(field_ptr as *const i64);
+                        print!("{}", val);
                     }
                 }
             }

@@ -259,6 +259,10 @@ register_symbol!(
     "haxe_trace_enum_boxed",
     crate::type_system::haxe_trace_enum_boxed
 );
+register_symbol!(
+    "haxe_trace_enum_boxed_typed",
+    crate::type_system::haxe_trace_enum_boxed_typed
+);
 
 // Std.string() - Type-specific conversions
 register_symbol!(

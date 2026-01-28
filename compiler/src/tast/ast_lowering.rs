@@ -6403,8 +6403,10 @@ impl<'a> AstLowering<'a> {
 
                     if let Some(symbol_id) = symbol_id_opt {
                         if let Some(symbol) = self.context.symbol_table.get_symbol(symbol_id) {
-                            if symbol.kind == crate::tast::symbols::SymbolKind::Class {
-                                // Return a reference to the class itself
+                            if symbol.kind == crate::tast::symbols::SymbolKind::Class
+                                || symbol.kind == crate::tast::symbols::SymbolKind::Enum
+                            {
+                                // Return a reference to the class/enum itself
                                 let class_type = symbol.type_id;
                                 return Ok(TypedExpression {
                                     expr_type: class_type,
@@ -6534,6 +6536,40 @@ impl<'a> AstLowering<'a> {
                                             source_location: self.context.create_location(),
                                             metadata,
                                         });
+                                    }
+                                }
+                            } else if symbol.kind == crate::tast::symbols::SymbolKind::Enum {
+                                // Found an enum! Look up the variant by field name
+                                if let Some(variants) =
+                                    self.context.symbol_table.get_enum_variants(symbol_id)
+                                {
+                                    for &variant_id in variants {
+                                        if let Some(variant_sym) =
+                                            self.context.symbol_table.get_symbol(variant_id)
+                                        {
+                                            if variant_sym.name == field_name_interned {
+                                                let variant_type = variant_sym.type_id;
+                                                let kind = TypedExpressionKind::Variable {
+                                                    symbol_id: variant_id,
+                                                };
+                                                let usage = VariableUsage::Borrow;
+                                                let lifetime_id =
+                                                    self.assign_lifetime(&kind, &variant_type);
+                                                let metadata =
+                                                    self.analyze_expression_metadata(&kind);
+
+                                                return Ok(TypedExpression {
+                                                    expr_type: variant_type,
+                                                    kind,
+                                                    usage,
+                                                    lifetime_id,
+                                                    source_location: self
+                                                        .context
+                                                        .create_location_from_span(expression.span),
+                                                    metadata,
+                                                });
+                                            }
+                                        }
                                     }
                                 }
                             }
