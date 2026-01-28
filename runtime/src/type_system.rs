@@ -302,10 +302,12 @@ pub extern "C" fn haxe_register_enum(
 /// Variant data collected during registration: (name, param_count, param_types)
 type EnumVariantBuilder = (String, usize, Vec<ParamType>);
 
+/// Enum registration state: (enum_name, variants, expected_variant_count)
+type EnumBuilderEntry = (String, Vec<EnumVariantBuilder>, usize);
+
 /// Storage for enum registrations in progress
-/// Maps type_id -> (enum_name, variants, expected_count)
-static ENUM_BUILDER: RwLock<Option<HashMap<u32, (String, Vec<EnumVariantBuilder>, usize)>>> =
-    RwLock::new(None);
+/// Maps type_id -> EnumBuilderEntry
+static ENUM_BUILDER: RwLock<Option<HashMap<u32, EnumBuilderEntry>>> = RwLock::new(None);
 
 /// Start registering an enum type - call this first, then call register_enum_variant for each variant
 /// Finally call register_enum_finish to complete registration
