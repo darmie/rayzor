@@ -978,27 +978,13 @@ impl CraneliftBackend {
         );
         self.function_map.insert(mir_func_id, func_id);
 
-        // Track extern functions and stdlib wrapper functions in runtime_functions so we don't declare them twice
-        if is_extern {
-            debug!(
-                ": Declared new extern '{}' - MIR {:?} -> Cranelift {:?}",
-                func_name, mir_func_id, func_id
-            );
-            self.runtime_functions.insert(func_name, func_id);
-        } else {
-            // Check if this is a stdlib wrapper function - track it to prevent duplicates
-            let stdlib_mapping = crate::stdlib::runtime_mapping::StdlibMapping::new();
-            let is_stdlib_mir_wrapper = stdlib_mapping
-                .find_by_runtime_name(&function.name)
-                .is_some();
-            if is_stdlib_mir_wrapper {
-                debug!(
-                    ": Declared new stdlib wrapper '{}' - MIR {:?} -> Cranelift {:?}",
-                    func_name, mir_func_id, func_id
-                );
-                self.runtime_functions.insert(func_name, func_id);
-            }
-        }
+        // Track ALL functions by their original name in runtime_functions for dedup.
+        // When compiling multiple MIR modules, the same function (e.g. stdlib wrappers)
+        // appears in each module with different MIR IrFunctionIds. By tracking the
+        // function name -> Cranelift FuncId mapping, subsequent modules will reuse the
+        // existing declaration instead of creating duplicates.
+        self.runtime_functions
+            .insert(function.name.clone(), func_id);
 
         Ok(())
     }

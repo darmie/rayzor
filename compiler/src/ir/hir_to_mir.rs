@@ -3029,6 +3029,64 @@ impl<'a> HirToMirContext<'a> {
     }
 
     /// Get the number of fields for a specific enum variant
+    /// Resolve the discriminant value for an enum variant by name.
+    /// Looks up the enum type → symbol → variants, then finds the matching variant index.
+    fn resolve_enum_variant_discriminant(&self, enum_type: TypeId, variant_name: InternedString) -> Option<i64> {
+        // Get the enum symbol from the type
+        let enum_symbol = self.symbol_table.get_symbol_from_type(enum_type)
+            .or_else(|| {
+                // Try unwrapping GenericInstance or Enum type
+                let type_table = self.type_table.borrow();
+                if let Some(type_info) = type_table.get(enum_type) {
+                    match &type_info.kind {
+                        crate::tast::TypeKind::GenericInstance { base_type, .. } => {
+                            return self.symbol_table.get_symbol_from_type(*base_type);
+                        }
+                        crate::tast::TypeKind::Enum { symbol_id, .. } => {
+                            return Some(*symbol_id);
+                        }
+                        _ => {}
+                    }
+                }
+                None
+            });
+
+        if let Some(enum_sym) = enum_symbol {
+            if let Some(variants) = self.symbol_table.get_enum_variants(enum_sym) {
+                for (idx, &variant_id) in variants.iter().enumerate() {
+                    if let Some(variant_sym) = self.symbol_table.get_symbol(variant_id) {
+                        if variant_sym.name == variant_name {
+                            return Some(idx as i64);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: search ALL enums in symbol table for this variant name
+        // This handles cases where the enum_type doesn't map directly to a symbol
+        let variant_name_str = self.string_interner.get(variant_name)?;
+        for sym in self.symbol_table.all_symbols() {
+            if sym.kind == crate::tast::symbols::SymbolKind::EnumVariant {
+                let sym_name = self.string_interner.get(sym.name).unwrap_or("");
+                if sym_name == variant_name_str {
+                    // Found the variant — get its parent enum and find the index
+                    if let Some(parent_id) = self.symbol_table.find_parent_enum_for_constructor(sym.id) {
+                        if let Some(variants) = self.symbol_table.get_enum_variants(parent_id) {
+                            for (idx, &vid) in variants.iter().enumerate() {
+                                if vid == sym.id {
+                                    return Some(idx as i64);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
     fn get_enum_variant_field_count(&self, enum_symbol: SymbolId, variant_idx: usize) -> usize {
         // First check current module's HIR types
         for (_type_id, type_decl) in self.current_hir_types.iter() {
@@ -9447,12 +9505,35 @@ impl<'a> HirToMirContext<'a> {
                 // Literals in patterns are used for matching, not binding
                 // The matching logic should be handled elsewhere
             }
-            HirPattern::Constructor { .. } => {
-                // Constructor patterns need type information to extract fields
-                self.add_error(
-                    "Constructor patterns not yet supported in MIR lowering",
-                    SourceLocation::unknown(),
-                );
+            HirPattern::Constructor { fields, .. } => {
+                // Extract fields from enum data area and bind sub-patterns
+                for (i, field_pattern) in fields.iter().enumerate() {
+                    if matches!(field_pattern, HirPattern::Wildcard) {
+                        continue;
+                    }
+                    // Field at byte offset 8 + i*8 (tag is at offset 0, 8 bytes with padding)
+                    let field_offset = (8 + i * 8) as i64;
+                    if let Some(offset_val) = self.builder.build_int(field_offset, IrType::I64) {
+                        if let Some(field_ptr) = self.builder.build_gep(
+                            value,
+                            vec![offset_val],
+                            IrType::Ptr(Box::new(IrType::I8)),
+                        ) {
+                            // Load as I64 (the universal storage type for enum fields)
+                            // The enum field stores raw 8-byte values (integers, pointers, etc.)
+                            let load_type = IrType::I64;
+                            let field_ptr_typed = self.builder.build_bitcast(
+                                field_ptr,
+                                IrType::Ptr(Box::new(load_type.clone())),
+                            );
+                            if let Some(fpt) = field_ptr_typed {
+                                if let Some(field_val) = self.builder.build_load(fpt, load_type) {
+                                    self.bind_pattern(field_pattern, field_val);
+                                }
+                            }
+                        }
+                    }
+                }
             }
             HirPattern::Array { .. } => {
                 // Array patterns need runtime length checks
@@ -11509,6 +11590,10 @@ impl<'a> HirToMirContext<'a> {
 
             // Generate case body block
             self.builder.switch_to_block(body_block);
+            // Bind pattern variables (extract enum fields into variable symbols)
+            if !case.patterns.is_empty() {
+                self.bind_pattern(&case.patterns[0], scrut_val);
+            }
             self.lower_block(&case.body);
             self.builder.build_branch(continuation);
         }
@@ -11586,9 +11671,9 @@ impl<'a> HirToMirContext<'a> {
                     return None;
                 };
 
-                // TODO: Look up variant discriminant from type metadata
-                // For now, use a placeholder value (hash of variant name)
-                let variant_discriminant = variant.to_string().len() as i64; // Placeholder
+                // Look up variant discriminant from enum metadata
+                let variant_discriminant = self.resolve_enum_variant_discriminant(*enum_type, *variant)
+                    .unwrap_or(0);
 
                 let Some(expected_tag) = self.builder.build_int(variant_discriminant, IrType::I32)
                 else {
@@ -11602,8 +11687,8 @@ impl<'a> HirToMirContext<'a> {
                     return None;
                 };
 
-                // If no fields to match, just return tag comparison
-                if fields.is_empty() {
+                // If no fields to match, or all fields are wildcards, just return tag comparison
+                if fields.is_empty() || fields.iter().all(|f| matches!(f, HirPattern::Wildcard)) {
                     return Some(tag_matches);
                 }
 

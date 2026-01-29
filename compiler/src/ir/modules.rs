@@ -221,6 +221,13 @@ impl StringPool {
     pub fn get(&self, id: u32) -> Option<&str> {
         self.strings.get(&id).map(|s| s.as_str())
     }
+
+    /// Merge strings from another pool into this one (deduplicating by value)
+    pub fn merge_from(&mut self, other: &StringPool) {
+        for (_id, s) in &other.strings {
+            self.add(s.clone());
+        }
+    }
 }
 
 /// Module metadata

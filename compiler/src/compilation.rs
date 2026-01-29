@@ -949,6 +949,23 @@ impl CompilationUnit {
         self.symbol_table
             .add_symbol_alias(symbol_id, ScopeId::first(), qualified_interned);
 
+        // Register enum variants in root scope so they can be resolved
+        // during pattern matching and constructor calls
+        for variant in &enum_info.variants {
+            let variant_name = self.string_interner.intern(&variant.name);
+            let variant_symbol = self.symbol_table.create_enum_variant_in_scope(
+                variant_name,
+                ScopeId::first(),
+                symbol_id,
+            );
+
+            // Add variant to root scope for global resolution
+            self.scope_tree
+                .get_scope_mut(ScopeId::first())
+                .expect("Root scope should exist")
+                .add_symbol(variant_symbol, variant_name);
+        }
+
         trace!(
             "[BLADE] Registered enum: {} ({} variants)",
             qualified_name,
@@ -1865,6 +1882,11 @@ impl CompilationUnit {
                         debug!("[BLADE] Loaded from cache: {}", name);
                         // Add cached MIR to our modules
                         self.mir_modules.push(std::sync::Arc::new(cached_mir));
+
+                        // IMPORTANT: Even when using cached MIR, we must still register
+                        // type declarations (enums, classes, etc.) in the symbol table
+                        // so that user code can resolve imported types.
+                        self.pre_register_types_from_source(&filename, &source);
                         continue;
                     }
                 }
@@ -1945,6 +1967,10 @@ impl CompilationUnit {
             }
             found_path.ok_or_else(|| format!("Could not resolve import: {}", qualified_path))?
         } else {
+            // Check if the file is already loaded (resolve returns None for loaded files)
+            if self.namespace_resolver.is_qualified_path_loaded(qualified_path) {
+                return Ok(());
+            }
             return Err(format!("Could not resolve import: {}", qualified_path));
         };
 
@@ -2335,6 +2361,52 @@ impl CompilationUnit {
             .map_err(|e| format!("Pre-registration error in {}: {:?}", filename, e))?;
 
         Ok(())
+    }
+
+    /// Register type declarations from source into the symbol table.
+    ///
+    /// Used when loading from BLADE cache — the cached MIR has the compiled code
+    /// but the symbol table needs enum/class declarations to be registered so that
+    /// user code can resolve imported types.
+    fn pre_register_types_from_source(&mut self, filename: &str, source: &str) {
+        use crate::tast::ast_lowering::AstLowering;
+        use parser::parse_haxe_file_with_diagnostics;
+
+        let parse_result = match parse_haxe_file_with_diagnostics(filename, source) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+
+        let ast_file = parse_result.file;
+        let dummy_interner_rc = Rc::new(RefCell::new(StringInterner::new()));
+
+        let mut lowering = AstLowering::new(
+            &mut self.string_interner,
+            dummy_interner_rc,
+            &mut self.symbol_table,
+            &self.type_table,
+            &mut self.scope_tree,
+            &mut self.namespace_resolver,
+            &mut self.import_resolver,
+        );
+
+        // Set package context from the parsed file
+        if let Some(ref pkg) = ast_file.package {
+            lowering.set_package_from_parts(&pkg.path);
+        }
+
+        // Fully lower enum declarations (not just pre-register) so variant constructor
+        // types are properly set. For other types, pre-registration is sufficient.
+        for decl in &ast_file.declarations {
+            match decl {
+                parser::TypeDeclaration::Enum(enum_decl) => {
+                    let _ = lowering.lower_enum_declaration_public(enum_decl);
+                }
+                _ => {
+                    let _ = lowering.pre_register_declaration(decl);
+                }
+            }
+        }
     }
 
     /// Load global import.hx files
@@ -3477,10 +3549,55 @@ impl CompilationUnit {
         stats
     }
 
-    /// Get the MIR modules that were generated during compilation
-    /// Returns a vector of MIR modules corresponding to the compiled files
+    /// Get the MIR modules that were generated during compilation.
+    ///
+    /// When multiple modules exist (e.g., from imports), they are merged into a
+    /// single module. Each module independently gets the full stdlib merged in,
+    /// so the main module (last one) is self-contained for functions. We only need
+    /// to copy type definitions and globals from imported modules into the main module.
     pub fn get_mir_modules(&self) -> Vec<std::sync::Arc<crate::ir::IrModule>> {
-        self.mir_modules.clone()
+        if self.mir_modules.len() <= 1 {
+            return self.mir_modules.clone();
+        }
+
+        // Merge all modules into the last one (the main/user module)
+        let mut main_module: crate::ir::IrModule =
+            self.mir_modules.last().unwrap().as_ref().clone();
+
+        // Copy type definitions from imported modules into the main module
+        for import_module in &self.mir_modules[..self.mir_modules.len() - 1] {
+            for (typedef_id, typedef) in &import_module.types {
+                // Avoid overwriting existing types with the same ID
+                if !main_module.types.contains_key(typedef_id) {
+                    main_module.types.insert(*typedef_id, typedef.clone());
+                } else {
+                    // Remap to a new ID to avoid collision
+                    let new_id = crate::ir::modules::IrTypeDefId(main_module.next_typedef_id);
+                    main_module.next_typedef_id += 1;
+                    main_module.types.insert(new_id, typedef.clone());
+                }
+            }
+
+            // Copy globals from imported modules
+            for (global_id, global) in &import_module.globals {
+                if !main_module.globals.contains_key(global_id) {
+                    main_module.globals.insert(*global_id, global.clone());
+                }
+            }
+
+            // Merge string pools
+            main_module.string_pool.merge_from(&import_module.string_pool);
+        }
+
+        debug!(
+            "Merged {} MIR modules into single module '{}' with {} types, {} functions",
+            self.mir_modules.len(),
+            main_module.name,
+            main_module.types.len(),
+            main_module.functions.len()
+        );
+
+        vec![std::sync::Arc::new(main_module)]
     }
 
     /// Get HDLL function pointers for JIT linking.

@@ -1712,62 +1712,141 @@ impl<'a> TastToHirContext<'a> {
                 cases,
                 default_case,
             } => {
-                // Convert switch expression to a block with if-then-else chain
-                let discriminant_expr = self.lower_expression(discriminant);
-                let mut current_expr = default_case
-                    .as_ref()
-                    .map(|expr| self.lower_expression(expr))
-                    .unwrap_or_else(|| self.make_null_literal());
+                // Check if any case has constructor patterns (enum matching)
+                let has_constructor_patterns = cases.iter().any(|case| {
+                    matches!(
+                        &case.case_value.kind,
+                        TypedExpressionKind::PatternPlaceholder { pattern, .. }
+                            if matches!(pattern, parser::Pattern::Constructor { .. })
+                    ) || matches!(
+                        &case.case_value.kind,
+                        TypedExpressionKind::FunctionCall { function, .. }
+                            if matches!(&function.kind, TypedExpressionKind::Variable { symbol_id }
+                                if self.symbol_table.get_symbol(*symbol_id)
+                                    .map(|s| s.kind == crate::tast::symbols::SymbolKind::EnumVariant)
+                                    .unwrap_or(false))
+                    ) || matches!(
+                        &case.case_value.kind,
+                        TypedExpressionKind::Variable { symbol_id }
+                            if self.symbol_table.get_symbol(*symbol_id)
+                                .map(|s| s.kind == crate::tast::symbols::SymbolKind::EnumVariant)
+                                .unwrap_or(false)
+                    )
+                });
 
-                // Build if-then-else chain from right to left
-                for case in cases.iter().rev() {
-                    let case_value = self.lower_expression(&case.case_value);
-                    let case_body = match &case.body {
-                        TypedStatement::Expression { expression, .. } => {
-                            self.lower_expression(expression)
-                        }
-                        _ => {
-                            // For non-expression bodies, create a block
-                            let block = HirBlock {
-                                statements: vec![self.lower_statement(&case.body)],
+                if has_constructor_patterns {
+                    // Lower as a proper switch statement with pattern matching
+                    let scrutinee_expr = self.lower_expression(discriminant);
+                    let mut hir_cases = Vec::new();
+
+                    for case in cases {
+                        let patterns = vec![self.lower_case_value_pattern(&case.case_value)];
+                        let body = match &case.body {
+                            TypedStatement::Expression { expression, .. } => {
+                                let body_stmt = HirStatement::Expr(self.lower_expression(expression));
+                                HirBlock {
+                                    statements: vec![body_stmt],
+                                    expr: None,
+                                    scope: self.current_scope,
+                                }
+                            }
+                            _ => {
+                                HirBlock {
+                                    statements: vec![self.lower_statement(&case.body)],
+                                    expr: None,
+                                    scope: self.current_scope,
+                                }
+                            }
+                        };
+
+                        hir_cases.push(HirMatchCase {
+                            patterns,
+                            guard: None,
+                            body,
+                        });
+                    }
+
+                    // Add default case if present
+                    if let Some(default) = default_case {
+                        hir_cases.push(HirMatchCase {
+                            patterns: vec![HirPattern::Wildcard],
+                            guard: None,
+                            body: HirBlock {
+                                statements: vec![HirStatement::Expr(self.lower_expression(default))],
                                 expr: None,
                                 scope: self.current_scope,
-                            };
-                            HirExpr::new(
-                                HirExprKind::Block(block),
-                                expr.expr_type, // Use the switch expression's type
-                                self.current_lifetime,
-                                SourceLocation::unknown(),
-                            )
-                        }
+                            },
+                        });
+                    }
+
+                    let switch_stmt = HirStatement::Switch {
+                        scrutinee: scrutinee_expr,
+                        cases: hir_cases,
                     };
 
-                    // Create condition: discriminant == case_value
-                    let condition = HirExpr::new(
-                        HirExprKind::Binary {
-                            lhs: Box::new(discriminant_expr.clone()),
-                            op: crate::ir::hir::HirBinaryOp::Eq,
-                            rhs: Box::new(case_value),
-                        },
-                        self.get_bool_type(),
-                        self.current_lifetime,
-                        SourceLocation::unknown(),
-                    );
+                    // Wrap the switch statement in a block expression
+                    let block = HirBlock {
+                        statements: vec![switch_stmt],
+                        expr: None,
+                        scope: self.current_scope,
+                    };
 
-                    current_expr = HirExpr::new(
-                        HirExprKind::If {
-                            condition: Box::new(condition),
-                            then_expr: Box::new(case_body),
-                            else_expr: Box::new(current_expr),
-                        },
-                        // TODO: Infer actual type from context
-                        self.get_dynamic_type(),
-                        self.current_lifetime,
-                        SourceLocation::unknown(),
-                    );
+                    HirExprKind::Block(block)
+                } else {
+                    // Simple value matching: convert to if-then-else chain
+                    let discriminant_expr = self.lower_expression(discriminant);
+                    let mut current_expr = default_case
+                        .as_ref()
+                        .map(|expr| self.lower_expression(expr))
+                        .unwrap_or_else(|| self.make_null_literal());
+
+                    // Build if-then-else chain from right to left
+                    for case in cases.iter().rev() {
+                        let case_value = self.lower_expression(&case.case_value);
+                        let case_body = match &case.body {
+                            TypedStatement::Expression { expression, .. } => {
+                                self.lower_expression(expression)
+                            }
+                            _ => {
+                                let block = HirBlock {
+                                    statements: vec![self.lower_statement(&case.body)],
+                                    expr: None,
+                                    scope: self.current_scope,
+                                };
+                                HirExpr::new(
+                                    HirExprKind::Block(block),
+                                    expr.expr_type,
+                                    self.current_lifetime,
+                                    SourceLocation::unknown(),
+                                )
+                            }
+                        };
+
+                        let condition = HirExpr::new(
+                            HirExprKind::Binary {
+                                lhs: Box::new(discriminant_expr.clone()),
+                                op: crate::ir::hir::HirBinaryOp::Eq,
+                                rhs: Box::new(case_value),
+                            },
+                            self.get_bool_type(),
+                            self.current_lifetime,
+                            SourceLocation::unknown(),
+                        );
+
+                        current_expr = HirExpr::new(
+                            HirExprKind::If {
+                                condition: Box::new(condition),
+                                then_expr: Box::new(case_body),
+                                else_expr: Box::new(current_expr),
+                            },
+                            self.get_dynamic_type(),
+                            self.current_lifetime,
+                            SourceLocation::unknown(),
+                        );
+                    }
+
+                    current_expr.kind
                 }
-
-                current_expr.kind
             }
             TypedExpressionKind::Throw { expression } => {
                 // Throw as an expression creates a block that throws
@@ -2898,6 +2977,115 @@ impl<'a> TastToHirContext<'a> {
             TypedExpressionKind::Literal { value } => {
                 HirPattern::Literal(self.lower_literal(value))
             }
+            // Simple enum variant without parameters (e.g., case Red:)
+            TypedExpressionKind::Variable { symbol_id } => {
+                if let Some(sym) = self.symbol_table.get_symbol(*symbol_id) {
+                    if sym.kind == crate::tast::symbols::SymbolKind::EnumVariant {
+                        // Find the parent enum type
+                        let enum_type = self.symbol_table
+                            .find_parent_enum_for_constructor(*symbol_id)
+                            .and_then(|parent_id| self.symbol_table.get_symbol(parent_id))
+                            .map(|parent_sym| parent_sym.type_id)
+                            .unwrap_or(expr.expr_type);
+                        return HirPattern::Constructor {
+                            enum_type,
+                            variant: sym.name,
+                            fields: vec![],
+                        };
+                    }
+                }
+                HirPattern::Wildcard
+            }
+            // Enum constructor with parameters (e.g., case Ok(_):, case Some(x):)
+            TypedExpressionKind::FunctionCall { function, arguments, .. } => {
+                if let TypedExpressionKind::Variable { symbol_id } = &function.kind {
+                    if let Some(sym) = self.symbol_table.get_symbol(*symbol_id) {
+                        if sym.kind == crate::tast::symbols::SymbolKind::EnumVariant {
+                            let enum_type = self.symbol_table
+                                .find_parent_enum_for_constructor(*symbol_id)
+                                .and_then(|parent_id| self.symbol_table.get_symbol(parent_id))
+                                .map(|parent_sym| parent_sym.type_id)
+                                .unwrap_or(function.expr_type);
+                            let fields: Vec<HirPattern> = arguments.iter()
+                                .map(|arg| self.lower_case_value_pattern(arg))
+                                .collect();
+                            return HirPattern::Constructor {
+                                enum_type,
+                                variant: sym.name,
+                                fields,
+                            };
+                        }
+                    }
+                }
+                HirPattern::Wildcard
+            }
+            // Pattern placeholder from TAST (constructor patterns with params like Ok(_))
+            TypedExpressionKind::PatternPlaceholder { pattern, .. } => {
+                self.lower_parser_pattern_to_hir(pattern)
+            }
+            // Null expression is used as placeholder for wildcard patterns
+            TypedExpressionKind::Null => HirPattern::Wildcard,
+            _ => HirPattern::Wildcard,
+        }
+    }
+
+    /// Convert a parser::Pattern to HirPattern for switch case matching
+    fn lower_parser_pattern_to_hir(&mut self, pattern: &parser::Pattern) -> HirPattern {
+        match pattern {
+            parser::Pattern::Constructor { path, params } => {
+                let name_interned = self.string_interner.intern(&path.name);
+                // Look up the enum variant symbol
+                if let Some(sym) = self.symbol_table.lookup_symbol(
+                    crate::tast::ScopeId::first(), name_interned,
+                ) {
+                    let sym_id = sym.id;
+                    if sym.kind == crate::tast::symbols::SymbolKind::EnumVariant {
+                        let enum_type = self.symbol_table
+                            .find_parent_enum_for_constructor(sym_id)
+                            .and_then(|parent_id| self.symbol_table.get_symbol(parent_id))
+                            .map(|parent_sym| parent_sym.type_id)
+                            .unwrap_or(TypeId::invalid());
+                        let fields: Vec<HirPattern> = params.iter()
+                            .map(|p| self.lower_parser_pattern_to_hir(p))
+                            .collect();
+                        return HirPattern::Constructor {
+                            enum_type,
+                            variant: name_interned,
+                            fields,
+                        };
+                    }
+                }
+                HirPattern::Wildcard
+            }
+            parser::Pattern::Underscore => HirPattern::Wildcard,
+            parser::Pattern::Var(name) => {
+                // Variable patterns bind the matched value
+                let name_interned = self.string_interner.intern(name);
+                // Look up the symbol - try current scope first, then search all symbols
+                // (bind_pattern_variables in ast_lowering may have created it in a case scope)
+                let found = self.symbol_table.lookup_symbol(self.current_scope, name_interned)
+                    .map(|s| s.id)
+                    .or_else(|| {
+                        // Search all symbols for a variable with this name
+                        self.symbol_table.all_symbols()
+                            .filter(|s| s.name == name_interned && s.kind == crate::tast::symbols::SymbolKind::Variable)
+                            .last()
+                            .map(|s| s.id)
+                    });
+                if let Some(sym_id) = found {
+                    HirPattern::Variable {
+                        name: name_interned,
+                        symbol: sym_id,
+                    }
+                } else {
+                    HirPattern::Wildcard
+                }
+            }
+            parser::Pattern::Const(expr) => {
+                // Best effort: try to lower as a literal
+                HirPattern::Wildcard
+            }
+            parser::Pattern::Null => HirPattern::Wildcard,
             _ => HirPattern::Wildcard,
         }
     }

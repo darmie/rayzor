@@ -39,7 +39,7 @@ fn main() {
     println!("=== Option & Result Enum Test ===\n");
 
     // Test 1: Result<T,E> from rayzor.core (requires import)
-    println!("Test 1: Result enum from rayzor.core");
+    println!("\nTest 1: Result enum from rayzor.core");
     let source1 = r#"
 import rayzor.core.Result;
 
@@ -87,6 +87,29 @@ class Main {
 }
 "#;
     run_test(source3, "inline_enum_baseline");
+
+    // Test 4: Switch/case using Ok/Error without Result.* prefix
+    println!("\nTest 4: Switch on Result using unqualified Ok/Error");
+    let source4 = r#"
+import rayzor.core.Result;
+
+class Main {
+    static function main() {
+        var r = Result.Ok(99);
+        switch (r) {
+            case Ok(_): trace("got Ok");
+            case Error(_): trace("got Error");
+        }
+
+        var e = Result.Error("fail");
+        switch (e) {
+            case Ok(_): trace("got Ok");
+            case Error(_): trace("got Error");
+        }
+    }
+}
+"#;
+    run_test(source4, "switch_unqualified_variants");
 }
 
 fn run_test(source: &str, name: &str) {

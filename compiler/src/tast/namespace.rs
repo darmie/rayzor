@@ -213,6 +213,24 @@ impl NamespaceResolver {
     /// 2. Standard library paths
     ///
     /// Returns the first existing file path found, or None if not found
+    /// Check if a qualified path refers to a file that is already loaded
+    pub fn is_qualified_path_loaded(&self, qualified_path: &str) -> bool {
+        let file_path = qualified_path.replace('.', "/") + ".hx";
+        for source_path in &self.source_paths {
+            let full_path = source_path.join(&file_path);
+            if full_path.exists() && self.is_file_loaded(&full_path) {
+                return true;
+            }
+        }
+        for stdlib_path in &self.stdlib_paths {
+            let full_path = stdlib_path.join(&file_path);
+            if full_path.exists() && self.is_file_loaded(&full_path) {
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn resolve_qualified_path_to_file(&self, qualified_path: &str) -> Option<PathBuf> {
         // Convert qualified path to file path
         // "haxe.iterators.ArrayIterator" -> "haxe/iterators/ArrayIterator.hx"

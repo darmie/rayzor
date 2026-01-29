@@ -1062,6 +1062,13 @@ impl<'a> AstLowering<'a> {
         self.context.current_package = Some(package_id);
     }
 
+    /// Set the package context from a parsed package path (Vec of path segments)
+    pub fn set_package_from_parts(&mut self, parts: &[String]) {
+        if !parts.is_empty() {
+            self.set_package_context(&parts.join("."));
+        }
+    }
+
     /// Clear the current package context (used for root scope)
     pub fn clear_package_context(&mut self) {
         self.context.clear_package_context();
@@ -1307,8 +1314,15 @@ impl<'a> AstLowering<'a> {
             }
 
             // Process type declarations from import.hx
+            // Pre-register first (creates symbols in scope), then fully lower enums
+            // so their variant constructor types are properly set (not left as TypeId::invalid)
             for declaration in &import_file.declarations {
                 self.pre_register_declaration(declaration)?;
+            }
+            for declaration in &import_file.declarations {
+                if let TypeDeclaration::Enum(enum_decl) = declaration {
+                    let _ = self.lower_enum_declaration(enum_decl);
+                }
             }
         }
 
@@ -1813,7 +1827,7 @@ impl<'a> AstLowering<'a> {
     }
 
     /// Pre-register type declarations in the symbol table (first pass)
-    fn pre_register_declaration(&mut self, declaration: &TypeDeclaration) -> LoweringResult<()> {
+    pub fn pre_register_declaration(&mut self, declaration: &TypeDeclaration) -> LoweringResult<()> {
         match declaration {
             TypeDeclaration::Class(class_decl) => {
                 let class_name = self.context.intern_string(&class_decl.name);
@@ -2828,6 +2842,11 @@ impl<'a> AstLowering<'a> {
     }
 
     /// Lower an enum declaration
+    /// Public wrapper for lower_enum_declaration, used when loading from BLADE cache
+    pub fn lower_enum_declaration_public(&mut self, enum_decl: &EnumDecl) -> LoweringResult<TypedDeclaration> {
+        self.lower_enum_declaration(enum_decl)
+    }
+
     fn lower_enum_declaration(&mut self, enum_decl: &EnumDecl) -> LoweringResult<TypedDeclaration> {
         let enum_name = self.context.intern_string(&enum_decl.name);
 
