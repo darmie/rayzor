@@ -644,6 +644,17 @@ impl<'ctx> LLVMJitBackend<'ctx> {
     ///
     /// Returns the path to the generated object file.
     pub fn compile_to_object_file(&mut self, output_path: &std::path::Path) -> Result<(), String> {
+        // Dump IR for debugging if requested
+        if std::env::var("RAYZOR_DUMP_LLVM_IR").is_ok() {
+            let ir_str = self.module.print_to_string().to_string();
+            if std::fs::write("/tmp/rayzor_llvm_ir.ll", &ir_str).is_ok() {
+                eprintln!(
+                    "=== LLVM IR saved to /tmp/rayzor_llvm_ir.ll ({} bytes) ===",
+                    ir_str.len()
+                );
+            }
+        }
+
         // Verify module before compilation
         if let Err(msg) = self.module.verify() {
             return Err(format!(
@@ -927,6 +938,54 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         // Use function's actual name for LLVM (unique across modules)
         // Mangle the name to be LLVM-safe (replace :: with _)
         let func_name = Self::mangle_function_name(&function.name);
+
+        // If this function is ExternC (C ABI, no env param), treat it as extern
+        if function.kind == crate::ir::functions::FunctionKind::ExternC {
+            self.extern_function_ids.insert(func_id);
+
+            // Translate parameter types (NO env param for extern C functions)
+            let param_types: Result<Vec<BasicMetadataTypeEnum>, _> = function
+                .signature
+                .parameters
+                .iter()
+                .filter(|param| param.ty != IrType::Void)
+                .map(|param| self.translate_type(&param.ty).map(|t| t.into()))
+                .collect();
+            let param_types = param_types?;
+
+            let fn_type = if function.signature.return_type == IrType::Void {
+                self.context.void_type().fn_type(&param_types, false)
+            } else {
+                let return_type = self.translate_type(&function.signature.return_type)?;
+                return_type.fn_type(&param_types, false)
+            };
+
+            // Check if already declared
+            if let Some(existing_func) = self.module.get_function(&func_name) {
+                let existing_params = existing_func.get_type().get_param_types();
+                if existing_params.len() == param_types.len() {
+                    self.function_map.insert(func_id, existing_func);
+                    return Ok(existing_func);
+                }
+                // Signature mismatch - create with unique name
+                let unique_name = format!("{}__extern_{}", func_name, func_id.0);
+                let llvm_func = self.module.add_function(
+                    &unique_name,
+                    fn_type,
+                    Some(inkwell::module::Linkage::External),
+                );
+                self.function_map.insert(func_id, llvm_func);
+                return Ok(llvm_func);
+            }
+
+            let llvm_func = self.module.add_function(
+                &func_name,
+                fn_type,
+                Some(inkwell::module::Linkage::External),
+            );
+            self.function_map.insert(func_id, llvm_func);
+            return Ok(llvm_func);
+        }
 
         // Check if this function was already declared (from a previous module)
         // Reuse if it has basic blocks (was already compiled) AND signatures match

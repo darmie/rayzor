@@ -612,6 +612,9 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
     let mut compile_times = Vec::new();
     let mut exec_times = Vec::new();
 
+    // Set trace prefix so output lines are tagged with the target name
+    rayzor_runtime::haxe_sys::set_trace_prefix(&format!("[{}] ", target.name()));
+
     match target {
         // Tiered: stateful approach for JIT promotion across iterations
         Target::RayzorTiered => {

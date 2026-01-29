@@ -3,10 +3,47 @@
 //! System and I/O functions
 
 use log::debug;
+use std::cell::RefCell;
 use std::io::{self, Write};
 
 // Use the canonical HaxeString definition from haxe_string module
 use crate::haxe_string::HaxeString;
+
+// Thread-local trace prefix for identifying which backend owns the output
+thread_local! {
+    static TRACE_PREFIX: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+/// Set the trace prefix for the current thread (e.g., "[rayzor-tiered] ")
+#[no_mangle]
+pub extern "C" fn rayzor_set_trace_prefix(ptr: *const u8, len: usize) {
+    if ptr.is_null() || len == 0 {
+        TRACE_PREFIX.with(|p| p.borrow_mut().clear());
+        return;
+    }
+    unsafe {
+        let slice = std::slice::from_raw_parts(ptr, len);
+        if let Ok(s) = std::str::from_utf8(slice) {
+            TRACE_PREFIX.with(|p| *p.borrow_mut() = s.to_string());
+        }
+    }
+}
+
+/// Set trace prefix from a Rust string (convenience for Rust callers)
+pub fn set_trace_prefix(prefix: &str) {
+    TRACE_PREFIX.with(|p| *p.borrow_mut() = prefix.to_string());
+}
+
+fn print_with_prefix(msg: &str) {
+    TRACE_PREFIX.with(|p| {
+        let prefix = p.borrow();
+        if prefix.is_empty() {
+            println!("{}", msg);
+        } else {
+            println!("{}{}", *prefix, msg);
+        }
+    });
+}
 
 // ============================================================================
 // Console I/O
@@ -46,34 +83,34 @@ pub extern "C" fn haxe_sys_println() {
 /// Trace integer value
 #[no_mangle]
 pub extern "C" fn haxe_trace_int(value: i64) {
-    println!("{}", value);
+    print_with_prefix(&format!("{}", value));
 }
 
 /// Trace float value
 #[no_mangle]
 pub extern "C" fn haxe_trace_float(value: f64) {
-    println!("{}", value);
+    print_with_prefix(&format!("{}", value));
 }
 
 /// Trace boolean value
 #[no_mangle]
 pub extern "C" fn haxe_trace_bool(value: bool) {
-    println!("{}", value);
+    print_with_prefix(&format!("{}", value));
 }
 
 /// Trace string value (ptr + len)
 #[no_mangle]
 pub extern "C" fn haxe_trace_string(ptr: *const u8, len: usize) {
     if ptr.is_null() {
-        println!("null");
+        print_with_prefix("null");
         return;
     }
 
     unsafe {
         let slice = std::slice::from_raw_parts(ptr, len);
         match std::str::from_utf8(slice) {
-            Ok(s) => println!("{}", s),
-            Err(_) => println!("<invalid utf8>"),
+            Ok(s) => print_with_prefix(s),
+            Err(_) => print_with_prefix("<invalid utf8>"),
         }
     }
 }
@@ -96,7 +133,7 @@ pub extern "C" fn haxe_trace_string_struct(s_ptr: *const HaxeString) {
 #[no_mangle]
 pub extern "C" fn haxe_trace_any(dynamic_ptr: *mut u8) {
     if dynamic_ptr.is_null() {
-        println!("null");
+        print_with_prefix("null");
         return;
     }
 
@@ -109,13 +146,13 @@ pub extern "C" fn haxe_trace_any(dynamic_ptr: *mut u8) {
             if !haxe_str.ptr.is_null() && haxe_str.len > 0 {
                 let slice = std::slice::from_raw_parts(haxe_str.ptr, haxe_str.len);
                 if let Ok(s) = std::str::from_utf8(slice) {
-                    println!("{}", s);
+                    print_with_prefix(s);
                     return;
                 }
             }
         }
         // Fallback
-        println!("<Dynamic@{:p}>", dynamic_ptr);
+        print_with_prefix(&format!("<Dynamic@{:p}>", dynamic_ptr));
     }
 }
 
