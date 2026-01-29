@@ -2545,25 +2545,107 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 global_id,
                 ty,
             } => {
-                // TODO: Implement proper global variable loading in LLVM
-                // For now, return null/zero value
-                let llvm_ty = self.translate_type(ty)?;
-                let placeholder = match llvm_ty {
-                    inkwell::types::BasicTypeEnum::IntType(t) => t.const_int(0, false).into(),
-                    inkwell::types::BasicTypeEnum::FloatType(t) => t.const_float(0.0).into(),
-                    inkwell::types::BasicTypeEnum::PointerType(t) => t.const_null().into(),
-                    _ => self.context.i64_type().const_int(0, false).into(),
+                // Call rayzor_global_load(global_id) -> i64
+                let load_fn = match self.module.get_function("rayzor_global_load") {
+                    Some(f) => f,
+                    None => {
+                        let fn_type = self.context.i64_type().fn_type(
+                            &[self.context.i64_type().into()],
+                            false,
+                        );
+                        self.module.add_function("rayzor_global_load", fn_type, None)
+                    }
                 };
-                tracing::debug!("[LLVM] LoadGlobal {:?} - returning placeholder", global_id);
-                self.value_map.insert(*dest, placeholder);
+
+                let id_val = self.context.i64_type().const_int(global_id.0 as u64, false);
+                let result = self
+                    .builder
+                    .build_call(
+                        load_fn,
+                        &[id_val.into()],
+                        &format!("global_load_{}", dest.as_u32()),
+                    )
+                    .map_err(|e| format!("Failed to build global_load call: {}", e))?
+                    .try_as_basic_value()
+                    .left()
+                    .ok_or("rayzor_global_load did not return a value")?;
+
+                // Cast the i64 result to the expected type if needed
+                let llvm_ty = self.translate_type(ty)?;
+                let final_val = if llvm_ty.is_pointer_type() {
+                    self.builder
+                        .build_int_to_ptr(
+                            result.into_int_value(),
+                            llvm_ty.into_pointer_type(),
+                            &format!("global_ptr_{}", dest.as_u32()),
+                        )
+                        .map_err(|e| format!("Failed to cast global to ptr: {}", e))?
+                        .into()
+                } else if llvm_ty.is_float_type() {
+                    self.builder
+                        .build_bit_cast(
+                            result.into_int_value(),
+                            llvm_ty,
+                            &format!("global_float_{}", dest.as_u32()),
+                        )
+                        .map_err(|e| format!("Failed to cast global to float: {}", e))?
+                } else {
+                    result
+                };
+                self.value_map.insert(*dest, final_val);
             }
 
             IrInstruction::StoreGlobal {
                 global_id,
-                value: _,
+                value,
             } => {
-                // TODO: Implement proper global variable storing in LLVM
-                tracing::debug!("[LLVM] StoreGlobal {:?} - not implemented", global_id);
+                // Call rayzor_global_store(global_id, value)
+                let store_fn = match self.module.get_function("rayzor_global_store") {
+                    Some(f) => f,
+                    None => {
+                        let fn_type = self.context.void_type().fn_type(
+                            &[
+                                self.context.i64_type().into(),
+                                self.context.i64_type().into(),
+                            ],
+                            false,
+                        );
+                        self.module.add_function("rayzor_global_store", fn_type, None)
+                    }
+                };
+
+                let id_val = self.context.i64_type().const_int(global_id.0 as u64, false);
+                let raw_val = self.get_value(*value)?;
+
+                // Convert value to i64 for storage
+                let val_i64 = if raw_val.is_pointer_value() {
+                    self.builder
+                        .build_ptr_to_int(
+                            raw_val.into_pointer_value(),
+                            self.context.i64_type(),
+                            "global_store_ptrtoint",
+                        )
+                        .map_err(|e| format!("Failed to cast ptr for global store: {}", e))?
+                        .into()
+                } else if raw_val.is_float_value() {
+                    self.builder
+                        .build_bit_cast(
+                            raw_val.into_float_value(),
+                            self.context.i64_type(),
+                            "global_store_float",
+                        )
+                        .map_err(|e| format!("Failed to cast float for global store: {}", e))?
+                } else {
+                    raw_val
+                };
+
+                self.builder
+                    .build_call(
+                        store_fn,
+                        &[id_val.into(), val_i64.into()],
+                        "global_store",
+                    )
+                    .map_err(|e| format!("Failed to build global_store call: {}", e))?;
             }
 
             // Panic
