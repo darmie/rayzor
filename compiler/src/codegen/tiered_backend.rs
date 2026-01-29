@@ -634,7 +634,7 @@ impl TierPreset {
                 verbosity: 0,
                 start_interpreted: true,
                 bailout_strategy: BailoutStrategy::Slow, // High threshold before bailout
-                max_tier_promotions: 0, // Interpreter only
+                max_tier_promotions: 0,                  // Interpreter only
             },
         }
     }
@@ -1377,7 +1377,8 @@ impl TieredBackend {
 
             // Compile ALL modules at the new tier and get ALL function pointers
             let pointers = self.compile_all_at_tier(&modules_lock, target_tier)?;
-            self.current_compiled_tier.store(target_tier as u8, Ordering::Relaxed);
+            self.current_compiled_tier
+                .store(target_tier as u8, Ordering::Relaxed);
             drop(modules_lock);
             pointers
         };
@@ -2156,8 +2157,7 @@ impl TieredBackend {
                 if config.verbosity >= 2 {
                     debug!(
                         "[TieredBackend] Skipping recompilation: already at tier {} (requested {})",
-                        current_tier,
-                        max_tier as u8
+                        current_tier, max_tier as u8
                     );
                 }
                 // Mark batch items as no longer optimizing
