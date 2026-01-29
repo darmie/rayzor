@@ -978,13 +978,23 @@ impl CraneliftBackend {
         );
         self.function_map.insert(mir_func_id, func_id);
 
-        // Track ALL functions by their original name in runtime_functions for dedup.
-        // When compiling multiple MIR modules, the same function (e.g. stdlib wrappers)
-        // appears in each module with different MIR IrFunctionIds. By tracking the
-        // function name -> Cranelift FuncId mapping, subsequent modules will reuse the
-        // existing declaration instead of creating duplicates.
-        self.runtime_functions
-            .insert(function.name.clone(), func_id);
+        // Track extern functions and stdlib wrapper functions in runtime_functions
+        // so we don't declare them twice across MIR modules.
+        // DO NOT track all functions — unqualified names like "new", "get", "toString"
+        // collide across classes, causing signature mismatches.
+        if is_extern {
+            self.runtime_functions
+                .insert(function.name.clone(), func_id);
+        } else {
+            let stdlib_mapping = crate::stdlib::runtime_mapping::StdlibMapping::new();
+            if stdlib_mapping
+                .find_by_runtime_name(&function.name)
+                .is_some()
+            {
+                self.runtime_functions
+                    .insert(function.name.clone(), func_id);
+            }
+        }
 
         Ok(())
     }
@@ -1345,8 +1355,6 @@ impl CraneliftBackend {
         // This catches IR errors early but adds compilation overhead
         #[cfg(debug_assertions)]
         if let Err(errors) = cranelift_codegen::verify_function(&self.ctx.func, self.module.isa()) {
-            debug!("!!! Cranelift Verifier Errors for {} !!!", function.name);
-            debug!("{}", errors);
             return Err(format!("Verifier errors in {}: {}", function.name, errors));
         }
 

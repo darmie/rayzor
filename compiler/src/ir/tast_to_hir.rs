@@ -3079,14 +3079,17 @@ impl<'a> TastToHirContext<'a> {
                     .lookup_symbol(self.current_scope, name_interned)
                     .map(|s| s.id)
                     .or_else(|| {
-                        // Search all symbols for a variable with this name
+                        // Search all symbols for a variable with this name.
+                        // Use max_by_key on SymbolId to get the most recently created
+                        // symbol, ensuring deterministic behavior regardless of
+                        // HashMap iteration order.
                         self.symbol_table
                             .all_symbols()
                             .filter(|s| {
                                 s.name == name_interned
                                     && s.kind == crate::tast::symbols::SymbolKind::Variable
                             })
-                            .last()
+                            .max_by_key(|s| s.id)
                             .map(|s| s.id)
                     });
                 if let Some(sym_id) = found {

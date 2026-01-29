@@ -1883,10 +1883,13 @@ impl CompilationUnit {
                         // Add cached MIR to our modules
                         self.mir_modules.push(std::sync::Arc::new(cached_mir));
 
-                        // IMPORTANT: Even when using cached MIR, we must still register
-                        // type declarations (enums, classes, etc.) in the symbol table
-                        // so that user code can resolve imported types.
-                        self.pre_register_types_from_source(&filename, &source);
+                        // Register enum declarations from cached source so that
+                        // user code can resolve imported enum types and variants.
+                        // Only enums are registered here — class registration is
+                        // handled by the normal TAST pipeline and must NOT be done
+                        // here to avoid overwriting user imports (e.g., sys.thread.Mutex
+                        // overwriting rayzor.concurrent.Mutex).
+                        self.register_enums_from_source(&filename, &source);
                         continue;
                     }
                 }
@@ -2366,12 +2369,12 @@ impl CompilationUnit {
         Ok(())
     }
 
-    /// Register type declarations from source into the symbol table.
+    /// Register only enum declarations from source into the symbol table.
     ///
     /// Used when loading from BLADE cache — the cached MIR has the compiled code
-    /// but the symbol table needs enum/class declarations to be registered so that
-    /// user code can resolve imported types.
-    fn pre_register_types_from_source(&mut self, filename: &str, source: &str) {
+    /// but the symbol table needs enum declarations registered so that user code
+    /// can resolve imported enum types and their variants.
+    fn register_enums_from_source(&mut self, filename: &str, source: &str) {
         use crate::tast::ast_lowering::AstLowering;
         use parser::parse_haxe_file_with_diagnostics;
 
@@ -2398,16 +2401,11 @@ impl CompilationUnit {
             lowering.set_package_from_parts(&pkg.path);
         }
 
-        // Fully lower enum declarations (not just pre-register) so variant constructor
-        // types are properly set. For other types, pre-registration is sufficient.
+        // Only lower enum declarations — class registration must go through
+        // the normal TAST pipeline to avoid overwriting user imports
         for decl in &ast_file.declarations {
-            match decl {
-                parser::TypeDeclaration::Enum(enum_decl) => {
-                    let _ = lowering.lower_enum_declaration_public(enum_decl);
-                }
-                _ => {
-                    let _ = lowering.pre_register_declaration(decl);
-                }
+            if let parser::TypeDeclaration::Enum(enum_decl) = decl {
+                let _ = lowering.lower_enum_declaration_public(enum_decl);
             }
         }
     }
@@ -3553,56 +3551,9 @@ impl CompilationUnit {
     }
 
     /// Get the MIR modules that were generated during compilation.
-    ///
-    /// When multiple modules exist (e.g., from imports), they are merged into a
-    /// single module. Each module independently gets the full stdlib merged in,
-    /// so the main module (last one) is self-contained for functions. We only need
-    /// to copy type definitions and globals from imported modules into the main module.
+    /// Returns a vector of MIR modules corresponding to the compiled files.
     pub fn get_mir_modules(&self) -> Vec<std::sync::Arc<crate::ir::IrModule>> {
-        if self.mir_modules.len() <= 1 {
-            return self.mir_modules.clone();
-        }
-
-        // Merge all modules into the last one (the main/user module)
-        let mut main_module: crate::ir::IrModule =
-            self.mir_modules.last().unwrap().as_ref().clone();
-
-        // Copy type definitions from imported modules into the main module
-        for import_module in &self.mir_modules[..self.mir_modules.len() - 1] {
-            for (typedef_id, typedef) in &import_module.types {
-                // Avoid overwriting existing types with the same ID
-                if !main_module.types.contains_key(typedef_id) {
-                    main_module.types.insert(*typedef_id, typedef.clone());
-                } else {
-                    // Remap to a new ID to avoid collision
-                    let new_id = crate::ir::modules::IrTypeDefId(main_module.next_typedef_id);
-                    main_module.next_typedef_id += 1;
-                    main_module.types.insert(new_id, typedef.clone());
-                }
-            }
-
-            // Copy globals from imported modules
-            for (global_id, global) in &import_module.globals {
-                if !main_module.globals.contains_key(global_id) {
-                    main_module.globals.insert(*global_id, global.clone());
-                }
-            }
-
-            // Merge string pools
-            main_module
-                .string_pool
-                .merge_from(&import_module.string_pool);
-        }
-
-        debug!(
-            "Merged {} MIR modules into single module '{}' with {} types, {} functions",
-            self.mir_modules.len(),
-            main_module.name,
-            main_module.types.len(),
-            main_module.functions.len()
-        );
-
-        vec![std::sync::Arc::new(main_module)]
+        self.mir_modules.clone()
     }
 
     /// Get HDLL function pointers for JIT linking.
