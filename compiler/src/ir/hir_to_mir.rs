@@ -40,6 +40,9 @@ pub struct HirToMirContext<'a> {
     /// Resolved IR types for pattern-bound variables (overrides convert_type for TypeParameter types)
     symbol_ir_types: HashMap<SymbolId, IrType>,
 
+    /// Concrete TypeIds for pattern-bound variables (for toString dispatch on generic fields)
+    symbol_type_ids: HashMap<SymbolId, TypeId>,
+
     /// Mapping from HIR function symbols to MIR function IDs
     function_map: HashMap<SymbolId, crate::ir::IrFunctionId>,
 
@@ -239,6 +242,7 @@ impl<'a> HirToMirContext<'a> {
             builder: IrBuilder::new(module_name.clone(), source_file),
             symbol_map: HashMap::new(),
             symbol_ir_types: HashMap::new(),
+            symbol_type_ids: HashMap::new(),
             function_map: HashMap::new(),
             global_symbol_map: HashMap::new(),
             external_function_map: HashMap::new(),
@@ -3091,9 +3095,9 @@ impl<'a> HirToMirContext<'a> {
         None
     }
 
-    /// Resolve the concrete IrTypes for an enum variant's fields.
-    /// Handles generic type parameter substitution (e.g., Result<Int,String>.Ok → [I32]).
-    fn get_enum_variant_field_types(&self, enum_type: TypeId, variant_name: InternedString) -> Vec<IrType> {
+    /// Resolve the concrete IrTypes and TypeIds for an enum variant's fields.
+    /// Handles generic type parameter substitution (e.g., Result<Int,String>.Ok → [(I32, IntTypeId)]).
+    fn get_enum_variant_field_types(&self, enum_type: TypeId, variant_name: InternedString) -> Vec<(IrType, TypeId)> {
         // Step 1: Resolve enum_type to base enum SymbolId and optional generic type_args
         let (enum_symbol, generic_type_args) = {
             let type_table = self.type_table.borrow();
@@ -3154,7 +3158,9 @@ impl<'a> HirToMirContext<'a> {
                         let vname = self.string_interner.get(variant.name).unwrap_or("");
                         if vname == variant_name_str {
                             return variant.fields.iter().map(|field| {
-                                self.resolve_field_type(field.ty, &generic_type_args)
+                                let ir_type = self.resolve_field_type(field.ty, &generic_type_args);
+                                let type_id = self.resolve_field_type_id(field.ty, &generic_type_args);
+                                (ir_type, type_id)
                             }).collect();
                         }
                     }
@@ -3171,7 +3177,9 @@ impl<'a> HirToMirContext<'a> {
                         if let Some(type_info) = type_table.get(variant_sym.type_id) {
                             if let crate::tast::core::TypeKind::Function { params, .. } = &type_info.kind {
                                 return params.iter().map(|p| {
-                                    self.resolve_field_type(*p, &generic_type_args)
+                                    let ir_type = self.resolve_field_type(*p, &generic_type_args);
+                                    let type_id = self.resolve_field_type_id(*p, &generic_type_args);
+                                    (ir_type, type_id)
                                 }).collect();
                             }
                         }
@@ -3232,6 +3240,43 @@ impl<'a> HirToMirContext<'a> {
         // Not a type parameter — convert directly
         drop(type_table);
         self.convert_type(field_type_id)
+    }
+
+    /// Like resolve_field_type but returns the concrete TypeId instead of IrType.
+    fn resolve_field_type_id(&self, field_type_id: TypeId, generic_info: &Option<(TypeId, Vec<TypeId>)>) -> TypeId {
+        let type_table = self.type_table.borrow();
+        if let Some(type_info) = type_table.get(field_type_id) {
+            if let crate::tast::TypeKind::TypeParameter { symbol_id, .. } = &type_info.kind {
+                if let Some((base_type, concrete_args)) = generic_info {
+                    if let Some(base_info) = type_table.get(*base_type) {
+                        let base_type_args = match &base_info.kind {
+                            crate::tast::TypeKind::Enum { type_args, .. } => type_args,
+                            _ => return field_type_id,
+                        };
+                        for (idx, &param_type_id) in base_type_args.iter().enumerate() {
+                            if let Some(param_info) = type_table.get(param_type_id) {
+                                if let crate::tast::TypeKind::TypeParameter { symbol_id: param_sym, .. } = &param_info.kind {
+                                    if param_sym == symbol_id {
+                                        if let Some(&concrete_type_id) = concrete_args.get(idx) {
+                                            return concrete_type_id;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if concrete_args.len() == 1 {
+                            let concrete_id = concrete_args[0];
+                            if let Some(ci) = type_table.get(concrete_id) {
+                                if !matches!(ci.kind, crate::tast::TypeKind::TypeParameter { .. }) {
+                                    return concrete_id;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        field_type_id
     }
 
     fn get_enum_variant_field_count(&self, enum_symbol: SymbolId, variant_idx: usize) -> usize {
@@ -4482,48 +4527,10 @@ impl<'a> HirToMirContext<'a> {
                         // Direct enum variant expressions (Color.Red) are handled above
 
                         // If this is a class type, try to call toString() on it
-                        if let Some(class_name) = class_info {
-                            debug!(
-                                "[TRACE] Class '{}' detected, calling toString()",
-                                class_name
-                            );
-                            // Lower the object first
+                        if class_info.is_some() {
                             let obj_reg = self.lower_expression(arg)?;
-
-                            // Try to find a toString function - methods are named without class prefix in MIR
-                            let tostring_func_name = "toString";
-
-                            // toString() returns *String, takes this pointer
-                            let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
-                            let _this_ty = IrType::Ptr(Box::new(IrType::Void));
-
-                            // Try to find the toString function in the current module
-                            // Look through the module's functions to find one matching the name
-                            let tostring_id = self
-                                .builder
-                                .module
-                                .functions
-                                .iter()
-                                .find(|(_, func)| func.name == tostring_func_name)
-                                .map(|(id, _)| *id);
-
-                            debug!(
-                                "[TRACE] Looking for '{}', found: {:?}, module has {} functions",
-                                tostring_func_name,
-                                tostring_id,
-                                self.builder.module.functions.len()
-                            );
-
-                            // If not found, we'll fall through to traceAny
-                            if let Some(tostring_id) = tostring_id {
-                                // Call toString
-                                let string_reg = self.builder.build_call_direct(
-                                    tostring_id,
-                                    vec![obj_reg],
-                                    string_ptr_ty.clone(),
-                                )?;
-
-                                // Now trace the string result
+                            if let Some(string_reg) = self.try_call_tostring(obj_reg, arg.ty)? {
+                                let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
                                 let string_trace_id = self.get_or_register_extern_function(
                                     "haxe_trace_string_struct",
                                     vec![string_ptr_ty],
@@ -4534,8 +4541,6 @@ impl<'a> HirToMirContext<'a> {
                                     vec![string_reg],
                                     IrType::Void,
                                 );
-                            } else {
-                                debug!("[TRACE] toString function '{}' not found, falling back to traceAny", tostring_func_name);
                             }
                         }
 
@@ -7699,14 +7704,23 @@ impl<'a> HirToMirContext<'a> {
                         let rhs_reg = self.lower_expression(rhs)?;
 
                         // Convert non-string operand to string if needed
+                        // For class instances with toString(), call it directly at compile time
                         let lhs_str_val = if !lhs_is_string {
-                            self.convert_to_string(lhs_reg, &lhs_type)?
+                            if let Some(reg) = self.try_call_tostring(lhs_reg, self.resolve_expr_type_id(lhs))? {
+                                reg
+                            } else {
+                                self.convert_to_string(lhs_reg, &lhs_type)?
+                            }
                         } else {
                             lhs_reg
                         };
 
                         let rhs_str_val = if !rhs_is_string {
-                            self.convert_to_string(rhs_reg, &rhs_type)?
+                            if let Some(reg) = self.try_call_tostring(rhs_reg, self.resolve_expr_type_id(rhs))? {
+                                reg
+                            } else {
+                                self.convert_to_string(rhs_reg, &rhs_type)?
+                            }
                         } else {
                             rhs_reg
                         };
@@ -9035,8 +9049,46 @@ impl<'a> HirToMirContext<'a> {
         }
     }
 
-    /// Insert automatic boxing if needed when assigning to Dynamic
-    /// Returns the (potentially boxed) value and whether boxing was applied
+    /// If `type_id` resolves to a Class with a `toString()` in the current module,
+    /// call `obj.toString()` and return the resulting `*HaxeString` register.
+    /// Returns `Some(string_reg)` on success, `None` if not a class or toString not found.
+    fn try_call_tostring(&mut self, obj_reg: IrId, type_id: TypeId) -> Option<Option<IrId>> {
+        // Check if type_id is a Class
+        let is_class = {
+            let type_table = self.type_table.borrow();
+            type_table
+                .get(type_id)
+                .map(|ti| matches!(ti.kind, crate::tast::TypeKind::Class { .. }))
+                .unwrap_or(false)
+        };
+
+        if !is_class {
+            return Some(None);
+        }
+
+        // Search for toString function in the current module
+        let tostring_id = self
+            .builder
+            .module
+            .functions
+            .iter()
+            .find(|(_, func)| func.name == "toString")
+            .map(|(id, _)| *id);
+
+        let tostring_id = match tostring_id {
+            Some(id) => id,
+            None => return Some(None),
+        };
+
+        // Call toString(this) -> *HaxeString
+        let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
+        let string_reg = self
+            .builder
+            .build_call_direct(tostring_id, vec![obj_reg], string_ptr_ty)?;
+
+        Some(Some(string_reg))
+    }
+
     /// Convert a value to a string pointer
     /// Uses the appropriate *_to_string MIR wrapper based on the source type
     fn convert_to_string(&mut self, value: IrId, from_type: &IrType) -> Option<IrId> {
@@ -9123,6 +9175,16 @@ impl<'a> HirToMirContext<'a> {
             }
         }
         default_type
+    }
+
+    /// Get the effective TypeId for an expression, checking symbol_type_ids for pattern-bound variables.
+    fn resolve_expr_type_id(&self, expr: &HirExpr) -> TypeId {
+        if let HirExprKind::Variable { symbol, .. } = &expr.kind {
+            if let Some(resolved) = self.symbol_type_ids.get(symbol) {
+                return *resolved;
+            }
+        }
+        expr.ty
     }
 
     /// Convert a dynamic/unknown-type value to string using runtime dispatch.
@@ -9711,7 +9773,9 @@ impl<'a> HirToMirContext<'a> {
                             vec![offset_val],
                             IrType::Ptr(Box::new(IrType::I8)),
                         ) {
-                            let resolved_type = field_types.get(i).cloned().unwrap_or(IrType::I64);
+                            let (resolved_type, resolved_type_id) = field_types.get(i)
+                                .cloned()
+                                .unwrap_or((IrType::I64, TypeId::invalid()));
 
                             // Determine load strategy based on resolved type
                             let (load_type, needs_bitcast_after) = match &resolved_type {
@@ -9741,9 +9805,12 @@ impl<'a> HirToMirContext<'a> {
                                             field_val = cast_val;
                                         }
                                     }
-                                    // Record the resolved IR type for this variable
+                                    // Record the resolved IR type and TypeId for this variable
                                     if let HirPattern::Variable { symbol, .. } = field_pattern {
                                         self.symbol_ir_types.insert(*symbol, resolved_type.clone());
+                                        if resolved_type_id != TypeId::invalid() {
+                                            self.symbol_type_ids.insert(*symbol, resolved_type_id);
+                                        }
                                     }
                                     self.bind_pattern(field_pattern, field_val);
                                 }
