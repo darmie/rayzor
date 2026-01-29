@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
 #
-# Stress test for intermittent benchmark crashes on amd64 Linux.
+# Local stress test for Mac (and Linux without Docker).
 #
-# Runs benchmark_runner with mandelbrot repeatedly to reproduce
-# crashes that occur intermittently in CI.
+# Runs benchmark_runner repeatedly to catch intermittent crashes
+# across all backend targets (cranelift, tiered, precompiled-tiered).
 #
 # Usage:
-#   ./ci/bench-test/stress-test.sh [ITERATIONS] [--bench NAME] [--stop-on-fail]
+#   ./ci/bench-test/local-stress-test.sh [ITERATIONS] [--bench NAME] [--stop-on-fail]
 #
 # Examples:
-#   ./ci/bench-test/stress-test.sh              # 20 iterations, mandelbrot
-#   ./ci/bench-test/stress-test.sh 50           # 50 iterations
-#   ./ci/bench-test/stress-test.sh 30 --bench mandelbrot_simple
-#   ./ci/bench-test/stress-test.sh 10 --stop-on-fail
+#   ./ci/bench-test/local-stress-test.sh              # 10 iterations, mandelbrot + nbody
+#   ./ci/bench-test/local-stress-test.sh 20            # 20 iterations
+#   ./ci/bench-test/local-stress-test.sh 5 --bench nbody
+#   ./ci/bench-test/local-stress-test.sh 10 --stop-on-fail
 
 set -uo pipefail
 
 # --- Configuration ---
 
-ITERATIONS="${1:-20}"
-BENCH_NAME="mandelbrot"
+ITERATIONS="${1:-10}"
+BENCHMARKS="mandelbrot nbody"
 STOP_ON_FAIL=0
-TIMEOUT=600
+TIMEOUT=120
 LOG_DIR="ci/bench-test/logs"
 BINARY="target/release/examples/benchmark_runner"
 
@@ -30,7 +30,7 @@ shift 2>/dev/null || true
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --bench)
-            BENCH_NAME="$2"
+            BENCHMARKS="$2"
             shift 2
             ;;
         --stop-on-fail)
@@ -52,7 +52,7 @@ done
 
 mkdir -p "$LOG_DIR"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-SUMMARY_LOG="$LOG_DIR/summary_${TIMESTAMP}.log"
+SUMMARY_LOG="$LOG_DIR/local_summary_${TIMESTAMP}.log"
 
 pass_count=0
 fail_count=0
@@ -64,6 +64,8 @@ describe_exit() {
     local code=$1
     if [[ $code -eq 0 ]]; then
         echo "OK"
+    elif [[ $code -eq 124 ]]; then
+        echo "TIMEOUT"
     elif [[ $code -gt 128 ]]; then
         local sig=$((code - 128))
         case $sig in
@@ -78,78 +80,91 @@ describe_exit() {
     fi
 }
 
+# --- Check binary ---
+
+if [[ ! -f "$BINARY" ]]; then
+    echo "Binary not found: $BINARY"
+    echo "Building release binary..."
+    cargo build --release -p compiler --features llvm-backend --example benchmark_runner || exit 1
+fi
+
 # --- Banner ---
 
 echo "========================================================================"
-echo "  Rayzor Benchmark Stress Test"
+echo "  Rayzor Local Stress Test"
 echo "========================================================================"
 echo ""
 echo "  Platform:    $(uname -s) $(uname -m)"
 echo "  Kernel:      $(uname -r)"
 echo "  Iterations:  $ITERATIONS"
-echo "  Benchmark:   $BENCH_NAME"
+echo "  Benchmarks:  $BENCHMARKS"
+echo "  Timeout:     ${TIMEOUT}s per run"
 echo "  Stop on fail: $( [[ $STOP_ON_FAIL -eq 1 ]] && echo "yes" || echo "no" )"
 echo "  Log dir:     $LOG_DIR"
-echo "  Timestamp:   $TIMESTAMP"
 echo ""
 echo "========================================================================"
 
 {
-    echo "Rayzor Benchmark Stress Test"
+    echo "Rayzor Local Stress Test"
     echo "Platform: $(uname -s) $(uname -m) | Kernel: $(uname -r)"
-    echo "Iterations: $ITERATIONS | Benchmark: $BENCH_NAME | Stop on fail: $STOP_ON_FAIL"
+    echo "Iterations: $ITERATIONS | Benchmarks: $BENCHMARKS"
     echo "Started: $(date)"
     echo ""
 } > "$SUMMARY_LOG"
 
 # --- Test loop ---
 
-for ((i = 1; i <= ITERATIONS; i++)); do
-    printf "  [RUN ] %s (#%d/%d)... " "$BENCH_NAME" "$i" "$ITERATIONS"
-    logfile="$LOG_DIR/${BENCH_NAME}_${TIMESTAMP}_run${i}.log"
+stopped=0
+for bench in $BENCHMARKS; do
+    if [[ $stopped -eq 1 ]]; then break; fi
 
-    # Run with signal handler preloaded and timeout
-    # RAYZOR_TARGET can be set to isolate a specific backend (cranelift, interpreter, tiered)
-    exit_code=0
-    RAYZOR_TARGET=${RAYZOR_TARGET:-} LD_PRELOAD=/usr/lib/libseghandler.so timeout "$TIMEOUT" \
-        "$BINARY" "$BENCH_NAME" > "$logfile" 2>&1 || exit_code=$?
+    echo ""
+    echo "  --- $bench ---"
 
-    if [[ $exit_code -eq 0 ]]; then
-        echo "PASS"
-        pass_count=$((pass_count + 1))
-    else
-        desc=$(describe_exit "$exit_code")
-        echo "FAIL ($desc)"
-        fail_count=$((fail_count + 1))
-        signals+=("run$i:$desc")
-        echo "         Log: $logfile"
+    for ((i = 1; i <= ITERATIONS; i++)); do
+        printf "  [RUN ] %s (#%d/%d)... " "$bench" "$i" "$ITERATIONS"
+        logfile="$LOG_DIR/${bench}_local_${TIMESTAMP}_run${i}.log"
 
-        echo "  [FAIL] run $i: $desc" >> "$SUMMARY_LOG"
+        exit_code=0
+        timeout "$TIMEOUT" "$BINARY" "$bench" > "$logfile" 2>&1 || exit_code=$?
 
-        # Print last 30 lines of log for quick diagnosis
-        echo "         --- last 30 lines ---"
-        tail -30 "$logfile" 2>/dev/null | sed 's/^/         /'
-        echo "         --- end ---"
+        if [[ $exit_code -eq 0 ]]; then
+            echo "PASS"
+            pass_count=$((pass_count + 1))
+        else
+            desc=$(describe_exit "$exit_code")
+            echo "FAIL ($desc)"
+            fail_count=$((fail_count + 1))
+            signals+=("${bench}:run$i:$desc")
+            echo "         Log: $logfile"
 
-        if [[ $STOP_ON_FAIL -eq 1 ]]; then
-            echo ""
-            echo "Stopping on first failure (--stop-on-fail)"
-            break
+            echo "  [FAIL] $bench run $i: $desc" >> "$SUMMARY_LOG"
+
+            echo "         --- last 20 lines ---"
+            tail -20 "$logfile" 2>/dev/null | sed 's/^/         /'
+            echo "         --- end ---"
+
+            if [[ $STOP_ON_FAIL -eq 1 ]]; then
+                echo ""
+                echo "Stopping on first failure (--stop-on-fail)"
+                stopped=1
+                break
+            fi
         fi
-    fi
+    done
 done
 
 # --- Summary ---
 
 echo ""
 echo "========================================================================"
-echo "  STRESS TEST SUMMARY"
+echo "  LOCAL STRESS TEST SUMMARY"
 echo "========================================================================"
 echo ""
 
 total=$((pass_count + fail_count))
 
-echo "  Benchmark: $BENCH_NAME"
+echo "  Benchmarks: $BENCHMARKS"
 echo "    Passed: $pass_count / $total"
 echo "    Failed: $fail_count / $total"
 if [[ ${#signals[@]} -gt 0 ]]; then

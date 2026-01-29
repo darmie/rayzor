@@ -348,6 +348,14 @@ pub struct TieredBackend {
     /// Promotion barrier for safe tier promotion
     /// Ensures no JIT code is executing when function pointers are replaced
     promotion_barrier: Arc<PromotionBarrier>,
+
+    /// Number of Cranelift tier promotions performed (each leaks a backend)
+    promotion_count: Arc<AtomicU64>,
+
+    /// The highest Cranelift tier currently compiled for all functions
+    /// Used to skip redundant recompilations when multiple functions
+    /// cross thresholds at the same tier level
+    current_compiled_tier: Arc<AtomicU8>,
 }
 
 /// Optimization tier level (5-tier system with interpreter)
@@ -547,6 +555,7 @@ impl TierPreset {
                 verbosity: 0,
                 start_interpreted: true,
                 bailout_strategy: BailoutStrategy::Quick,
+                max_tier_promotions: 4,
             },
 
             TierPreset::Application => TieredConfig {
@@ -563,6 +572,7 @@ impl TierPreset {
                 verbosity: 0,
                 start_interpreted: true,
                 bailout_strategy: BailoutStrategy::Quick,
+                max_tier_promotions: 10,
             },
 
             TierPreset::Server => TieredConfig {
@@ -579,6 +589,7 @@ impl TierPreset {
                 verbosity: 0,
                 start_interpreted: true,
                 bailout_strategy: BailoutStrategy::Immediate,
+                max_tier_promotions: 15,
             },
 
             TierPreset::Benchmark => TieredConfig {
@@ -595,6 +606,7 @@ impl TierPreset {
                 verbosity: 1,            // Show tier transitions
                 start_interpreted: true, // Start with interpreter for instant startup
                 bailout_strategy: BailoutStrategy::Immediate,
+                max_tier_promotions: 8,
             },
 
             TierPreset::Development => TieredConfig {
@@ -605,6 +617,7 @@ impl TierPreset {
                 verbosity: 2, // Detailed logging
                 start_interpreted: true,
                 bailout_strategy: BailoutStrategy::Immediate,
+                max_tier_promotions: 6,
             },
 
             TierPreset::Embedded => TieredConfig {
@@ -621,6 +634,7 @@ impl TierPreset {
                 verbosity: 0,
                 start_interpreted: true,
                 bailout_strategy: BailoutStrategy::Slow, // High threshold before bailout
+                max_tier_promotions: 0, // Interpreter only
             },
         }
     }
@@ -705,6 +719,12 @@ pub struct TieredConfig {
     /// Interpreter bailout strategy - determines how quickly to switch to JIT
     /// Use BailoutStrategy::Immediate for benchmarks, Quick for most apps
     pub bailout_strategy: BailoutStrategy,
+
+    /// Maximum number of Cranelift tier promotions (each leaks a backend).
+    /// Once exhausted, further Cranelift promotions are skipped (functions stay at current tier).
+    /// LLVM promotion is not counted since it has its own singleton guard.
+    /// Set to 0 to disable tier promotion entirely.
+    pub max_tier_promotions: u64,
 }
 
 impl Default for TieredConfig {
@@ -717,6 +737,7 @@ impl Default for TieredConfig {
             verbosity: 0,
             start_interpreted: true, // Enable interpreter by default for instant startup
             bailout_strategy: BailoutStrategy::Quick, // Good balance for most apps
+            max_tier_promotions: 10,
         }
     }
 }
@@ -748,6 +769,7 @@ impl TieredConfig {
             verbosity: 2,
             start_interpreted: true, // Instant startup for quick iteration
             bailout_strategy: BailoutStrategy::Immediate, // Quick bailout for testing
+            max_tier_promotions: 6,
         }
     }
 
@@ -761,6 +783,7 @@ impl TieredConfig {
             verbosity: 0,
             start_interpreted: true, // Instant startup, then promote hot functions
             bailout_strategy: BailoutStrategy::Quick, // Quick bailout
+            max_tier_promotions: 10,
         }
     }
 
@@ -775,6 +798,7 @@ impl TieredConfig {
             verbosity: 0,
             start_interpreted: false, // Skip interpreter, start at Phase 1
             bailout_strategy: BailoutStrategy::Quick, // Not used when start_interpreted=false
+            max_tier_promotions: 10,
         }
     }
 }
@@ -840,6 +864,8 @@ impl TieredBackend {
             #[cfg(feature = "llvm-backend")]
             llvm_compiled: Arc::new(Mutex::new(false)),
             promotion_barrier: Arc::new(PromotionBarrier::new()),
+            promotion_count: Arc::new(AtomicU64::new(0)),
+            current_compiled_tier: Arc::new(AtomicU8::new(0)),
         })
     }
 
@@ -890,6 +916,8 @@ impl TieredBackend {
             #[cfg(feature = "llvm-backend")]
             llvm_compiled: Arc::new(Mutex::new(false)),
             promotion_barrier: Arc::new(PromotionBarrier::new()),
+            promotion_count: Arc::new(AtomicU64::new(0)),
+            current_compiled_tier: Arc::new(AtomicU8::new(0)),
         })
     }
 
@@ -1332,8 +1360,24 @@ impl TieredBackend {
             map
         } else {
             // Tier 1-3: Use Cranelift backend
+            // Skip if already at this tier (dedup)
+            let current_tier = self.current_compiled_tier.load(Ordering::Relaxed);
+            if target_tier as u8 <= current_tier {
+                drop(modules_lock);
+                return Ok(());
+            }
+
+            // Check promotion budget
+            let count = self.promotion_count.fetch_add(1, Ordering::Relaxed);
+            if count >= self.config.max_tier_promotions {
+                self.promotion_count.fetch_sub(1, Ordering::Relaxed);
+                drop(modules_lock);
+                return Ok(());
+            }
+
             // Compile ALL modules at the new tier and get ALL function pointers
             let pointers = self.compile_all_at_tier(&modules_lock, target_tier)?;
+            self.current_compiled_tier.store(target_tier as u8, Ordering::Relaxed);
             drop(modules_lock);
             pointers
         };
@@ -1953,6 +1997,8 @@ impl TieredBackend {
         let runtime_symbols = Arc::clone(&self.runtime_symbols);
         let llvm_queue = Arc::clone(&self.llvm_queue);
         let promotion_barrier = Arc::clone(&self.promotion_barrier);
+        let promotion_count = Arc::clone(&self.promotion_count);
+        let current_compiled_tier = Arc::clone(&self.current_compiled_tier);
 
         let handle = thread::spawn(move || {
             if config.verbosity >= 1 {
@@ -1980,6 +2026,8 @@ impl TieredBackend {
                     &runtime_symbols,
                     &llvm_queue,
                     &promotion_barrier,
+                    &promotion_count,
+                    &current_compiled_tier,
                 );
 
                 // Sleep before next iteration
@@ -2012,6 +2060,8 @@ impl TieredBackend {
         runtime_symbols: &Arc<Vec<(String, usize)>>,
         llvm_queue: &Arc<Mutex<VecDeque<IrFunctionId>>>,
         promotion_barrier: &Arc<PromotionBarrier>,
+        promotion_count: &Arc<AtomicU64>,
+        current_compiled_tier: &Arc<AtomicU8>,
     ) {
         // Drain batch of functions to compile in parallel
         let batch: Vec<(IrFunctionId, OptimizationTier)> = {
@@ -2100,6 +2150,41 @@ impl TieredBackend {
                 );
             }
 
+            // Skip if we've already compiled at this tier or higher (dedup)
+            let current_tier = current_compiled_tier.load(Ordering::Relaxed);
+            if max_tier as u8 <= current_tier {
+                if config.verbosity >= 2 {
+                    debug!(
+                        "[TieredBackend] Skipping recompilation: already at tier {} (requested {})",
+                        current_tier,
+                        max_tier as u8
+                    );
+                }
+                // Mark batch items as no longer optimizing
+                let mut optimizing_lock = optimizing.lock().unwrap();
+                for (func_id, _) in &cranelift_batch {
+                    optimizing_lock.remove(func_id);
+                }
+                return;
+            }
+
+            // Check promotion budget
+            let count = promotion_count.fetch_add(1, Ordering::Relaxed);
+            if count >= config.max_tier_promotions {
+                promotion_count.fetch_sub(1, Ordering::Relaxed);
+                if config.verbosity >= 1 {
+                    debug!(
+                        "[TieredBackend] Tier promotion budget exhausted ({}/{}), skipping",
+                        count, config.max_tier_promotions
+                    );
+                }
+                let mut optimizing_lock = optimizing.lock().unwrap();
+                for (func_id, _) in &cranelift_batch {
+                    optimizing_lock.remove(func_id);
+                }
+                return;
+            }
+
             // Compile ALL modules at the highest tier
             let compile_result =
                 Self::compile_all_at_tier_static(&modules_lock[..], max_tier, runtime_symbols);
@@ -2165,6 +2250,9 @@ impl TieredBackend {
 
                     // Step 4: Complete promotion - allow JIT executions to resume
                     promotion_barrier.complete_promotion();
+
+                    // Track the tier we just compiled to (for dedup)
+                    current_compiled_tier.store(max_tier as u8, Ordering::Relaxed);
 
                     if config.verbosity >= 2 {
                         debug!("[TieredBackend] Promotion complete, executions resumed");
