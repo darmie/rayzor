@@ -1743,20 +1743,19 @@ impl<'a> TastToHirContext<'a> {
                         let patterns = vec![self.lower_case_value_pattern(&case.case_value)];
                         let body = match &case.body {
                             TypedStatement::Expression { expression, .. } => {
-                                let body_stmt = HirStatement::Expr(self.lower_expression(expression));
+                                let body_stmt =
+                                    HirStatement::Expr(self.lower_expression(expression));
                                 HirBlock {
                                     statements: vec![body_stmt],
                                     expr: None,
                                     scope: self.current_scope,
                                 }
                             }
-                            _ => {
-                                HirBlock {
-                                    statements: vec![self.lower_statement(&case.body)],
-                                    expr: None,
-                                    scope: self.current_scope,
-                                }
-                            }
+                            _ => HirBlock {
+                                statements: vec![self.lower_statement(&case.body)],
+                                expr: None,
+                                scope: self.current_scope,
+                            },
                         };
 
                         hir_cases.push(HirMatchCase {
@@ -1772,7 +1771,9 @@ impl<'a> TastToHirContext<'a> {
                             patterns: vec![HirPattern::Wildcard],
                             guard: None,
                             body: HirBlock {
-                                statements: vec![HirStatement::Expr(self.lower_expression(default))],
+                                statements: vec![HirStatement::Expr(
+                                    self.lower_expression(default),
+                                )],
                                 expr: None,
                                 scope: self.current_scope,
                             },
@@ -2982,7 +2983,8 @@ impl<'a> TastToHirContext<'a> {
                 if let Some(sym) = self.symbol_table.get_symbol(*symbol_id) {
                     if sym.kind == crate::tast::symbols::SymbolKind::EnumVariant {
                         // Find the parent enum type
-                        let enum_type = self.symbol_table
+                        let enum_type = self
+                            .symbol_table
                             .find_parent_enum_for_constructor(*symbol_id)
                             .and_then(|parent_id| self.symbol_table.get_symbol(parent_id))
                             .map(|parent_sym| parent_sym.type_id)
@@ -2997,16 +2999,22 @@ impl<'a> TastToHirContext<'a> {
                 HirPattern::Wildcard
             }
             // Enum constructor with parameters (e.g., case Ok(_):, case Some(x):)
-            TypedExpressionKind::FunctionCall { function, arguments, .. } => {
+            TypedExpressionKind::FunctionCall {
+                function,
+                arguments,
+                ..
+            } => {
                 if let TypedExpressionKind::Variable { symbol_id } = &function.kind {
                     if let Some(sym) = self.symbol_table.get_symbol(*symbol_id) {
                         if sym.kind == crate::tast::symbols::SymbolKind::EnumVariant {
-                            let enum_type = self.symbol_table
+                            let enum_type = self
+                                .symbol_table
                                 .find_parent_enum_for_constructor(*symbol_id)
                                 .and_then(|parent_id| self.symbol_table.get_symbol(parent_id))
                                 .map(|parent_sym| parent_sym.type_id)
                                 .unwrap_or(function.expr_type);
-                            let fields: Vec<HirPattern> = arguments.iter()
+                            let fields: Vec<HirPattern> = arguments
+                                .iter()
                                 .map(|arg| self.lower_case_value_pattern(arg))
                                 .collect();
                             return HirPattern::Constructor {
@@ -3035,17 +3043,20 @@ impl<'a> TastToHirContext<'a> {
             parser::Pattern::Constructor { path, params } => {
                 let name_interned = self.string_interner.intern(&path.name);
                 // Look up the enum variant symbol
-                if let Some(sym) = self.symbol_table.lookup_symbol(
-                    crate::tast::ScopeId::first(), name_interned,
-                ) {
+                if let Some(sym) = self
+                    .symbol_table
+                    .lookup_symbol(crate::tast::ScopeId::first(), name_interned)
+                {
                     let sym_id = sym.id;
                     if sym.kind == crate::tast::symbols::SymbolKind::EnumVariant {
-                        let enum_type = self.symbol_table
+                        let enum_type = self
+                            .symbol_table
                             .find_parent_enum_for_constructor(sym_id)
                             .and_then(|parent_id| self.symbol_table.get_symbol(parent_id))
                             .map(|parent_sym| parent_sym.type_id)
                             .unwrap_or(TypeId::invalid());
-                        let fields: Vec<HirPattern> = params.iter()
+                        let fields: Vec<HirPattern> = params
+                            .iter()
                             .map(|p| self.lower_parser_pattern_to_hir(p))
                             .collect();
                         return HirPattern::Constructor {
@@ -3063,12 +3074,18 @@ impl<'a> TastToHirContext<'a> {
                 let name_interned = self.string_interner.intern(name);
                 // Look up the symbol - try current scope first, then search all symbols
                 // (bind_pattern_variables in ast_lowering may have created it in a case scope)
-                let found = self.symbol_table.lookup_symbol(self.current_scope, name_interned)
+                let found = self
+                    .symbol_table
+                    .lookup_symbol(self.current_scope, name_interned)
                     .map(|s| s.id)
                     .or_else(|| {
                         // Search all symbols for a variable with this name
-                        self.symbol_table.all_symbols()
-                            .filter(|s| s.name == name_interned && s.kind == crate::tast::symbols::SymbolKind::Variable)
+                        self.symbol_table
+                            .all_symbols()
+                            .filter(|s| {
+                                s.name == name_interned
+                                    && s.kind == crate::tast::symbols::SymbolKind::Variable
+                            })
                             .last()
                             .map(|s| s.id)
                     });

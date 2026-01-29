@@ -1827,7 +1827,10 @@ impl<'a> AstLowering<'a> {
     }
 
     /// Pre-register type declarations in the symbol table (first pass)
-    pub fn pre_register_declaration(&mut self, declaration: &TypeDeclaration) -> LoweringResult<()> {
+    pub fn pre_register_declaration(
+        &mut self,
+        declaration: &TypeDeclaration,
+    ) -> LoweringResult<()> {
         match declaration {
             TypeDeclaration::Class(class_decl) => {
                 let class_name = self.context.intern_string(&class_decl.name);
@@ -2843,7 +2846,10 @@ impl<'a> AstLowering<'a> {
 
     /// Lower an enum declaration
     /// Public wrapper for lower_enum_declaration, used when loading from BLADE cache
-    pub fn lower_enum_declaration_public(&mut self, enum_decl: &EnumDecl) -> LoweringResult<TypedDeclaration> {
+    pub fn lower_enum_declaration_public(
+        &mut self,
+        enum_decl: &EnumDecl,
+    ) -> LoweringResult<TypedDeclaration> {
         self.lower_enum_declaration(enum_decl)
     }
 

@@ -318,8 +318,7 @@ pub fn register_enum_from_mir(
         })
         .collect();
 
-    let variants_static: &'static [EnumVariantInfo] =
-        Box::leak(variant_infos.into_boxed_slice());
+    let variants_static: &'static [EnumVariantInfo] = Box::leak(variant_infos.into_boxed_slice());
 
     let enum_info = Box::leak(Box::new(EnumInfo {
         name: enum_name_static,

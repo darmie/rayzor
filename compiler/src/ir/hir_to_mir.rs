@@ -3039,9 +3039,15 @@ impl<'a> HirToMirContext<'a> {
     /// Get the number of fields for a specific enum variant
     /// Resolve the discriminant value for an enum variant by name.
     /// Looks up the enum type → symbol → variants, then finds the matching variant index.
-    fn resolve_enum_variant_discriminant(&self, enum_type: TypeId, variant_name: InternedString) -> Option<i64> {
+    fn resolve_enum_variant_discriminant(
+        &self,
+        enum_type: TypeId,
+        variant_name: InternedString,
+    ) -> Option<i64> {
         // Get the enum symbol from the type
-        let enum_symbol = self.symbol_table.get_symbol_from_type(enum_type)
+        let enum_symbol = self
+            .symbol_table
+            .get_symbol_from_type(enum_type)
             .or_else(|| {
                 // Try unwrapping GenericInstance or Enum type
                 let type_table = self.type_table.borrow();
@@ -3079,7 +3085,9 @@ impl<'a> HirToMirContext<'a> {
                 let sym_name = self.string_interner.get(sym.name).unwrap_or("");
                 if sym_name == variant_name_str {
                     // Found the variant — get its parent enum and find the index
-                    if let Some(parent_id) = self.symbol_table.find_parent_enum_for_constructor(sym.id) {
+                    if let Some(parent_id) =
+                        self.symbol_table.find_parent_enum_for_constructor(sym.id)
+                    {
                         if let Some(variants) = self.symbol_table.get_enum_variants(parent_id) {
                             for (idx, &vid) in variants.iter().enumerate() {
                                 if vid == sym.id {
@@ -3097,34 +3105,61 @@ impl<'a> HirToMirContext<'a> {
 
     /// Resolve the concrete IrTypes and TypeIds for an enum variant's fields.
     /// Handles generic type parameter substitution (e.g., Result<Int,String>.Ok → [(I32, IntTypeId)]).
-    fn get_enum_variant_field_types(&self, enum_type: TypeId, variant_name: InternedString) -> Vec<(IrType, TypeId)> {
+    fn get_enum_variant_field_types(
+        &self,
+        enum_type: TypeId,
+        variant_name: InternedString,
+    ) -> Vec<(IrType, TypeId)> {
         // Step 1: Resolve enum_type to base enum SymbolId and optional generic type_args
         let (enum_symbol, generic_type_args) = {
             let type_table = self.type_table.borrow();
             if let Some(type_info) = type_table.get(enum_type) {
                 match &type_info.kind {
-                    crate::tast::TypeKind::GenericInstance { base_type, type_args, .. } => {
+                    crate::tast::TypeKind::GenericInstance {
+                        base_type,
+                        type_args,
+                        ..
+                    } => {
                         // Generic enum: Result<Int, String>
-                        let base_sym = self.symbol_table.get_symbol_from_type(*base_type)
-                            .or_else(|| {
-                                if let Some(base_info) = type_table.get(*base_type) {
-                                    if let crate::tast::TypeKind::Enum { symbol_id, .. } = &base_info.kind {
-                                        return Some(*symbol_id);
+                        let base_sym =
+                            self.symbol_table
+                                .get_symbol_from_type(*base_type)
+                                .or_else(|| {
+                                    if let Some(base_info) = type_table.get(*base_type) {
+                                        if let crate::tast::TypeKind::Enum { symbol_id, .. } =
+                                            &base_info.kind
+                                        {
+                                            return Some(*symbol_id);
+                                        }
                                     }
-                                }
-                                None
-                            });
+                                    None
+                                });
                         (base_sym, Some((*base_type, type_args.clone())))
                     }
-                    crate::tast::TypeKind::Enum { symbol_id, type_args, .. } => {
+                    crate::tast::TypeKind::Enum {
+                        symbol_id,
+                        type_args,
+                        ..
+                    } => {
                         // Check if type_args contain concrete types (not TypeParameters)
                         // If so, this IS the concrete instance and we need to find the base enum
-                        let has_concrete_args = !type_args.is_empty() && type_args.iter().any(|ta| {
-                            type_table.get(*ta).map(|ti| !matches!(ti.kind, crate::tast::TypeKind::TypeParameter { .. })).unwrap_or(false)
-                        });
+                        let has_concrete_args = !type_args.is_empty()
+                            && type_args.iter().any(|ta| {
+                                type_table
+                                    .get(*ta)
+                                    .map(|ti| {
+                                        !matches!(
+                                            ti.kind,
+                                            crate::tast::TypeKind::TypeParameter { .. }
+                                        )
+                                    })
+                                    .unwrap_or(false)
+                            });
                         if has_concrete_args {
                             // Find the base enum type (with TypeParameter type_args) via symbol
-                            let base_type = self.symbol_table.get_symbol(*symbol_id)
+                            let base_type = self
+                                .symbol_table
+                                .get_symbol(*symbol_id)
                                 .map(|sym| sym.type_id)
                                 .unwrap_or(enum_type);
                             (Some(*symbol_id), Some((base_type, type_args.clone())))
@@ -3157,11 +3192,17 @@ impl<'a> HirToMirContext<'a> {
                     for variant in &enum_decl.variants {
                         let vname = self.string_interner.get(variant.name).unwrap_or("");
                         if vname == variant_name_str {
-                            return variant.fields.iter().map(|field| {
-                                let ir_type = self.resolve_field_type(field.ty, &generic_type_args);
-                                let type_id = self.resolve_field_type_id(field.ty, &generic_type_args);
-                                (ir_type, type_id)
-                            }).collect();
+                            return variant
+                                .fields
+                                .iter()
+                                .map(|field| {
+                                    let ir_type =
+                                        self.resolve_field_type(field.ty, &generic_type_args);
+                                    let type_id =
+                                        self.resolve_field_type_id(field.ty, &generic_type_args);
+                                    (ir_type, type_id)
+                                })
+                                .collect();
                         }
                     }
                 }
@@ -3175,12 +3216,19 @@ impl<'a> HirToMirContext<'a> {
                     if variant_sym.name == variant_name {
                         let type_table = self.type_table.borrow();
                         if let Some(type_info) = type_table.get(variant_sym.type_id) {
-                            if let crate::tast::core::TypeKind::Function { params, .. } = &type_info.kind {
-                                return params.iter().map(|p| {
-                                    let ir_type = self.resolve_field_type(*p, &generic_type_args);
-                                    let type_id = self.resolve_field_type_id(*p, &generic_type_args);
-                                    (ir_type, type_id)
-                                }).collect();
+                            if let crate::tast::core::TypeKind::Function { params, .. } =
+                                &type_info.kind
+                            {
+                                return params
+                                    .iter()
+                                    .map(|p| {
+                                        let ir_type =
+                                            self.resolve_field_type(*p, &generic_type_args);
+                                        let type_id =
+                                            self.resolve_field_type_id(*p, &generic_type_args);
+                                        (ir_type, type_id)
+                                    })
+                                    .collect();
                             }
                         }
                     }
@@ -3193,7 +3241,11 @@ impl<'a> HirToMirContext<'a> {
 
     /// Resolve a field's TypeId to an IrType, substituting generic type parameters
     /// if generic_info is provided (base_type + concrete type_args).
-    fn resolve_field_type(&self, field_type_id: TypeId, generic_info: &Option<(TypeId, Vec<TypeId>)>) -> IrType {
+    fn resolve_field_type(
+        &self,
+        field_type_id: TypeId,
+        generic_info: &Option<(TypeId, Vec<TypeId>)>,
+    ) -> IrType {
         let type_table = self.type_table.borrow();
 
         // Check if this TypeId is a type parameter that needs substitution
@@ -3208,7 +3260,11 @@ impl<'a> HirToMirContext<'a> {
                         };
                         for (idx, &param_type_id) in base_type_args.iter().enumerate() {
                             if let Some(param_info) = type_table.get(param_type_id) {
-                                if let crate::tast::TypeKind::TypeParameter { symbol_id: param_sym, .. } = &param_info.kind {
+                                if let crate::tast::TypeKind::TypeParameter {
+                                    symbol_id: param_sym,
+                                    ..
+                                } = &param_info.kind
+                                {
                                     if param_sym == symbol_id {
                                         // Found match — substitute with concrete type
                                         if let Some(&concrete_type_id) = concrete_args.get(idx) {
@@ -3243,7 +3299,11 @@ impl<'a> HirToMirContext<'a> {
     }
 
     /// Like resolve_field_type but returns the concrete TypeId instead of IrType.
-    fn resolve_field_type_id(&self, field_type_id: TypeId, generic_info: &Option<(TypeId, Vec<TypeId>)>) -> TypeId {
+    fn resolve_field_type_id(
+        &self,
+        field_type_id: TypeId,
+        generic_info: &Option<(TypeId, Vec<TypeId>)>,
+    ) -> TypeId {
         let type_table = self.type_table.borrow();
         if let Some(type_info) = type_table.get(field_type_id) {
             if let crate::tast::TypeKind::TypeParameter { symbol_id, .. } = &type_info.kind {
@@ -3255,7 +3315,11 @@ impl<'a> HirToMirContext<'a> {
                         };
                         for (idx, &param_type_id) in base_type_args.iter().enumerate() {
                             if let Some(param_info) = type_table.get(param_type_id) {
-                                if let crate::tast::TypeKind::TypeParameter { symbol_id: param_sym, .. } = &param_info.kind {
+                                if let crate::tast::TypeKind::TypeParameter {
+                                    symbol_id: param_sym,
+                                    ..
+                                } = &param_info.kind
+                                {
                                     if param_sym == symbol_id {
                                         if let Some(&concrete_type_id) = concrete_args.get(idx) {
                                             return concrete_type_id;
@@ -7706,7 +7770,9 @@ impl<'a> HirToMirContext<'a> {
                         // Convert non-string operand to string if needed
                         // For class instances with toString(), call it directly at compile time
                         let lhs_str_val = if !lhs_is_string {
-                            if let Some(reg) = self.try_call_tostring(lhs_reg, self.resolve_expr_type_id(lhs))? {
+                            if let Some(reg) =
+                                self.try_call_tostring(lhs_reg, self.resolve_expr_type_id(lhs))?
+                            {
                                 reg
                             } else {
                                 self.convert_to_string(lhs_reg, &lhs_type)?
@@ -7716,7 +7782,9 @@ impl<'a> HirToMirContext<'a> {
                         };
 
                         let rhs_str_val = if !rhs_is_string {
-                            if let Some(reg) = self.try_call_tostring(rhs_reg, self.resolve_expr_type_id(rhs))? {
+                            if let Some(reg) =
+                                self.try_call_tostring(rhs_reg, self.resolve_expr_type_id(rhs))?
+                            {
                                 reg
                             } else {
                                 self.convert_to_string(rhs_reg, &rhs_type)?
@@ -9082,9 +9150,9 @@ impl<'a> HirToMirContext<'a> {
 
         // Call toString(this) -> *HaxeString
         let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
-        let string_reg = self
-            .builder
-            .build_call_direct(tostring_id, vec![obj_reg], string_ptr_ty)?;
+        let string_reg =
+            self.builder
+                .build_call_direct(tostring_id, vec![obj_reg], string_ptr_ty)?;
 
         Some(Some(string_reg))
     }
@@ -9733,7 +9801,12 @@ impl<'a> HirToMirContext<'a> {
         self.bind_pattern_with_scrutinee_type(pattern, value, None);
     }
 
-    fn bind_pattern_with_scrutinee_type(&mut self, pattern: &HirPattern, value: IrId, scrutinee_type: Option<TypeId>) {
+    fn bind_pattern_with_scrutinee_type(
+        &mut self,
+        pattern: &HirPattern,
+        value: IrId,
+        scrutinee_type: Option<TypeId>,
+    ) {
         match pattern {
             HirPattern::Variable { symbol, .. } => {
                 // Bind the value to the symbol
@@ -9755,7 +9828,11 @@ impl<'a> HirToMirContext<'a> {
                 // Literals in patterns are used for matching, not binding
                 // The matching logic should be handled elsewhere
             }
-            HirPattern::Constructor { enum_type, variant, fields } => {
+            HirPattern::Constructor {
+                enum_type,
+                variant,
+                fields,
+            } => {
                 // Use scrutinee type if available (has concrete generic args), otherwise fall back to pattern's enum_type
                 let effective_type = scrutinee_type.unwrap_or(*enum_type);
                 let field_types = self.get_enum_variant_field_types(effective_type, *variant);
@@ -9773,7 +9850,8 @@ impl<'a> HirToMirContext<'a> {
                             vec![offset_val],
                             IrType::Ptr(Box::new(IrType::I8)),
                         ) {
-                            let (resolved_type, resolved_type_id) = field_types.get(i)
+                            let (resolved_type, resolved_type_id) = field_types
+                                .get(i)
                                 .cloned()
                                 .unwrap_or((IrType::I64, TypeId::invalid()));
 
@@ -9790,18 +9868,17 @@ impl<'a> HirToMirContext<'a> {
                                 _ => (IrType::I64, None),
                             };
 
-                            let field_ptr_typed = self.builder.build_bitcast(
-                                field_ptr,
-                                IrType::Ptr(Box::new(load_type.clone())),
-                            );
+                            let field_ptr_typed = self
+                                .builder
+                                .build_bitcast(field_ptr, IrType::Ptr(Box::new(load_type.clone())));
                             if let Some(fpt) = field_ptr_typed {
-                                if let Some(mut field_val) = self.builder.build_load(fpt, load_type) {
+                                if let Some(mut field_val) = self.builder.build_load(fpt, load_type)
+                                {
                                     // Bitcast to pointer type if needed
                                     if let Some(target_type) = needs_bitcast_after {
-                                        if let Some(cast_val) = self.builder.build_bitcast(
-                                            field_val,
-                                            target_type,
-                                        ) {
+                                        if let Some(cast_val) =
+                                            self.builder.build_bitcast(field_val, target_type)
+                                        {
                                             field_val = cast_val;
                                         }
                                     }
@@ -11876,7 +11953,11 @@ impl<'a> HirToMirContext<'a> {
             self.builder.switch_to_block(body_block);
             // Bind pattern variables (extract enum fields into variable symbols)
             if !case.patterns.is_empty() {
-                self.bind_pattern_with_scrutinee_type(&case.patterns[0], scrut_val, Some(scrutinee.ty));
+                self.bind_pattern_with_scrutinee_type(
+                    &case.patterns[0],
+                    scrut_val,
+                    Some(scrutinee.ty),
+                );
             }
             self.lower_block(&case.body);
             self.builder.build_branch(continuation);
@@ -11956,7 +12037,8 @@ impl<'a> HirToMirContext<'a> {
                 };
 
                 // Look up variant discriminant from enum metadata
-                let variant_discriminant = self.resolve_enum_variant_discriminant(*enum_type, *variant)
+                let variant_discriminant = self
+                    .resolve_enum_variant_discriminant(*enum_type, *variant)
                     .unwrap_or(0);
 
                 let Some(expected_tag) = self.builder.build_int(variant_discriminant, IrType::I32)

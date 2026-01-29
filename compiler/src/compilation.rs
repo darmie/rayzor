@@ -1968,7 +1968,10 @@ impl CompilationUnit {
             found_path.ok_or_else(|| format!("Could not resolve import: {}", qualified_path))?
         } else {
             // Check if the file is already loaded (resolve returns None for loaded files)
-            if self.namespace_resolver.is_qualified_path_loaded(qualified_path) {
+            if self
+                .namespace_resolver
+                .is_qualified_path_loaded(qualified_path)
+            {
                 return Ok(());
             }
             return Err(format!("Could not resolve import: {}", qualified_path));
@@ -3586,7 +3589,9 @@ impl CompilationUnit {
             }
 
             // Merge string pools
-            main_module.string_pool.merge_from(&import_module.string_pool);
+            main_module
+                .string_pool
+                .merge_from(&import_module.string_pool);
         }
 
         debug!(
