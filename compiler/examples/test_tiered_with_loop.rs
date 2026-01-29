@@ -126,6 +126,7 @@ class Math {
         verbosity: 1, // Show promotions
         start_interpreted: false,
         bailout_strategy: compiler::codegen::BailoutStrategy::Quick,
+        max_tier_promotions: 3,
     };
 
     let mut backend = TieredBackend::new(config)?;

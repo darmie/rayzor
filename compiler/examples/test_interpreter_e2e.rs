@@ -224,6 +224,7 @@ fn compile_and_run_interpreted(source: &str, name: &str) -> Result<(), String> {
         verbosity: 0,
         start_interpreted: true, // Start in interpreter mode
         bailout_strategy: compiler::codegen::BailoutStrategy::Quick,
+        max_tier_promotions: 0,
     };
 
     let mut backend = TieredBackend::with_symbols(config, &symbols_ref)

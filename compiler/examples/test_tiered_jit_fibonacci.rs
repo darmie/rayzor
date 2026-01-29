@@ -77,6 +77,7 @@ fn main() {
         verbosity: 2, // Verbose output to see tier promotions
         start_interpreted: false,
         bailout_strategy: compiler::codegen::BailoutStrategy::Quick,
+        max_tier_promotions: 3,
     };
 
     // Create tiered backend and compile module
