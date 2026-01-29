@@ -38,9 +38,11 @@ use std::sync::Arc;
 fn main() {
     println!("=== Option & Result Enum Test ===\n");
 
-    // Test 1: Result<T,E> from StdTypes (no import needed)
-    println!("Test 1: Result enum from StdTypes");
+    // Test 1: Result<T,E> from rayzor.core (requires import)
+    println!("Test 1: Result enum from rayzor.core");
     let source1 = r#"
+import rayzor.core.Result;
+
 class Main {
     static function main() {
         var ok = Result.Ok(42);
@@ -50,11 +52,13 @@ class Main {
     }
 }
 "#;
-    run_test(source1, "result_stdtypes");
+    run_test(source1, "result_import");
 
     // Test 2: Simple Result usage with Int error type
     println!("\nTest 2: Result with Int error");
     let source2 = r#"
+import rayzor.core.Result;
+
 class Main {
     static function main() {
         var r = Result.Ok(100);

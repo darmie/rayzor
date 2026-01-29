@@ -930,13 +930,8 @@ impl<'a> HirToMirContext<'a> {
             self.lower_global(*symbol_id, global);
         }
 
-        // Generate __init__ function for dynamic global initialization and enum RTTI
-        // Also generate if we have enums to register (even without dynamic globals)
-        let has_enums = self
-            .current_hir_types
-            .values()
-            .any(|decl| matches!(decl, HirTypeDecl::Enum(_)));
-        if !self.dynamic_globals.is_empty() || has_enums {
+        // Generate __init__ function for dynamic global initialization
+        if !self.dynamic_globals.is_empty() {
             self.generate_module_init_function();
         }
 
@@ -12838,30 +12833,54 @@ impl<'a> HirToMirContext<'a> {
         }
     }
 
-    fn register_enum_metadata(&mut self, type_id: TypeId, enum_decl: &HirEnum) {
+    fn register_enum_metadata(&mut self, _type_id: TypeId, enum_decl: &HirEnum) {
         // Register enum type with discriminant values
         let typedef_id = self.builder.module.alloc_typedef_id();
+
+        // Use the symbol's type_id for consistency with trace call sites
+        let sym_type_id = self
+            .symbol_table
+            .get_symbol(enum_decl.symbol_id)
+            .map(|sym| sym.type_id)
+            .unwrap_or(_type_id);
+
+        let enum_name = self
+            .string_interner
+            .get(enum_decl.name)
+            .unwrap_or("<unknown>")
+            .to_string();
 
         let mut variants = Vec::new();
         for (i, variant) in enum_decl.variants.iter().enumerate() {
             // Use explicit discriminant if provided, otherwise use index
             let discriminant = variant.discriminant.unwrap_or(i as i32) as i64;
 
-            // Convert variant fields to IR fields
+            let variant_name = self
+                .string_interner
+                .get(variant.name)
+                .unwrap_or("<unknown>")
+                .to_string();
+
+            // Convert variant fields to IR fields with resolved types
             let fields: Vec<IrField> = variant
                 .fields
                 .iter()
                 .map(|field| {
+                    let field_name = self
+                        .string_interner
+                        .get(field.name)
+                        .unwrap_or("<unknown>")
+                        .to_string();
                     IrField {
-                        name: field.name.to_string(),
-                        ty: IrType::Any, // TODO: Convert TypeId to IrType
+                        name: field_name,
+                        ty: self.convert_type(field.ty),
                         offset: None,
                     }
                 })
                 .collect();
 
             variants.push(IrEnumVariant {
-                name: variant.name.to_string(),
+                name: variant_name,
                 discriminant,
                 fields,
             });
@@ -12869,8 +12888,8 @@ impl<'a> HirToMirContext<'a> {
 
         let typedef = IrTypeDef {
             id: typedef_id,
-            name: enum_decl.name.to_string(),
-            type_id,
+            name: enum_name,
+            type_id: sym_type_id,
             definition: IrTypeDefinition::Enum {
                 variants,
                 discriminant_type: IrType::I32,
@@ -13187,215 +13206,6 @@ impl<'a> HirToMirContext<'a> {
         self.builder.module.add_type(typedef);
     }
 
-    /// Emit runtime type information registration for all enum types
-    fn emit_enum_rtti_registrations(&mut self) {
-        // Collect enums from current_hir_types
-        let enums_to_register: Vec<_> = self
-            .current_hir_types
-            .iter()
-            .filter_map(|(type_id, decl)| {
-                if let HirTypeDecl::Enum(enum_decl) = decl {
-                    Some((*type_id, enum_decl.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        if enums_to_register.is_empty() {
-            return;
-        }
-
-        // Get or register the RTTI functions
-        let start_func_id = self.get_or_register_extern_function(
-            "haxe_register_enum_start",
-            vec![
-                IrType::I32,                       // type_id
-                IrType::Ptr(Box::new(IrType::I8)), // name_ptr
-                IrType::I64,                       // name_len
-                IrType::I64,                       // variant_count
-            ],
-            IrType::Void,
-        );
-
-        let variant_func_id = self.get_or_register_extern_function(
-            "haxe_register_enum_variant",
-            vec![
-                IrType::I32,                       // type_id
-                IrType::I64,                       // variant_index
-                IrType::Ptr(Box::new(IrType::I8)), // name_ptr
-                IrType::I64,                       // name_len
-                IrType::I64,                       // param_count
-                IrType::Ptr(Box::new(IrType::I8)), // param_types_ptr (array of u8)
-            ],
-            IrType::Void,
-        );
-
-        let finish_func_id = self.get_or_register_extern_function(
-            "haxe_register_enum_finish",
-            vec![IrType::I32], // type_id
-            IrType::Void,
-        );
-
-        // Register each enum
-        for (_hir_type_id, enum_decl) in enums_to_register {
-            // Use the symbol's type_id for consistency with haxe_trace_enum
-            let symbol_type_id = self
-                .symbol_table
-                .get_symbol(enum_decl.symbol_id)
-                .map(|sym| sym.type_id.0 as i64)
-                .unwrap_or(0);
-            // Resolve the interned string to get the actual enum name
-            let enum_name = self
-                .string_interner
-                .get(enum_decl.name)
-                .unwrap_or("<unknown>")
-                .to_string();
-            let variant_count = enum_decl.variants.len();
-
-            // Build: haxe_register_enum_start(type_id, name_ptr, name_len, variant_count)
-            let type_id_reg = self
-                .builder
-                .build_const(IrValue::I32(symbol_type_id as i32))
-                .unwrap_or(IrId::invalid());
-            let name_ptr = self
-                .builder
-                .build_const(IrValue::String(enum_name.clone()))
-                .unwrap_or(IrId::invalid());
-            let name_len = self
-                .builder
-                .build_const(IrValue::I64(enum_name.len() as i64))
-                .unwrap_or(IrId::invalid());
-            let variant_count_reg = self
-                .builder
-                .build_const(IrValue::I64(variant_count as i64))
-                .unwrap_or(IrId::invalid());
-
-            let _ = self.builder.build_call_direct(
-                start_func_id,
-                vec![type_id_reg, name_ptr, name_len, variant_count_reg],
-                IrType::Void,
-            );
-
-            // Register each variant
-            for (idx, variant) in enum_decl.variants.iter().enumerate() {
-                // Resolve the interned string to get the actual variant name
-                let variant_name = self
-                    .string_interner
-                    .get(variant.name)
-                    .unwrap_or("<unknown>")
-                    .to_string();
-                let param_count = variant.fields.len();
-
-                // Build param_types array: map each field's TypeId to ParamType (u8)
-                // ParamType: Int=0, Float=1, Bool=2, String=3, Object=4
-                let param_types: Vec<u8> = {
-                    let type_table = self.type_table.borrow();
-                    variant
-                        .fields
-                        .iter()
-                        .map(|field| {
-                            match type_table.get(field.ty).map(|ti| &ti.kind) {
-                                Some(crate::tast::core::TypeKind::Int) => 0u8,
-                                Some(crate::tast::core::TypeKind::Float) => 1u8,
-                                Some(crate::tast::core::TypeKind::Bool) => 2u8,
-                                Some(crate::tast::core::TypeKind::String) => 3u8,
-                                Some(crate::tast::core::TypeKind::TypeParameter { .. }) => 5u8, // Dynamic/generic
-                                Some(crate::tast::core::TypeKind::Dynamic) => 5u8,
-                                _ => 4u8, // Object
-                            }
-                        })
-                        .collect()
-                };
-
-                let idx_reg = self
-                    .builder
-                    .build_const(IrValue::I64(idx as i64))
-                    .unwrap_or(IrId::invalid());
-                let var_name_ptr = self
-                    .builder
-                    .build_const(IrValue::String(variant_name.clone()))
-                    .unwrap_or(IrId::invalid());
-                let var_name_len = self
-                    .builder
-                    .build_const(IrValue::I64(variant_name.len() as i64))
-                    .unwrap_or(IrId::invalid());
-                let param_count_reg = self
-                    .builder
-                    .build_const(IrValue::I64(param_count as i64))
-                    .unwrap_or(IrId::invalid());
-
-                // Build param_types_ptr: allocate and store param types, or null if no params
-                let param_types_ptr = if param_types.is_empty() {
-                    // Null pointer - use iconst 0 then bitcast to ptr
-                    let null_val = self
-                        .builder
-                        .build_const(IrValue::I64(0))
-                        .unwrap_or(IrId::invalid());
-                    self.builder
-                        .build_bitcast(null_val, IrType::Ptr(Box::new(IrType::I8)))
-                        .unwrap_or(IrId::invalid())
-                } else {
-                    // Allocate memory for param types array
-                    let alloc_size = self
-                        .builder
-                        .build_const(IrValue::I64(param_types.len() as i64))
-                        .unwrap_or(IrId::invalid());
-                    let alloc_func = self.get_or_register_extern_function(
-                        "rayzor_tracked_alloc",
-                        vec![IrType::I64],
-                        IrType::Ptr(Box::new(IrType::I8)),
-                    );
-                    let ptr = self
-                        .builder
-                        .build_call_direct(
-                            alloc_func,
-                            vec![alloc_size],
-                            IrType::Ptr(Box::new(IrType::I8)),
-                        )
-                        .unwrap_or(IrId::invalid());
-
-                    // Store each param type byte
-                    for (i, &ptype) in param_types.iter().enumerate() {
-                        let offset = self
-                            .builder
-                            .build_const(IrValue::I64(i as i64))
-                            .unwrap_or(IrId::invalid());
-                        let elem_ptr = self
-                            .builder
-                            .build_gep(ptr, vec![offset], IrType::Ptr(Box::new(IrType::I8)))
-                            .unwrap_or(IrId::invalid());
-                        let val = self
-                            .builder
-                            .build_const(IrValue::I8(ptype as i8))
-                            .unwrap_or(IrId::invalid());
-                        let _ = self.builder.build_store(elem_ptr, val);
-                    }
-
-                    ptr // Keep as pointer type
-                };
-
-                let _ = self.builder.build_call_direct(
-                    variant_func_id,
-                    vec![
-                        type_id_reg,
-                        idx_reg,
-                        var_name_ptr,
-                        var_name_len,
-                        param_count_reg,
-                        param_types_ptr,
-                    ],
-                    IrType::Void,
-                );
-            }
-
-            // Finish: haxe_register_enum_finish(type_id)
-            let _ = self
-                .builder
-                .build_call_direct(finish_func_id, vec![type_id_reg], IrType::Void);
-        }
-    }
-
     fn generate_module_init_function(&mut self) {
         // Generate __init__ function that initializes dynamic globals
         // This function is called once at module load time
@@ -13431,9 +13241,6 @@ impl<'a> HirToMirContext<'a> {
             // 1. Get the global's address
             // 2. Store init_value to that address
         }
-
-        // Register enum types with runtime RTTI
-        self.emit_enum_rtti_registrations();
 
         // Return void
         self.builder.build_return(None);

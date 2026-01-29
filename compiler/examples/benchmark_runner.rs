@@ -635,7 +635,10 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
             // Upgrade to LLVM tier for maximum performance
             #[cfg(feature = "llvm-backend")]
             {
-                let _ = state.backend.upgrade_to_llvm();
+                match state.backend.upgrade_to_llvm() {
+                    Ok(()) => eprintln!("  [LLVM] Upgrade succeeded"),
+                    Err(e) => eprintln!("  [LLVM] Upgrade FAILED: {}", e),
+                }
             }
 
             // Benchmark runs

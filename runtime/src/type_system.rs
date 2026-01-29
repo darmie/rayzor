@@ -297,6 +297,47 @@ pub extern "C" fn haxe_register_enum(
 }
 
 // ============================================================================
+// Rust-native enum RTTI registration (called from compiler backends directly)
+// ============================================================================
+
+/// Register enum RTTI directly from MIR metadata, bypassing generated code.
+/// `variants` is a slice of (name, param_count, param_types) tuples.
+pub fn register_enum_from_mir(
+    type_id: u32,
+    name: &str,
+    variants: &[(String, usize, Vec<ParamType>)],
+) {
+    let enum_name_static: &'static str = Box::leak(name.to_string().into_boxed_str());
+
+    let variant_infos: Vec<EnumVariantInfo> = variants
+        .iter()
+        .map(|(vname, param_count, param_types)| EnumVariantInfo {
+            name: Box::leak(vname.clone().into_boxed_str()),
+            param_count: *param_count,
+            param_types: Box::leak(param_types.clone().into_boxed_slice()),
+        })
+        .collect();
+
+    let variants_static: &'static [EnumVariantInfo] =
+        Box::leak(variant_infos.into_boxed_slice());
+
+    let enum_info = Box::leak(Box::new(EnumInfo {
+        name: enum_name_static,
+        variants: variants_static,
+    }));
+
+    let type_info = TypeInfo {
+        name: enum_name_static,
+        size: std::mem::size_of::<i64>(),
+        align: std::mem::align_of::<i64>(),
+        to_string: enum_to_string,
+        enum_info: Some(enum_info),
+    };
+
+    register_type(TypeId(type_id), type_info);
+}
+
+// ============================================================================
 // Simpler per-variant registration API (easier to call from generated code)
 // ============================================================================
 

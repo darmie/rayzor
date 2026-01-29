@@ -147,6 +147,9 @@ fn compile_to_native(modules: &[Arc<IrModule>]) -> Result<CraneliftBackend, Stri
 }
 
 fn execute_main(backend: &mut CraneliftBackend, modules: &[Arc<IrModule>]) -> Result<(), String> {
+    // Register enum RTTI and call __init__ functions
+    backend.initialize_modules(modules)?;
+
     for module in modules.iter().rev() {
         if backend.call_main(module).is_ok() {
             return Ok(());
