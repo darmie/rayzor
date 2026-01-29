@@ -13002,10 +13002,22 @@ impl<'a> HirToMirContext<'a> {
             for elem in elements.iter() {
                 let elem_val = self.lower_expression(elem)?;
 
+                // If the element is a pointer type (e.g., class instance), cast to i64
+                // so the call matches haxe_array_push_i64's signature.
+                // Cranelift treats ptr/i64 interchangeably but LLVM enforces strict types.
+                let elem_type = self.builder.get_register_type(elem_val);
+                let push_val = if matches!(elem_type, Some(IrType::Ptr(_))) {
+                    self.builder
+                        .build_bitcast(elem_val, IrType::I64)
+                        .unwrap_or(elem_val)
+                } else {
+                    elem_val
+                };
+
                 // Call haxe_array_push_i64(arr, val) - this is a void function, so ignore the None return
                 self.builder.build_call_direct(
                     push_func_id,
-                    vec![array_ptr, elem_val],
+                    vec![array_ptr, push_val],
                     IrType::Void,
                 );
             }

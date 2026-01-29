@@ -1712,11 +1712,21 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 let target_ty = self.translate_type(ty)?;
 
                 let result = if src_val.is_int_value() {
-                    self.builder.build_bit_cast(
-                        src_val.into_int_value(),
-                        target_ty,
-                        &format!("bitcast_{}", dest.as_u32()),
-                    )
+                    // If target is pointer type, use inttoptr instead of bitcast
+                    // (LLVM bitcast cannot convert integer to ptr)
+                    if target_ty.is_pointer_type() {
+                        self.builder.build_int_to_ptr(
+                            src_val.into_int_value(),
+                            target_ty.into_pointer_type(),
+                            &format!("bitcast_{}", dest.as_u32()),
+                        ).map(|v| v.into())
+                    } else {
+                        self.builder.build_bit_cast(
+                            src_val.into_int_value(),
+                            target_ty,
+                            &format!("bitcast_{}", dest.as_u32()),
+                        )
+                    }
                 } else if src_val.is_float_value() {
                     self.builder.build_bit_cast(
                         src_val.into_float_value(),
@@ -1724,11 +1734,21 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                         &format!("bitcast_{}", dest.as_u32()),
                     )
                 } else if src_val.is_pointer_value() {
-                    self.builder.build_bit_cast(
-                        src_val.into_pointer_value(),
-                        target_ty,
-                        &format!("bitcast_{}", dest.as_u32()),
-                    )
+                    // If target is integer type, use ptrtoint instead of bitcast
+                    // (LLVM bitcast cannot convert ptr to integer)
+                    if target_ty.is_int_type() {
+                        self.builder.build_ptr_to_int(
+                            src_val.into_pointer_value(),
+                            target_ty.into_int_type(),
+                            &format!("bitcast_{}", dest.as_u32()),
+                        ).map(|v| v.into())
+                    } else {
+                        self.builder.build_bit_cast(
+                            src_val.into_pointer_value(),
+                            target_ty,
+                            &format!("bitcast_{}", dest.as_u32()),
+                        )
+                    }
                 } else {
                     return Err("Unsupported bitcast type".to_string());
                 }
