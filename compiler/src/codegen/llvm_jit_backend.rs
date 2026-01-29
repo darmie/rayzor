@@ -1715,11 +1715,13 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     // If target is pointer type, use inttoptr instead of bitcast
                     // (LLVM bitcast cannot convert integer to ptr)
                     if target_ty.is_pointer_type() {
-                        self.builder.build_int_to_ptr(
-                            src_val.into_int_value(),
-                            target_ty.into_pointer_type(),
-                            &format!("bitcast_{}", dest.as_u32()),
-                        ).map(|v| v.into())
+                        self.builder
+                            .build_int_to_ptr(
+                                src_val.into_int_value(),
+                                target_ty.into_pointer_type(),
+                                &format!("bitcast_{}", dest.as_u32()),
+                            )
+                            .map(|v| v.into())
                     } else {
                         self.builder.build_bit_cast(
                             src_val.into_int_value(),
@@ -1737,11 +1739,13 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     // If target is integer type, use ptrtoint instead of bitcast
                     // (LLVM bitcast cannot convert ptr to integer)
                     if target_ty.is_int_type() {
-                        self.builder.build_ptr_to_int(
-                            src_val.into_pointer_value(),
-                            target_ty.into_int_type(),
-                            &format!("bitcast_{}", dest.as_u32()),
-                        ).map(|v| v.into())
+                        self.builder
+                            .build_ptr_to_int(
+                                src_val.into_pointer_value(),
+                                target_ty.into_int_type(),
+                                &format!("bitcast_{}", dest.as_u32()),
+                            )
+                            .map(|v| v.into())
                     } else {
                         self.builder.build_bit_cast(
                             src_val.into_pointer_value(),
