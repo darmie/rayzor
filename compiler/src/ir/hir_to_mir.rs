@@ -4309,7 +4309,7 @@ impl<'a> HirToMirContext<'a> {
                                                 .builder
                                                 .build_const(IrValue::I64(struct_size as i64))?;
                                             let alloc_func = self.get_or_register_extern_function(
-                                                "rayzor_tracked_alloc",
+                                                "malloc",
                                                 vec![IrType::I64],
                                                 IrType::Ptr(Box::new(IrType::I8)),
                                             );
@@ -4729,7 +4729,7 @@ impl<'a> HirToMirContext<'a> {
                                             concrete_type_args.len() as i64,
                                         ))?;
                                         let alloc_func = self.get_or_register_extern_function(
-                                            "rayzor_tracked_alloc",
+                                            "malloc",
                                             vec![IrType::I64],
                                             IrType::Ptr(Box::new(IrType::I8)),
                                         );
