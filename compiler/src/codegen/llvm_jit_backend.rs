@@ -2549,11 +2549,12 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 let load_fn = match self.module.get_function("rayzor_global_load") {
                     Some(f) => f,
                     None => {
-                        let fn_type = self.context.i64_type().fn_type(
-                            &[self.context.i64_type().into()],
-                            false,
-                        );
-                        self.module.add_function("rayzor_global_load", fn_type, None)
+                        let fn_type = self
+                            .context
+                            .i64_type()
+                            .fn_type(&[self.context.i64_type().into()], false);
+                        self.module
+                            .add_function("rayzor_global_load", fn_type, None)
                     }
                 };
 
@@ -2595,10 +2596,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 self.value_map.insert(*dest, final_val);
             }
 
-            IrInstruction::StoreGlobal {
-                global_id,
-                value,
-            } => {
+            IrInstruction::StoreGlobal { global_id, value } => {
                 // Call rayzor_global_store(global_id, value)
                 let store_fn = match self.module.get_function("rayzor_global_store") {
                     Some(f) => f,
@@ -2610,7 +2608,8 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                             ],
                             false,
                         );
-                        self.module.add_function("rayzor_global_store", fn_type, None)
+                        self.module
+                            .add_function("rayzor_global_store", fn_type, None)
                     }
                 };
 
@@ -2640,11 +2639,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 };
 
                 self.builder
-                    .build_call(
-                        store_fn,
-                        &[id_val.into(), val_i64.into()],
-                        "global_store",
-                    )
+                    .build_call(store_fn, &[id_val.into(), val_i64.into()], "global_store")
                     .map_err(|e| format!("Failed to build global_store call: {}", e))?;
             }
 
