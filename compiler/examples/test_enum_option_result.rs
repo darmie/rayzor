@@ -97,14 +97,14 @@ class Main {
     static function main() {
         var r = Result.Ok(99);
         switch (r) {
-            case Ok(_): trace("got Ok");
+            case Ok(v): trace("got Ok with value " + v);
             case Error(_): trace("got Error");
         }
 
         var e = Result.Error("fail");
         switch (e) {
             case Ok(_): trace("got Ok");
-            case Error(_): trace("got Error");
+            case Error(msg): trace("got Error: " + msg);
         }
     }
 }
