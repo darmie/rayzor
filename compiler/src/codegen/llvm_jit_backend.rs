@@ -373,6 +373,23 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
     /// Get all compiled function pointers
     /// Call this after finalize() to get all available function addresses
+    /// Get a single function pointer by ID (lazy resolution, avoids bulk compilation)
+    pub fn get_function_pointer_by_id(&mut self, func_id: IrFunctionId) -> Option<usize> {
+        if let Some(&ptr) = self.function_pointers.get(&func_id) {
+            return Some(ptr);
+        }
+        let engine = self.execution_engine.as_ref()?;
+        let llvm_func = self.function_map.get(&func_id)?;
+        let func_name = llvm_func.get_name().to_string_lossy().to_string();
+        if let Ok(fn_ptr) = engine.get_function_address(&func_name) {
+            if fn_ptr != 0 {
+                self.function_pointers.insert(func_id, fn_ptr as usize);
+                return Some(fn_ptr as usize);
+            }
+        }
+        None
+    }
+
     pub fn get_all_function_pointers(&mut self) -> Result<HashMap<IrFunctionId, usize>, String> {
         let engine = self
             .execution_engine
@@ -380,15 +397,27 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             .ok_or("Execution engine not initialized - call finalize() first")?;
 
         // Get pointers for all functions in function_map that we haven't cached yet
+        let mut null_ptrs: Vec<String> = Vec::new();
         for (&func_id, llvm_func) in &self.function_map {
             if !self.function_pointers.contains_key(&func_id) {
                 let func_name = llvm_func.get_name().to_string_lossy().to_string();
                 if let Ok(fn_ptr) = engine.get_function_address(&func_name) {
                     if fn_ptr != 0 {
                         self.function_pointers.insert(func_id, fn_ptr as usize);
+                    } else {
+                        null_ptrs.push(format!("{} ({:?})", func_name, func_id));
                     }
+                } else {
+                    null_ptrs.push(format!("{} ({:?}) [err]", func_name, func_id));
                 }
             }
+        }
+        if !null_ptrs.is_empty() {
+            tracing::warn!(
+                "[LLVM] {} functions returned null/error pointers: {:?}",
+                null_ptrs.len(),
+                null_ptrs
+            );
         }
 
         Ok(self.function_pointers.clone())
@@ -606,6 +635,37 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 .map_err(|e| format!("Failed to run optimization passes: {}", e))?;
         }
 
+        // Dump optimized LLVM IR for debugging if requested
+        if std::env::var("RAYZOR_DUMP_LLVM_IR").is_ok() {
+            let ir_str = self.module.print_to_string().to_string();
+            if std::fs::write("/tmp/rayzor_llvm_ir_opt.ll", &ir_str).is_ok() {
+                eprintln!(
+                    "=== Optimized LLVM IR saved to /tmp/rayzor_llvm_ir_opt.ll ({} bytes) ===",
+                    ir_str.len()
+                );
+            }
+        }
+
+        // Verify module before JIT compilation
+        if let Err(msg) = self.module.verify() {
+            return Err(format!(
+                "LLVM module verification failed: {}",
+                msg.to_string()
+            ));
+        }
+
+        // Register runtime symbols via LLVM's DynamicLibrary (process-level symbol table)
+        // BEFORE creating the execution engine. MCJIT resolves symbols via RuntimeDyld
+        // during module loading, so all symbols must be available before engine creation
+        // to prevent RuntimeDyld from hitting unresolved symbols and crashing in
+        // resolveRelocations with a null mutex (intermittent ~33% failure rate on Linux).
+        for (name, addr) in &self.runtime_symbols {
+            let c_name = std::ffi::CString::new(name.as_str()).unwrap();
+            unsafe {
+                llvm_sys::support::LLVMAddSymbol(c_name.as_ptr(), *addr as *mut std::ffi::c_void);
+            }
+        }
+
         // Create execution engine
         // Note: We use OptimizationLevel::None here because we've already optimized the module
         // using run_passes() above. The execution engine just needs to do code generation.
@@ -615,11 +675,25 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             .create_jit_execution_engine(OptimizationLevel::None)
             .map_err(|e| format!("Failed to create JIT execution engine: {}", e))?;
 
-        // Add global mappings for runtime symbols
+        // Also add global mappings as a fallback for symbols that MCJIT
+        // might resolve through the execution engine rather than RuntimeDyld
+        let mut mapped_count = 0;
+        let mut unmapped: Vec<String> = Vec::new();
         for (name, addr) in &self.runtime_symbols {
             if let Some(func) = self.module.get_function(name) {
                 engine.add_global_mapping(&func, *addr);
+                mapped_count += 1;
+            } else {
+                unmapped.push(name.clone());
             }
+        }
+        if !unmapped.is_empty() {
+            tracing::debug!(
+                "[LLVM] Mapped {}/{} runtime symbols. Unmapped: {:?}",
+                mapped_count,
+                self.runtime_symbols.len(),
+                unmapped
+            );
         }
 
         self.execution_engine = Some(engine);

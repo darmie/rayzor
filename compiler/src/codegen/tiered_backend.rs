@@ -1007,7 +1007,7 @@ impl TieredBackend {
         // Debug: print current tier
         if self.config.verbosity >= 2 {
             let count = self.profile_data.get_function_count(func_id);
-            eprintln!(
+            debug!(
                 "[TieredBackend] Executing {:?} at tier {:?} (count: {})",
                 func_id, tier, count
             );
@@ -1267,7 +1267,7 @@ impl TieredBackend {
                     // Optimize the function
                     if let Err(e) = self.optimize_function_internal(func_id, target_tier) {
                         if self.config.verbosity >= 1 {
-                            eprintln!(
+                            debug!(
                                 "[TieredBackend] Sync optimization failed for {:?}: {}",
                                 func_id, e
                             );
@@ -1295,13 +1295,8 @@ impl TieredBackend {
                 .any(|(id, tier)| *id == func_id && *tier == target_tier)
         {
             let count = self.profile_data.get_function_count(func_id);
-            if target_tier.uses_llvm() {
-                eprintln!(
-                    "[TieredBackend] Enqueuing {:?} for LLVM (count: {})",
-                    func_id, count
-                );
-            } else if self.config.verbosity >= 2 {
-                eprintln!(
+            if self.config.verbosity >= 2 {
+                debug!(
                     "[TieredBackend] Enqueuing {:?} for {} (count: {})",
                     func_id,
                     target_tier.description(),
@@ -1642,17 +1637,13 @@ impl TieredBackend {
     #[cfg(feature = "llvm-backend")]
     #[allow(dead_code)]
     fn compile_all_with_llvm(&self) -> Result<HashMap<IrFunctionId, usize>, String> {
-        // Use AOT dylib approach only on Apple Silicon where MCJIT is unstable
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        {
-            self.compile_all_with_llvm_aot()
-        }
-
-        // On other platforms, MCJIT works fine
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        {
-            self.compile_all_with_llvm_mcjit()
-        }
+        // Use AOT dylib approach on all platforms.
+        // MCJIT has an intermittent crash (~20-33% failure rate) in
+        // RuntimeDyldImpl::resolveRelocations where pthread_mutex_lock is
+        // called on a null/corrupt mutex during symbol resolution.
+        // The AOT approach compiles to an object file, links with the system
+        // linker, and loads via dlopen — bypassing MCJIT entirely.
+        self.compile_all_with_llvm_aot()
     }
 
     /// Compile with MCJIT (for x86_64 and Linux)
@@ -1712,20 +1703,39 @@ impl TieredBackend {
         let function_symbols = backend.get_function_symbols();
 
         backend.finalize()?;
-        let all_pointers = backend.get_all_function_pointers()?;
 
-        Box::leak(Box::new(backend));
+        // IMPORTANT: Do NOT use get_all_function_pointers() here!
+        // That would trigger MCJIT to bulk-compile ALL functions at once, which causes
+        // intermittent segfaults (~40% failure rate). Instead, only resolve the function
+        // pointers that the tiered backend actually needs for top-level dispatch.
+        // Inner function calls go through LLVM's compiled code directly.
+        //
+        // We only resolve pointers for functions that already exist in our function_pointers
+        // map (i.e., functions that Cranelift compiled and the tiered backend calls externally).
+        let needed_func_ids: Vec<IrFunctionId> = {
+            let fp_lock = self.function_pointers.read().unwrap();
+            fp_lock.keys().cloned().collect()
+        };
 
-        // Build name -> pointer map for global storage
+        let mut resolved_pointers = HashMap::new();
+        for func_id in &needed_func_ids {
+            if let Some(ptr) = backend.get_function_pointer_by_id(*func_id) {
+                resolved_pointers.insert(*func_id, ptr);
+            }
+        }
+
+        let _leaked_backend = Box::leak(Box::new(backend));
+
+        // Build name -> pointer map for global storage (only resolved functions)
         let global_ptrs: HashMap<String, usize> = function_symbols
             .iter()
-            .filter_map(|(id, name)| all_pointers.get(id).map(|ptr| (name.clone(), *ptr)))
+            .filter_map(|(id, name)| resolved_pointers.get(id).map(|ptr| (name.clone(), *ptr)))
             .collect();
 
         *self.llvm_compiled.lock().unwrap() = true;
         super::llvm_jit_backend::mark_llvm_compiled_globally_with_pointers(global_ptrs);
 
-        Ok(all_pointers)
+        Ok(resolved_pointers)
     }
 
     /// Compile with AOT to dylib (for Apple Silicon)
@@ -1774,7 +1784,12 @@ impl TieredBackend {
             .unwrap_or_default()
             .as_nanos();
         let obj_path = temp_dir.join(format!("rayzor_llvm_{}.o", timestamp));
-        let dylib_path = temp_dir.join(format!("rayzor_llvm_{}.dylib", timestamp));
+        let dylib_ext = if cfg!(target_os = "macos") {
+            "dylib"
+        } else {
+            "so"
+        };
+        let dylib_path = temp_dir.join(format!("rayzor_llvm_{}.{}", timestamp, dylib_ext));
 
         // Create LLVM context and backend
         let context = Box::leak(Box::new(Context::create()));
@@ -1806,13 +1821,27 @@ impl TieredBackend {
 
         // Link object file to dylib using system linker
         tracing::trace!("[LLVM:AOT] Linking to dylib: {:?}", dylib_path);
-        self.link_to_dylib(&obj_path, &dylib_path)?;
+        self.link_to_dylib(&obj_path, &dylib_path, &self.runtime_symbols)?;
 
         // Load the dylib
         tracing::trace!("[LLVM:AOT] Loading dylib");
         let lib = unsafe {
-            libloading::Library::new(&dylib_path)
-                .map_err(|e| format!("Failed to load dylib: {}", e))?
+            #[cfg(unix)]
+            {
+                // On Unix, use RTLD_NOW | RTLD_GLOBAL so the shared library can
+                // resolve symbols from the host process (runtime functions).
+                // RTLD_GLOBAL makes the host's symbols visible to the loaded library.
+                use libloading::os::unix::Library as UnixLibrary;
+                let unix_lib =
+                    UnixLibrary::open(Some(&dylib_path), libc::RTLD_NOW | libc::RTLD_GLOBAL)
+                        .map_err(|e| format!("Failed to load dylib: {}", e))?;
+                libloading::Library::from(unix_lib)
+            }
+            #[cfg(not(unix))]
+            {
+                libloading::Library::new(&dylib_path)
+                    .map_err(|e| format!("Failed to load dylib: {}", e))?
+            }
         };
 
         // Get function pointers from dylib
@@ -1890,9 +1919,44 @@ impl TieredBackend {
     ///
     /// Returns error if no linker is available - caller should fall back to Cranelift
     #[cfg(feature = "llvm-backend")]
-    fn link_to_dylib(&self, obj_path: &Path, dylib_path: &Path) -> Result<(), String> {
+    fn link_to_dylib(
+        &self,
+        obj_path: &Path,
+        dylib_path: &Path,
+        runtime_symbols: &[(String, usize)],
+    ) -> Result<(), String> {
         // Try to find a suitable linker
         let linker = Self::find_linker()?;
+
+        // Generate a stub assembly file that defines runtime symbols as absolute
+        // addresses. This lets the .dylib/.so resolve host-process functions
+        // (haxe_math_sqrt, etc.) without needing --export-dynamic on the binary.
+        let stubs_asm_path = obj_path.with_extension("stubs.s");
+        let stubs_obj_path = obj_path.with_extension("stubs.o");
+        {
+            let mut asm = String::new();
+            for (name, addr) in runtime_symbols {
+                // On macOS, C symbols have a leading underscore
+                #[cfg(target_os = "macos")]
+                let sym = format!("_{}", name);
+                #[cfg(not(target_os = "macos"))]
+                let sym = name.to_string();
+
+                asm.push_str(&format!(".globl {}\n", sym));
+                asm.push_str(&format!(".set {}, 0x{:x}\n", sym, addr));
+            }
+            std::fs::write(&stubs_asm_path, &asm)
+                .map_err(|e| format!("Failed to write stubs asm: {}", e))?;
+
+            let output = std::process::Command::new(&linker)
+                .args(["-c", stubs_asm_path.to_str().unwrap(), "-o", stubs_obj_path.to_str().unwrap()])
+                .output()
+                .map_err(|e| format!("Failed to assemble stubs: {}", e))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("Stubs assembly failed: {}", stderr));
+            }
+        }
 
         // Build linker arguments based on platform
         #[cfg(target_os = "macos")]
@@ -1901,7 +1965,7 @@ impl TieredBackend {
             "-o".to_string(),
             dylib_path.to_str().ok_or("Invalid dylib path")?.to_string(),
             obj_path.to_str().ok_or("Invalid object path")?.to_string(),
-            "-Wl,-undefined,dynamic_lookup".to_string(),
+            stubs_obj_path.to_str().ok_or("Invalid stubs path")?.to_string(),
         ];
 
         #[cfg(target_os = "linux")]
@@ -1911,6 +1975,7 @@ impl TieredBackend {
             "-o".to_string(),
             dylib_path.to_str().ok_or("Invalid dylib path")?.to_string(),
             obj_path.to_str().ok_or("Invalid object path")?.to_string(),
+            stubs_obj_path.to_str().ok_or("Invalid stubs path")?.to_string(),
         ];
 
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -1925,6 +1990,10 @@ impl TieredBackend {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!("Linker failed: {}", stderr));
         }
+
+        // Clean up temp files
+        let _ = std::fs::remove_file(&stubs_asm_path);
+        let _ = std::fs::remove_file(&stubs_obj_path);
 
         Ok(())
     }
