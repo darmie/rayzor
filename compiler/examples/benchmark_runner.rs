@@ -923,6 +923,11 @@ fn save_results(suite: &BenchmarkSuite) -> Result<BenchmarkSuite, String> {
             }
         }
 
+        // Always update system info to current
+        if suite.system_info.is_some() {
+            existing_suite.system_info = suite.system_info.clone();
+        }
+
         existing_suite
     } else {
         suite.clone()
@@ -962,7 +967,26 @@ fn generate_chart_html(suite: &BenchmarkSuite) -> Result<(), String> {
     html.push_str(&suite.date);
     html.push_str(
         r#"</p>
-    <div class="summary">
+"#,
+    );
+
+    if let Some(info) = &suite.system_info {
+        html.push_str(&format!(
+            r#"    <div class="summary">
+        <h3>System</h3>
+        <p><strong>OS:</strong> {} | <strong>Arch:</strong> {} | <strong>CPU cores:</strong> {} | <strong>RAM:</strong> {:.1} GB | <strong>Host:</strong> {}</p>
+    </div>
+"#,
+            info.os,
+            info.arch,
+            info.cpu_cores,
+            info.ram_mb as f64 / 1024.0,
+            info.hostname
+        ));
+    }
+
+    html.push_str(
+        r#"    <div class="summary">
         <h3>Summary</h3>
         <ul>
 "#,
