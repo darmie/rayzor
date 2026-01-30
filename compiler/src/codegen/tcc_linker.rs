@@ -89,6 +89,47 @@ impl TccLinker {
         let nostdlib = CString::new("-nostdlib").unwrap();
         unsafe { tcc_set_options(state, nostdlib.as_ptr()) };
 
+        // Register libc symbols that LLVM-generated code may reference.
+        // With -nostdlib, TCC won't resolve these automatically.
+        {
+            extern "C" {
+                fn malloc(size: usize) -> *mut std::ffi::c_void;
+                fn realloc(ptr: *mut std::ffi::c_void, size: usize) -> *mut std::ffi::c_void;
+                fn calloc(nmemb: usize, size: usize) -> *mut std::ffi::c_void;
+                fn free(ptr: *mut std::ffi::c_void);
+                fn memcpy(
+                    dst: *mut std::ffi::c_void,
+                    src: *const std::ffi::c_void,
+                    n: usize,
+                ) -> *mut std::ffi::c_void;
+                fn memset(
+                    s: *mut std::ffi::c_void,
+                    c: i32,
+                    n: usize,
+                ) -> *mut std::ffi::c_void;
+                fn memmove(
+                    dst: *mut std::ffi::c_void,
+                    src: *const std::ffi::c_void,
+                    n: usize,
+                ) -> *mut std::ffi::c_void;
+                fn abort();
+            }
+            let libc_syms: &[(&str, *const std::ffi::c_void)] = &[
+                ("malloc", malloc as *const std::ffi::c_void),
+                ("realloc", realloc as *const std::ffi::c_void),
+                ("calloc", calloc as *const std::ffi::c_void),
+                ("free", free as *const std::ffi::c_void),
+                ("memcpy", memcpy as *const std::ffi::c_void),
+                ("memset", memset as *const std::ffi::c_void),
+                ("memmove", memmove as *const std::ffi::c_void),
+                ("abort", abort as *const std::ffi::c_void),
+            ];
+            for (name, addr) in libc_syms {
+                let c_name = CString::new(*name).unwrap();
+                unsafe { tcc_add_symbol(state, c_name.as_ptr(), *addr) };
+            }
+        }
+
         // Register all runtime symbols
         for (name, addr) in runtime_symbols {
             let c_name = CString::new(name.as_str())

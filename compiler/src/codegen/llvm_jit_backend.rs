@@ -752,14 +752,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     .to_str()
                     .unwrap_or(""),
                 self.opt_level,
-                // TCC in-process linker handles relocations directly, so we can
-                // use static reloc mode (no PIC overhead). System linker needs PIC
-                // for shared libraries.
-                if cfg!(feature = "tcc-linker") {
-                    RelocMode::Default
-                } else {
-                    RelocMode::PIC
-                },
+                RelocMode::PIC,
                 CodeModel::Default,
             )
             .ok_or("Failed to create target machine for AOT")?;
