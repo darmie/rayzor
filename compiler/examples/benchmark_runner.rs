@@ -79,7 +79,18 @@ struct BenchmarkResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BenchmarkSuite {
     date: String,
+    #[serde(default)]
+    system_info: Option<SystemInfo>,
     benchmarks: Vec<BenchmarkResults>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SystemInfo {
+    os: String,
+    arch: String,
+    cpu_cores: usize,
+    ram_mb: u64,
+    hostname: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -781,6 +792,69 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
     })
 }
 
+fn get_system_info() -> SystemInfo {
+    let ram_mb = {
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::read_to_string("/proc/meminfo")
+                .ok()
+                .and_then(|s| {
+                    s.lines()
+                        .find(|l| l.starts_with("MemTotal:"))
+                        .and_then(|l| {
+                            l.split_whitespace()
+                                .nth(1)
+                                .and_then(|v| v.parse::<u64>().ok())
+                        })
+                })
+                .map(|kb| kb / 1024)
+                .unwrap_or(0)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("sysctl")
+                .args(["-n", "hw.memsize"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .map(|b| b / (1024 * 1024))
+                .unwrap_or(0)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            0u64
+        }
+    };
+
+    let hostname = std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    SystemInfo {
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        cpu_cores: std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1),
+        ram_mb,
+        hostname,
+    }
+}
+
+fn print_system_info(info: &SystemInfo) {
+    println!("System Information:");
+    println!("  OS:        {}", info.os);
+    println!("  Arch:      {}", info.arch);
+    println!("  CPU cores: {}", info.cpu_cores);
+    println!("  RAM:       {:.1} GB", info.ram_mb as f64 / 1024.0);
+    println!("  Host:      {}", info.hostname);
+    println!();
+}
+
 fn print_results(results: &[BenchmarkResult]) {
     if results.is_empty() {
         return;
@@ -1082,8 +1156,12 @@ fn main() {
     );
     println!();
 
+    let sys_info = get_system_info();
+    print_system_info(&sys_info);
+
     let mut suite = BenchmarkSuite {
         date: chrono::Local::now().format("%Y-%m-%d").to_string(),
+        system_info: Some(sys_info),
         benchmarks: Vec::new(),
     };
 
