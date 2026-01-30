@@ -13,6 +13,10 @@ pub mod mir_interpreter;
 pub mod profiling;
 pub mod tiered_backend;
 
+// TinyCC-based in-process linker for LLVM AOT object files
+#[cfg(feature = "tcc-linker")]
+pub mod tcc_linker;
+
 // Apple Silicon-specific JIT memory management
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod apple_jit_memory;
