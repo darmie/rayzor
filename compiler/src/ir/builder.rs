@@ -524,6 +524,18 @@ impl IrBuilder {
         Some(dest)
     }
 
+    /// Build a pointer add (byte-offset pointer arithmetic)
+    pub fn build_ptr_add(&mut self, ptr: IrId, offset: IrId, ty: IrType) -> Option<IrId> {
+        let dest = self.alloc_reg()?;
+        self.add_instruction(IrInstruction::PtrAdd {
+            dest,
+            ptr,
+            offset,
+            ty,
+        })?;
+        Some(dest)
+    }
+
     /// Build a select (ternary) instruction
     pub fn build_select(
         &mut self,

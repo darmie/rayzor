@@ -29,6 +29,26 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+/// Layout information for a single field in a @:cstruct class
+#[derive(Debug, Clone)]
+struct CStructFieldLayout {
+    symbol_id: SymbolId,
+    name: String,
+    byte_offset: u32,
+    ir_type: IrType,
+    c_type: &'static str, // "double", "long", "int"
+}
+
+/// Precomputed C-compatible layout for a @:cstruct class
+#[derive(Debug, Clone)]
+struct CStructLayout {
+    fields: Vec<CStructFieldLayout>,
+    total_size: u32,
+    alignment: u32,
+    c_name: String,
+    cdef_string: String,
+}
+
 /// Context for lowering HIR to MIR
 pub struct HirToMirContext<'a> {
     /// MIR builder
@@ -164,6 +184,10 @@ pub struct HirToMirContext<'a> {
     /// Symbols that have been reassigned in the current scope
     /// These should be skipped at scope exit (they're freed at reassignment time)
     reassigned_in_scope: HashSet<SymbolId>,
+
+    /// Precomputed C-compatible layouts for @:cstruct classes
+    /// Maps class TypeId to its CStructLayout
+    cstruct_layouts: HashMap<TypeId, CStructLayout>,
 }
 
 /// SSA-derived optimization hints from DFG analysis
@@ -277,6 +301,7 @@ impl<'a> HirToMirContext<'a> {
             current_drop_points: None,
             current_stmt_index: 0,
             reassigned_in_scope: HashSet::new(),
+            cstruct_layouts: HashMap::new(),
         };
 
         // Pre-declare malloc so it's available for heap allocations during lowering
@@ -521,8 +546,12 @@ impl<'a> HirToMirContext<'a> {
                     DropBehavior::NoDrop
                 }
                 TypeKind::Class { symbol_id, .. } => {
-                    // Use SymbolFlags::EXTERN from the TypedAST
+                    // Use SymbolFlags from the TypedAST
                     if let Some(symbol) = self.symbol_table.get_symbol(*symbol_id) {
+                        // @:cstruct classes are user-managed (no AutoDrop header)
+                        if symbol.flags.is_cstruct() {
+                            return DropBehavior::RuntimeManaged;
+                        }
                         if symbol.flags.contains(SymbolFlags::EXTERN) {
                             return DropBehavior::RuntimeManaged;
                         }
@@ -643,6 +672,153 @@ impl<'a> HirToMirContext<'a> {
         let ptr_u8_ty = IrType::Ptr(Box::new(IrType::U8));
         self.builder
             .build_call_direct(malloc_id, vec![size_reg], ptr_u8_ty)
+    }
+
+    /// Check if a class symbol has the @:cstruct flag
+    fn is_cstruct_class(&self, type_id: TypeId) -> bool {
+        let type_table = self.type_table.borrow();
+        if let Some(type_info) = type_table.get(type_id) {
+            if let Some(symbol_id) = type_info.symbol_id() {
+                if let Some(sym) = self.symbol_table.get_symbol(symbol_id) {
+                    return sym.flags.is_cstruct();
+                }
+            }
+        }
+        false
+    }
+
+    /// Get or compute the CStruct layout for a class type
+    fn get_or_compute_cstruct_layout(&mut self, type_id: TypeId) -> Option<CStructLayout> {
+        if let Some(layout) = self.cstruct_layouts.get(&type_id) {
+            return Some(layout.clone());
+        }
+
+        // Look up class info from type table
+        let (symbol_id, class_name, no_mangle) = {
+            let type_table = self.type_table.borrow();
+            let type_info = type_table.get(type_id)?;
+            let symbol_id = type_info.symbol_id()?;
+            let sym = self.symbol_table.get_symbol(symbol_id)?;
+            let name = self.string_interner.get(sym.name)?.to_string();
+            let no_mangle = sym.flags.is_no_mangle();
+            (symbol_id, name, no_mangle)
+        };
+
+        // Get fields from field_index_map for this type.
+        // Try matching by type_id first, then fall back to matching by class symbol_id
+        // (TypeIds can differ between expression types and registration types)
+        let mut fields_with_index: Vec<(SymbolId, u32)> = Vec::new();
+        for (field_sym, (class_ty, idx)) in &self.field_index_map {
+            if *class_ty == type_id {
+                fields_with_index.push((*field_sym, *idx));
+            }
+        }
+        // Fallback: if no fields found by type_id, match fields by name.
+        // TypeIds can differ between expression types and registration types,
+        // so we find fields whose name matches our class's field names.
+        if fields_with_index.is_empty() {
+            // Get the class name to match against field_index_map entries
+            let class_name_interned = self.symbol_table.get_symbol(symbol_id)
+                .map(|s| s.name);
+
+            // Find all unique class type_ids in field_index_map
+            let field_class_tys: std::collections::HashSet<TypeId> =
+                self.field_index_map.values().map(|(ty, _)| *ty).collect();
+
+            // For each class type_id, check if its fields belong to our class
+            // by checking field names against what the class should have
+            for candidate_ty in &field_class_tys {
+                // Check if this candidate type has the same class name/symbol
+                let is_our_class = self.current_hir_types.iter().any(|(tid, decl)| {
+                    if *tid != *candidate_ty {
+                        return false;
+                    }
+                    if let HirTypeDecl::Class(c) = decl {
+                        c.symbol_id == symbol_id
+                    } else {
+                        false
+                    }
+                });
+                if is_our_class {
+                    for (field_sym, (class_ty, idx)) in &self.field_index_map {
+                        if class_ty == candidate_ty {
+                            fields_with_index.push((*field_sym, *idx));
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        fields_with_index.sort_by_key(|(_, idx)| *idx);
+
+        let c_name = if no_mangle {
+            class_name.clone()
+        } else {
+            // Simple mangling: package_ClassName
+            class_name.replace('.', "_")
+        };
+
+        let mut byte_offset: u32 = 0;
+        let mut max_align: u32 = 1;
+        let mut layout_fields = Vec::new();
+
+        for (field_sym_id, _idx) in &fields_with_index {
+            let sym = self.symbol_table.get_symbol(*field_sym_id)?;
+            let field_name = self.string_interner.get(sym.name)?.to_string();
+            let ir_type = self.convert_type(sym.type_id);
+
+            // For @:cstruct, promote I32 (Haxe Int) to I64 (C long)
+            // to match C's 64-bit `long` type on LP64 systems.
+            // This ensures byte-level compatibility with C structs.
+            let (size, align, c_type, ir_type) = match &ir_type {
+                IrType::F64 => (8u32, 8u32, "double", ir_type),
+                IrType::I64 => (8, 8, "long", ir_type),
+                IrType::I32 => (8, 8, "long", IrType::I64), // Promote to i64
+                IrType::Bool => (4, 4, "int", ir_type),
+                _ => (8, 8, "long", ir_type),
+            };
+
+            // Align offset
+            if align > 0 {
+                byte_offset = (byte_offset + align - 1) & !(align - 1);
+            }
+            if align > max_align {
+                max_align = align;
+            }
+
+            layout_fields.push(CStructFieldLayout {
+                symbol_id: *field_sym_id,
+                name: field_name,
+                byte_offset,
+                ir_type,
+                c_type,
+            });
+
+            byte_offset += size;
+        }
+
+        // Pad total size to alignment
+        if max_align > 0 {
+            byte_offset = (byte_offset + max_align - 1) & !(max_align - 1);
+        }
+
+        // Build cdef string
+        let mut cdef = format!("typedef struct {{ ");
+        for f in &layout_fields {
+            cdef.push_str(&format!("{} {}; ", f.c_type, f.name));
+        }
+        cdef.push_str(&format!("}} {};\n", c_name));
+
+        let layout = CStructLayout {
+            fields: layout_fields,
+            total_size: byte_offset,
+            alignment: max_align,
+            c_name,
+            cdef_string: cdef,
+        };
+
+        self.cstruct_layouts.insert(type_id, layout.clone());
+        Some(layout)
     }
 
     /// Register a constructor by qualified name for cross-file resolution
@@ -865,6 +1041,24 @@ impl<'a> HirToMirContext<'a> {
 
                         if should_skip_method {
                             continue;
+                        }
+
+                        // Skip synthetic cdef() on @:cstruct classes — handled at call site
+                        if method.function.body.is_none() {
+                            if let Some(method_name) = self.string_interner.get(method.function.name) {
+                                if method_name == "cdef" {
+                                    let is_cstruct = self
+                                        .symbol_table
+                                        .get_symbol(class.symbol_id)
+                                        .map(|sym| sym.flags.is_cstruct())
+                                        .unwrap_or(false);
+                                    if is_cstruct {
+                                        // Pre-compute layout so it's available at call site
+                                        self.get_or_compute_cstruct_layout(*type_id);
+                                        continue;
+                                    }
+                                }
+                            }
                         }
 
                         if method.is_static {
@@ -3790,6 +3984,56 @@ impl<'a> HirToMirContext<'a> {
                     "[CALL CHECK] callee.kind discriminant = {:?}",
                     std::mem::discriminant(&callee.kind)
                 );
+                // Static cdef() call resolved as Variable — find parent @:cstruct class
+                if let HirExprKind::Variable { symbol, .. } = &callee.kind {
+                    let callee_name = self
+                        .symbol_table
+                        .get_symbol(*symbol)
+                        .and_then(|s| self.string_interner.get(s.name))
+                        .map(|s| s.to_string());
+                    if callee_name.as_deref() == Some("cdef") {
+                        // Find the @:cstruct class that has this cdef method
+                        for (tid, decl) in self.current_hir_types.iter() {
+                            if let crate::ir::hir::HirTypeDecl::Class(c) = decl {
+                                let is_cstruct = self
+                                    .symbol_table
+                                    .get_symbol(c.symbol_id)
+                                    .map(|s| s.flags.is_cstruct())
+                                    .unwrap_or(false);
+                                if !is_cstruct {
+                                    continue;
+                                }
+                                // Check if this class has a method with our cdef symbol
+                                let has_cdef = c.methods.iter().any(|m| m.function.symbol_id == *symbol);
+                                if has_cdef {
+                                    // HIR TypeId may not be in type_table — find canonical TypeId by symbol
+                                    let canonical_tid = {
+                                        let type_table = self.type_table.borrow();
+                                        type_table.get(*tid)
+                                            .and_then(|_| Some(*tid))
+                                            .or_else(|| {
+                                                // Scan type_table for a Class with matching symbol_id
+                                                type_table.iter().find_map(|(_, t)| {
+                                                    if let crate::tast::core::TypeKind::Class { symbol_id: sid, .. } = &t.kind {
+                                                        if *sid == c.symbol_id {
+                                                            return Some(t.id);
+                                                        }
+                                                    }
+                                                    None
+                                                })
+                                            })
+                                    };
+                                    if let Some(real_tid) = canonical_tid {
+                                        if let Some(layout) = self.get_or_compute_cstruct_layout(real_tid) {
+                                            return self.builder.build_const(IrValue::String(layout.cdef_string));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if let HirExprKind::Field { object, field } = &callee.kind {
                     // This is a method call: object.method(args)
                     // The method symbol should be in our function_map (local or external)
@@ -3803,6 +4047,57 @@ impl<'a> HirToMirContext<'a> {
                         "[Method call] method={:?}, field={:?}, in_local={}, in_external={}",
                         method_name, field, in_local, in_external
                     );
+
+                    // @:cstruct synthetic cdef() method — return C typedef string
+                    if method_name == Some("cdef") {
+                        let obj_type = object.ty;
+                        if self.is_cstruct_class(obj_type) {
+                            if let Some(layout) = self.get_or_compute_cstruct_layout(obj_type) {
+                                return self.builder.build_const(IrValue::String(layout.cdef_string));
+                            }
+                        }
+                        // Fallback: for static calls, obj_type may differ from cached TypeId.
+                        // Extract symbol_id from obj_type, find matching layout.
+                        let obj_sym_id = {
+                            let type_table = self.type_table.borrow();
+                            type_table.get(obj_type).and_then(|t| {
+                                if let crate::tast::core::TypeKind::Class { symbol_id, .. } = &t.kind {
+                                    Some(*symbol_id)
+                                } else {
+                                    None
+                                }
+                            })
+                        };
+                        if let Some(sym_id) = obj_sym_id {
+                            // Find the cached layout whose class has this symbol_id
+                            let cdef_str = self.cstruct_layouts.iter()
+                                .find_map(|(tid, layout)| {
+                                    // Check if this type_id's class matches our symbol
+                                    let type_table = self.type_table.borrow();
+                                    if let Some(t) = type_table.get(*tid) {
+                                        if let crate::tast::core::TypeKind::Class { symbol_id, .. } = &t.kind {
+                                            if *symbol_id == sym_id {
+                                                return Some(layout.cdef_string.clone());
+                                            }
+                                        }
+                                    }
+                                    // Also check via HirTypeDecl
+                                    for (htid, decl) in self.current_hir_types.iter() {
+                                        if *htid == *tid {
+                                            if let crate::ir::hir::HirTypeDecl::Class(c) = decl {
+                                                if c.symbol_id == sym_id {
+                                                    return Some(layout.cdef_string.clone());
+                                                }
+                                            }
+                                        }
+                                    }
+                                    None
+                                });
+                            if let Some(cdef) = cdef_str {
+                                return self.builder.build_const(IrValue::String(cdef));
+                            }
+                        }
+                    }
 
                     if let Some(func_id) = self.get_function_id(field) {
                         // FIRST: Try to route through runtime mapping for extern class methods
@@ -7840,6 +8135,45 @@ impl<'a> HirToMirContext<'a> {
                     return Some(array_ptr);
                 }
 
+                // @:cstruct CLASS: flat C-compatible allocation (no object header)
+                if self.is_cstruct_class(*class_type) {
+                    if let Some(layout) = self.get_or_compute_cstruct_layout(*class_type) {
+                        let obj_ptr = self.build_heap_alloc(layout.total_size as u64)?;
+
+                        // Zero-initialize all bytes via first field store of 0
+                        // (memset-style zero init would be better but this works)
+                        if let Some(zero) = self.builder.build_const(IrValue::I64(0)) {
+                            for field in &layout.fields {
+                                let offset_const = self.builder.build_const(IrValue::I64(field.byte_offset as i64))?;
+                                let field_ptr = self.builder.build_ptr_add(obj_ptr, offset_const, IrType::Ptr(Box::new(IrType::U8)))?;
+                                let zero_val = match &field.ir_type {
+                                    IrType::F64 => self.builder.build_const(IrValue::F64(0.0))?,
+                                    IrType::I64 => self.builder.build_const(IrValue::I64(0))?,
+                                    IrType::I32 => self.builder.build_const(IrValue::I32(0))?,
+                                    IrType::Bool => self.builder.build_const(IrValue::Bool(false))?,
+                                    _ => self.builder.build_const(IrValue::I64(0))?,
+                                };
+                                self.builder.build_store(field_ptr, zero_val);
+                            }
+                        }
+
+                        // Call constructor if exists
+                        let constructor_func_id = self.constructor_map.get(&constructor_type_id).copied();
+                        if let Some(constructor_func_id) = constructor_func_id {
+                            let arg_regs: Vec<_> = std::iter::once(obj_ptr)
+                                .chain(args.iter().filter_map(|a| self.lower_expression(a)))
+                                .collect();
+                            self.builder.build_call_direct(
+                                constructor_func_id,
+                                arg_regs,
+                                IrType::Void,
+                            );
+                        }
+
+                        return Some(obj_ptr);
+                    }
+                }
+
                 // CLASS TYPE CONSTRUCTOR:
                 // Allocate object on HEAP (not stack) since objects may escape the current function
                 // When a method returns `new Foo()`, the object must outlive the callee's stack frame
@@ -10426,20 +10760,37 @@ impl<'a> HirToMirContext<'a> {
                         });
 
                     if let Some(field_index) = field_index_opt {
+                        // @:cstruct: use byte-offset PtrAdd instead of GEP
+                        let obj_type_id = object.ty;
+                        if self.is_cstruct_class(obj_type_id) {
+                            if let Some(layout) = self.get_or_compute_cstruct_layout(obj_type_id) {
+                                let field_layout = layout.fields.iter().find(|f| f.symbol_id == *field)
+                                    .or_else(|| {
+                                        let fname = self.symbol_table.get_symbol(*field)
+                                            .and_then(|s| self.string_interner.get(s.name));
+                                        fname.and_then(|n| layout.fields.iter().find(|f| f.name == n))
+                                    });
+                                if let Some(fl) = field_layout {
+                                    let offset_const = self.builder.build_const(IrValue::I64(fl.byte_offset as i64));
+                                    if let Some(offset_const) = offset_const {
+                                        let field_ptr = self.builder.build_ptr_add(obj_reg, offset_const, IrType::Ptr(Box::new(IrType::U8)));
+                                        if let Some(field_ptr) = field_ptr {
+                                            self.builder.build_store(field_ptr, value);
+                                        }
+                                    }
+                                    return;
+                                }
+                            }
+                        }
+
                         // Create constant for field index
                         if let Some(index_const) =
                             self.builder.build_const(IrValue::I32(field_index as i32))
                         {
                             // Get the type of the field from the FIELD'S DECLARED TYPE in symbol table
-                            // NOT from the value's type, which may be incorrect (e.g., I32 for String parameter)
-                            //
-                            // IMPORTANT: If the field symbol's type_id is Dynamic/Unknown, we need to
-                            // fall back to looking up the actual field definition by name.
                             let field_ty = self.symbol_table.get_symbol(*field)
                                 .and_then(|s| {
                                     let converted = self.convert_type(s.type_id);
-                                    // If converted type is Ptr(Void), this might be a proxy symbol with
-                                    // incorrect type. Try the fallback.
                                     if matches!(&converted, IrType::Ptr(inner) if matches!(**inner, IrType::Void)) {
                                         None
                                     } else {
@@ -10447,7 +10798,6 @@ impl<'a> HirToMirContext<'a> {
                                     }
                                 })
                                 .unwrap_or_else(|| {
-                                    // Fallback: find field by name in field_index_map
                                     let field_name = self.symbol_table.get_symbol(*field).map(|s| s.name);
                                     for (sym, _) in &self.field_index_map {
                                         if let Some(sym_info) = self.symbol_table.get_symbol(*sym) {
@@ -11007,16 +11357,46 @@ impl<'a> HirToMirContext<'a> {
             }
         };
 
-        // eprintln!(
-        //     "DEBUG: Field access - field={:?}, class_type={:?}, index={}",
-        //     field, class_type_id, field_index
-        // );
+        // Get the type of the field
+        let field_ir_ty = self.convert_type(field_ty);
+
+        // @:cstruct: use byte-offset PtrAdd instead of index-based GEP
+        // Check both class_type_id (from field_index_map) and receiver_ty (expression type)
+        let cstruct_type = if self.is_cstruct_class(class_type_id) {
+            Some(class_type_id)
+        } else if self.is_cstruct_class(receiver_ty) {
+            Some(receiver_ty)
+        } else {
+            None
+        };
+        if let Some(cstruct_ty) = cstruct_type {
+            if let Some(layout) = self.get_or_compute_cstruct_layout(cstruct_ty) {
+                if let Some(field_layout) = layout.fields.iter().find(|f| f.symbol_id == field) {
+                    let offset_const = self.builder.build_const(IrValue::I64(field_layout.byte_offset as i64))?;
+                    let byte_ptr_ty = IrType::Ptr(Box::new(IrType::U8));
+                    let field_ptr = self.builder.build_ptr_add(obj, offset_const, byte_ptr_ty)?;
+                    let field_value = self.builder.build_load(field_ptr, field_ir_ty.clone())?;
+                    self.builder.set_register_type(field_value, field_ir_ty);
+                    return Some(field_value);
+                }
+                // Field not found by symbol_id — try by name
+                let field_name = self.symbol_table.get_symbol(field).map(|s| s.name);
+                if let Some(fname) = field_name {
+                    let fname_str = self.string_interner.get(fname).unwrap_or("");
+                    if let Some(field_layout) = layout.fields.iter().find(|f| f.name == fname_str) {
+                        let offset_const = self.builder.build_const(IrValue::I64(field_layout.byte_offset as i64))?;
+                        let byte_ptr_ty = IrType::Ptr(Box::new(IrType::U8));
+                        let field_ptr = self.builder.build_ptr_add(obj, offset_const, byte_ptr_ty)?;
+                        let field_value = self.builder.build_load(field_ptr, field_ir_ty.clone())?;
+                        self.builder.set_register_type(field_value, field_ir_ty);
+                        return Some(field_value);
+                    }
+                }
+            }
+        }
 
         // Create constant for field index
         let index_const = self.builder.build_const(IrValue::I32(field_index as i32))?;
-
-        // Get the type of the field
-        let field_ir_ty = self.convert_type(field_ty);
 
         // Use GetElementPtr to get pointer to the field
         // obj is a pointer to the struct, indices are [field_index]
@@ -11030,7 +11410,6 @@ impl<'a> HirToMirContext<'a> {
         // Register the type of the loaded value for use in later instructions (e.g., Cmp)
         self.builder.set_register_type(field_value, field_ir_ty);
 
-        // debug!("Field access successful - value={:?}", field_value);
         Some(field_value)
     }
 

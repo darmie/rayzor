@@ -623,6 +623,52 @@ enum TypeSubstitutionResult {
 }
 
 impl<'a> AstLowering<'a> {
+    /// Extract SymbolFlags and optional native name from metadata entries.
+    /// Shared across class, abstract, and other type declarations.
+    fn extract_metadata_flags(
+        &mut self,
+        meta_list: &[parser::haxe_ast::Metadata],
+        symbol_id: SymbolId,
+    ) -> crate::tast::symbols::SymbolFlags {
+        use crate::tast::symbols::SymbolFlags;
+
+        let mut flags = SymbolFlags::NONE;
+        for meta in meta_list {
+            let name = meta.name.strip_prefix(':').unwrap_or(&meta.name);
+            match name {
+                "generic" => flags = flags.union(SymbolFlags::GENERIC),
+                "final" => flags = flags.union(SymbolFlags::FINAL),
+                "forward" => flags = flags.union(SymbolFlags::FORWARD),
+                "extern" => flags = flags.union(SymbolFlags::EXTERN),
+                "native" => {
+                    flags = flags.union(SymbolFlags::NATIVE);
+                    if let Some(first_param) = meta.params.first() {
+                        if let parser::haxe_ast::ExprKind::String(native_str) = &first_param.kind {
+                            let native_interned = self.context.string_interner.intern(&native_str);
+                            if let Some(sym) =
+                                self.context.symbol_table.get_symbol_mut(symbol_id)
+                            {
+                                sym.native_name = Some(native_interned);
+                            }
+                        }
+                    }
+                }
+                "cstruct" => {
+                    flags = flags.union(SymbolFlags::CSTRUCT);
+                    let no_mangle = meta.params.iter().any(|p| {
+                        matches!(&p.kind, parser::haxe_ast::ExprKind::Ident(s) if s == "NoMangle")
+                    });
+                    if no_mangle {
+                        flags = flags.union(SymbolFlags::NO_MANGLE);
+                    }
+                }
+                "no_mangle" => flags = flags.union(SymbolFlags::NO_MANGLE),
+                _ => {}
+            }
+        }
+        flags
+    }
+
     /// Get the current class symbol if we're in a class context
     fn get_current_class_symbol(&self) -> Option<SymbolId> {
         self.context.class_context_stack.last().copied()
@@ -2502,35 +2548,7 @@ impl<'a> AstLowering<'a> {
         self.class_fields.insert(class_symbol, Vec::new());
 
         // Extract metadata flags from @:generic, @:final, @:native, etc.
-        let mut symbol_flags = crate::tast::symbols::SymbolFlags::NONE;
-        for meta in &class_decl.meta {
-            match meta.name.as_str() {
-                "generic" | ":generic" => {
-                    symbol_flags = symbol_flags.union(crate::tast::symbols::SymbolFlags::GENERIC);
-                }
-                "final" | ":final" => {
-                    symbol_flags = symbol_flags.union(crate::tast::symbols::SymbolFlags::FINAL);
-                }
-                "native" | ":native" => {
-                    symbol_flags = symbol_flags.union(crate::tast::symbols::SymbolFlags::NATIVE);
-                    // Extract native name string from first parameter if present
-                    if let Some(first_param) = meta.params.first() {
-                        if let parser::haxe_ast::ExprKind::String(native_str) = &first_param.kind {
-                            let native_interned = self.context.string_interner.intern(native_str);
-                            if let Some(sym) =
-                                self.context.symbol_table.get_symbol_mut(class_symbol)
-                            {
-                                sym.native_name = Some(native_interned);
-                            }
-                        }
-                    }
-                }
-                "forward" | ":forward" => {
-                    symbol_flags = symbol_flags.union(crate::tast::symbols::SymbolFlags::FORWARD);
-                }
-                _ => {} // Other metadata handled elsewhere or ignored
-            }
-        }
+        let mut symbol_flags = self.extract_metadata_flags(&class_decl.meta, class_symbol);
         // Also check for modifiers (final, extern, etc)
         for modifier in &class_decl.modifiers {
             match modifier {
@@ -2751,6 +2769,75 @@ impl<'a> AstLowering<'a> {
         self.context.class_context_stack.pop();
 
         self.context.exit_scope();
+
+        // Auto-inject synthetic cdef() static method for @:cstruct classes
+        if symbol_flags.is_cstruct() {
+            let cdef_name = self.context.intern_string("cdef");
+            // Create a symbol for the synthetic method
+            let cdef_symbol = self
+                .context
+                .symbol_table
+                .create_function_in_scope(cdef_name, class_scope);
+            self.context
+                .symbol_table
+                .add_symbol_flags(cdef_symbol, crate::tast::symbols::SymbolFlags::STATIC);
+            if let Some(scope) = self.context.scope_tree.get_scope_mut(class_scope) {
+                scope.add_symbol(cdef_symbol, cdef_name);
+            }
+            // Set return type to String
+            let string_type = self.context.type_table.borrow().string_type();
+            let fn_type = self
+                .context
+                .type_table
+                .borrow_mut()
+                .create_function_type(vec![], string_type);
+            self.context
+                .symbol_table
+                .update_symbol_type(cdef_symbol, fn_type);
+
+            // Register in class_methods
+            if let Some(methods_list) = self.class_methods.get_mut(&class_symbol) {
+                methods_list.push((cdef_name, cdef_symbol, true));
+            }
+
+            // Add synthetic TypedFunction (empty body — intercepted at MIR level)
+            methods.push(crate::tast::node::TypedFunction {
+                symbol_id: cdef_symbol,
+                name: cdef_name,
+                parameters: vec![],
+                return_type: string_type,
+                body: vec![],
+                visibility: crate::tast::symbols::Visibility::Public,
+                effects: crate::tast::node::FunctionEffects {
+                    can_throw: false,
+                    async_kind: crate::tast::node::AsyncKind::Sync,
+                    is_pure: true,
+                    is_inline: true,
+                    exception_types: vec![],
+                    memory_effects: crate::tast::node::MemoryEffects::default(),
+                    resource_effects: crate::tast::node::ResourceEffects::default(),
+                },
+                type_parameters: vec![],
+                is_static: true,
+                source_location: crate::tast::symbols::SourceLocation {
+                    file_id: 0,
+                    line: 0,
+                    column: 0,
+                    byte_offset: 0,
+                },
+                metadata: crate::tast::node::FunctionMetadata {
+                    complexity_score: 0,
+                    statement_count: 0,
+                    is_recursive: false,
+                    call_count: 0,
+                    is_override: false,
+                    overload_signatures: vec![],
+                    operator_metadata: vec![],
+                    is_array_access: false,
+                    memory_annotations: vec![],
+                },
+            });
+        }
 
         // Extract memory safety annotations from metadata
         let memory_annotations = self.extract_memory_annotations(&class_decl.meta);
@@ -3106,27 +3193,9 @@ impl<'a> AstLowering<'a> {
         self.context.update_symbol_qualified_name(abstract_symbol);
 
         // Extract @:native metadata for abstracts
-        for meta in &abstract_decl.meta {
-            let name = meta.name.strip_prefix(':').unwrap_or(&meta.name);
-            if name == "native" {
-                if let Some(sym) = self.context.symbol_table.get_symbol_mut(abstract_symbol) {
-                    sym.flags = sym.flags.union(crate::tast::symbols::SymbolFlags::NATIVE);
-                }
-                if let Some(first_param) = meta.params.first() {
-                    if let parser::haxe_ast::ExprKind::String(native_str) = &first_param.kind {
-                        let native_interned = self.context.string_interner.intern(native_str);
-                        if let Some(sym) = self.context.symbol_table.get_symbol_mut(abstract_symbol)
-                        {
-                            sym.native_name = Some(native_interned);
-                        }
-                    }
-                }
-            }
-            if name == "extern" {
-                if let Some(sym) = self.context.symbol_table.get_symbol_mut(abstract_symbol) {
-                    sym.flags = sym.flags.union(crate::tast::symbols::SymbolFlags::EXTERN);
-                }
-            }
+        let abstract_meta_flags = self.extract_metadata_flags(&abstract_decl.meta, abstract_symbol);
+        if let Some(sym) = self.context.symbol_table.get_symbol_mut(abstract_symbol) {
+            sym.flags = sym.flags.union(abstract_meta_flags);
         }
 
         // Add abstract to the root scope so it can be resolved for forward references

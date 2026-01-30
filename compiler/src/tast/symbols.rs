@@ -303,6 +303,10 @@ impl SymbolFlags {
     pub const FORWARD: Self = Self(1 << 12);
     /// @:native - has native runtime implementation
     pub const NATIVE: Self = Self(1 << 13);
+    /// @:cstruct - C-compatible flat struct layout (no object header)
+    pub const CSTRUCT: Self = Self(1 << 14);
+    /// @:no_mangle or @:cstruct(NoMangle) - use unmangled name in C typedef
+    pub const NO_MANGLE: Self = Self(1 << 15);
 
     pub const fn empty() -> Self {
         Self::NONE
@@ -345,6 +349,16 @@ impl SymbolFlags {
     /// Check if this symbol has @:native metadata
     pub const fn is_native(self) -> bool {
         self.contains(Self::NATIVE)
+    }
+
+    /// Check if this symbol has @:cstruct metadata
+    pub const fn is_cstruct(self) -> bool {
+        self.contains(Self::CSTRUCT)
+    }
+
+    /// Check if this symbol has @:no_mangle metadata
+    pub const fn is_no_mangle(self) -> bool {
+        self.contains(Self::NO_MANGLE)
     }
 }
 
