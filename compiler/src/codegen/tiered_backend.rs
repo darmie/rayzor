@@ -1958,9 +1958,18 @@ impl TieredBackend {
                     // Load 64-bit address into x16 (IP0 scratch register), then branch
                     let a = *addr;
                     asm.push_str(&format!("  movz x16, #0x{:x}\n", a & 0xFFFF));
-                    asm.push_str(&format!("  movk x16, #0x{:x}, lsl #16\n", (a >> 16) & 0xFFFF));
-                    asm.push_str(&format!("  movk x16, #0x{:x}, lsl #32\n", (a >> 32) & 0xFFFF));
-                    asm.push_str(&format!("  movk x16, #0x{:x}, lsl #48\n", (a >> 48) & 0xFFFF));
+                    asm.push_str(&format!(
+                        "  movk x16, #0x{:x}, lsl #16\n",
+                        (a >> 16) & 0xFFFF
+                    ));
+                    asm.push_str(&format!(
+                        "  movk x16, #0x{:x}, lsl #32\n",
+                        (a >> 32) & 0xFFFF
+                    ));
+                    asm.push_str(&format!(
+                        "  movk x16, #0x{:x}, lsl #48\n",
+                        (a >> 48) & 0xFFFF
+                    ));
                     asm.push_str("  br x16\n");
                 }
             }
