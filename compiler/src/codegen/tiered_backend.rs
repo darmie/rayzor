@@ -1784,12 +1784,16 @@ impl TieredBackend {
             .unwrap_or_default()
             .as_nanos();
         let obj_path = temp_dir.join(format!("rayzor_llvm_{}.o", timestamp));
-        let dylib_ext = if cfg!(target_os = "macos") {
-            "dylib"
-        } else {
-            "so"
+
+        #[cfg(not(feature = "tcc-linker"))]
+        let dylib_path = {
+            let dylib_ext = if cfg!(target_os = "macos") {
+                "dylib"
+            } else {
+                "so"
+            };
+            temp_dir.join(format!("rayzor_llvm_{}.{}", timestamp, dylib_ext))
         };
-        let dylib_path = temp_dir.join(format!("rayzor_llvm_{}.{}", timestamp, dylib_ext));
 
         // Create LLVM context and backend
         let context = Box::leak(Box::new(Context::create()));
@@ -1819,55 +1823,27 @@ impl TieredBackend {
         tracing::trace!("[LLVM:AOT] Compiling to object file: {:?}", obj_path);
         backend.compile_to_object_file(&obj_path)?;
 
-        // Link object file to dylib using system linker
-        tracing::trace!("[LLVM:AOT] Linking to dylib: {:?}", dylib_path);
-        self.link_to_dylib(&obj_path, &dylib_path, &self.runtime_symbols)?;
-
-        // Load the dylib
-        tracing::trace!("[LLVM:AOT] Loading dylib");
-        let lib = unsafe {
-            #[cfg(unix)]
-            {
-                // On Unix, use RTLD_NOW | RTLD_GLOBAL so the shared library can
-                // resolve symbols from the host process (runtime functions).
-                // RTLD_GLOBAL makes the host's symbols visible to the loaded library.
-                use libloading::os::unix::Library as UnixLibrary;
-                let unix_lib =
-                    UnixLibrary::open(Some(&dylib_path), libc::RTLD_NOW | libc::RTLD_GLOBAL)
-                        .map_err(|e| format!("Failed to load dylib: {}", e))?;
-                libloading::Library::from(unix_lib)
-            }
-            #[cfg(not(unix))]
-            {
-                libloading::Library::new(&dylib_path)
-                    .map_err(|e| format!("Failed to load dylib: {}", e))?
-            }
+        // Link and load — use TCC in-process linker if available,
+        // otherwise fall back to system linker + dlopen.
+        #[cfg(feature = "tcc-linker")]
+        let all_pointers = {
+            tracing::trace!("[LLVM:AOT] Linking with TCC in-process linker");
+            let mut linker = super::tcc_linker::TccLinker::new(&self.runtime_symbols)?;
+            let pointers = linker.link_object_file(&obj_path, &function_symbols)?;
+            // Leak the linker to keep code alive (same pattern as dylib)
+            Box::leak(Box::new(linker));
+            let _ = std::fs::remove_file(&obj_path);
+            pointers
         };
 
-        // Get function pointers from dylib
-        let mut all_pointers = HashMap::new();
-        for (func_id, symbol_name) in &function_symbols {
-            let symbol_result: Result<libloading::Symbol<*const ()>, _> =
-                unsafe { lib.get(symbol_name.as_bytes()) };
-
-            if let Ok(symbol) = symbol_result {
-                let ptr = *symbol as usize;
-                if ptr != 0 {
-                    all_pointers.insert(*func_id, ptr);
-                }
-            }
-        }
-
-        tracing::trace!(
-            "[LLVM:AOT] Loaded {} function pointers from dylib",
-            all_pointers.len()
-        );
-
-        // Leak the library to keep code valid (intentional!)
-        Box::leak(Box::new(lib));
-
-        // Clean up object file (dylib must stay for loaded code)
-        let _ = std::fs::remove_file(&obj_path);
+        #[cfg(not(feature = "tcc-linker"))]
+        let all_pointers = {
+            tracing::trace!("[LLVM:AOT] Linking with system linker");
+            let pointers =
+                self.link_and_load_with_system_linker(&obj_path, &dylib_path, &function_symbols)?;
+            let _ = std::fs::remove_file(&obj_path);
+            pointers
+        };
 
         // Build name -> pointer map for global storage (so other backends can reuse)
         let global_ptrs: HashMap<String, usize> = function_symbols
@@ -1914,11 +1890,61 @@ impl TieredBackend {
 
     /// Link object file to dynamic library using system linker
     ///
+    /// Link object file to dylib using system linker, load via dlopen,
+    /// and extract function pointers. Used as fallback when TCC is not available.
+    #[cfg(all(feature = "llvm-backend", not(feature = "tcc-linker")))]
+    fn link_and_load_with_system_linker(
+        &self,
+        obj_path: &Path,
+        dylib_path: &Path,
+        function_symbols: &HashMap<IrFunctionId, String>,
+    ) -> Result<HashMap<IrFunctionId, usize>, String> {
+        self.link_to_dylib(obj_path, dylib_path, &self.runtime_symbols)?;
+
+        let lib = unsafe {
+            #[cfg(unix)]
+            {
+                use libloading::os::unix::Library as UnixLibrary;
+                let unix_lib =
+                    UnixLibrary::open(Some(dylib_path), libc::RTLD_NOW | libc::RTLD_GLOBAL)
+                        .map_err(|e| format!("Failed to load dylib: {}", e))?;
+                libloading::Library::from(unix_lib)
+            }
+            #[cfg(not(unix))]
+            {
+                libloading::Library::new(dylib_path)
+                    .map_err(|e| format!("Failed to load dylib: {}", e))?
+            }
+        };
+
+        let mut all_pointers = HashMap::new();
+        for (func_id, symbol_name) in function_symbols {
+            let symbol_result: Result<libloading::Symbol<*const ()>, _> =
+                unsafe { lib.get(symbol_name.as_bytes()) };
+            if let Ok(symbol) = symbol_result {
+                let ptr = *symbol as usize;
+                if ptr != 0 {
+                    all_pointers.insert(*func_id, ptr);
+                }
+            }
+        }
+
+        tracing::trace!(
+            "[LLVM:AOT] Loaded {} function pointers from dylib",
+            all_pointers.len()
+        );
+
+        // Leak the library to keep code valid
+        Box::leak(Box::new(lib));
+
+        Ok(all_pointers)
+    }
+
     /// On macOS: Uses clang (via cc wrapper)
     /// On Linux: Uses gcc or clang
     ///
     /// Returns error if no linker is available - caller should fall back to Cranelift
-    #[cfg(feature = "llvm-backend")]
+    #[cfg(all(feature = "llvm-backend", not(feature = "tcc-linker")))]
     fn link_to_dylib(
         &self,
         obj_path: &Path,
@@ -1958,9 +1984,18 @@ impl TieredBackend {
                     // Load 64-bit address into x16 (IP0 scratch register), then branch
                     let a = *addr;
                     asm.push_str(&format!("  movz x16, #0x{:x}\n", a & 0xFFFF));
-                    asm.push_str(&format!("  movk x16, #0x{:x}, lsl #16\n", (a >> 16) & 0xFFFF));
-                    asm.push_str(&format!("  movk x16, #0x{:x}, lsl #32\n", (a >> 32) & 0xFFFF));
-                    asm.push_str(&format!("  movk x16, #0x{:x}, lsl #48\n", (a >> 48) & 0xFFFF));
+                    asm.push_str(&format!(
+                        "  movk x16, #0x{:x}, lsl #16\n",
+                        (a >> 16) & 0xFFFF
+                    ));
+                    asm.push_str(&format!(
+                        "  movk x16, #0x{:x}, lsl #32\n",
+                        (a >> 32) & 0xFFFF
+                    ));
+                    asm.push_str(&format!(
+                        "  movk x16, #0x{:x}, lsl #48\n",
+                        (a >> 48) & 0xFFFF
+                    ));
                     asm.push_str("  br x16\n");
                 }
             }
@@ -2032,7 +2067,7 @@ impl TieredBackend {
     ///
     /// Searches for: clang, gcc, cc (in order of preference)
     /// Returns the path to the linker or an error if none found
-    #[cfg(feature = "llvm-backend")]
+    #[cfg(all(feature = "llvm-backend", not(feature = "tcc-linker")))]
     fn find_linker() -> Result<String, String> {
         // Check for linkers in order of preference
         let candidates = ["clang", "gcc", "cc"];
@@ -2054,7 +2089,14 @@ impl TieredBackend {
     /// Check if LLVM AOT compilation is available on this system
     #[cfg(feature = "llvm-backend")]
     pub fn is_llvm_aot_available() -> bool {
-        Self::find_linker().is_ok()
+        #[cfg(feature = "tcc-linker")]
+        {
+            true // TCC is statically linked, always available
+        }
+        #[cfg(not(feature = "tcc-linker"))]
+        {
+            Self::find_linker().is_ok()
+        }
     }
 
     /// Legacy single-function compile (returns just one pointer)

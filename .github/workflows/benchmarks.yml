@@ -2,7 +2,7 @@ name: Benchmarks
 
 on:
   push:
-    branches: [main]
+    branches: [main, explore/tinycc-tiered-aot]
   workflow_dispatch:
 
 env:
@@ -37,10 +37,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Run nbody benchmark
-        run: cargo run --release --package compiler --features all-backends --example benchmark_runner -- nbody --json
+        run: cargo run --release --package compiler --features all-backends,tcc-linker --example benchmark_runner -- nbody --json
 
       - name: Run mandelbrot benchmark
-        run: cargo run --release --package compiler --features all-backends --example benchmark_runner -- mandelbrot --json
+        run: cargo run --release --package compiler --features all-backends,tcc-linker --example benchmark_runner -- mandelbrot --json
 
       - name: Upload benchmark results
         if: always()

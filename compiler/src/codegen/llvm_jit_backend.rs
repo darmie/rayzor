@@ -752,7 +752,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     .to_str()
                     .unwrap_or(""),
                 self.opt_level,
-                RelocMode::PIC, // Position Independent Code for dylib
+                RelocMode::PIC,
                 CodeModel::Default,
             )
             .ok_or("Failed to create target machine for AOT")?;
