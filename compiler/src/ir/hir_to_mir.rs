@@ -7767,27 +7767,37 @@ impl<'a> HirToMirContext<'a> {
                         let lhs_reg = self.lower_expression(lhs)?;
                         let rhs_reg = self.lower_expression(rhs)?;
 
+                        // Use MIR register types (from runtime mapping) instead of HIR types,
+                        // which may be unresolved generics (e.g. Ptr(Void) for Vec<Int>.length())
+                        let lhs_mir_type = self.builder.get_register_type(lhs_reg).unwrap_or(lhs_type.clone());
+                        let rhs_mir_type = self.builder.get_register_type(rhs_reg).unwrap_or(rhs_type.clone());
+
+                        let lhs_is_string_mir = matches!(&lhs_mir_type, IrType::String)
+                            || matches!(&lhs_mir_type, IrType::Ptr(inner) if matches!(inner.as_ref(), IrType::String));
+                        let rhs_is_string_mir = matches!(&rhs_mir_type, IrType::String)
+                            || matches!(&rhs_mir_type, IrType::Ptr(inner) if matches!(inner.as_ref(), IrType::String));
+
                         // Convert non-string operand to string if needed
                         // For class instances with toString(), call it directly at compile time
-                        let lhs_str_val = if !lhs_is_string {
+                        let lhs_str_val = if !lhs_is_string_mir {
                             if let Some(reg) =
                                 self.try_call_tostring(lhs_reg, self.resolve_expr_type_id(lhs))?
                             {
                                 reg
                             } else {
-                                self.convert_to_string(lhs_reg, &lhs_type)?
+                                self.convert_to_string(lhs_reg, &lhs_mir_type)?
                             }
                         } else {
                             lhs_reg
                         };
 
-                        let rhs_str_val = if !rhs_is_string {
+                        let rhs_str_val = if !rhs_is_string_mir {
                             if let Some(reg) =
                                 self.try_call_tostring(rhs_reg, self.resolve_expr_type_id(rhs))?
                             {
                                 reg
                             } else {
-                                self.convert_to_string(rhs_reg, &rhs_type)?
+                                self.convert_to_string(rhs_reg, &rhs_mir_type)?
                             }
                         } else {
                             rhs_reg
@@ -9193,46 +9203,18 @@ impl<'a> HirToMirContext<'a> {
             mir_wrapper, from_type
         );
 
-        // Cast to proper type if needed (int_to_string expects i32)
-        let final_value = if mir_wrapper == "int_to_string" {
-            match from_type {
-                IrType::I64 => {
-                    // int_to_string takes i32, so reduce i64 to i32
-                    self.builder
-                        .build_cast(value, IrType::I64, IrType::I32)
-                        .unwrap_or(value)
-                }
-                IrType::Ptr(_) => {
-                    // Pointer value (likely unresolved generic like Ptr(Void)) - treat as i64, then cast to i32
-                    self.builder
-                        .build_cast(value, IrType::I64, IrType::I32)
-                        .unwrap_or(value)
-                }
-                _ => value,
-            }
-        } else {
-            value
-        };
-
-        // Get the parameter and return types for the MIR wrapper
-        // Note: *_to_string wrappers return String, not Ptr(String)
-        let (param_type, return_type) = match mir_wrapper {
-            "int_to_string" => (IrType::I32, IrType::String),
-            "float_to_string" => (IrType::F64, IrType::String),
-            "bool_to_string" => (IrType::Bool, IrType::String),
-            _ => (IrType::I32, IrType::String),
-        };
-
-        // Register forward reference to the MIR wrapper
+        // Resolve the MIR wrapper's signature — int_to_string takes I64 (matching runtime),
+        // float_to_string takes F64, bool_to_string takes Bool.
+        // The Cranelift backend's C ABI auto-cast handles any I32↔I64 promotion
+        // at the call site, so no manual casting is needed here.
         let func_id = self.register_stdlib_mir_forward_ref(
             mir_wrapper,
-            vec![param_type],
-            return_type.clone(),
+            vec![from_type.clone()],
+            IrType::String,
         );
 
-        // Generate the call
         self.builder
-            .build_call_direct(func_id, vec![final_value], return_type)
+            .build_call_direct(func_id, vec![value], IrType::String)
     }
 
     /// Get the effective IR type for an expression, checking symbol_ir_types for pattern-bound variables.
@@ -13002,16 +12984,22 @@ impl<'a> HirToMirContext<'a> {
             for elem in elements.iter() {
                 let elem_val = self.lower_expression(elem)?;
 
-                // If the element is a pointer type (e.g., class instance), cast to i64
-                // so the call matches haxe_array_push_i64's signature.
-                // Cranelift treats ptr/i64 interchangeably but LLVM enforces strict types.
+                // Convert element to i64 to match haxe_array_push_i64's signature.
                 let elem_type = self.builder.get_register_type(elem_val);
-                let push_val = if matches!(elem_type, Some(IrType::Ptr(_))) {
-                    self.builder
-                        .build_bitcast(elem_val, IrType::I64)
-                        .unwrap_or(elem_val)
-                } else {
-                    elem_val
+                let push_val = match &elem_type {
+                    Some(IrType::Ptr(_)) => {
+                        // Pointer → i64: bitcast (reinterpret pointer as integer)
+                        self.builder
+                            .build_bitcast(elem_val, IrType::I64)
+                            .unwrap_or(elem_val)
+                    }
+                    Some(IrType::I32) => {
+                        // I32 → I64: sign-extend (not bitcast)
+                        self.builder
+                            .build_cast(elem_val, IrType::I32, IrType::I64)
+                            .unwrap_or(elem_val)
+                    }
+                    _ => elem_val,
                 };
 
                 // Call haxe_array_push_i64(arr, val) - this is a void function, so ignore the None return

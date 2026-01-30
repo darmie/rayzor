@@ -68,12 +68,14 @@ fn declare_string_conversion_externs(builder: &mut MirBuilder) {
     builder.mark_as_extern(func_id);
 }
 
-/// Build: fn int_to_string(value: i32) -> String
-/// Converts an integer to its string representation by calling runtime
+/// Build: fn int_to_string(value: i64) -> String
+/// Converts an integer to its string representation by calling runtime.
+/// Accepts I64 directly so both I32 (sign-extended) and I64 values work
+/// without an extra truncation cast in the caller.
 fn build_int_to_string(builder: &mut MirBuilder) {
     let func_id = builder
         .begin_function("int_to_string")
-        .param("value", IrType::I32)
+        .param("value", IrType::I64)
         .returns(IrType::String)
         .calling_convention(CallingConvention::C)
         .build();
@@ -85,14 +87,11 @@ fn build_int_to_string(builder: &mut MirBuilder) {
 
     let value = builder.get_param(0);
 
-    // Cast i32 to i64 for runtime function
-    let value_i64 = builder.cast(value, IrType::I32, IrType::I64);
-
-    // Call extern runtime function
+    // Call extern runtime function (haxe_string_from_int takes i64 directly)
     let extern_id = builder
         .get_function_by_name("haxe_string_from_int")
         .expect("haxe_string_from_int not found");
-    let result = builder.call(extern_id, vec![value_i64]).unwrap();
+    let result = builder.call(extern_id, vec![value]).unwrap();
 
     builder.ret(Some(result));
 }

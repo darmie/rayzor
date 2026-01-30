@@ -191,30 +191,30 @@ class Main {
         v.push(20);
         v.push(30);
 
-        // Test length
+        // Test length with string concat
         trace("Length: " + v.length());
 
         // Test get
-        trace("v[0]: " + v.get(0));
-        trace("v[1]: " + v.get(1));
-        trace("v[2]: " + v.get(2));
+        trace("v[0] = " + v.get(0));
+        trace("v[1] = " + v.get(1));
+        trace("v[2] = " + v.get(2));
 
         // Test first/last
-        trace("First: " + v.first());
-        trace("Last: " + v.last());
+        trace(v.first());
+        trace(v.last());
 
         // Test set
         v.set(1, 42);
-        trace("After set v[1]=42: " + v.get(1));
+        trace(v.get(1));
 
         // Test pop
         var popped = v.pop();
-        trace("Popped: " + popped);
-        trace("Length after pop: " + v.length());
+        trace(popped);
+        trace(v.length());
 
         // Test clear
         v.clear();
-        trace("Length after clear: " + v.length());
+        trace(v.length());
     }
 }
 "#
@@ -232,13 +232,13 @@ class Main {
         v.push(2.5);
         v.push(3.5);
 
-        trace("Length: " + v.length());
-        trace("v[0]: " + v.get(0));
-        trace("v[1]: " + v.get(1));
-        trace("v[2]: " + v.get(2));
+        trace(v.length());
+        trace(v.get(0));
+        trace(v.get(1));
+        trace(v.get(2));
 
-        trace("First: " + v.first());
-        trace("Last: " + v.last());
+        trace(v.first());
+        trace(v.last());
     }
 }
 "#
@@ -260,24 +260,22 @@ class Main {
         v.push(9);
         v.push(3);
 
-        trace("Before sort:");
-        trace("  v[0]: " + v.get(0));
-        trace("  v[1]: " + v.get(1));
-        trace("  v[2]: " + v.get(2));
-        trace("  v[3]: " + v.get(3));
-        trace("  v[4]: " + v.get(4));
-        trace("  v[5]: " + v.get(5));
+        trace(v.get(0));
+        trace(v.get(1));
+        trace(v.get(2));
+        trace(v.get(3));
+        trace(v.get(4));
+        trace(v.get(5));
 
         // Sort ascending
         v.sort();
 
-        trace("After sort:");
-        trace("  v[0]: " + v.get(0));
-        trace("  v[1]: " + v.get(1));
-        trace("  v[2]: " + v.get(2));
-        trace("  v[3]: " + v.get(3));
-        trace("  v[4]: " + v.get(4));
-        trace("  v[5]: " + v.get(5));
+        trace(v.get(0));
+        trace(v.get(1));
+        trace(v.get(2));
+        trace(v.get(3));
+        trace(v.get(4));
+        trace(v.get(5));
     }
 }
 "#
@@ -296,19 +294,17 @@ class Main {
         v.push(2.71);
         v.push(0.5);
 
-        trace("Before sort:");
-        trace("  v[0]: " + v.get(0));
-        trace("  v[1]: " + v.get(1));
-        trace("  v[2]: " + v.get(2));
-        trace("  v[3]: " + v.get(3));
+        trace(v.get(0));
+        trace(v.get(1));
+        trace(v.get(2));
+        trace(v.get(3));
 
         v.sort();
 
-        trace("After sort:");
-        trace("  v[0]: " + v.get(0));
-        trace("  v[1]: " + v.get(1));
-        trace("  v[2]: " + v.get(2));
-        trace("  v[3]: " + v.get(3));
+        trace(v.get(0));
+        trace(v.get(1));
+        trace(v.get(2));
+        trace(v.get(3));
     }
 }
 "#
@@ -322,7 +318,7 @@ class Main {
     static function main() {
         var v = new Vec<Int>();
 
-        trace("Initial capacity: " + v.capacity());
+        trace(v.capacity());
 
         // Push many elements to trigger growth
         var i = 0;
@@ -331,14 +327,13 @@ class Main {
             i = i + 1;
         }
 
-        trace("After 20 pushes:");
-        trace("  Length: " + v.length());
-        trace("  Capacity: " + v.capacity());
+        trace(v.length());
+        trace(v.capacity());
 
         // Verify values
-        trace("  First: " + v.first());
-        trace("  Last: " + v.last());
-        trace("  v[10]: " + v.get(10));
+        trace(v.first());
+        trace(v.last());
+        trace(v.get(10));
     }
 }
 "#

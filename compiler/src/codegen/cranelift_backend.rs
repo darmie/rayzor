@@ -2546,6 +2546,10 @@ impl CraneliftBackend {
                         builder.ins().bitcast(types::F32, MemFlags::new(), src_val)
                     }
 
+                    // Int width conversions (sign-extend or truncate)
+                    (types::I32, types::I64) => builder.ins().sextend(types::I64, src_val),
+                    (types::I64, types::I32) => builder.ins().ireduce(types::I32, src_val),
+
                     // Same type - just copy
                     (from, to) if from == to => src_val,
 

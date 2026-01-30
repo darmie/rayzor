@@ -140,9 +140,9 @@ pub extern "C" fn haxe_string_char_code_at(s: *const HaxeString, index: usize) -
 // String Operations
 // ============================================================================
 
-/// Concatenate two strings
+/// Concatenate two strings (sret variant — use haxe_string_concat_ptr instead)
 #[no_mangle]
-pub extern "C" fn haxe_string_concat(
+pub extern "C" fn haxe_string_concat_sret(
     out: *mut HaxeString,
     a: *const HaxeString,
     b: *const HaxeString,
