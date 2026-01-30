@@ -1928,13 +1928,14 @@ impl TieredBackend {
         // Try to find a suitable linker
         let linker = Self::find_linker()?;
 
-        // Generate a stub assembly file that defines runtime symbols as absolute
-        // addresses. This lets the .dylib/.so resolve host-process functions
-        // (haxe_math_sqrt, etc.) without needing --export-dynamic on the binary.
+        // Generate trampoline stubs that jump to absolute runtime function addresses.
+        // Unlike `.set` aliases, trampolines generate real executable code that works
+        // correctly with PIC/PIE shared libraries on native x86_64 and ARM64.
         let stubs_asm_path = obj_path.with_extension("stubs.s");
         let stubs_obj_path = obj_path.with_extension("stubs.o");
         {
             let mut asm = String::new();
+            asm.push_str(".text\n");
             for (name, addr) in runtime_symbols {
                 // On macOS, C symbols have a leading underscore
                 #[cfg(target_os = "macos")]
@@ -1943,7 +1944,25 @@ impl TieredBackend {
                 let sym = name.to_string();
 
                 asm.push_str(&format!(".globl {}\n", sym));
-                asm.push_str(&format!(".set {}, 0x{:x}\n", sym, addr));
+                asm.push_str(&format!("{}:\n", sym));
+
+                // Generate architecture-specific trampoline
+                #[cfg(target_arch = "x86_64")]
+                {
+                    // movabs rax, <addr>; jmp rax
+                    asm.push_str(&format!("  movabs $0x{:x}, %rax\n", addr));
+                    asm.push_str("  jmpq *%rax\n");
+                }
+                #[cfg(target_arch = "aarch64")]
+                {
+                    // Load 64-bit address into x16 (IP0 scratch register), then branch
+                    let a = *addr;
+                    asm.push_str(&format!("  movz x16, #0x{:x}\n", a & 0xFFFF));
+                    asm.push_str(&format!("  movk x16, #0x{:x}, lsl #16\n", (a >> 16) & 0xFFFF));
+                    asm.push_str(&format!("  movk x16, #0x{:x}, lsl #32\n", (a >> 32) & 0xFFFF));
+                    asm.push_str(&format!("  movk x16, #0x{:x}, lsl #48\n", (a >> 48) & 0xFFFF));
+                    asm.push_str("  br x16\n");
+                }
             }
             std::fs::write(&stubs_asm_path, &asm)
                 .map_err(|e| format!("Failed to write stubs asm: {}", e))?;
