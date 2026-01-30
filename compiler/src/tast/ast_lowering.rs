@@ -645,9 +645,7 @@ impl<'a> AstLowering<'a> {
                     if let Some(first_param) = meta.params.first() {
                         if let parser::haxe_ast::ExprKind::String(native_str) = &first_param.kind {
                             let native_interned = self.context.string_interner.intern(&native_str);
-                            if let Some(sym) =
-                                self.context.symbol_table.get_symbol_mut(symbol_id)
-                            {
+                            if let Some(sym) = self.context.symbol_table.get_symbol_mut(symbol_id) {
                                 sym.native_name = Some(native_interned);
                             }
                         }
