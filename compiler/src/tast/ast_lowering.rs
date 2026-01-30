@@ -1601,6 +1601,7 @@ impl<'a> AstLowering<'a> {
                 flags: SymbolFlags::NONE,
                 package_id: None,
                 qualified_name: None,
+                native_name: None,
             };
 
             // Add symbol to symbol table
@@ -1773,6 +1774,7 @@ impl<'a> AstLowering<'a> {
                 flags: SymbolFlags::NONE,
                 package_id: None,
                 qualified_name: None,
+                native_name: None,
             };
 
             self.context.symbol_table.add_symbol(func_symbol);
@@ -2475,6 +2477,15 @@ impl<'a> AstLowering<'a> {
                 }
                 "native" | ":native" => {
                     symbol_flags = symbol_flags.union(crate::tast::symbols::SymbolFlags::NATIVE);
+                    // Extract native name string from first parameter if present
+                    if let Some(first_param) = meta.params.first() {
+                        if let parser::haxe_ast::ExprKind::String(native_str) = &first_param.kind {
+                            let native_interned = self.context.string_interner.intern(native_str);
+                            if let Some(sym) = self.context.symbol_table.get_symbol_mut(class_symbol) {
+                                sym.native_name = Some(native_interned);
+                            }
+                        }
+                    }
                 }
                 "forward" | ":forward" => {
                     symbol_flags = symbol_flags.union(crate::tast::symbols::SymbolFlags::FORWARD);
@@ -3055,6 +3066,29 @@ impl<'a> AstLowering<'a> {
 
         // Update qualified name (full path including class hierarchy)
         self.context.update_symbol_qualified_name(abstract_symbol);
+
+        // Extract @:native metadata for abstracts
+        for meta in &abstract_decl.meta {
+            let name = meta.name.strip_prefix(':').unwrap_or(&meta.name);
+            if name == "native" {
+                if let Some(sym) = self.context.symbol_table.get_symbol_mut(abstract_symbol) {
+                    sym.flags = sym.flags.union(crate::tast::symbols::SymbolFlags::NATIVE);
+                }
+                if let Some(first_param) = meta.params.first() {
+                    if let parser::haxe_ast::ExprKind::String(native_str) = &first_param.kind {
+                        let native_interned = self.context.string_interner.intern(native_str);
+                        if let Some(sym) = self.context.symbol_table.get_symbol_mut(abstract_symbol) {
+                            sym.native_name = Some(native_interned);
+                        }
+                    }
+                }
+            }
+            if name == "extern" {
+                if let Some(sym) = self.context.symbol_table.get_symbol_mut(abstract_symbol) {
+                    sym.flags = sym.flags.union(crate::tast::symbols::SymbolFlags::EXTERN);
+                }
+            }
+        }
 
         // Add abstract to the root scope so it can be resolved for forward references
         self.context

@@ -493,6 +493,9 @@ fn extract_type_info_from_ast(haxe_file: &parser::HaxeFile) -> BladeTypeInfo {
             parser::TypeDeclaration::Class(class) => {
                 let is_extern = class.modifiers.contains(&parser::Modifier::Extern);
 
+                // Extract @:native metadata
+                let native_name = extract_native_meta(&class.meta);
+
                 let extends = class.extends.as_ref().map(|t| type_to_string(t));
                 let implements: Vec<String> =
                     class.implements.iter().map(|t| type_to_string(t)).collect();
@@ -602,6 +605,7 @@ fn extract_type_info_from_ast(haxe_file: &parser::HaxeFile) -> BladeTypeInfo {
                     static_fields,
                     static_methods,
                     constructor,
+                    native_name,
                 });
             }
             parser::TypeDeclaration::Enum(enum_decl) => {
@@ -661,6 +665,8 @@ fn extract_type_info_from_ast(haxe_file: &parser::HaxeFile) -> BladeTypeInfo {
                 });
             }
             parser::TypeDeclaration::Abstract(abstract_decl) => {
+                let native_name = extract_native_meta(&abstract_decl.meta);
+
                 let type_params: Vec<String> = abstract_decl
                     .type_params
                     .iter()
@@ -708,6 +714,7 @@ fn extract_type_info_from_ast(haxe_file: &parser::HaxeFile) -> BladeTypeInfo {
                     to_types,
                     methods,
                     static_methods,
+                    native_name,
                 });
             }
             parser::TypeDeclaration::Interface(iface) => {
@@ -746,6 +753,7 @@ fn extract_type_info_from_ast(haxe_file: &parser::HaxeFile) -> BladeTypeInfo {
                     static_fields: vec![],
                     static_methods: vec![],
                     constructor: None,
+                    native_name: None,
                 });
             }
             parser::TypeDeclaration::Conditional(_) => {
@@ -758,6 +766,21 @@ fn extract_type_info_from_ast(haxe_file: &parser::HaxeFile) -> BladeTypeInfo {
 }
 
 /// Extract method info from parsed function AST
+/// Extract @:native metadata value from a metadata list
+fn extract_native_meta(meta: &[parser::Metadata]) -> Option<String> {
+    for m in meta {
+        let name = m.name.strip_prefix(':').unwrap_or(&m.name);
+        if name == "native" {
+            if let Some(first_param) = m.params.first() {
+                if let parser::ExprKind::String(native_name) = &first_param.kind {
+                    return Some(native_name.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
 fn extract_method_from_ast(
     func: &parser::Function,
     is_public: bool,

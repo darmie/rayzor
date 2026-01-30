@@ -24,7 +24,7 @@ package rayzor.concurrent;
  * trace(result); // 42
  * ```
  */
-@:native("rayzor::thread::Thread")
+@:native("rayzor::concurrent::Thread")
 extern class Thread<T> {
     /**
      * Spawn a new thread to execute the given closure.

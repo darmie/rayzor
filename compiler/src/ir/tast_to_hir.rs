@@ -1090,14 +1090,23 @@ impl<'a> TastToHirContext<'a> {
         let type_table = self.type_table.borrow();
         let type_info = type_table.get(receiver_type)?;
 
-        // Get class name from type - no hardcoding!
+        // Get class name from type - prefer lowered @:native name for namespacing
         let class_name = match &type_info.kind {
             TypeKind::String => "String",
             TypeKind::Array { .. } => "Array",
             TypeKind::Class { symbol_id, .. } => {
-                // Get class name from symbol
                 if let Some(class_info) = self.symbol_table.get_symbol(*symbol_id) {
-                    self.string_interner.get(class_info.name)?
+                    // Use lowered native name if available (e.g., "rayzor::concurrent::Arc" -> "rayzor_concurrent_Arc")
+                    if let Some(native_interned) = class_info.native_name {
+                        if let Some(native_str) = self.string_interner.get(native_interned) {
+                            let lowered = native_str.replace("::", "_");
+                            Box::leak(lowered.into_boxed_str())
+                        } else {
+                            self.string_interner.get(class_info.name)?
+                        }
+                    } else {
+                        self.string_interner.get(class_info.name)?
+                    }
                 } else {
                     return None;
                 }

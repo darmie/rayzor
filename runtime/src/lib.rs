@@ -48,6 +48,13 @@ pub mod vec_plugin; // Pointer-based Vec API
 
 pub mod plugin_impl; // Plugin registration
 
+// Box<T> runtime — single-owner heap allocation
+pub mod box_runtime;
+
+// TinyCC runtime API (rayzor.runtime.CC)
+#[cfg(feature = "tcc-runtime")]
+pub mod tinycc_runtime;
+
 // Re-export main types
 pub use haxe_array::HaxeArray;
 pub use haxe_string::HaxeString;

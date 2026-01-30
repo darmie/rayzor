@@ -236,6 +236,13 @@ impl StdlibMapping {
         mapping.register_sys_condition_methods();
         // Boxing/unboxing and other internal extern functions
         mapping.register_internal_extern_functions();
+        // TinyCC runtime API (rayzor.runtime.CC)
+        mapping.register_cc_methods();
+        // Systems-level types (rayzor.Box, rayzor.Ptr, rayzor.Ref, rayzor.Usize)
+        mapping.register_box_methods();
+        mapping.register_ptr_methods();
+        mapping.register_ref_methods();
+        mapping.register_usize_methods();
 
         mapping
     }
@@ -490,15 +497,9 @@ impl StdlibMapping {
     /// NOTE: This uses name-based detection for backward compatibility with existing class mappings.
     /// The `is_mir_wrapper` field on RuntimeFunctionCall is more precise for per-function checks.
     pub fn is_mir_wrapper_class(&self, class_name: &str) -> bool {
-        // Check if any method of this class has a MIR wrapper-style runtime name
+        // Check if any method of this class is registered as a MIR wrapper
         self.mappings.iter().any(|(sig, call)| {
-            if sig.class != class_name {
-                return false;
-            }
-            // MIR wrapper names: {Class}_{method} (e.g., Thread_spawn, VecI32_push)
-            // Extern names use prefixes: rayzor_*, haxe_*
-            let expected_mir_name = format!("{}_{}", sig.class, sig.method);
-            call.runtime_name == expected_mir_name
+            sig.class == class_name && call.is_mir_wrapper
         })
     }
 
@@ -1704,27 +1705,27 @@ impl StdlibMapping {
         let mappings = vec![
             // Thread::spawn<T>(f: Void -> T) -> Thread<T>
             // MIR wrapper: takes closure (*u8), returns thread handle (*u8)
-            map_method!(static "Thread", "spawn" => "Thread_spawn", params: 1, mir_wrapper,
+            map_method!(static "rayzor_concurrent_Thread", "spawn" => "Thread_spawn", params: 1, mir_wrapper,
                 types: &[PtrU8] => PtrU8),
             // Thread<T>::join() -> T
             // MIR wrapper: takes thread handle (*u8), returns result (*u8 for Dynamic)
-            map_method!(instance "Thread", "join" => "Thread_join", params: 0, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_Thread", "join" => "Thread_join", params: 0, mir_wrapper,
                 types: &[PtrU8] => PtrU8),
             // Thread<T>::isFinished() -> Bool
             // MIR wrapper: takes thread handle (*u8), returns bool
-            map_method!(instance "Thread", "isFinished" => "Thread_isFinished", params: 0, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_Thread", "isFinished" => "Thread_isFinished", params: 0, mir_wrapper,
                 types: &[PtrU8] => Bool),
             // Thread::sleep(millis: Int) -> Void
             // MIR wrapper: takes millis (i32), returns void
-            map_method!(static "Thread", "sleep" => "Thread_sleep", params: 1, mir_wrapper,
+            map_method!(static "rayzor_concurrent_Thread", "sleep" => "Thread_sleep", params: 1, mir_wrapper,
                 types: &[I32]),
             // Thread::yieldNow() -> Void
             // MIR wrapper: no params, returns void
-            map_method!(static "Thread", "yieldNow" => "Thread_yieldNow", params: 0, mir_wrapper,
+            map_method!(static "rayzor_concurrent_Thread", "yieldNow" => "Thread_yieldNow", params: 0, mir_wrapper,
                 types: &[]),
             // Thread::currentId() -> Int
             // MIR wrapper: no params, returns thread id (i64)
-            map_method!(static "Thread", "currentId" => "Thread_currentId", params: 0, mir_wrapper,
+            map_method!(static "rayzor_concurrent_Thread", "currentId" => "Thread_currentId", params: 0, mir_wrapper,
                 types: &[] => I64),
         ];
 
@@ -1745,50 +1746,50 @@ impl StdlibMapping {
         let mappings = vec![
             // Constructor: new Channel<T>(capacity: Int) -> Channel<T>
             // MIR wrapper: takes capacity (i32), returns channel handle (*u8)
-            map_method!(constructor "Channel", "new" => "Channel_init", params: 1, mir_wrapper,
+            map_method!(constructor "rayzor_concurrent_Channel", "new" => "Channel_init", params: 1, mir_wrapper,
                 types: &[I32] => PtrU8),
             // Channel::init<T>(capacity: Int) -> Channel<T> (for backwards compatibility)
-            map_method!(static "Channel", "init" => "Channel_init", params: 1, mir_wrapper,
+            map_method!(static "rayzor_concurrent_Channel", "init" => "Channel_init", params: 1, mir_wrapper,
                 types: &[I32] => PtrU8),
             // Channel<T>::send(value: T) -> Void
             // MIR wrapper: takes channel handle + value ptr
-            map_method!(instance "Channel", "send" => "Channel_send", params: 1, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_Channel", "send" => "Channel_send", params: 1, mir_wrapper,
                 types: &[PtrU8, PtrU8]),
             // Channel<T>::trySend(value: T) -> Bool
             // MIR wrapper: takes channel handle + value ptr, returns bool
-            map_method!(instance "Channel", "trySend" => "Channel_trySend", params: 1, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_Channel", "trySend" => "Channel_trySend", params: 1, mir_wrapper,
                 types: &[PtrU8, PtrU8] => Bool),
             // Channel<T>::receive() -> T
             // MIR wrapper: takes channel handle, returns value ptr
-            map_method!(instance "Channel", "receive" => "Channel_receive", params: 0, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_Channel", "receive" => "Channel_receive", params: 0, mir_wrapper,
                 types: &[PtrU8] => PtrU8),
             // Channel<T>::tryReceive() -> Null<T>
             // MIR wrapper: takes channel handle, returns value ptr (or null)
-            map_method!(instance "Channel", "tryReceive" => "Channel_tryReceive", params: 0, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_Channel", "tryReceive" => "Channel_tryReceive", params: 0, mir_wrapper,
                 types: &[PtrU8] => PtrU8),
             // Channel<T>::close() -> Void
             // MIR wrapper: takes channel handle
-            map_method!(instance "Channel", "close" => "Channel_close", params: 0, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_Channel", "close" => "Channel_close", params: 0, mir_wrapper,
                 types: &[PtrU8]),
             // Channel<T>::isClosed() -> Bool
             // MIR wrapper: takes channel handle, returns bool
-            map_method!(instance "Channel", "isClosed" => "Channel_isClosed", params: 0, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_Channel", "isClosed" => "Channel_isClosed", params: 0, mir_wrapper,
                 types: &[PtrU8] => Bool),
             // Channel<T>::len() -> Int
             // MIR wrapper: takes channel handle, returns i32
-            map_method!(instance "Channel", "len" => "Channel_len", params: 0, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_Channel", "len" => "Channel_len", params: 0, mir_wrapper,
                 types: &[PtrU8] => I32),
             // Channel<T>::capacity() -> Int
             // MIR wrapper: takes channel handle, returns i32
-            map_method!(instance "Channel", "capacity" => "Channel_capacity", params: 0, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_Channel", "capacity" => "Channel_capacity", params: 0, mir_wrapper,
                 types: &[PtrU8] => I32),
             // Channel<T>::isEmpty() -> Bool
             // MIR wrapper: takes channel handle, returns bool
-            map_method!(instance "Channel", "isEmpty" => "Channel_isEmpty", params: 0, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_Channel", "isEmpty" => "Channel_isEmpty", params: 0, mir_wrapper,
                 types: &[PtrU8] => Bool),
             // Channel<T>::isFull() -> Bool
             // MIR wrapper: takes channel handle, returns bool
-            map_method!(instance "Channel", "isFull" => "Channel_isFull", params: 0, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_Channel", "isFull" => "Channel_isFull", params: 0, mir_wrapper,
                 types: &[PtrU8] => Bool),
         ];
 
@@ -1805,31 +1806,39 @@ impl StdlibMapping {
         let mappings = vec![
             // Constructor: new Arc<T>(value: T) -> Arc<T>
             // MIR wrapper: takes value ptr, returns arc handle (*u8)
-            map_method!(constructor "Arc", "new" => "Arc_init", params: 1, mir_wrapper,
+            map_method!(constructor "rayzor_concurrent_Arc", "new" => "Arc_init", params: 1, mir_wrapper,
                 types: &[PtrU8] => PtrU8),
             // Arc::init<T>(value: T) -> Arc<T> (for backwards compatibility)
-            map_method!(static "Arc", "init" => "Arc_init", params: 1, mir_wrapper,
+            map_method!(static "rayzor_concurrent_Arc", "init" => "Arc_init", params: 1, mir_wrapper,
                 types: &[PtrU8] => PtrU8),
             // Arc<T>::clone() -> Arc<T>
             // MIR wrapper: takes arc handle, returns cloned arc handle
-            map_method!(instance "Arc", "clone" => "Arc_clone", params: 0, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_Arc", "clone" => "Arc_clone", params: 0, mir_wrapper,
                 types: &[PtrU8] => PtrU8),
             // Arc<T>::get() -> T
             // MIR wrapper: takes arc handle, returns value ptr
-            map_method!(instance "Arc", "get" => "Arc_get", params: 0, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_Arc", "get" => "Arc_get", params: 0, mir_wrapper,
                 types: &[PtrU8] => PtrU8),
             // Arc<T>::strongCount() -> Int
             // MIR wrapper: takes arc handle, returns count (u64)
-            map_method!(instance "Arc", "strongCount" => "Arc_strongCount", params: 0, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_Arc", "strongCount" => "Arc_strongCount", params: 0, mir_wrapper,
                 types: &[PtrU8] => U64),
             // Arc<T>::tryUnwrap() -> Null<T>
             // MIR wrapper: takes arc handle, returns value ptr (or null)
-            map_method!(instance "Arc", "tryUnwrap" => "Arc_tryUnwrap", params: 0, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_Arc", "tryUnwrap" => "Arc_tryUnwrap", params: 0, mir_wrapper,
                 types: &[PtrU8] => PtrU8),
             // Arc<T>::asPtr() -> Int
             // MIR wrapper: takes arc handle, returns ptr as u64
-            map_method!(instance "Arc", "asPtr" => "Arc_asPtr", params: 0, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_Arc", "asPtr" => "Arc_asPtr", params: 0, mir_wrapper,
                 types: &[PtrU8] => U64),
+            // Arc<T>::asPtrTyped() -> Ptr<T>
+            // MIR wrapper: same as asPtr but returns typed Ptr (i64 at runtime)
+            map_method!(instance "rayzor_concurrent_Arc", "asPtrTyped" => "Arc_asPtr", params: 0, mir_wrapper,
+                types: &[PtrU8] => I64),
+            // Arc<T>::asRef() -> Ref<T>
+            // MIR wrapper: same as asPtr but returns typed Ref (i64 at runtime)
+            map_method!(instance "rayzor_concurrent_Arc", "asRef" => "Arc_asPtr", params: 0, mir_wrapper,
+                types: &[PtrU8] => I64),
         ];
 
         self.register_from_tuples(mappings);
@@ -1845,30 +1854,30 @@ impl StdlibMapping {
         let mappings = vec![
             // Constructor: new Mutex<T>(value: T) -> Mutex<T>
             // MIR wrapper: takes value ptr, returns mutex handle (*u8)
-            map_method!(constructor "Mutex", "new" => "Mutex_init", params: 1, mir_wrapper,
+            map_method!(constructor "rayzor_concurrent_Mutex", "new" => "Mutex_init", params: 1, mir_wrapper,
                 types: &[PtrU8] => PtrU8),
             // Mutex::init<T>(value: T) -> Mutex<T> (for backwards compatibility)
-            map_method!(static "Mutex", "init" => "Mutex_init", params: 1, mir_wrapper,
+            map_method!(static "rayzor_concurrent_Mutex", "init" => "Mutex_init", params: 1, mir_wrapper,
                 types: &[PtrU8] => PtrU8),
             // Mutex<T>::lock() -> MutexGuard<T>
             // MIR wrapper: takes mutex handle, returns guard handle (*u8)
-            map_method!(instance "Mutex", "lock" => "Mutex_lock", params: 0, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_Mutex", "lock" => "Mutex_lock", params: 0, mir_wrapper,
                 types: &[PtrU8] => PtrU8),
             // Mutex<T>::tryLock() -> Null<MutexGuard<T>>
             // MIR wrapper: takes mutex handle, returns guard handle (or null)
-            map_method!(instance "Mutex", "tryLock" => "Mutex_tryLock", params: 0, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_Mutex", "tryLock" => "Mutex_tryLock", params: 0, mir_wrapper,
                 types: &[PtrU8] => PtrU8),
             // Mutex<T>::isLocked() -> Bool
             // MIR wrapper: takes mutex handle, returns bool
-            map_method!(instance "Mutex", "isLocked" => "Mutex_isLocked", params: 0, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_Mutex", "isLocked" => "Mutex_isLocked", params: 0, mir_wrapper,
                 types: &[PtrU8] => Bool),
             // MutexGuard<T>::get() -> T
             // MIR wrapper: takes guard handle, returns value ptr
-            map_method!(instance "MutexGuard", "get" => "MutexGuard_get", params: 0, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_MutexGuard", "get" => "MutexGuard_get", params: 0, mir_wrapper,
                 types: &[PtrU8] => PtrU8),
             // MutexGuard<T>::unlock() -> Void
             // MIR wrapper: takes guard handle
-            map_method!(instance "MutexGuard", "unlock" => "MutexGuard_unlock", params: 0, mir_wrapper,
+            map_method!(instance "rayzor_concurrent_MutexGuard", "unlock" => "MutexGuard_unlock", params: 0, mir_wrapper,
                 types: &[PtrU8]),
         ];
 
@@ -2579,6 +2588,182 @@ impl StdlibMapping {
 
         self.register_from_tuples(mappings);
     }
+
+    // ============================================================================
+    // Box<T> Methods (rayzor.Box — single-owner heap allocation)
+    // ============================================================================
+
+    fn register_box_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
+        let mappings = vec![
+            // Box.init<T>(value: T): Box<T>  (static, allocates on heap)
+            map_method!(static "rayzor_Box", "init" => "Box_init", params: 1, mir_wrapper,
+                types: &[I64] => I64),
+            // box.unbox(): T  (instance, reads value from heap)
+            map_method!(instance "rayzor_Box", "unbox" => "Box_unbox", params: 0, mir_wrapper,
+                types: &[I64] => I64),
+            // box.asPtr(): Ptr<T>  (instance, identity — box IS the pointer)
+            map_method!(instance "rayzor_Box", "asPtr" => "Box_raw", params: 0, mir_wrapper,
+                types: &[I64] => I64),
+            // box.asRef(): Ref<T>  (instance, identity — box IS the pointer)
+            map_method!(instance "rayzor_Box", "asRef" => "Box_raw", params: 0, mir_wrapper,
+                types: &[I64] => I64),
+            // box.raw(): Int  (instance, identity — returns heap address)
+            map_method!(instance "rayzor_Box", "raw" => "Box_raw", params: 0, mir_wrapper,
+                types: &[I64] => I64),
+            // box.free(): Void  (instance, deallocates)
+            map_method!(instance "rayzor_Box", "free" => "Box_free", params: 0, mir_wrapper,
+                types: &[I64]),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // Ptr<T> Methods (rayzor.Ptr — raw mutable pointer)
+    // ============================================================================
+    //
+    // All Ptr operations are MIR-level: fromRaw/raw are identity,
+    // deref is load, write is store, offset is pointer arithmetic.
+
+    fn register_ptr_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
+        let mappings = vec![
+            // Ptr.fromRaw<T>(address: Int): Ptr<T>  (static, identity cast)
+            map_method!(static "rayzor_Ptr", "fromRaw" => "Ptr_fromRaw", params: 1, mir_wrapper,
+                types: &[I64] => I64),
+            // ptr.raw(): Int  (instance, identity cast)
+            map_method!(instance "rayzor_Ptr", "raw" => "Ptr_raw", params: 0, mir_wrapper,
+                types: &[I64] => I64),
+            // ptr.deref(): T  (instance, load from address)
+            map_method!(instance "rayzor_Ptr", "deref" => "Ptr_deref", params: 0, mir_wrapper,
+                types: &[I64] => I64),
+            // ptr.write(value: T): Void  (instance, store to address)
+            map_method!(instance "rayzor_Ptr", "write" => "Ptr_write", params: 1, mir_wrapper,
+                types: &[I64, I64]),
+            // ptr.offset(n: Int): Ptr<T>  (instance, pointer arithmetic)
+            map_method!(instance "rayzor_Ptr", "offset" => "Ptr_offset", params: 1, mir_wrapper,
+                types: &[I64, I64] => I64),
+            // ptr.isNull(): Bool  (instance, compare to 0)
+            map_method!(instance "rayzor_Ptr", "isNull" => "Ptr_isNull", params: 0, mir_wrapper,
+                types: &[I64] => Bool),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // Ref<T> Methods (rayzor.Ref — read-only reference)
+    // ============================================================================
+
+    fn register_ref_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
+        let mappings = vec![
+            // Ref.fromRaw<T>(address: Int): Ref<T>  (static, identity cast)
+            map_method!(static "rayzor_Ref", "fromRaw" => "Ref_fromRaw", params: 1, mir_wrapper,
+                types: &[I64] => I64),
+            // ref.raw(): Int  (instance, identity cast)
+            map_method!(instance "rayzor_Ref", "raw" => "Ref_raw", params: 0, mir_wrapper,
+                types: &[I64] => I64),
+            // ref.deref(): T  (instance, load from address)
+            map_method!(instance "rayzor_Ref", "deref" => "Ref_deref", params: 0, mir_wrapper,
+                types: &[I64] => I64),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // Usize Methods (rayzor.Usize — unsigned pointer-sized integer)
+    // ============================================================================
+    //
+    // All Usize operations are native i64 instructions at MIR level.
+    // Conversions to/from Int are identity. Arithmetic maps to native ops.
+
+    fn register_usize_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
+        let mappings = vec![
+            // Usize.fromInt(value: Int): Usize  (static, identity)
+            map_method!(static "rayzor_Usize", "fromInt" => "Usize_fromInt", params: 1, mir_wrapper,
+                types: &[I64] => I64),
+            // usize.toInt(): Int  (instance, identity)
+            map_method!(instance "rayzor_Usize", "toInt" => "Usize_toInt", params: 0, mir_wrapper,
+                types: &[I64] => I64),
+            // Usize.fromPtr<T>(ptr: Ptr<T>): Usize  (static, identity)
+            map_method!(static "rayzor_Usize", "fromPtr" => "Usize_fromInt", params: 1, mir_wrapper,
+                types: &[I64] => I64),
+            // Usize.fromRef<T>(ref: Ref<T>): Usize  (static, identity)
+            map_method!(static "rayzor_Usize", "fromRef" => "Usize_fromInt", params: 1, mir_wrapper,
+                types: &[I64] => I64),
+            // usize.toPtr<T>(): Ptr<T>  (instance, identity)
+            map_method!(instance "rayzor_Usize", "toPtr" => "Usize_toInt", params: 0, mir_wrapper,
+                types: &[I64] => I64),
+            // usize.toRef<T>(): Ref<T>  (instance, identity)
+            map_method!(instance "rayzor_Usize", "toRef" => "Usize_toInt", params: 0, mir_wrapper,
+                types: &[I64] => I64),
+            // usize.add(other: Usize): Usize  (instance, native add)
+            map_method!(instance "rayzor_Usize", "add" => "Usize_add", params: 1, mir_wrapper,
+                types: &[I64, I64] => I64),
+            // usize.sub(other: Usize): Usize  (instance, native sub)
+            map_method!(instance "rayzor_Usize", "sub" => "Usize_sub", params: 1, mir_wrapper,
+                types: &[I64, I64] => I64),
+            // usize.band(other: Usize): Usize  (instance, native AND)
+            map_method!(instance "rayzor_Usize", "band" => "Usize_band", params: 1, mir_wrapper,
+                types: &[I64, I64] => I64),
+            // usize.bor(other: Usize): Usize  (instance, native OR)
+            map_method!(instance "rayzor_Usize", "bor" => "Usize_bor", params: 1, mir_wrapper,
+                types: &[I64, I64] => I64),
+            // usize.shl(bits: Int): Usize  (instance, native shift left)
+            map_method!(instance "rayzor_Usize", "shl" => "Usize_shl", params: 1, mir_wrapper,
+                types: &[I64, I64] => I64),
+            // usize.shr(bits: Int): Usize  (instance, native shift right unsigned)
+            map_method!(instance "rayzor_Usize", "shr" => "Usize_shr", params: 1, mir_wrapper,
+                types: &[I64, I64] => I64),
+            // usize.alignUp(alignment: Usize): Usize  (instance, (self + align - 1) & ~(align - 1))
+            map_method!(instance "rayzor_Usize", "alignUp" => "Usize_alignUp", params: 1, mir_wrapper,
+                types: &[I64, I64] => I64),
+            // usize.isZero(): Bool  (instance, compare to 0)
+            map_method!(instance "rayzor_Usize", "isZero" => "Usize_isZero", params: 0, mir_wrapper,
+                types: &[I64] => Bool),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // TinyCC Runtime Methods (rayzor.runtime.CC)
+    // ============================================================================
+
+    fn register_cc_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
+        let mappings = vec![
+            // CC.create(): CC  (static, returns opaque TCC state pointer)
+            map_method!(static "rayzor_runtime_CC", "create" => "rayzor_tcc_create", params: 0, returns: primitive,
+                types: &[] => PtrVoid),
+            // cc.compile(code: String): Bool  (instance, takes self + string ptr)
+            map_method!(instance "rayzor_runtime_CC", "compile" => "rayzor_tcc_compile", params: 1, returns: primitive,
+                types: &[PtrVoid, PtrString] => I32),
+            // cc.addSymbol(name: String, value: Int): Void  (instance)
+            map_method!(instance "rayzor_runtime_CC", "addSymbol" => "rayzor_tcc_add_symbol", params: 2, returns: void,
+                types: &[PtrVoid, PtrString, I64]),
+            // cc.relocate(): Bool  (instance)
+            map_method!(instance "rayzor_runtime_CC", "relocate" => "rayzor_tcc_relocate", params: 1, returns: primitive,
+                types: &[PtrVoid] => I32),
+            // cc.getSymbol(name: String): Int  (instance)
+            map_method!(instance "rayzor_runtime_CC", "getSymbol" => "rayzor_tcc_get_symbol", params: 1, returns: primitive,
+                types: &[PtrVoid, PtrString] => I64),
+            // cc.delete(): Void  (instance)
+            map_method!(instance "rayzor_runtime_CC", "delete" => "rayzor_tcc_delete", params: 0, returns: void,
+                types: &[PtrVoid]),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
 }
 
 impl Default for StdlibMapping {
@@ -2671,7 +2856,7 @@ mod tests {
 
         // Test Channel constructor (MIR wrapper - returns pointer directly)
         let sig = MethodSignature {
-            class: "Channel",
+            class: "rayzor_concurrent_Channel",
             method: "new",
             is_static: true,
             is_constructor: true,

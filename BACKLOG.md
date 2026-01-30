@@ -959,7 +959,7 @@ inventory::submit! { RayzorSymbol::new("haxe_std_parse_int", haxe_std_parse_int 
 - [ ] Memory safety violation tests (edge cases)
 - [ ] Performance benchmarks (formal suite)
 - [ ] Fuzzing infrastructure
-- [ ] CI/CD GitHub Actions integration
+- [x] CI/CD GitHub Actions integration ✅ (benchmarks workflow on push/schedule)
 
 ---
 
@@ -1317,6 +1317,120 @@ E2E test infrastructure now supports all levels:
 
 ---
 
+## 13. Inline C / TinyCC Runtime API 🔴
+
+**Priority:** Medium
+**Complexity:** Medium-High
+**Dependencies:** TCC linker integration (complete), stdlib infrastructure
+**Status:** Not Started
+
+### Overview
+
+Expose TinyCC as a first-class API in `rayzor.runtime` for runtime C compilation, and support Haxe's `untyped {}` block semantics for inline C code embedded directly in Haxe source files.
+
+### 13.1 Explicit API: `rayzor.runtime.TinyCC` Extern Class
+
+**Status:** 🔴 Not Started
+
+**Haxe API:**
+```haxe
+package rayzor.runtime;
+
+extern class TinyCC {
+    static function create():TinyCC;
+    function compileString(code:String):Bool;
+    function addSymbol(name:String, address:Int):Void;
+    function relocate():Bool;
+    function getSymbol(name:String):Int;  // returns function pointer
+    function delete():Void;
+}
+```
+
+**Usage:**
+```haxe
+import rayzor.runtime.TinyCC;
+
+var cc = TinyCC.create();
+cc.compileString("
+    int add(int a, int b) { return a + b; }
+");
+cc.relocate();
+var addPtr = cc.getSymbol("add");
+// call via function pointer or FFI bridge
+cc.delete();
+```
+
+**Tasks:**
+- [ ] Create `compiler/haxe-std/rayzor/runtime/TinyCC.hx` extern class
+- [ ] Implement runtime functions in Rust wrapping TCC FFI (`rayzor_tcc_create`, `rayzor_tcc_compile_string`, etc.)
+- [ ] Register symbols in `runtime/src/plugin_impl.rs`
+- [ ] Add stdlib lowering mappings for TinyCC methods
+- [ ] Function pointer call support (cast Int to callable)
+- [ ] Error handling — surface TCC compilation errors to Haxe
+
+### 13.2 Implicit API: `untyped {}` Block with Inline C
+
+**Status:** 🔴 Not Started
+
+Haxe's `untyped {}` blocks allow escaping the type system. In Rayzor, these blocks can contain inline C code that gets compiled at runtime via TCC.
+
+**Syntax:**
+```haxe
+class MyClass {
+    public function fastCompute(x:Int, y:Int):Int {
+        return untyped {
+            // Raw C code compiled via TCC at runtime
+            __c__("
+                int result = x * x + y * y;
+                return result;
+            ");
+        };
+    }
+}
+
+// Or direct untyped block with C literal:
+var result:Int = untyped __c__("
+    #include <math.h>
+    return (int)sqrt(144.0);
+");
+```
+
+**Tasks:**
+- [ ] Parser: recognize `untyped {}` blocks (already parsed as UntypedExpr)
+- [ ] Parser: recognize `__c__("...")` intrinsic inside untyped blocks
+- [ ] TAST lowering: extract C source string from `__c__` calls
+- [ ] MIR: add `InlineC { source: String, captures: Vec<(String, Register)> }` instruction
+- [ ] Codegen: compile inline C via TCC at JIT time, bind captured variables as symbols
+- [ ] Type marshalling: pass Haxe values (Int, Float, Bool, String, pointers) to C and back
+- [ ] Scoping: capture local variables from surrounding Haxe scope into TCC symbol table
+- [ ] Caching: hash C source to avoid recompiling identical blocks
+
+### 13.3 Safety and Restrictions
+
+**Tasks:**
+- [ ] Inline C blocks bypass Rayzor's memory safety — document this clearly
+- [ ] Add `@:unsafe` metadata requirement (or warn) when using `__c__`
+- [ ] Sandbox: restrict `#include` paths, disallow system calls by default
+- [ ] Optional `@:allowSyscalls` metadata to unlock full C capabilities
+
+### Acceptance Criteria
+
+```haxe
+// Explicit API
+var cc = TinyCC.create();
+cc.compileString("double square(double x) { return x * x; }");
+cc.relocate();
+var sq = cc.getSymbol("square");
+// call sq(3.0) → 9.0
+
+// Implicit inline C
+var x = 42;
+var doubled:Int = untyped __c__("return x * 2;");
+trace(doubled);  // 84
+```
+
+---
+
 ## Known Issues
 
 ### Deref Coercion for Wrapper Types
@@ -1338,15 +1452,13 @@ var value = arc.get();  // Must explicitly call .get()
 - Handle nested wrappers (e.g., `Arc<Mutex<T>>`)
 
 ### String Concatenation with Trace
-**Status:** Crashes at runtime
-**Issue:** Using string concatenation inside trace causes misaligned pointer dereference
+**Status:** ✅ FIXED (2026-01-30)
+**Issue:** ~~Using string concatenation inside trace causes misaligned pointer dereference~~ — Resolved by using MIR register types instead of HIR types for string concat operands, and changing `int_to_string` to accept I64 directly.
 
 ```haxe
-// This crashes:
-trace("Length: " + v.length());
-
-// Workaround - trace values directly:
-trace(v.length());  // Works fine
+// Now works:
+trace("Length: " + v.length());  // ✅
+trace("The point is: " + p);    // ✅ (calls toString())
 ```
 
 ---
@@ -1372,7 +1484,71 @@ trace(v.length());  // Works fine
 - **Async state machines** build on generics and memory safety
 - Implementation should follow dependency order to avoid rework
 
-**Last Updated:** 2026-01-28 (Enum Trace with RTTI)
+**Last Updated:** 2026-01-30 (String Concat & Vec Fixes)
+
+## Recent Progress (Session 2026-01-30b - String Concat & Vec Fixes)
+
+**String Concatenation Fix:** ✅ Complete
+
+- ✅ **`int_to_string` accepts I64 directly** — removed redundant I32→I64 cast inside wrapper, matching `haxe_string_from_int(i64)` runtime signature
+- ✅ **MIR register types for string concat** — HIR types from generic methods (e.g. `Vec<Int>.length()`) resolve as `Ptr(Void)`; now uses `builder.get_register_type()` which reflects correct runtime mapping types
+- ✅ **Cranelift BitCast I32↔I64** — added sextend/ireduce support in BitCast handler
+- ✅ **Vec push I32→I64 sign-extend** — array literal push uses `build_cast` instead of `build_bitcast`
+- ✅ **String concat ABI** — renamed `haxe_string_concat` to `haxe_string_concat_sret` to avoid symbol conflict
+
+**E2E Test Results:**
+
+- ✅ test_vec_e2e: **5/5 PASS** (was 1/2 FAIL)
+- ✅ test_tostring_concat: **3/3 PASS**
+- ✅ test_core_types_e2e: **25/25 PASS**
+
+**Commit:** 0f9136d
+
+---
+
+## Recent Progress (Session 2026-01-30 - TCC Linker & Benchmark CI)
+
+**TCC In-Process Linker Integration:** ✅ Complete
+- ✅ **TCC linker replaces system linker + dlopen** for LLVM AOT object files on Linux
+  - Vendored TinyCC source via `cc` crate in `build.rs` (no system TCC install needed)
+  - Feature-gated behind `tcc-linker` cargo feature
+  - `-nostdlib` to avoid libc/libtcc1 dependency; manually registers libc symbols (malloc, realloc, calloc, free, memcpy, memset, memmove, abort)
+  - ELF object files loaded via `tcc_add_file()`, relocated in-memory via `tcc_relocate()`
+  - Function pointers extracted via `tcc_get_symbol()`
+  - **Files:** `compiler/src/codegen/tcc_linker.rs` (new), `compiler/build.rs`, `compiler/Cargo.toml`
+
+- ✅ **Fixed TCC relocation errors on CI**
+  - `library 'c' not found` → fixed with `-nostdlib`
+  - `undefined symbol 'realloc'` → fixed by registering libc symbols via `tcc_add_symbol`
+  - `R_X86_64_32[S] out of range` → fixed by keeping LLVM `RelocMode::PIC` (TCC allocates at arbitrary addresses)
+
+- ✅ **Tiered backend LLVM upgrade working on CI**
+  - mandelbrot_class_small: tiered 2.17x faster than Cranelift-only
+  - nbody: tiered 1.08x faster than Cranelift-only
+  - LLVM tier promotion fires correctly during benchmark execution
+
+**Benchmark CI Infrastructure:**
+- ✅ **GitHub Actions benchmark workflow** (`.github/workflows/benchmarks.yml`)
+  - Runs on push to main and weekly schedule
+  - Stores results as JSON artifacts with system info
+  - HTML chart generation with historical comparison
+- ✅ **System info in benchmark output** — OS, arch, CPU cores, RAM, hostname
+  - Displays in both console output and HTML chart page
+  - Preserved across JSON result merges
+
+**E2E Test Results (verified 2026-01-30):**
+- ✅ test_core_types_e2e: **25/25 PASS** (was 20/25 in backlog)
+- ✅ test_rayzor_stdlib_e2e: **9/9 PASS**
+- ✅ test_enum_trace: **3/3 PASS**
+- ✅ test_enum_resolution: **2/2 PASS**
+- ✅ test_enum_option_result: **4/4 PASS**
+- ✅ test_vec_e2e: **5/5 PASS** (was 1/2 FAIL — fixed Vec bitcast I32→I64 + string concat)
+
+**Remaining Issues:**
+- ✅ ~~Vec bitcast error (I32→I64)~~ — Fixed with sextend/ireduce in Cranelift BitCast handler
+- ✅ ~~String concatenation ABI mismatch~~ — Fixed by using MIR register types + renamed sret variant
+
+---
 
 ## Recent Progress (Session 2026-01-28 - Enum Trace)
 
@@ -1742,8 +1918,8 @@ arc.get().someMethod();  // Works with explicit .get()
 - ✅ test_rayzor_stdlib_e2e: 8/8 PASS (100%)
 - ✅ test_deque_condition: 3/3 PASS (100%)
 - ✅ test_generics_e2e: Compilation successful
-- ⚠️ test_core_types_e2e: 20/25 PASS (80%) - 5 pre-existing failures
-- ⚠️ test_vec_e2e: 0/5 PASS (0%) - 5 pre-existing failures
+- ⚠️ test_core_types_e2e: 25/25 PASS (100%) ✅ (was 20/25, fixed 2026-01-30)
+- ⚠️ test_vec_e2e: 1/2 PASS (50%) - vec_int_basic fails (bitcast I32→I64), vec_float_basic hangs
 
 **Identified Issues (Pre-existing):**
 - ❌ Missing extern function: haxe_array_get

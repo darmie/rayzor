@@ -2500,24 +2500,14 @@ impl HaxeCompilationPipeline {
         // For non-concurrent code, only check if @:safety mode is enabled
         // Check if any imported symbols include concurrent primitives (Thread, Channel, Mutex, Arc)
         let uses_concurrency = typed_file.imports.iter().any(|imp| {
-            if let Some(symbols) = &imp.imported_symbols {
-                // Check if any imported symbol matches concurrent types
-                let interner = self.string_interner.borrow();
-                symbols.iter().any(|s| {
-                    if let Some(name) = interner.get(*s) {
-                        name == "Thread" || name == "Channel" || name == "Mutex" || name == "Arc"
-                    } else {
-                        false
-                    }
-                })
+            // Check if the import's module path contains "concurrent"
+            // This covers both explicit imports (e.g., import rayzor.concurrent.Thread)
+            // and wildcard imports (e.g., import rayzor.concurrent.*)
+            let interner = self.string_interner.borrow();
+            if let Some(path) = interner.get(imp.module_path) {
+                path.contains("concurrent")
             } else {
-                // Wildcard import - check module path for "concurrent"
-                let interner = self.string_interner.borrow();
-                if let Some(path) = interner.get(imp.module_path) {
-                    path.contains("concurrent")
-                } else {
-                    false
-                }
+                false
             }
         });
 

@@ -96,4 +96,26 @@ extern class Arc<T> {
      */
     @:native("as_ptr")
     public function asPtr(): Int;
+
+    /**
+     * Get a typed mutable pointer to the inner value.
+     *
+     * The returned Ptr<T> can be passed to C code via `.raw()`.
+     * The Arc must outlive any use of the pointer.
+     *
+     * @return Typed pointer to the inner value
+     */
+    @:native("as_ptr_typed")
+    public function asPtrTyped(): rayzor.Ptr<T>;
+
+    /**
+     * Get a typed read-only reference to the inner value.
+     *
+     * The returned Ref<T> can be passed to C code via `.raw()`.
+     * The Arc must outlive any use of the reference.
+     *
+     * @return Typed read-only reference to the inner value
+     */
+    @:native("as_ref")
+    public function asRef(): rayzor.Ref<T>;
 }

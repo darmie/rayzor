@@ -507,11 +507,9 @@ impl<'a> HirToMirContext<'a> {
                                 if symbol.flags.contains(SymbolFlags::EXTERN) {
                                     return DropBehavior::RuntimeManaged;
                                 }
-                                // Fallback: Check stdlib class name
-                                if let Some(class_name) = self.string_interner.get(symbol.name) {
-                                    if self.stdlib_mapping.is_stdlib_class(class_name) {
-                                        return DropBehavior::RuntimeManaged;
-                                    }
+                                // Fallback: Check stdlib class by native name or simple name
+                                if self.is_stdlib_class_by_symbol(symbol) {
+                                    return DropBehavior::RuntimeManaged;
                                 }
                             }
                         }
@@ -528,14 +526,12 @@ impl<'a> HirToMirContext<'a> {
                         if symbol.flags.contains(SymbolFlags::EXTERN) {
                             return DropBehavior::RuntimeManaged;
                         }
-                        // Fallback: Check if it's a known stdlib class by name.
+                        // Fallback: Check if it's a known stdlib class by native name or simple name.
                         // This handles cases where the EXTERN flag wasn't propagated
                         // through the symbol table (e.g., stdlib types loaded via imports
                         // where the local symbol doesn't carry the extern flag).
-                        if let Some(class_name) = self.string_interner.get(symbol.name) {
-                            if self.stdlib_mapping.is_stdlib_class(class_name) {
-                                return DropBehavior::RuntimeManaged;
-                            }
+                        if self.is_stdlib_class_by_symbol(symbol) {
+                            return DropBehavior::RuntimeManaged;
                         }
                     }
                     // User-defined (non-extern) classes need AutoDrop
@@ -551,6 +547,26 @@ impl<'a> HirToMirContext<'a> {
         } else {
             DropBehavior::NoDrop
         }
+    }
+
+    /// Check if a symbol refers to a known stdlib class by trying native name then simple name
+    fn is_stdlib_class_by_symbol(&self, symbol: &crate::tast::symbols::Symbol) -> bool {
+        // Try lowered @:native name first (e.g., "rayzor::concurrent::Arc" -> "rayzor_concurrent_Arc")
+        if let Some(native) = symbol.native_name {
+            if let Some(native_str) = self.string_interner.get(native) {
+                let lowered = native_str.replace("::", "_");
+                if self.stdlib_mapping.is_stdlib_class(&lowered) {
+                    return true;
+                }
+            }
+        }
+        // Fall back to simple name
+        if let Some(class_name) = self.string_interner.get(symbol.name) {
+            if self.stdlib_mapping.is_stdlib_class(class_name) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Check if a type needs drop (convenience wrapper for get_drop_behavior)
@@ -771,14 +787,21 @@ impl<'a> HirToMirContext<'a> {
             match type_decl {
                 HirTypeDecl::Class(class) => {
                     // Get qualified class name for runtime mapping checks
-                    // Use qualified_name with underscores (e.g., "rayzor_Bytes") for precise matching
-                    // This prevents "Bytes" from matching both rayzor.Bytes and haxe.io.Bytes
+                    // Prefer lowered @:native name (e.g., "rayzor::concurrent::Arc" -> "rayzor_concurrent_Arc")
+                    // Fall back to qualified_name with underscores (e.g., "rayzor.Bytes" -> "rayzor_Bytes")
                     let qualified_class_name = self
                         .symbol_table
                         .get_symbol(class.symbol_id)
-                        .and_then(|sym| sym.qualified_name)
-                        .and_then(|qn| self.string_interner.get(qn))
-                        .map(|qn| qn.replace(".", "_"));
+                        .and_then(|sym| {
+                            // Prefer native name if available
+                            if let Some(native) = sym.native_name {
+                                self.string_interner.get(native).map(|n| n.replace("::", "_"))
+                            } else {
+                                sym.qualified_name
+                                    .and_then(|qn| self.string_interner.get(qn))
+                                    .map(|qn| qn.replace(".", "_"))
+                            }
+                        });
 
                     // Fallback to simple class name if no qualified name
                     let class_name = self.string_interner.get(class.name);
@@ -2271,7 +2294,7 @@ impl<'a> HirToMirContext<'a> {
                                 let returns_same_class =
                                     matches!(method_name, "init" | "clone" | "new");
                                 if returns_same_class
-                                    && self.stdlib_mapping.is_stdlib_class(class_name)
+                                    && self.is_stdlib_class_by_symbol(sym_info)
                                 {
                                     debug!(
                                         "[STDLIB CLASS DETECT] Static call {}.{}() returns {}",
@@ -2448,11 +2471,15 @@ impl<'a> HirToMirContext<'a> {
                 let (name, qname) =
                     if let Some(class_info) = self.symbol_table.get_symbol(*symbol_id) {
                         let n = self.string_interner.get(class_info.name);
-                        // Get qualified name with underscore format (e.g., "rayzor_Bytes")
-                        let qn = class_info
-                            .qualified_name
-                            .and_then(|qn| self.string_interner.get(qn))
-                            .map(|qn| qn.replace(".", "_"));
+                        // Prefer lowered @:native name, fall back to qualified name
+                        let qn = if let Some(native) = class_info.native_name {
+                            self.string_interner.get(native).map(|n| n.replace("::", "_"))
+                        } else {
+                            class_info
+                                .qualified_name
+                                .and_then(|qn| self.string_interner.get(qn))
+                                .map(|qn| qn.replace(".", "_"))
+                        };
                         (n, qn)
                     } else {
                         (None, None)
@@ -2472,10 +2499,14 @@ impl<'a> HirToMirContext<'a> {
                                 self.symbol_table.get_symbol(*symbol_id)
                             {
                                 let n = self.string_interner.get(class_info.name);
-                                let qn = class_info
-                                    .qualified_name
-                                    .and_then(|qn| self.string_interner.get(qn))
-                                    .map(|qn| qn.replace(".", "_"));
+                                let qn = if let Some(native) = class_info.native_name {
+                                    self.string_interner.get(native).map(|n| n.replace("::", "_"))
+                                } else {
+                                    class_info
+                                        .qualified_name
+                                        .and_then(|qn| self.string_interner.get(qn))
+                                        .map(|qn| qn.replace(".", "_"))
+                                };
                                 (n, qn)
                             } else {
                                 (None, None)
@@ -5056,8 +5087,9 @@ impl<'a> HirToMirContext<'a> {
                                             // Check if this is a MIR wrapper class
                                             if self.stdlib_mapping.is_mir_wrapper_class(class_name)
                                             {
-                                                let mir_func_name =
-                                                    format!("{}_{}", class_name, method_name);
+                                                // Use runtime_name directly as the MIR wrapper function name
+                                                // (e.g., "Arc_init" not "rayzor_concurrent_Arc_init")
+                                                let mir_func_name = runtime_func.to_string();
                                                 debug!(
                                                     "[DYNAMIC STDLIB MIR] Using MIR wrapper: {}",
                                                     mir_func_name
@@ -5906,10 +5938,7 @@ impl<'a> HirToMirContext<'a> {
                                             // Check if this is a stdlib class
                                             self.symbol_table
                                                 .get_symbol(*symbol_id)
-                                                .and_then(|s| self.string_interner.get(s.name))
-                                                .map(|name| {
-                                                    !self.stdlib_mapping.is_stdlib_class(name)
-                                                })
+                                                .map(|s| !self.is_stdlib_class_by_symbol(s))
                                                 .unwrap_or(false)
                                         } else {
                                             false
@@ -7437,16 +7466,33 @@ impl<'a> HirToMirContext<'a> {
                         let mut found = None;
                         if let Some(sym_id) = actual_symbol_id {
                             if let Some(sym) = self.symbol_table.get_symbol(sym_id) {
-                                if let Some(qn) = sym.qualified_name {
-                                    if let Some(qual_name) = self.string_interner.get(qn) {
-                                        let qualified_class_name = qual_name.replace(".", "_");
+                                // Try lowered @:native name first
+                                if let Some(native) = sym.native_name {
+                                    if let Some(native_str) = self.string_interner.get(native) {
+                                        let native_class_name = native_str.replace("::", "_");
                                         if let Some((_, rc)) = self
                                             .stdlib_mapping
-                                            .find_constructor(&qualified_class_name)
+                                            .find_constructor(&native_class_name)
                                         {
-                                            debug!("[NEW EXPR]: find_constructor(qualified='{}') = {:?}",
-                                                qualified_class_name, rc.runtime_name);
+                                            debug!("[NEW EXPR]: find_constructor(native='{}') = {:?}",
+                                                native_class_name, rc.runtime_name);
                                             found = Some((rc.runtime_name, rc.needs_out_param));
+                                        }
+                                    }
+                                }
+                                // Fall back to qualified name
+                                if found.is_none() {
+                                    if let Some(qn) = sym.qualified_name {
+                                        if let Some(qual_name) = self.string_interner.get(qn) {
+                                            let qualified_class_name = qual_name.replace(".", "_");
+                                            if let Some((_, rc)) = self
+                                                .stdlib_mapping
+                                                .find_constructor(&qualified_class_name)
+                                            {
+                                                debug!("[NEW EXPR]: find_constructor(qualified='{}') = {:?}",
+                                                    qualified_class_name, rc.runtime_name);
+                                                found = Some((rc.runtime_name, rc.needs_out_param));
+                                            }
                                         }
                                     }
                                 }

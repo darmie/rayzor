@@ -19,6 +19,7 @@ parking_lot = "0.12"
 default = []
 runtime-safety-checks = []
 panic-on-safety-violation = []
+tcc-runtime = []
 
 [profile.release]
 opt-level = 3

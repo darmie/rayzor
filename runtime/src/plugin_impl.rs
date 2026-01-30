@@ -748,6 +748,12 @@ register_symbol!(
 );
 register_symbol!("rayzor_arc_as_ptr", crate::concurrency::rayzor_arc_as_ptr);
 
+// Box<T> functions
+register_symbol!("rayzor_box_init", crate::box_runtime::rayzor_box_init);
+register_symbol!("rayzor_box_unbox", crate::box_runtime::rayzor_box_unbox);
+register_symbol!("rayzor_box_raw", crate::box_runtime::rayzor_box_raw);
+register_symbol!("rayzor_box_free", crate::box_runtime::rayzor_box_free);
+
 // Mutex functions
 register_symbol!("rayzor_mutex_init", crate::concurrency::rayzor_mutex_init);
 register_symbol!("rayzor_mutex_lock", crate::concurrency::rayzor_mutex_lock);
@@ -1107,6 +1113,22 @@ register_symbol!("rayzor_global_load", crate::rayzor_global_load);
 register_symbol!("rayzor_tracked_alloc", crate::rayzor_tracked_alloc);
 register_symbol!("rayzor_tracked_realloc", crate::rayzor_tracked_realloc);
 register_symbol!("rayzor_tracked_free", crate::rayzor_tracked_free);
+
+// ============================================================================
+// TinyCC Runtime API (rayzor.runtime.CC)
+// ============================================================================
+#[cfg(feature = "tcc-runtime")]
+register_symbol!("rayzor_tcc_create", crate::tinycc_runtime::rayzor_tcc_create);
+#[cfg(feature = "tcc-runtime")]
+register_symbol!("rayzor_tcc_compile", crate::tinycc_runtime::rayzor_tcc_compile);
+#[cfg(feature = "tcc-runtime")]
+register_symbol!("rayzor_tcc_add_symbol", crate::tinycc_runtime::rayzor_tcc_add_symbol);
+#[cfg(feature = "tcc-runtime")]
+register_symbol!("rayzor_tcc_relocate", crate::tinycc_runtime::rayzor_tcc_relocate);
+#[cfg(feature = "tcc-runtime")]
+register_symbol!("rayzor_tcc_get_symbol", crate::tinycc_runtime::rayzor_tcc_get_symbol);
+#[cfg(feature = "tcc-runtime")]
+register_symbol!("rayzor_tcc_delete", crate::tinycc_runtime::rayzor_tcc_delete);
 
 /// Rayzor Runtime Plugin
 pub struct RayzorRuntimePlugin;

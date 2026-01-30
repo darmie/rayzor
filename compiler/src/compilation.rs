@@ -677,6 +677,7 @@ impl CompilationUnit {
                 flags: SymbolFlags::NONE,
                 package_id: None,
                 qualified_name: None,
+                native_name: None,
             };
 
             // Add symbol to symbol table
@@ -762,6 +763,11 @@ impl CompilationUnit {
             }
             if class_info.is_abstract {
                 sym.flags = sym.flags.union(SymbolFlags::ABSTRACT);
+            }
+            if let Some(ref native) = class_info.native_name {
+                sym.flags = sym.flags.union(SymbolFlags::NATIVE);
+                let native_interned = self.string_interner.intern(native);
+                sym.native_name = Some(native_interned);
             }
         }
 
@@ -1058,6 +1064,11 @@ impl CompilationUnit {
             sym.qualified_name = Some(qualified_interned);
             sym.is_exported = true;
             sym.scope_id = abstract_scope; // Set the scope where methods are registered
+            if let Some(ref native) = abstract_info.native_name {
+                sym.flags = sym.flags.union(SymbolFlags::NATIVE);
+                let native_interned = self.string_interner.intern(native);
+                sym.native_name = Some(native_interned);
+            }
         }
 
         // Create abstract type

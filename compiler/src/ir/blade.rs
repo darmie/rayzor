@@ -296,6 +296,9 @@ pub struct BladeClassInfo {
     pub static_methods: Vec<BladeMethodInfo>,
     /// Constructor info (if any)
     pub constructor: Option<BladeMethodInfo>,
+    /// Native name from @:native metadata (e.g., "rayzor::concurrent::Arc")
+    /// Lowered form replaces :: with _ for symbol resolution
+    pub native_name: Option<String>,
 }
 
 /// Enum variant information
@@ -358,6 +361,8 @@ pub struct BladeAbstractInfo {
     pub methods: Vec<BladeMethodInfo>,
     /// Static methods defined on the abstract
     pub static_methods: Vec<BladeMethodInfo>,
+    /// Native name from @:native metadata (e.g., "rayzor::Ptr")
+    pub native_name: Option<String>,
 }
 
 /// All type information for a module

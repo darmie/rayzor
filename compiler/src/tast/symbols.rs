@@ -275,6 +275,9 @@ pub struct Symbol {
     pub package_id: Option<super::namespace::PackageId>,
     /// Full qualified name (e.g., "com.example.MyClass")
     pub qualified_name: Option<InternedString>,
+    /// Native name from @:native metadata (e.g., "rayzor::concurrent::Arc")
+    /// Used for runtime mapping lookup. Lowered form replaces :: with _
+    pub native_name: Option<InternedString>,
 }
 
 /// Bitflags for various symbol properties
@@ -377,6 +380,7 @@ impl Symbol {
             flags: SymbolFlags::default(),
             package_id: None,
             qualified_name: None,
+            native_name: None,
         }
     }
 
@@ -822,6 +826,7 @@ impl SymbolTable {
             flags: SymbolFlags::NONE,
             package_id: None,
             qualified_name: None,
+            native_name: None,
         };
 
         // Add the symbol to the table
@@ -856,6 +861,7 @@ impl SymbolTable {
             flags: SymbolFlags::NONE,
             package_id: None,
             qualified_name: None,
+            native_name: None,
         };
 
         // Add the symbol to the table
@@ -894,6 +900,7 @@ impl SymbolTable {
             flags: SymbolFlags::NONE,
             package_id: None,
             qualified_name: None,
+            native_name: None,
         };
 
         // Add the symbol to the table
@@ -931,6 +938,7 @@ impl SymbolTable {
             flags: SymbolFlags::NONE,
             package_id: None,
             qualified_name: None,
+            native_name: None,
         };
 
         self.add_symbol(symbol);
@@ -966,6 +974,7 @@ impl SymbolTable {
             flags: SymbolFlags::NONE,
             package_id: None,
             qualified_name: None,
+            native_name: None,
         };
 
         self.add_symbol(symbol);
@@ -1011,6 +1020,7 @@ impl SymbolTable {
             flags: SymbolFlags::NONE,
             package_id: None,
             qualified_name: None,
+            native_name: None,
         };
 
         self.add_symbol(symbol);
@@ -1037,6 +1047,7 @@ impl SymbolTable {
             flags: SymbolFlags::NONE,
             package_id: None,
             qualified_name: None,
+            native_name: None,
         };
 
         self.add_symbol(symbol);
@@ -1067,6 +1078,7 @@ impl SymbolTable {
             flags: SymbolFlags::NONE,
             package_id: None,
             qualified_name: None,
+            native_name: None,
         };
 
         self.add_symbol(symbol);
@@ -1097,6 +1109,7 @@ impl SymbolTable {
             flags: SymbolFlags::NONE,
             package_id: None,
             qualified_name: None,
+            native_name: None,
         };
 
         self.add_symbol(symbol);
@@ -1128,6 +1141,7 @@ impl SymbolTable {
             flags: SymbolFlags::NONE,
             package_id: None,
             qualified_name: None,
+            native_name: None,
         };
 
         self.add_symbol(symbol);
