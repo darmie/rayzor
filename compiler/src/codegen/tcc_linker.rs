@@ -43,7 +43,8 @@ unsafe extern "C" fn tcc_error_callback(opaque: *mut std::ffi::c_void, msg: *con
 /// In-process linker using TinyCC to load ELF object files into executable memory.
 pub struct TccLinker {
     state: *mut TCCState,
-    /// Collected error messages from TCC
+    /// Collected error messages from TCC (boxed for stable pointer passed to C callback)
+    #[allow(clippy::box_collection)]
     errors: Box<Vec<String>>,
     /// Whether relocate() has been called
     relocated: bool,
