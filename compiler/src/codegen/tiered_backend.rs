@@ -1949,7 +1949,12 @@ impl TieredBackend {
                 .map_err(|e| format!("Failed to write stubs asm: {}", e))?;
 
             let output = std::process::Command::new(&linker)
-                .args(["-c", stubs_asm_path.to_str().unwrap(), "-o", stubs_obj_path.to_str().unwrap()])
+                .args([
+                    "-c",
+                    stubs_asm_path.to_str().unwrap(),
+                    "-o",
+                    stubs_obj_path.to_str().unwrap(),
+                ])
                 .output()
                 .map_err(|e| format!("Failed to assemble stubs: {}", e))?;
             if !output.status.success() {
@@ -1965,7 +1970,10 @@ impl TieredBackend {
             "-o".to_string(),
             dylib_path.to_str().ok_or("Invalid dylib path")?.to_string(),
             obj_path.to_str().ok_or("Invalid object path")?.to_string(),
-            stubs_obj_path.to_str().ok_or("Invalid stubs path")?.to_string(),
+            stubs_obj_path
+                .to_str()
+                .ok_or("Invalid stubs path")?
+                .to_string(),
         ];
 
         #[cfg(target_os = "linux")]
@@ -1975,7 +1983,10 @@ impl TieredBackend {
             "-o".to_string(),
             dylib_path.to_str().ok_or("Invalid dylib path")?.to_string(),
             obj_path.to_str().ok_or("Invalid object path")?.to_string(),
-            stubs_obj_path.to_str().ok_or("Invalid stubs path")?.to_string(),
+            stubs_obj_path
+                .to_str()
+                .ok_or("Invalid stubs path")?
+                .to_string(),
         ];
 
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]

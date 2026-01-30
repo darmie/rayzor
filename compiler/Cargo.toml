@@ -13,6 +13,7 @@ rayzor-plugin = { path = "../plugin" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libloading = "0.8"  # For HDLL dynamic library loading
+libc = "0.2"  # For dlopen flags on Linux
 postcard = { version = "1.0", features = ["alloc"] }
 fxhash = "0.2.1"
 log = "0.4"
@@ -33,6 +34,7 @@ target-lexicon = "0.12"
 
 # LLVM backend (optional, for Tier 3 optimization and AOT)
 inkwell = { version = "0.5", features = ["llvm18-0"], optional = true}
+llvm-sys = { version = "180", optional = true }
 
 [dev-dependencies]
 walkdir = "2"
@@ -45,7 +47,7 @@ harness = false
 [features]
 default = ["cranelift-backend"]
 cranelift-backend = []
-llvm-backend = ["inkwell"]
+llvm-backend = ["inkwell", "llvm-sys"]
 all-backends = ["cranelift-backend", "llvm-backend"]
 
 [[bin]]

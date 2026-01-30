@@ -1002,9 +1002,19 @@ fn main() {
 
     // Parse arguments
     let json_output = args.iter().any(|a| a == "--json");
+    let specific_target = args
+        .iter()
+        .position(|a| a == "--target")
+        .and_then(|i| args.get(i + 1).cloned());
     let specific_bench = args
         .iter()
-        .find(|a| !a.starts_with("-") && *a != &args[0])
+        .find(|a| {
+            !a.starts_with("-") && *a != &args[0] && {
+                // Skip the value after --target
+                let idx = args.iter().position(|x| x == *a).unwrap_or(0);
+                idx == 0 || args.get(idx - 1).map_or(true, |prev| prev != "--target")
+            }
+        })
         .cloned();
 
     // Get available benchmarks
@@ -1029,13 +1039,37 @@ fn main() {
         available
     };
 
-    let all_targets = vec![
+    let mut all_targets_list = vec![
         Target::RayzorCranelift,
         Target::RayzorInterpreter,
         Target::RayzorTiered,
-        // Note: LLVM is now a standalone backend, not part of default benchmarks
-        // Use --llvm flag or test_llvm_* examples for LLVM benchmarks
     ];
+    #[cfg(feature = "llvm-backend")]
+    all_targets_list.push(Target::RayzorLLVM);
+
+    // Filter by --target flag if provided
+    let all_targets: Vec<Target> = if let Some(ref target_name) = specific_target {
+        let filtered: Vec<Target> = all_targets_list
+            .iter()
+            .filter(|t| t.name() == target_name.as_str())
+            .copied()
+            .collect();
+        if filtered.is_empty() {
+            eprintln!(
+                "Unknown target: {}. Available: {}",
+                target_name,
+                all_targets_list
+                    .iter()
+                    .map(|t| t.name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            return;
+        }
+        filtered
+    } else {
+        all_targets_list
+    };
 
     println!(
         "Running {} benchmarks x up to {} targets",
@@ -1072,21 +1106,59 @@ fn main() {
         let is_heavy = is_heavy_benchmark(bench_name);
         let has_precompiled = has_precompiled_bundle(bench_name);
 
-        let mut targets: Vec<Target> = all_targets
-            .iter()
-            .filter(|t| !is_heavy || !matches!(t, Target::RayzorInterpreter))
-            .copied()
-            .collect();
+        let mut targets: Vec<Target> = if specific_target.is_some() {
+            // When --target is specified, use exactly the requested targets
+            all_targets.clone()
+        } else {
+            // Default: filter heavy benchmarks and add precompiled targets
+            let mut t: Vec<Target> = all_targets
+                .iter()
+                .filter(|t| !is_heavy || !matches!(t, Target::RayzorInterpreter))
+                .copied()
+                .collect();
 
-        // Add precompiled targets if .rzb bundle exists
-        if has_precompiled {
-            targets.push(Target::RayzorPrecompiled);
-            targets.push(Target::RayzorPrecompiledTiered);
-            println!("  (Precompiled .rzb bundle found - testing AOT and AOT+tiered)\n");
-        }
+            // Add precompiled targets if .rzb bundle exists
+            if has_precompiled {
+                t.push(Target::RayzorPrecompiled);
+                t.push(Target::RayzorPrecompiledTiered);
+                println!("  (Precompiled .rzb bundle found - testing AOT and AOT+tiered)\n");
+            }
 
-        if is_heavy {
-            println!("  (Standalone interpreter skipped - tiered mode shows full progression)\n");
+            if is_heavy {
+                println!(
+                    "  (Standalone interpreter skipped - tiered mode shows full progression)\n"
+                );
+            }
+            t
+        };
+
+        // When --target specifies precompiled targets, add them if not already present
+        if let Some(ref tn) = specific_target {
+            if tn == "rayzor-precompiled"
+                && has_precompiled
+                && !targets
+                    .iter()
+                    .any(|t| matches!(t, Target::RayzorPrecompiled))
+            {
+                targets.push(Target::RayzorPrecompiled);
+            }
+            if tn == "rayzor-precompiled-tiered"
+                && has_precompiled
+                && !targets
+                    .iter()
+                    .any(|t| matches!(t, Target::RayzorPrecompiledTiered))
+            {
+                targets.push(Target::RayzorPrecompiledTiered);
+            }
+            // Re-filter to only the requested target
+            targets.retain(|t| t.name() == tn.as_str());
+            if targets.is_empty() {
+                eprintln!(
+                    "  Target '{}' not available for benchmark '{}'",
+                    tn, bench_name
+                );
+                continue;
+            }
         }
 
         // IMPORTANT: Run LLVM FIRST before spawning background threads!
