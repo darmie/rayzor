@@ -22,8 +22,11 @@ type TCCState = std::ffi::c_void;
 extern "C" {
     fn tcc_new() -> *mut TCCState;
     fn tcc_delete(s: *mut TCCState);
+    fn tcc_set_lib_path(s: *mut TCCState, path: *const i8);
     fn tcc_set_output_type(s: *mut TCCState, output_type: i32) -> i32;
+    fn tcc_set_options(s: *mut TCCState, str: *const i8) -> i32;
     fn tcc_compile_string(s: *mut TCCState, buf: *const i8) -> i32;
+    fn tcc_add_sysinclude_path(s: *mut TCCState, pathname: *const i8) -> i32;
     fn tcc_add_symbol(s: *mut TCCState, name: *const i8, val: *const std::ffi::c_void) -> i32;
     fn tcc_relocate(s: *mut TCCState) -> i32;
     fn tcc_get_symbol(s: *mut TCCState, name: *const i8) -> *mut std::ffi::c_void;
@@ -60,7 +63,31 @@ pub extern "C" fn rayzor_tcc_create() -> *mut TCCState {
         if state.is_null() {
             return ptr::null_mut();
         }
+
+        // Set TCC lib path for runtime include resolution
+        let tcc_dir = std::env::var("RAYZOR_TCC_DIR").unwrap_or_else(|_| {
+            let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            manifest
+                .join("../compiler/vendor/tinycc")
+                .to_string_lossy()
+                .into_owned()
+        });
+        if let Ok(path) = CString::new(tcc_dir.as_str()) {
+            tcc_set_lib_path(state, path.as_ptr());
+        }
+
+        // Skip linking system libraries — JIT doesn't need them
+        let opts = CString::new("-nostdlib").unwrap();
+        tcc_set_options(state, opts.as_ptr());
         tcc_set_output_type(state, TCC_OUTPUT_MEMORY);
+
+        // Add sysinclude path AFTER set_output_type so tccdefs.h can be found.
+        // TCC injects `#include <tccdefs.h>` internally during preprocessing.
+        let inc_path = std::path::Path::new(&tcc_dir).join("include");
+        if let Ok(cinc) = CString::new(inc_path.to_string_lossy().as_ref()) {
+            tcc_add_sysinclude_path(state, cinc.as_ptr());
+        }
+
         state
     }
 }
@@ -136,6 +163,55 @@ pub extern "C" fn rayzor_tcc_get_symbol(state: *mut TCCState, name: *const HaxeS
         };
         let sym = tcc_get_symbol(state, c_name.as_ptr());
         sym as i64
+    }
+}
+
+/// Call a JIT-compiled function that takes no arguments and returns an i64.
+/// `fn_addr` is the address returned by `rayzor_tcc_get_symbol`.
+#[no_mangle]
+pub extern "C" fn rayzor_tcc_call0(fn_addr: i64) -> i64 {
+    if fn_addr == 0 {
+        return 0;
+    }
+    unsafe {
+        let f: extern "C" fn() -> i64 = std::mem::transmute(fn_addr as usize);
+        f()
+    }
+}
+
+/// Call a JIT-compiled function with 1 i64 argument, returning i64.
+#[no_mangle]
+pub extern "C" fn rayzor_tcc_call1(fn_addr: i64, arg0: i64) -> i64 {
+    if fn_addr == 0 {
+        return 0;
+    }
+    unsafe {
+        let f: extern "C" fn(i64) -> i64 = std::mem::transmute(fn_addr as usize);
+        f(arg0)
+    }
+}
+
+/// Call a JIT-compiled function with 2 i64 arguments, returning i64.
+#[no_mangle]
+pub extern "C" fn rayzor_tcc_call2(fn_addr: i64, arg0: i64, arg1: i64) -> i64 {
+    if fn_addr == 0 {
+        return 0;
+    }
+    unsafe {
+        let f: extern "C" fn(i64, i64) -> i64 = std::mem::transmute(fn_addr as usize);
+        f(arg0, arg1)
+    }
+}
+
+/// Call a JIT-compiled function with 3 i64 arguments, returning i64.
+#[no_mangle]
+pub extern "C" fn rayzor_tcc_call3(fn_addr: i64, arg0: i64, arg1: i64, arg2: i64) -> i64 {
+    if fn_addr == 0 {
+        return 0;
+    }
+    unsafe {
+        let f: extern "C" fn(i64, i64, i64) -> i64 = std::mem::transmute(fn_addr as usize);
+        f(arg0, arg1, arg2)
     }
 }
 

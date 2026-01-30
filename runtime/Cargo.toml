@@ -15,11 +15,14 @@ chrono = "0.4"
 log = "0.4"
 parking_lot = "0.12"
 
+[build-dependencies]
+cc = { version = "1", optional = true }
+
 [features]
 default = []
 runtime-safety-checks = []
 panic-on-safety-violation = []
-tcc-runtime = []
+tcc-runtime = ["cc"]
 
 [profile.release]
 opt-level = 3

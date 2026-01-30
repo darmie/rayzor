@@ -50,40 +50,43 @@ pub fn build_systems_types(builder: &mut MirBuilder) {
 
 fn declare_box_externs(builder: &mut MirBuilder) {
     let i64_ty = IrType::I64;
-    let ptr_u8 = builder.ptr_type(builder.u8_type());
     let void_ty = IrType::Void;
 
-    // extern fn rayzor_box_init(value: i64) -> *u8
+    // Box is represented as i64 (opaque pointer) throughout the type system.
+    // Use i64 for all params/returns to match the MIR wrappers and avoid
+    // LLVM type mismatches (ptr vs i64) during module verification.
+
+    // extern fn rayzor_box_init(value: i64) -> i64
     let func_id = builder
         .begin_function("rayzor_box_init")
         .param("value", i64_ty.clone())
-        .returns(ptr_u8.clone())
-        .calling_convention(CallingConvention::C)
-        .build();
-    builder.mark_as_extern(func_id);
-
-    // extern fn rayzor_box_unbox(box_ptr: *u8) -> i64
-    let func_id = builder
-        .begin_function("rayzor_box_unbox")
-        .param("box_ptr", ptr_u8.clone())
         .returns(i64_ty.clone())
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
 
-    // extern fn rayzor_box_raw(box_ptr: *u8) -> i64
+    // extern fn rayzor_box_unbox(box_ptr: i64) -> i64
     let func_id = builder
-        .begin_function("rayzor_box_raw")
-        .param("box_ptr", ptr_u8.clone())
-        .returns(i64_ty)
+        .begin_function("rayzor_box_unbox")
+        .param("box_ptr", i64_ty.clone())
+        .returns(i64_ty.clone())
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
 
-    // extern fn rayzor_box_free(box_ptr: *u8) -> void
+    // extern fn rayzor_box_raw(box_ptr: i64) -> i64
+    let func_id = builder
+        .begin_function("rayzor_box_raw")
+        .param("box_ptr", i64_ty.clone())
+        .returns(i64_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // extern fn rayzor_box_free(box_ptr: i64) -> void
     let func_id = builder
         .begin_function("rayzor_box_free")
-        .param("box_ptr", ptr_u8)
+        .param("box_ptr", i64_ty)
         .returns(void_ty)
         .calling_convention(CallingConvention::C)
         .build();

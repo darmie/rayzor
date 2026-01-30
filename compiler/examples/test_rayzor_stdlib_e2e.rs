@@ -451,9 +451,6 @@ fn main() -> Result<(), String> {
 
     let mut suite = E2ETestSuite::new();
 
-    // NOTE: For-in iterator test moved to separate file: test_forin_iterator.rs
-    // For-in loops are not yet fully implemented in MIR lowering.
-
     // ============================================================================
     // TEST 1: Basic Thread Spawn with Import
     // ============================================================================

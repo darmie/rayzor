@@ -2453,6 +2453,47 @@ impl<'a> HirToMirContext<'a> {
                     }
                 }
             }
+
+            // FALLBACK 2: No qualified name and no valid receiver type.
+            // This happens for extern classes (like CC) loaded via BLADE cache where
+            // method symbols lack qualified names. Search all stdlib classes for the method,
+            // but only use it if exactly ONE class matches (to avoid ambiguity).
+            if qualified_name.is_none() {
+                let mut matches: Vec<(
+                    &crate::stdlib::runtime_mapping::MethodSignature,
+                    &crate::stdlib::RuntimeFunctionCall,
+                )> = Vec::new();
+                for class_name in self.stdlib_mapping.get_all_classes() {
+                    if let Some(count) = param_count {
+                        if let Some(m) = self
+                            .stdlib_mapping
+                            .find_by_name_and_params(class_name, method_name, count)
+                            .or_else(|| {
+                                self.stdlib_mapping.find_by_name_and_params(
+                                    class_name,
+                                    method_name,
+                                    count + 1,
+                                )
+                            })
+                        {
+                            matches.push(m);
+                        }
+                    } else if let Some(m) =
+                        self.stdlib_mapping.find_by_name(class_name, method_name)
+                    {
+                        matches.push(m);
+                    }
+                }
+                if matches.len() == 1 {
+                    let (sig, mapping) = matches[0];
+                    debug!(
+                        "[FALLBACK2] Found unique {}.{} via brute-force class search -> {}",
+                        sig.class, sig.method, mapping.runtime_name
+                    );
+                    return Some((sig.class, sig.method, mapping));
+                }
+            }
+
             return None;
         }
 

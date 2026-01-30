@@ -8,7 +8,7 @@ description = "Rayzor Haxe Language Compiler"
 parser = { path = "../parser" }
 source_map = { path = "../source_map" }
 diagnostics = { path = "../diagnostics" }
-rayzor-runtime = { path = "../runtime" }
+rayzor-runtime = { path = "../runtime", features = ["tcc-runtime"] }
 rayzor-plugin = { path = "../plugin" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -254,9 +254,11 @@ impl StdlibMapping {
 
     /// Check if a method is a stdlib method with runtime mapping
     pub fn has_mapping(&self, class: &str, method: &str, is_static: bool) -> bool {
-        self.mappings
-            .keys()
-            .any(|sig| sig.class == class && sig.method == method && sig.is_static == is_static)
+        self.mappings.keys().any(|sig| {
+            self.class_matches(class, &sig.class)
+                && sig.method == method
+                && sig.is_static == is_static
+        })
     }
 
     /// Find a stdlib method mapping by class and method name
@@ -268,7 +270,7 @@ impl StdlibMapping {
     ) -> Option<(&MethodSignature, &RuntimeFunctionCall)> {
         self.mappings
             .iter()
-            .find(|(sig, _)| sig.class == class && sig.method == method)
+            .find(|(sig, _)| self.class_matches(class, &sig.class) && sig.method == method)
     }
 
     /// Find a stdlib method mapping by class, method name, AND parameter count
@@ -282,8 +284,16 @@ impl StdlibMapping {
         param_count: usize,
     ) -> Option<(&MethodSignature, &RuntimeFunctionCall)> {
         self.mappings.iter().find(|(sig, call)| {
-            sig.class == class && sig.method == method && call.param_count == param_count
+            self.class_matches(class, &sig.class)
+                && sig.method == method
+                && call.param_count == param_count
         })
+    }
+
+    /// Check if a lookup class name matches a registered class name.
+    /// Supports exact match and suffix match (e.g., "Arc" matches "rayzor_concurrent_Arc").
+    fn class_matches(&self, lookup: &str, registered: &str) -> bool {
+        lookup == registered || registered.ends_with(&format!("_{}", lookup))
     }
 
     /// Find a static method by class and method name
@@ -293,9 +303,9 @@ impl StdlibMapping {
         class: &str,
         method: &str,
     ) -> Option<(&MethodSignature, &RuntimeFunctionCall)> {
-        self.mappings
-            .iter()
-            .find(|(sig, _)| sig.class == class && sig.method == method && sig.is_static)
+        self.mappings.iter().find(|(sig, _)| {
+            self.class_matches(class, &sig.class) && sig.method == method && sig.is_static
+        })
     }
 
     /// Get all unique stdlib class names that have registered methods
@@ -306,9 +316,14 @@ impl StdlibMapping {
         classes
     }
 
-    /// Check if a class name is a registered stdlib class
+    /// Check if a class name is a registered stdlib class.
+    /// Matches both exact names (e.g., "rayzor_concurrent_Arc") and simple suffixes
+    /// (e.g., "Arc" matches "rayzor_concurrent_Arc") to handle cases where the full
+    /// qualified name isn't available (e.g., EXTERN flag not propagated, no native_name).
     pub fn is_stdlib_class(&self, class_name: &str) -> bool {
-        self.mappings.keys().any(|sig| sig.class == class_name)
+        self.mappings
+            .keys()
+            .any(|sig| sig.class == class_name || sig.class.ends_with(&format!("_{}", class_name)))
     }
 
     /// Check if methods of this class are typically static
@@ -316,7 +331,7 @@ impl StdlibMapping {
     pub fn class_has_static_methods(&self, class_name: &str) -> bool {
         self.mappings
             .keys()
-            .filter(|sig| sig.class == class_name)
+            .filter(|sig| self.class_matches(class_name, &sig.class))
             .any(|sig| sig.is_static)
     }
 
@@ -325,7 +340,7 @@ impl StdlibMapping {
     pub fn get_class_static_str(&self, class_name: &str) -> Option<&'static str> {
         self.mappings
             .keys()
-            .find(|sig| sig.class == class_name)
+            .find(|sig| self.class_matches(class_name, &sig.class))
             .map(|sig| sig.class)
     }
 
@@ -439,9 +454,9 @@ impl StdlibMapping {
         &self,
         class: &str,
     ) -> Option<(&MethodSignature, &RuntimeFunctionCall)> {
-        self.mappings
-            .iter()
-            .find(|(sig, _)| sig.class == class && sig.method == "new" && sig.is_constructor)
+        self.mappings.iter().find(|(sig, _)| {
+            self.class_matches(class, &sig.class) && sig.method == "new" && sig.is_constructor
+        })
     }
 
     /// Find a runtime function call by runtime function name
@@ -500,7 +515,7 @@ impl StdlibMapping {
         // Check if any method of this class is registered as a MIR wrapper
         self.mappings
             .iter()
-            .any(|(sig, call)| sig.class == class_name && call.is_mir_wrapper)
+            .any(|(sig, call)| self.class_matches(class_name, &sig.class) && call.is_mir_wrapper)
     }
 
     /// Register a stdlib method -> runtime function mapping (internal)
@@ -2760,6 +2775,18 @@ impl StdlibMapping {
             // cc.delete(): Void  (instance)
             map_method!(instance "rayzor_runtime_CC", "delete" => "rayzor_tcc_delete", params: 0, returns: void,
                 types: &[PtrVoid]),
+            // CC.call0(fnAddr): Int — call JIT function with 0 args
+            map_method!(static "rayzor_runtime_CC", "call0" => "rayzor_tcc_call0", params: 1, returns: primitive,
+                types: &[I64] => I64),
+            // CC.call1(fnAddr, arg0): Int — call JIT function with 1 arg
+            map_method!(static "rayzor_runtime_CC", "call1" => "rayzor_tcc_call1", params: 2, returns: primitive,
+                types: &[I64, I64] => I64),
+            // CC.call2(fnAddr, arg0, arg1): Int — call JIT function with 2 args
+            map_method!(static "rayzor_runtime_CC", "call2" => "rayzor_tcc_call2", params: 3, returns: primitive,
+                types: &[I64, I64, I64] => I64),
+            // CC.call3(fnAddr, arg0, arg1, arg2): Int — call JIT function with 3 args
+            map_method!(static "rayzor_runtime_CC", "call3" => "rayzor_tcc_call3", params: 4, returns: primitive,
+                types: &[I64, I64, I64, I64] => I64),
         ];
 
         self.register_from_tuples(mappings);

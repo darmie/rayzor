@@ -1077,6 +1077,7 @@ version = "0.1.0"
 name = "rayzor-runtime"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "chrono",
  "inventory",
  "lazy_static",
