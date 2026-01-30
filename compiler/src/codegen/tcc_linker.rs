@@ -19,6 +19,7 @@ extern "C" {
     fn tcc_new() -> *mut TCCState;
     fn tcc_delete(s: *mut TCCState);
     fn tcc_set_output_type(s: *mut TCCState, output_type: i32) -> i32;
+    fn tcc_set_options(s: *mut TCCState, str: *const i8) -> i32;
     fn tcc_add_file(s: *mut TCCState, filename: *const i8) -> i32;
     fn tcc_add_symbol(s: *mut TCCState, name: *const i8, val: *const std::ffi::c_void) -> i32;
     fn tcc_relocate(s: *mut TCCState) -> i32;
@@ -82,6 +83,11 @@ impl TccLinker {
             unsafe { tcc_delete(state) };
             return Err("Failed to set TCC output type to memory".to_string());
         }
+
+        // Disable standard library linking — we only need to relocate pre-compiled
+        // object files with our own runtime symbols, not link against libc/libtcc1.
+        let nostdlib = CString::new("-nostdlib").unwrap();
+        unsafe { tcc_set_options(state, nostdlib.as_ptr()) };
 
         // Register all runtime symbols
         for (name, addr) in runtime_symbols {
