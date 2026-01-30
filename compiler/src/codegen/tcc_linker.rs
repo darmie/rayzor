@@ -102,11 +102,7 @@ impl TccLinker {
                     src: *const std::ffi::c_void,
                     n: usize,
                 ) -> *mut std::ffi::c_void;
-                fn memset(
-                    s: *mut std::ffi::c_void,
-                    c: i32,
-                    n: usize,
-                ) -> *mut std::ffi::c_void;
+                fn memset(s: *mut std::ffi::c_void, c: i32, n: usize) -> *mut std::ffi::c_void;
                 fn memmove(
                     dst: *mut std::ffi::c_void,
                     src: *const std::ffi::c_void,
