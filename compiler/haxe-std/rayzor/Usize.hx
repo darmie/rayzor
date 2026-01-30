@@ -19,8 +19,9 @@ package rayzor;
  *
  * Example:
  * ```haxe
- * var addr:Usize = Usize.fromInt(0x1000);
+ * var addr:Usize = 0x1000;           // implicit @:from Int
  * var ptr:Ptr<Vec3> = addr.toPtr();
+ * var size:Int = addr;               // implicit @:to Int
  * ```
  */
 @:native("rayzor::Usize")

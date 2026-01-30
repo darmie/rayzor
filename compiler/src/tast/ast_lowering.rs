@@ -2006,19 +2006,47 @@ impl<'a> AstLowering<'a> {
                 let abstract_name = self.context.intern_string(&abstract_decl.name);
 
                 // Check if this abstract already exists in the root scope
-                if self
+                if let Some(existing) = self
                     .context
                     .symbol_table
                     .lookup_symbol(ScopeId::first(), abstract_name)
-                    .is_some()
                 {
+                    let existing_id = existing.id;
+                    // The symbol may have been created as SymbolKind::Class by import resolution
+                    // (which doesn't know the declaration kind). Fix it to Abstract now that we
+                    // know the actual declaration type. We must fix BOTH:
+                    // 1. The symbol kind (Class -> Abstract)
+                    // 2. The type in the type table (create a new Abstract type, since types are immutable)
+                    let needs_fix = self
+                        .context
+                        .symbol_table
+                        .get_symbol(existing_id)
+                        .map(|s| s.kind == crate::tast::SymbolKind::Class)
+                        .unwrap_or(false);
+                    if needs_fix {
+                        if let Some(sym) = self.context.symbol_table.get_symbol_mut(existing_id) {
+                            sym.kind = crate::tast::SymbolKind::Abstract;
+                        }
+                        // Create a proper Abstract type to replace the Class type
+                        let abstract_type = self
+                            .context
+                            .type_table
+                            .borrow_mut()
+                            .create_abstract_type(existing_id, None, Vec::new());
+                        self.context
+                            .symbol_table
+                            .update_symbol_type(existing_id, abstract_type);
+                        self.context
+                            .symbol_table
+                            .register_type_symbol_mapping(abstract_type, existing_id);
+                    }
                     return Ok(());
                 }
 
                 let abstract_symbol = self
                     .context
                     .symbol_table
-                    .create_class_in_scope(abstract_name, ScopeId::first()); // Reuse class for abstracts
+                    .create_abstract_in_scope(abstract_name, ScopeId::first());
 
                 // Register symbol with package information (also sets qualified name)
                 self.register_symbol_with_package(abstract_symbol, &abstract_decl.name);
@@ -2165,6 +2193,14 @@ impl<'a> AstLowering<'a> {
                         }
                         new_sym
                     }
+                } else if let Some(existing) = self
+                    .context
+                    .symbol_table
+                    .lookup_symbol(ScopeId::first(), symbol_name)
+                {
+                    // Symbol exists in root scope (from a previously compiled file)
+                    // Reuse it to preserve correct type kind (Abstract, Enum, etc.)
+                    existing.id
                 } else {
                     // Create a placeholder symbol for the imported type
                     let new_sym = self
@@ -2481,7 +2517,9 @@ impl<'a> AstLowering<'a> {
                     if let Some(first_param) = meta.params.first() {
                         if let parser::haxe_ast::ExprKind::String(native_str) = &first_param.kind {
                             let native_interned = self.context.string_interner.intern(native_str);
-                            if let Some(sym) = self.context.symbol_table.get_symbol_mut(class_symbol) {
+                            if let Some(sym) =
+                                self.context.symbol_table.get_symbol_mut(class_symbol)
+                            {
                                 sym.native_name = Some(native_interned);
                             }
                         }
@@ -3077,7 +3115,8 @@ impl<'a> AstLowering<'a> {
                 if let Some(first_param) = meta.params.first() {
                     if let parser::haxe_ast::ExprKind::String(native_str) = &first_param.kind {
                         let native_interned = self.context.string_interner.intern(native_str);
-                        if let Some(sym) = self.context.symbol_table.get_symbol_mut(abstract_symbol) {
+                        if let Some(sym) = self.context.symbol_table.get_symbol_mut(abstract_symbol)
+                        {
                             sym.native_name = Some(native_interned);
                         }
                     }

@@ -795,7 +795,9 @@ impl<'a> HirToMirContext<'a> {
                         .and_then(|sym| {
                             // Prefer native name if available
                             if let Some(native) = sym.native_name {
-                                self.string_interner.get(native).map(|n| n.replace("::", "_"))
+                                self.string_interner
+                                    .get(native)
+                                    .map(|n| n.replace("::", "_"))
                             } else {
                                 sym.qualified_name
                                     .and_then(|qn| self.string_interner.get(qn))
@@ -2293,9 +2295,7 @@ impl<'a> HirToMirContext<'a> {
                                 // Methods like init, clone, tryLock return the same class or a related type
                                 let returns_same_class =
                                     matches!(method_name, "init" | "clone" | "new");
-                                if returns_same_class
-                                    && self.is_stdlib_class_by_symbol(sym_info)
-                                {
+                                if returns_same_class && self.is_stdlib_class_by_symbol(sym_info) {
                                     debug!(
                                         "[STDLIB CLASS DETECT] Static call {}.{}() returns {}",
                                         class_name, method_name, class_name
@@ -2473,7 +2473,9 @@ impl<'a> HirToMirContext<'a> {
                         let n = self.string_interner.get(class_info.name);
                         // Prefer lowered @:native name, fall back to qualified name
                         let qn = if let Some(native) = class_info.native_name {
-                            self.string_interner.get(native).map(|n| n.replace("::", "_"))
+                            self.string_interner
+                                .get(native)
+                                .map(|n| n.replace("::", "_"))
                         } else {
                             class_info
                                 .qualified_name
@@ -2500,7 +2502,9 @@ impl<'a> HirToMirContext<'a> {
                             {
                                 let n = self.string_interner.get(class_info.name);
                                 let qn = if let Some(native) = class_info.native_name {
-                                    self.string_interner.get(native).map(|n| n.replace("::", "_"))
+                                    self.string_interner
+                                        .get(native)
+                                        .map(|n| n.replace("::", "_"))
                                 } else {
                                     class_info
                                         .qualified_name
@@ -2539,6 +2543,32 @@ impl<'a> HirToMirContext<'a> {
                     (None, None, Vec::new())
                 }
             }
+            TypeKind::Abstract {
+                symbol_id,
+                type_args,
+                ..
+            } => {
+                // For abstract types like Ptr<T>, Ref<T>, Box<T>, Usize
+                // These are zero-cost abstracts over Int with methods in stdlib_mapping
+                let (name, qname) =
+                    if let Some(class_info) = self.symbol_table.get_symbol(*symbol_id) {
+                        let n = self.string_interner.get(class_info.name);
+                        let qn = if let Some(native) = class_info.native_name {
+                            self.string_interner
+                                .get(native)
+                                .map(|n| n.replace("::", "_"))
+                        } else {
+                            class_info
+                                .qualified_name
+                                .and_then(|qn| self.string_interner.get(qn))
+                                .map(|qn| qn.replace(".", "_"))
+                        };
+                        (n, qn)
+                    } else {
+                        (None, None)
+                    };
+                (name, qname, type_args.clone())
+            }
             TypeKind::GenericInstance {
                 base_type,
                 type_args,
@@ -2547,14 +2577,25 @@ impl<'a> HirToMirContext<'a> {
                 // For generic instances like Deque<Int>, Channel<String>, Arc<T>
                 // Get the base type's class name (e.g., "Deque" from Deque<Int>)
                 if let Some(base_info) = type_table.get(*base_type) {
-                    if let TypeKind::Class { symbol_id, .. } = &base_info.kind {
+                    let sym_id = match &base_info.kind {
+                        TypeKind::Class { symbol_id, .. } => Some(*symbol_id),
+                        TypeKind::Abstract { symbol_id, .. } => Some(*symbol_id),
+                        _ => None,
+                    };
+                    if let Some(symbol_id) = sym_id {
                         let (name, qname) =
-                            if let Some(class_info) = self.symbol_table.get_symbol(*symbol_id) {
+                            if let Some(class_info) = self.symbol_table.get_symbol(symbol_id) {
                                 let n = self.string_interner.get(class_info.name);
-                                let qn = class_info
-                                    .qualified_name
-                                    .and_then(|qn| self.string_interner.get(qn))
-                                    .map(|qn| qn.replace(".", "_"));
+                                let qn = if let Some(native) = class_info.native_name {
+                                    self.string_interner
+                                        .get(native)
+                                        .map(|n| n.replace("::", "_"))
+                                } else {
+                                    class_info
+                                        .qualified_name
+                                        .and_then(|qn| self.string_interner.get(qn))
+                                        .map(|qn| qn.replace(".", "_"))
+                                };
                                 (n, qn)
                             } else {
                                 (None, None)
@@ -4039,6 +4080,109 @@ impl<'a> HirToMirContext<'a> {
                         // Check if this is a Dynamic method call or stdlib method
                         let object_type = object.ty;
 
+                        // Check if the object is a stdlib class (including extern abstracts like Ptr, Ref, Box, Usize)
+                        // These should resolve via stdlib_mapping without any Dynamic unboxing
+                        debug!(
+                            "[FIELDACCESS] Entering stdlib class check for object_type={:?}",
+                            object_type
+                        );
+                        {
+                            let type_table = self.type_table.borrow();
+                            let class_symbol_id =
+                                if let Some(type_info) = type_table.get(object_type) {
+                                    match &type_info.kind {
+                                        TypeKind::Class { symbol_id, .. } => Some(*symbol_id),
+                                        TypeKind::Abstract { symbol_id, .. } => Some(*symbol_id),
+                                        _ => None,
+                                    }
+                                } else {
+                                    None
+                                };
+
+                            if let Some(sym_id) = class_symbol_id {
+                                // Get the class name from qualified_name
+                                let class_name_opt =
+                                    self.symbol_table.get_symbol(sym_id).and_then(|s| {
+                                        s.qualified_name
+                                            .and_then(|qn| self.string_interner.get(qn))
+                                            .map(|s| s.replace(".", "_"))
+                                    });
+
+                                let method_name_opt = self
+                                    .symbol_table
+                                    .get_symbol(*field)
+                                    .and_then(|s| self.string_interner.get(s.name));
+
+                                if let (Some(class_name), Some(method_name)) =
+                                    (class_name_opt, method_name_opt)
+                                {
+                                    // Look up in stdlib_mapping
+                                    if let Some((_sig, mapping)) =
+                                        self.stdlib_mapping.find_by_name(&class_name, method_name)
+                                    {
+                                        // Extract data before dropping borrows
+                                        let is_mir_wrapper = mapping.is_mir_wrapper;
+                                        let runtime_name = mapping.runtime_name.to_string();
+                                        let has_return = mapping.has_return;
+                                        drop(type_table);
+
+                                        // Lower object (receiver) + args
+                                        let obj_reg = self.lower_expression(object)?;
+                                        let mut arg_regs = vec![obj_reg];
+                                        for arg in args {
+                                            if let Some(reg) = self.lower_expression(arg) {
+                                                arg_regs.push(reg);
+                                            }
+                                        }
+
+                                        if is_mir_wrapper {
+                                            let param_types: Vec<_> = arg_regs
+                                                .iter()
+                                                .map(|r| {
+                                                    self.builder
+                                                        .get_register_type(*r)
+                                                        .unwrap_or(IrType::I64)
+                                                })
+                                                .collect();
+
+                                            let mir_func_id = self.register_stdlib_mir_forward_ref(
+                                                &runtime_name,
+                                                param_types,
+                                                result_type.clone(),
+                                            );
+
+                                            return self.builder.build_call_direct(
+                                                mir_func_id,
+                                                arg_regs,
+                                                result_type.clone(),
+                                            );
+                                        } else {
+                                            let param_types: Vec<_> =
+                                                arg_regs.iter().map(|_| IrType::I64).collect();
+                                            let return_type = if has_return {
+                                                IrType::I64
+                                            } else {
+                                                IrType::Void
+                                            };
+
+                                            let extern_func_id = self
+                                                .get_or_register_extern_function(
+                                                    &runtime_name,
+                                                    param_types,
+                                                    return_type.clone(),
+                                                );
+
+                                            return self.builder.build_call_direct(
+                                                extern_func_id,
+                                                arg_regs,
+                                                return_type,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         // First check if the object is Dynamic - handle auto-unbox for method calls
                         let type_table = self.type_table.borrow();
                         if let Some(type_info) = type_table.get(object_type) {
@@ -4201,14 +4345,20 @@ impl<'a> HirToMirContext<'a> {
                         let class_symbol_id = if let Some(type_info) = type_table.get(object_type) {
                             match &type_info.kind {
                                 TypeKind::Class { symbol_id, .. } => Some(*symbol_id),
+                                TypeKind::Abstract { symbol_id, .. } => Some(*symbol_id),
                                 TypeKind::GenericInstance { base_type, .. } => {
-                                    // For GenericInstance like Deque<Int>, get the base class symbol
+                                    // For GenericInstance like Deque<Int>, get the base class/abstract symbol
                                     if let Some(base_info) = type_table.get(*base_type) {
-                                        if let TypeKind::Class { symbol_id, .. } = &base_info.kind {
-                                            debug!("[STDLIB FALLBACK] GenericInstance base class symbol_id={:?}", symbol_id);
-                                            Some(*symbol_id)
-                                        } else {
-                                            None
+                                        match &base_info.kind {
+                                            TypeKind::Class { symbol_id, .. } => {
+                                                debug!("[STDLIB FALLBACK] GenericInstance base class symbol_id={:?}", symbol_id);
+                                                Some(*symbol_id)
+                                            }
+                                            TypeKind::Abstract { symbol_id, .. } => {
+                                                debug!("[STDLIB FALLBACK] GenericInstance base abstract symbol_id={:?}", symbol_id);
+                                                Some(*symbol_id)
+                                            }
+                                            _ => None,
                                         }
                                     } else {
                                         None
@@ -4227,10 +4377,17 @@ impl<'a> HirToMirContext<'a> {
                                 {
                                     debug!("[STDLIB FALLBACK] Found class '{}', checking for stdlib method", class_name);
 
-                                    // Check if it's a rayzor stdlib class by using qualified name
+                                    // Check if it's a rayzor stdlib class by using native name or qualified name
                                     let qualified_name_opt = class_symbol
-                                        .qualified_name
-                                        .and_then(|qn| self.string_interner.get(qn));
+                                        .native_name
+                                        .and_then(|nn| self.string_interner.get(nn))
+                                        .map(|n| n.replace("::", "_"))
+                                        .or_else(|| {
+                                            class_symbol
+                                                .qualified_name
+                                                .and_then(|qn| self.string_interner.get(qn))
+                                                .map(|s| s.to_string())
+                                        });
 
                                     if let Some(qualified_name) = qualified_name_opt {
                                         // Try to get the method name from the field symbol
@@ -4249,7 +4406,7 @@ impl<'a> HirToMirContext<'a> {
                                             // Use the proper mapping function that handles all methods
                                             if let Some(runtime_func) = self
                                                 .get_static_stdlib_runtime_func(
-                                                    qualified_name,
+                                                    &qualified_name,
                                                     method_name,
                                                 )
                                             {
@@ -4427,9 +4584,9 @@ impl<'a> HirToMirContext<'a> {
                         // e.g., s.indexOf("World", 0) has args=[s, "World", 0], param_count=2
                         let param_count = args.len().saturating_sub(1);
                         // Try to find stdlib runtime mapping for this method
-                        if let Some((class_name, method_name, runtime_call)) =
-                            self.get_stdlib_runtime_info(*symbol, receiver_type, Some(param_count))
-                        {
+                        let runtime_info =
+                            self.get_stdlib_runtime_info(*symbol, receiver_type, Some(param_count));
+                        if let Some((class_name, method_name, runtime_call)) = runtime_info {
                             // Skip methods that need ptr_conversion - let them fall through to
                             // the existing handler which properly handles params_need_ptr_conversion
                             if runtime_call.params_need_ptr_conversion != 0 {
@@ -4474,6 +4631,7 @@ impl<'a> HirToMirContext<'a> {
                                 let args_to_process: &[HirExpr] = if is_instance_method {
                                     // Instance method: args[0] is receiver, rest are actual args
                                     let receiver_reg = self.lower_expression(receiver)?;
+                                    debug!("[RECEIVER LOWER] method={}, receiver_reg={:?}, receiver_type={:?}", runtime_func, receiver_reg, self.builder.get_register_type(receiver_reg));
                                     arg_regs.push(receiver_reg);
                                     &args[1..]
                                 } else {
@@ -7470,12 +7628,13 @@ impl<'a> HirToMirContext<'a> {
                                 if let Some(native) = sym.native_name {
                                     if let Some(native_str) = self.string_interner.get(native) {
                                         let native_class_name = native_str.replace("::", "_");
-                                        if let Some((_, rc)) = self
-                                            .stdlib_mapping
-                                            .find_constructor(&native_class_name)
+                                        if let Some((_, rc)) =
+                                            self.stdlib_mapping.find_constructor(&native_class_name)
                                         {
-                                            debug!("[NEW EXPR]: find_constructor(native='{}') = {:?}",
-                                                native_class_name, rc.runtime_name);
+                                            debug!(
+                                                "[NEW EXPR]: find_constructor(native='{}') = {:?}",
+                                                native_class_name, rc.runtime_name
+                                            );
                                             found = Some((rc.runtime_name, rc.needs_out_param));
                                         }
                                     }
@@ -8868,15 +9027,38 @@ impl<'a> HirToMirContext<'a> {
             }
 
             // Abstract types - use their underlying type
-            Some(TypeKind::Abstract { underlying, .. }) => {
+            Some(TypeKind::Abstract {
+                underlying,
+                symbol_id,
+                ..
+            }) => {
                 if let Some(underlying_type) = underlying {
                     // If underlying type is specified, use it
                     self.convert_type(*underlying_type)
                 } else {
-                    // No underlying type specified, this is likely Int or similar
-                    // Check the abstract definition for hints, for now default to I32
-                    // TODO: Look up abstract definition to get actual underlying type
-                    IrType::I32
+                    // No underlying type specified — check if this is a systems type
+                    // (Ptr, Ref, Box, Usize) which are all i64 (pointer-sized) abstracts over Int
+                    let is_systems_type = self
+                        .symbol_table
+                        .get_symbol(*symbol_id)
+                        .and_then(|sym| {
+                            let qn = sym
+                                .qualified_name
+                                .and_then(|qn| self.string_interner.get(qn))
+                                .map(|qn| qn.replace(".", "_"))
+                                .or_else(|| {
+                                    sym.native_name
+                                        .and_then(|nn| self.string_interner.get(nn))
+                                        .map(|nn| nn.replace("::", "_"))
+                                });
+                            qn.filter(|name| self.stdlib_mapping.is_mir_wrapper_class(name))
+                        })
+                        .is_some();
+                    if is_systems_type {
+                        IrType::I64
+                    } else {
+                        IrType::I32
+                    }
                 }
             }
 
@@ -9467,6 +9649,25 @@ impl<'a> HirToMirContext<'a> {
             return Some(value);
         }
 
+        // Check the actual MIR register type of the value.
+        // If it's already a primitive (I64, I32, F64, Bool) rather than a pointer (Ptr(U8)),
+        // then it's NOT a boxed Dynamic value — skip unboxing.
+        // This handles MIR wrapper returns (e.g., Usize ops return I64 typed as Dynamic in HIR).
+        let actual_mir_type = self.builder.get_register_type(value);
+        if let Some(ref mir_ty) = actual_mir_type {
+            let is_already_unboxed = matches!(
+                mir_ty,
+                IrType::I64 | IrType::I32 | IrType::F64 | IrType::Bool
+            );
+            if is_already_unboxed {
+                debug!(
+                    "[UNBOXING] Skipping unbox — value MIR type {:?} is already a primitive",
+                    mir_ty
+                );
+                return Some(value);
+            }
+        }
+
         // Determine which unboxing function to call based on target type
         match &target_kind_cloned {
             // Value types (need to extract from heap)
@@ -9529,9 +9730,53 @@ impl<'a> HirToMirContext<'a> {
                     .build_call_direct(unbox_func_id, vec![value], ptr_u8)
             }
 
+            // Abstract types (like Ptr<T>, Ref<T>, Box<T>, Usize) — zero-cost over Int
+            // These are NOT heap-boxed, they're just i64 values. Skip unboxing.
+            Some(TypeKind::Abstract { .. }) => {
+                debug!("[UNBOXING] Skipping unbox for Abstract type (zero-cost over Int)");
+                Some(value)
+            }
+
             // Reference types (just extract the pointer)
-            Some(TypeKind::Class { .. })
-            | Some(TypeKind::Interface { .. })
+            Some(TypeKind::Class { symbol_id, .. }) => {
+                // Check if this is a MIR wrapper class (extern abstract like Ptr, Ref, Box, Usize)
+                // These are zero-cost abstracts over Int — NOT heap-boxed, skip unboxing
+                if let Some(sym) = self.symbol_table.get_symbol(*symbol_id) {
+                    // Try qualified name (e.g., "rayzor.Ptr" → "rayzor_Ptr"), then native name
+                    let class_name = sym
+                        .qualified_name
+                        .and_then(|qn| self.string_interner.get(qn))
+                        .map(|qn| qn.replace(".", "_"))
+                        .or_else(|| {
+                            sym.native_name
+                                .and_then(|nn| self.string_interner.get(nn))
+                                .map(|nn| nn.replace("::", "_"))
+                        });
+                    if let Some(cn) = &class_name {
+                        if self.stdlib_mapping.is_mir_wrapper_class(cn) {
+                            debug!("[UNBOXING] Skipping unbox for MIR wrapper class '{}' (extern abstract)", cn);
+                            return Some(value);
+                        }
+                    }
+                }
+
+                debug!(
+                    "[UNBOXING] Auto-unboxing Dynamic to reference type {:?} using unbox_reference",
+                    target_kind_cloned
+                );
+
+                // Call haxe_unbox_reference_ptr to extract the pointer
+                let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
+                let unbox_func_id = self.get_or_register_extern_function(
+                    "haxe_unbox_reference_ptr",
+                    vec![ptr_u8.clone()],
+                    ptr_u8.clone(),
+                );
+
+                self.builder
+                    .build_call_direct(unbox_func_id, vec![value], ptr_u8)
+            }
+            Some(TypeKind::Interface { .. })
             | Some(TypeKind::Anonymous { .. })
             | Some(TypeKind::Array { .. }) => {
                 debug!(
@@ -9539,7 +9784,6 @@ impl<'a> HirToMirContext<'a> {
                     target_kind_cloned
                 );
 
-                // Call haxe_unbox_reference_ptr to extract the pointer
                 let ptr_u8 = IrType::Ptr(Box::new(IrType::U8));
                 let unbox_func_id = self.get_or_register_extern_function(
                     "haxe_unbox_reference_ptr",

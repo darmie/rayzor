@@ -498,9 +498,9 @@ impl StdlibMapping {
     /// The `is_mir_wrapper` field on RuntimeFunctionCall is more precise for per-function checks.
     pub fn is_mir_wrapper_class(&self, class_name: &str) -> bool {
         // Check if any method of this class is registered as a MIR wrapper
-        self.mappings.iter().any(|(sig, call)| {
-            sig.class == class_name && call.is_mir_wrapper
-        })
+        self.mappings
+            .iter()
+            .any(|(sig, call)| sig.class == class_name && call.is_mir_wrapper)
     }
 
     /// Register a stdlib method -> runtime function mapping (internal)

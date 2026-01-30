@@ -4,27 +4,35 @@
 //! At runtime, a Box is just a heap pointer. These functions provide
 //! the allocation and deallocation primitives.
 //!
+//! Uses libc malloc/free to match the Cranelift JIT backend, which maps
+//! all MIR malloc/free calls to libc directly.
+//!
 //! Most Box operations (asPtr, asRef, raw, unbox) are identity or load
 //! operations handled at MIR level. Only init and free need runtime support.
 
 use std::ptr;
 
+extern "C" {
+    fn malloc(size: usize) -> *mut u8;
+    fn free(ptr: *mut u8);
+}
+
 /// Allocate a value on the heap (Box.init).
 ///
 /// Takes an i64 value (which may be a pointer to a larger object or a primitive),
-/// allocates 8 bytes on the heap, stores the value, and returns the heap pointer.
+/// allocates 8 bytes on the heap via libc malloc, stores the value,
+/// and returns the heap pointer.
 ///
 /// # Safety
 /// - Caller must eventually call `rayzor_box_free` to release the memory.
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_box_init(value: i64) -> *mut u8 {
-    let layout = std::alloc::Layout::new::<i64>();
-    let ptr = std::alloc::alloc(layout);
-    if ptr.is_null() {
+    let p = malloc(8);
+    if p.is_null() {
         return ptr::null_mut();
     }
-    *(ptr as *mut i64) = value;
-    ptr
+    *(p as *mut i64) = value;
+    p
 }
 
 /// Free a Box allocation.
@@ -37,8 +45,7 @@ pub unsafe extern "C" fn rayzor_box_free(box_ptr: *mut u8) {
     if box_ptr.is_null() {
         return;
     }
-    let layout = std::alloc::Layout::new::<i64>();
-    std::alloc::dealloc(box_ptr, layout);
+    free(box_ptr);
 }
 
 /// Read the value from a Box (Box.unbox).

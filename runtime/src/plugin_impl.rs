@@ -1118,17 +1118,35 @@ register_symbol!("rayzor_tracked_free", crate::rayzor_tracked_free);
 // TinyCC Runtime API (rayzor.runtime.CC)
 // ============================================================================
 #[cfg(feature = "tcc-runtime")]
-register_symbol!("rayzor_tcc_create", crate::tinycc_runtime::rayzor_tcc_create);
+register_symbol!(
+    "rayzor_tcc_create",
+    crate::tinycc_runtime::rayzor_tcc_create
+);
 #[cfg(feature = "tcc-runtime")]
-register_symbol!("rayzor_tcc_compile", crate::tinycc_runtime::rayzor_tcc_compile);
+register_symbol!(
+    "rayzor_tcc_compile",
+    crate::tinycc_runtime::rayzor_tcc_compile
+);
 #[cfg(feature = "tcc-runtime")]
-register_symbol!("rayzor_tcc_add_symbol", crate::tinycc_runtime::rayzor_tcc_add_symbol);
+register_symbol!(
+    "rayzor_tcc_add_symbol",
+    crate::tinycc_runtime::rayzor_tcc_add_symbol
+);
 #[cfg(feature = "tcc-runtime")]
-register_symbol!("rayzor_tcc_relocate", crate::tinycc_runtime::rayzor_tcc_relocate);
+register_symbol!(
+    "rayzor_tcc_relocate",
+    crate::tinycc_runtime::rayzor_tcc_relocate
+);
 #[cfg(feature = "tcc-runtime")]
-register_symbol!("rayzor_tcc_get_symbol", crate::tinycc_runtime::rayzor_tcc_get_symbol);
+register_symbol!(
+    "rayzor_tcc_get_symbol",
+    crate::tinycc_runtime::rayzor_tcc_get_symbol
+);
 #[cfg(feature = "tcc-runtime")]
-register_symbol!("rayzor_tcc_delete", crate::tinycc_runtime::rayzor_tcc_delete);
+register_symbol!(
+    "rayzor_tcc_delete",
+    crate::tinycc_runtime::rayzor_tcc_delete
+);
 
 /// Rayzor Runtime Plugin
 pub struct RayzorRuntimePlugin;

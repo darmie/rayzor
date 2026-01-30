@@ -7,7 +7,7 @@
 //! compiler and runtime link into the same binary, these extern declarations
 //! resolve at link time.
 
-use std::ffi::{CStr, CString};
+use std::ffi::CString;
 use std::ptr;
 
 use crate::haxe_string::HaxeString;
@@ -79,7 +79,11 @@ pub extern "C" fn rayzor_tcc_compile(state: *mut TCCState, code: *const HaxeStri
             None => return 0,
         };
         let ret = tcc_compile_string(state, c_code.as_ptr());
-        if ret < 0 { 0 } else { 1 }
+        if ret < 0 {
+            0
+        } else {
+            1
+        }
     }
 }
 
@@ -87,11 +91,7 @@ pub extern "C" fn rayzor_tcc_compile(state: *mut TCCState, code: *const HaxeStri
 /// The value is an i64 that C code can reference via `extern`.
 /// Takes the TCC state, a HaxeString pointer to the name, and the raw value.
 #[no_mangle]
-pub extern "C" fn rayzor_tcc_add_symbol(
-    state: *mut TCCState,
-    name: *const HaxeString,
-    value: i64,
-) {
+pub extern "C" fn rayzor_tcc_add_symbol(state: *mut TCCState, name: *const HaxeString, value: i64) {
     if state.is_null() {
         return;
     }
@@ -114,7 +114,11 @@ pub extern "C" fn rayzor_tcc_relocate(state: *mut TCCState) -> i32 {
     }
     unsafe {
         let ret = tcc_relocate(state);
-        if ret < 0 { 0 } else { 1 }
+        if ret < 0 {
+            0
+        } else {
+            1
+        }
     }
 }
 

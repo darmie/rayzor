@@ -2412,11 +2412,20 @@ impl CompilationUnit {
             lowering.set_package_from_parts(&pkg.path);
         }
 
-        // Only lower enum declarations — class registration must go through
-        // the normal TAST pipeline to avoid overwriting user imports
+        // Lower enum and abstract declarations from cached files.
+        // Class registration must go through the normal TAST pipeline
+        // to avoid overwriting user imports.
         for decl in &ast_file.declarations {
-            if let parser::TypeDeclaration::Enum(enum_decl) = decl {
-                let _ = lowering.lower_enum_declaration_public(enum_decl);
+            match decl {
+                parser::TypeDeclaration::Enum(enum_decl) => {
+                    let _ = lowering.lower_enum_declaration_public(enum_decl);
+                }
+                parser::TypeDeclaration::Abstract(_) => {
+                    // Pre-register abstract declarations so import resolution
+                    // creates Abstract symbols instead of Class placeholders
+                    let _ = lowering.pre_register_declaration(decl);
+                }
+                _ => {}
             }
         }
     }
