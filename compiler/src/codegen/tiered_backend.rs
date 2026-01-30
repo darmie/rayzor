@@ -1828,8 +1828,7 @@ impl TieredBackend {
         #[cfg(feature = "tcc-linker")]
         let all_pointers = {
             tracing::trace!("[LLVM:AOT] Linking with TCC in-process linker");
-            let mut linker =
-                super::tcc_linker::TccLinker::new(&self.runtime_symbols)?;
+            let mut linker = super::tcc_linker::TccLinker::new(&self.runtime_symbols)?;
             let pointers = linker.link_object_file(&obj_path, &function_symbols)?;
             // Leak the linker to keep code alive (same pattern as dylib)
             Box::leak(Box::new(linker));

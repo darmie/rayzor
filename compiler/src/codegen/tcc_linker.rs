@@ -95,10 +95,7 @@ impl TccLinker {
             }
         }
 
-        tracing::trace!(
-            "[TCC] Registered {} runtime symbols",
-            runtime_symbols.len()
-        );
+        tracing::trace!("[TCC] Registered {} runtime symbols", runtime_symbols.len());
 
         Ok(Self {
             state,
