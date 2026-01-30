@@ -350,6 +350,99 @@ class Main {
 "#,
     ));
 
+    // ============================================================================
+    // TEST 7: @:cstruct with Ptr<T> and Usize fields — C-type mapping
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "cstruct_ptr_usize",
+        r#"
+package test;
+
+import rayzor.Ptr;
+import rayzor.Usize;
+
+@:cstruct
+class Buffer {
+    public var data:Ptr<Int>;
+    public var len:Usize;
+    public var cap:Usize;
+}
+
+class Main {
+    static function main() {
+        // Verify cdef() produces correct C types for Ptr and Usize
+        trace(Buffer.cdef());
+        // Buffer should be: typedef struct { void* data; size_t len; size_t cap; } Buffer;
+
+        var b = new Buffer();
+        b.len = 10;
+        b.cap = 20;
+        trace(b.len);   // 10
+        trace(b.cap);   // 20
+    }
+}
+"#,
+    ));
+
+    // ============================================================================
+    // TEST 8: @:cstruct with nested @:cstruct field — cdef() includes deps
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "cstruct_nested",
+        r#"
+package test;
+
+@:cstruct
+class Vec2 {
+    public var x:Float;
+    public var y:Float;
+}
+
+@:cstruct
+class Particle {
+    public var pos:Vec2;
+    public var mass:Float;
+}
+
+class Main {
+    static function main() {
+        // cdef() should include Vec2 typedef before Particle typedef
+        trace(Particle.cdef());
+        trace(42);
+    }
+}
+"#,
+    ));
+
+    // ============================================================================
+    // TEST 9: @:cstruct with Ptr<CStruct> field — typed pointer in cdef
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "cstruct_ptr_to_cstruct",
+        r#"
+package test;
+
+import rayzor.Ptr;
+
+@:cstruct
+class Node {
+    public var value:Int;
+    public var next:Ptr<Node>;
+}
+
+class Main {
+    static function main() {
+        // cdef() should produce Node* for the next field
+        trace(Node.cdef());
+
+        var n = new Node();
+        n.value = 42;
+        trace(n.value);  // 42
+    }
+}
+"#,
+    ));
+
     // Run all tests
     println!("╔══════════════════════════════════════════════════════════════════════╗");
     println!("║             @:cstruct Metadata — E2E Test Suite                    ║");

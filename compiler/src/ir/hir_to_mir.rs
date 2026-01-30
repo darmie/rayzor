@@ -36,7 +36,7 @@ struct CStructFieldLayout {
     name: String,
     byte_offset: u32,
     ir_type: IrType,
-    c_type: &'static str, // "double", "long", "int"
+    c_type: String, // "double", "long", "int", "void*", "Vec2", etc.
 }
 
 /// Precomputed C-compatible layout for a @:cstruct class
@@ -46,6 +46,9 @@ struct CStructLayout {
     total_size: u32,
     alignment: u32,
     c_name: String,
+    /// All dependency typedefs (for nested cstructs), in topological order
+    dep_cdefs: Vec<String>,
+    /// This struct's own typedef
     cdef_string: String,
 }
 
@@ -762,21 +765,18 @@ impl<'a> HirToMirContext<'a> {
         let mut max_align: u32 = 1;
         let mut layout_fields = Vec::new();
 
+        let mut dep_cdefs: Vec<String> = Vec::new();
+
         for (field_sym_id, _idx) in &fields_with_index {
             let sym = self.symbol_table.get_symbol(*field_sym_id)?;
             let field_name = self.string_interner.get(sym.name)?.to_string();
             let ir_type = self.convert_type(sym.type_id);
 
-            // For @:cstruct, promote I32 (Haxe Int) to I64 (C long)
-            // to match C's 64-bit `long` type on LP64 systems.
-            // This ensures byte-level compatibility with C structs.
-            let (size, align, c_type, ir_type) = match &ir_type {
-                IrType::F64 => (8u32, 8u32, "double", ir_type),
-                IrType::I64 => (8, 8, "long", ir_type),
-                IrType::I32 => (8, 8, "long", IrType::I64), // Promote to i64
-                IrType::Bool => (4, 4, "int", ir_type),
-                _ => (8, 8, "long", ir_type),
-            };
+            // Resolve field type to determine C type mapping.
+            // Check the original Haxe type (before IR conversion) for rich type info.
+            let (size, align, c_type, ir_type) = self.resolve_cstruct_field_type(
+                sym.type_id, ir_type, &mut dep_cdefs,
+            );
 
             // Align offset
             if align > 0 {
@@ -802,23 +802,203 @@ impl<'a> HirToMirContext<'a> {
             byte_offset = (byte_offset + max_align - 1) & !(max_align - 1);
         }
 
-        // Build cdef string
-        let mut cdef = format!("typedef struct {{ ");
+        // Build cdef string — own typedef only
+        let mut own_cdef = format!("typedef struct {{ ");
         for f in &layout_fields {
-            cdef.push_str(&format!("{} {}; ", f.c_type, f.name));
+            own_cdef.push_str(&format!("{} {}; ", f.c_type, f.name));
         }
-        cdef.push_str(&format!("}} {};\n", c_name));
+        own_cdef.push_str(&format!("}} {};\n", c_name));
+
+        // Full cdef includes dependency typedefs first, then own typedef
+        let mut full_cdef = String::new();
+        for dep in &dep_cdefs {
+            full_cdef.push_str(dep);
+        }
+        full_cdef.push_str(&own_cdef);
 
         let layout = CStructLayout {
             fields: layout_fields,
             total_size: byte_offset,
             alignment: max_align,
             c_name,
-            cdef_string: cdef,
+            dep_cdefs,
+            cdef_string: full_cdef,
         };
 
         self.cstruct_layouts.insert(type_id, layout.clone());
         Some(layout)
+    }
+
+    /// Resolve a field's Haxe type to C type info for @:cstruct layout.
+    ///
+    /// Returns (size_bytes, alignment, c_type_string, ir_type).
+    /// For nested @:cstruct types, recursively computes their layout and adds
+    /// dependency typedefs to `dep_cdefs`.
+    fn resolve_cstruct_field_type(
+        &mut self,
+        haxe_type_id: TypeId,
+        ir_type: IrType,
+        dep_cdefs: &mut Vec<String>,
+    ) -> (u32, u32, String, IrType) {
+        // Check the Haxe-level type for rich info (Ptr, Usize, nested cstruct, etc.)
+        let type_info = {
+            let type_table = self.type_table.borrow();
+            type_table.get(haxe_type_id).map(|t| (t.kind.clone(), t.id))
+        };
+
+        if let Some((kind, _tid)) = type_info {
+            match &kind {
+                // Abstract types: Ptr<T>, Ref<T>, Box<T>, Usize
+                TypeKind::Abstract { symbol_id, type_args, .. } => {
+                    let abstract_name = self.symbol_table.get_symbol(*symbol_id)
+                        .and_then(|s| self.string_interner.get(s.name))
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
+
+                    match abstract_name.as_str() {
+                        "Ptr" => {
+                            // Ptr<T> → T* if T is @:cstruct, else void*
+                            let c_type = if let Some(inner_tid) = type_args.first() {
+                                self.cstruct_ptr_c_type(*inner_tid, dep_cdefs)
+                            } else {
+                                "void*".to_string()
+                            };
+                            return (8, 8, c_type, IrType::I64);
+                        }
+                        "Ref" => {
+                            // Ref<T> → const T* if T is @:cstruct, else const void*
+                            let c_type = if let Some(inner_tid) = type_args.first() {
+                                let inner = self.cstruct_ptr_c_type(*inner_tid, dep_cdefs);
+                                if inner.ends_with('*') {
+                                    format!("const {}", inner)
+                                } else {
+                                    format!("const {}*", inner)
+                                }
+                            } else {
+                                "const void*".to_string()
+                            };
+                            return (8, 8, c_type, IrType::I64);
+                        }
+                        "Box" => {
+                            // Box<T> → T* (owned pointer)
+                            let c_type = if let Some(inner_tid) = type_args.first() {
+                                self.cstruct_ptr_c_type(*inner_tid, dep_cdefs)
+                            } else {
+                                "void*".to_string()
+                            };
+                            return (8, 8, c_type, IrType::I64);
+                        }
+                        "Usize" => {
+                            return (8, 8, "size_t".to_string(), IrType::I64);
+                        }
+                        _ => {} // Fall through to IR-based matching
+                    }
+                }
+                // Class types: check if it's a nested @:cstruct (inline embedding)
+                TypeKind::Class { symbol_id, .. } => {
+                    let is_nested_cstruct = self.symbol_table.get_symbol(*symbol_id)
+                        .map(|s| s.flags.is_cstruct())
+                        .unwrap_or(false);
+                    if is_nested_cstruct {
+                        // Recursively compute nested layout
+                        if let Some(nested_layout) = self.get_or_compute_cstruct_layout(haxe_type_id) {
+                            // Add nested cdef as dependency (if not already present)
+                            if !dep_cdefs.contains(&nested_layout.cdef_string) {
+                                // Add nested deps first (transitive)
+                                for dep in &nested_layout.dep_cdefs {
+                                    if !dep_cdefs.contains(dep) {
+                                        dep_cdefs.push(dep.clone());
+                                    }
+                                }
+                                // Then add nested struct's own typedef
+                                let own_cdef = {
+                                    let mut s = format!("typedef struct {{ ");
+                                    for f in &nested_layout.fields {
+                                        s.push_str(&format!("{} {}; ", f.c_type, f.name));
+                                    }
+                                    s.push_str(&format!("}} {};\n", nested_layout.c_name));
+                                    s
+                                };
+                                if !dep_cdefs.contains(&own_cdef) {
+                                    dep_cdefs.push(own_cdef);
+                                }
+                            }
+                            let c_type = nested_layout.c_name.clone();
+                            let size = nested_layout.total_size;
+                            let align = nested_layout.alignment;
+                            // Nested cstruct is embedded inline — IR type is a byte array
+                            return (size, align, c_type, IrType::I64);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Fallback: use IR type for primitives
+        match &ir_type {
+            IrType::F64 => (8, 8, "double".to_string(), ir_type),
+            IrType::I64 => (8, 8, "long".to_string(), ir_type),
+            IrType::I32 => (8, 8, "long".to_string(), IrType::I64), // Promote to i64
+            IrType::Bool => (4, 4, "int".to_string(), ir_type),
+            _ => (8, 8, "long".to_string(), ir_type),
+        }
+    }
+
+    /// Get the C type string for a pointer target type.
+    /// If target is @:cstruct, returns "StructName*"; otherwise "void*".
+    /// For pointers, we only need the target struct's name, not its full layout,
+    /// which avoids infinite recursion for self-referential types like `Ptr<Node>`.
+    fn cstruct_ptr_c_type(&mut self, target_type_id: TypeId, dep_cdefs: &mut Vec<String>) -> String {
+        let target_info = {
+            let type_table = self.type_table.borrow();
+            type_table.get(target_type_id).map(|t| t.kind.clone())
+        };
+        if let Some(TypeKind::Class { symbol_id, .. }) = target_info {
+            let is_cstruct = self.symbol_table.get_symbol(symbol_id)
+                .map(|s| s.flags.is_cstruct())
+                .unwrap_or(false);
+            if is_cstruct {
+                // Get the C name without computing full layout (avoids infinite recursion)
+                let no_mangle = self.symbol_table.get_symbol(symbol_id)
+                    .map(|s| s.flags.is_no_mangle())
+                    .unwrap_or(false);
+                let class_name = self.symbol_table.get_symbol(symbol_id)
+                    .and_then(|s| self.string_interner.get(s.name))
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+                let c_name = if no_mangle {
+                    class_name
+                } else {
+                    class_name.replace('.', "_")
+                };
+
+                // If the layout is already computed, use its deps
+                if let Some(layout) = self.cstruct_layouts.get(&target_type_id).cloned() {
+                    for dep in &layout.dep_cdefs {
+                        if !dep_cdefs.contains(dep) {
+                            dep_cdefs.push(dep.clone());
+                        }
+                    }
+                    // Add own typedef as dep
+                    let own_cdef = {
+                        let mut s = format!("typedef struct {{ ");
+                        for f in &layout.fields {
+                            s.push_str(&format!("{} {}; ", f.c_type, f.name));
+                        }
+                        s.push_str(&format!("}} {};\n", layout.c_name));
+                        s
+                    };
+                    if !dep_cdefs.contains(&own_cdef) {
+                        dep_cdefs.push(own_cdef);
+                    }
+                }
+                // For pointers, a forward declaration is sufficient in C.
+                // The struct name is enough — no need to compute full layout.
+                return format!("{}*", c_name);
+            }
+        }
+        "void*".to_string()
     }
 
     /// Register a constructor by qualified name for cross-file resolution
