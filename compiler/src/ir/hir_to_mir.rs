@@ -7769,8 +7769,14 @@ impl<'a> HirToMirContext<'a> {
 
                         // Use MIR register types (from runtime mapping) instead of HIR types,
                         // which may be unresolved generics (e.g. Ptr(Void) for Vec<Int>.length())
-                        let lhs_mir_type = self.builder.get_register_type(lhs_reg).unwrap_or(lhs_type.clone());
-                        let rhs_mir_type = self.builder.get_register_type(rhs_reg).unwrap_or(rhs_type.clone());
+                        let lhs_mir_type = self
+                            .builder
+                            .get_register_type(lhs_reg)
+                            .unwrap_or(lhs_type.clone());
+                        let rhs_mir_type = self
+                            .builder
+                            .get_register_type(rhs_reg)
+                            .unwrap_or(rhs_type.clone());
 
                         let lhs_is_string_mir = matches!(&lhs_mir_type, IrType::String)
                             || matches!(&lhs_mir_type, IrType::Ptr(inner) if matches!(inner.as_ref(), IrType::String));
