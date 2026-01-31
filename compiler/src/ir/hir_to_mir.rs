@@ -905,7 +905,8 @@ impl<'a> HirToMirContext<'a> {
                 TypeKind::Class { symbol_id, .. } => {
                     // Check if this is CString (extern abstract stored as Class)
                     if let Some(sym) = self.symbol_table.get_symbol(*symbol_id) {
-                        let is_cstring = sym.qualified_name
+                        let is_cstring = sym
+                            .qualified_name
                             .and_then(|n| self.string_interner.get(n))
                             .map(|s| s == "rayzor.CString")
                             .unwrap_or(false);
@@ -5288,9 +5289,12 @@ impl<'a> HirToMirContext<'a> {
                             {
                                 // Skip extern abstracts (CString, Usize, Ptr, etc.)
                                 // — they appear as Class in the type table but don't have toString()
-                                let is_extern = self.symbol_table
+                                let is_extern = self
+                                    .symbol_table
                                     .get_symbol(*symbol_id)
-                                    .map(|s| s.flags.contains(crate::tast::symbols::SymbolFlags::EXTERN))
+                                    .map(|s| {
+                                        s.flags.contains(crate::tast::symbols::SymbolFlags::EXTERN)
+                                    })
                                     .unwrap_or(false);
                                 if is_extern {
                                     None

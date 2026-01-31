@@ -57,9 +57,7 @@ pub extern "C" fn rayzor_cstring_to_string(cstr_addr: i64) -> *mut HaxeString {
         return hs_ptr;
     }
 
-    unsafe {
-        crate::haxe_string::haxe_string_from_cstr(hs_ptr, cstr);
-    }
+    crate::haxe_string::haxe_string_from_cstr(hs_ptr, cstr);
     hs_ptr
 }
 
