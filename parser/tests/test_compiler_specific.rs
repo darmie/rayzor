@@ -30,7 +30,7 @@ fn test_js_code_block() {
                 if let ExprKind::Block(elements) = &body.kind {
                     if let BlockElement::Expr(expr) = &elements[0] {
                         match &expr.kind {
-                            ExprKind::CompilerSpecific { target, code } => {
+                            ExprKind::CompilerSpecific { target, code, .. } => {
                                 assert_eq!(target, "__js__");
                                 if let ExprKind::String(s) = &code.kind {
                                     assert_eq!(s, "console.log('Hello from JavaScript');");
@@ -131,7 +131,7 @@ fn test_direct_compiler_specific() {
 
     if let Ok((_, expr)) = expr_result {
         match &expr.kind {
-            ExprKind::CompilerSpecific { target, code } => {
+            ExprKind::CompilerSpecific { target, code, .. } => {
                 assert_eq!(target, "__js__");
                 match &code.kind {
                     ExprKind::String(s) => assert_eq!(s, "console.log('test')"),

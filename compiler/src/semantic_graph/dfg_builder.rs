@@ -1219,7 +1219,7 @@ impl DfgBuilder {
                     metadata: NodeMetadata::default(),
                 })
             }
-            TypedExpressionKind::CompilerSpecific { target, code } => {
+            TypedExpressionKind::CompilerSpecific { target, code, .. } => {
                 // Compiler-specific code blocks
                 let code_node = self.build_expression(code)?;
 

@@ -100,6 +100,10 @@ register_symbol!(
     crate::haxe_string::haxe_string_split_array
 );
 register_symbol!(
+    "haxe_string_replace",
+    crate::haxe_string::haxe_string_replace
+);
+register_symbol!(
     "haxe_string_starts_with",
     crate::string::haxe_string_starts_with
 );
@@ -769,6 +773,16 @@ register_symbol!(
 register_symbol!(
     "rayzor_tcc_add_symbol",
     crate::tinycc_runtime::rayzor_tcc_add_symbol
+);
+#[cfg(feature = "tcc-runtime")]
+register_symbol!(
+    "rayzor_tcc_add_value_symbol",
+    crate::tinycc_runtime::rayzor_tcc_add_value_symbol
+);
+#[cfg(feature = "tcc-runtime")]
+register_symbol!(
+    "rayzor_tcc_free_value",
+    crate::tinycc_runtime::rayzor_tcc_free_value
 );
 #[cfg(feature = "tcc-runtime")]
 register_symbol!(

@@ -550,6 +550,59 @@ pub extern "C" fn haxe_string_println(s: *const HaxeString) {
     println!();
 }
 
+/// Replace all occurrences of `needle` in `haystack` with `replacement`.
+/// Returns a new HaxeString with the result.
+#[no_mangle]
+pub extern "C" fn haxe_string_replace(
+    haystack: *const HaxeString,
+    needle: *const HaxeString,
+    replacement: *const HaxeString,
+) -> *mut HaxeString {
+    let result = Box::new(HaxeString {
+        ptr: ptr::null_mut(),
+        len: 0,
+        cap: 0,
+    });
+    let result_ptr = Box::into_raw(result);
+    haxe_string_new(result_ptr);
+
+    if haystack.is_null() || needle.is_null() || replacement.is_null() {
+        return result_ptr;
+    }
+
+    unsafe {
+        let h = &*haystack;
+        let n = &*needle;
+        let r = &*replacement;
+
+        if h.len == 0 || n.len == 0 || h.ptr.is_null() || n.ptr.is_null() {
+            // Copy haystack as-is
+            if h.len > 0 && !h.ptr.is_null() {
+                let h_slice = slice::from_raw_parts(h.ptr, h.len);
+                haxe_string_from_bytes(result_ptr, h_slice.as_ptr(), h_slice.len());
+            }
+            return result_ptr;
+        }
+
+        let h_bytes = slice::from_raw_parts(h.ptr, h.len);
+        let n_bytes = slice::from_raw_parts(n.ptr, n.len);
+        let r_bytes = if r.len > 0 && !r.ptr.is_null() {
+            slice::from_raw_parts(r.ptr, r.len)
+        } else {
+            &[]
+        };
+
+        // Simple search-and-replace
+        let h_str = str::from_utf8_unchecked(h_bytes);
+        let n_str = str::from_utf8_unchecked(n_bytes);
+        let r_str = str::from_utf8_unchecked(r_bytes);
+        let replaced = h_str.replace(n_str, r_str);
+
+        haxe_string_from_bytes(result_ptr, replaced.as_ptr(), replaced.len());
+        result_ptr
+    }
+}
+
 /// Get C string pointer (null-terminated)
 #[no_mangle]
 pub extern "C" fn haxe_string_to_cstr(s: *const HaxeString) -> *const u8 {

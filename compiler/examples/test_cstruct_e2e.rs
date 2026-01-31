@@ -532,6 +532,83 @@ class Main {
 "#,
     ));
 
+    // ============================================================================
+    // TEST 13: __c__ basic — no args, returns 42
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "inline_c_basic",
+        r#"
+package test;
+
+class Main {
+    static function main() {
+        var result = untyped __c__("
+            long __entry__() { return 42; }
+        ");
+        trace(result);  // 42
+    }
+}
+"#,
+    ));
+
+    // ============================================================================
+    // TEST 14: __c__ with args via {0}, {1} (extern symbol injection)
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "inline_c_args",
+        r#"
+package test;
+
+class Main {
+    static function main() {
+        var x = 10;
+        var y = 20;
+        var sum = untyped __c__("
+            long __entry__() { return {0} + {1}; }
+        ", x, y);
+        trace(sum);  // 30
+    }
+}
+"#,
+    ));
+
+    // ============================================================================
+    // TEST 15: __c__ with @:cstruct pointer interop
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "inline_c_cstruct",
+        r#"
+package test;
+
+import rayzor.Usize;
+
+@:cstruct
+class Vec2 {
+    public var x:Int;
+    public var y:Int;
+}
+
+class Main {
+    static function main() {
+        var v = new Vec2();
+        v.x = 5;
+        v.y = 7;
+
+        untyped __c__(Vec2.cdef() + "
+            void __entry__() {
+                Vec2* v = (Vec2*){0};
+                v->x = v->x * 10;
+                v->y = v->y * 10;
+            }
+        ", Usize.fromPtr(v));
+
+        trace(v.x);  // 50
+        trace(v.y);  // 70
+    }
+}
+"#,
+    ));
+
     // Run all tests
     println!("╔══════════════════════════════════════════════════════════════════════╗");
     println!("║             @:cstruct Metadata — E2E Test Suite                    ║");

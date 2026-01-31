@@ -184,14 +184,33 @@ pub fn null_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     ))
 }
 
-/// Parse compiler-specific code block: `__js__("console.log('hello')")`
+/// Parse compiler-specific code block: `__c__("code {0} {1}", arg0, arg1)`
 pub fn compiler_specific_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
     let start = position(full, input);
     let (input, target) = compiler_specific_identifier(input)?;
 
-    // Parse the code argument (single string argument expected)
+    // Parse: (code_expr, optional_args...)
     let (input, _) = symbol("(").parse(input)?;
     let (input, code) = expression(full, input)?;
+
+    // Parse optional comma-separated additional arguments
+    let mut args = Vec::new();
+    let mut input = input;
+    loop {
+        // Try to parse a comma followed by an expression
+        let comma_result: PResult<'_, &str> = symbol(",").parse(input);
+        match comma_result {
+            Ok((rest, _)) => match expression(full, rest) {
+                Ok((rest2, arg_expr)) => {
+                    args.push(arg_expr);
+                    input = rest2;
+                }
+                Err(_) => break,
+            },
+            Err(_) => break,
+        }
+    }
+
     let (input, _) = symbol(")").parse(input)?;
 
     let end = position(full, input);
@@ -202,6 +221,7 @@ pub fn compiler_specific_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, 
             kind: ExprKind::CompilerSpecific {
                 target,
                 code: Box::new(code),
+                args,
             },
             span: Span::new(start, end),
         },

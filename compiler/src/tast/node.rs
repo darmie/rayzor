@@ -1217,10 +1217,11 @@ pub enum TypedExpressionKind {
         arg: Option<Box<TypedExpression>>,
     },
 
-    /// Compiler-specific code expression: `__js__("code")`
+    /// Compiler-specific code expression: `__c__("code {0}", arg0)`
     CompilerSpecific {
         target: InternedString,
         code: Box<TypedExpression>,
+        args: Vec<TypedExpression>,
     },
 
     /// Switch expression: `switch (expr) { case pattern: body; default: defaultBody; }`

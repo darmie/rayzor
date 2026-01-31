@@ -2074,6 +2074,20 @@ impl<'a> TastToHirContext<'a> {
                     is_method: false,
                 }
             }
+            TypedExpressionKind::CompilerSpecific { target, code, args } => {
+                let target_str = self
+                    .string_interner
+                    .get(*target)
+                    .unwrap_or("unknown")
+                    .to_string();
+                let code_expr = self.lower_expression(code);
+                let hir_args = args.iter().map(|a| self.lower_expression(a)).collect();
+                HirExprKind::InlineCode {
+                    target: target_str,
+                    code: Box::new(code_expr),
+                    args: hir_args,
+                }
+            }
             // Handle remaining expression types with error recovery
             _ => {
                 let error_msg = self.get_expression_type_name(&expr.kind);

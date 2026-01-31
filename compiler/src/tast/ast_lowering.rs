@@ -5959,12 +5959,17 @@ impl<'a> AstLowering<'a> {
                     self.lower_map_comprehension(for_parts, key, value, &expr_location)?;
                 comprehension.kind
             }
-            ExprKind::CompilerSpecific { target, code } => {
-                // Compiler-specific code: __js__("code")
+            ExprKind::CompilerSpecific { target, code, args } => {
+                // Compiler-specific code: __c__("code {0}", arg0)
                 let code_expr = self.lower_expression(code)?;
+                let lowered_args = args
+                    .iter()
+                    .filter_map(|a| self.lower_expression(a).ok())
+                    .collect();
                 TypedExpressionKind::CompilerSpecific {
                     target: self.context.intern_string(target),
                     code: Box::new(code_expr),
+                    args: lowered_args,
                 }
             }
             // For now, handle remaining expression types with placeholders

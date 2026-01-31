@@ -388,8 +388,9 @@ pub enum HirExprKind {
 
     // === Inline code ===
     InlineCode {
-        target: String, // js, cpp, etc.
-        code: String,
+        target: String,     // c, js, cpp, etc.
+        code: Box<HirExpr>, // code expression (string literal or concat)
+        args: Vec<HirExpr>, // positional arguments for {0}, {1}, etc.
     },
 
     // === Exception handling ===

@@ -191,6 +191,23 @@ pub struct HirToMirContext<'a> {
     /// Precomputed C-compatible layouts for @:cstruct classes
     /// Maps class TypeId to its CStructLayout
     cstruct_layouts: HashMap<TypeId, CStructLayout>,
+
+    /// Lazily-initialized TCC runtime function IDs for __c__ inline code
+    tcc_func_ids: Option<TccFuncIds>,
+}
+
+/// TCC runtime function IDs for __c__ inline code lowering
+#[derive(Debug, Clone, Copy)]
+struct TccFuncIds {
+    create: IrFunctionId,           // rayzor_tcc_create() -> I64
+    compile: IrFunctionId,          // rayzor_tcc_compile(I64, PtrString) -> I32
+    add_value_symbol: IrFunctionId, // rayzor_tcc_add_value_symbol(I64, PtrString, I64) -> I64
+    relocate: IrFunctionId,         // rayzor_tcc_relocate(I64) -> I32
+    get_symbol: IrFunctionId,       // rayzor_tcc_get_symbol(I64, PtrString) -> I64
+    delete: IrFunctionId,           // rayzor_tcc_delete(I64) -> Void
+    call0: IrFunctionId,            // rayzor_tcc_call0(I64) -> I64
+    free_value: IrFunctionId,       // rayzor_tcc_free_value(I64) -> Void
+    string_replace: IrFunctionId, // haxe_string_replace(PtrString, PtrString, PtrString) -> PtrString
 }
 
 /// SSA-derived optimization hints from DFG analysis
@@ -305,6 +322,7 @@ impl<'a> HirToMirContext<'a> {
             current_stmt_index: 0,
             reassigned_in_scope: HashSet::new(),
             cstruct_layouts: HashMap::new(),
+            tcc_func_ids: None,
         };
 
         // Pre-declare malloc so it's available for heap allocations during lowering
@@ -8816,9 +8834,9 @@ impl<'a> HirToMirContext<'a> {
                 self.lower_expression(inner)
             }
 
-            HirExprKind::InlineCode { target, code } => {
-                // Platform-specific inline code
-                self.lower_inline_code(target, code)
+            HirExprKind::InlineCode { target, code, args } => {
+                // Platform-specific inline code (__c__, __js__, etc.)
+                self.lower_inline_code(target, code, args)
             }
 
             HirExprKind::TryCatch { try_expr, .. } => {
@@ -14156,9 +14174,240 @@ impl<'a> HirToMirContext<'a> {
         result
     }
 
-    fn lower_inline_code(&mut self, _target: &str, _code: &str) -> Option<IrId> {
-        // TODO: Implement inline code
-        None
+    /// Declare a single TCC extern function and register it
+    fn declare_tcc_extern(
+        &mut self,
+        name: &str,
+        param_types: Vec<IrType>,
+        return_type: IrType,
+        dummy_id_offset: u32,
+    ) -> IrFunctionId {
+        use super::modules::IrExternFunction;
+        use super::{CallingConvention, IrFunctionSignature, IrId, IrParameter};
+
+        let parameters: Vec<IrParameter> = param_types
+            .into_iter()
+            .enumerate()
+            .map(|(i, ty)| IrParameter {
+                name: format!("p{}", i),
+                ty,
+                reg: IrId::new(0),
+                by_ref: false,
+            })
+            .collect();
+
+        let signature = IrFunctionSignature {
+            parameters,
+            return_type,
+            calling_convention: CallingConvention::C,
+            can_throw: false,
+            type_params: vec![],
+            uses_sret: false,
+        };
+
+        let func_id = self.builder.module.alloc_function_id();
+        let extern_func = IrExternFunction {
+            id: func_id,
+            name: name.to_string(),
+            symbol_id: SymbolId::from_raw(u32::MAX - 100 - dummy_id_offset),
+            signature,
+            source: "rayzor_runtime".to_string(),
+        };
+        self.builder
+            .module
+            .extern_functions
+            .insert(func_id, extern_func);
+        func_id
+    }
+
+    /// Lazily initialize TCC runtime extern function declarations
+    fn ensure_tcc_runtime(&mut self) -> TccFuncIds {
+        if let Some(ids) = self.tcc_func_ids {
+            return ids;
+        }
+
+        let create = self.declare_tcc_extern("rayzor_tcc_create", vec![], IrType::I64, 0);
+        let compile = self.declare_tcc_extern(
+            "rayzor_tcc_compile",
+            vec![IrType::I64, IrType::I64],
+            IrType::I32,
+            1,
+        );
+        let add_value_symbol = self.declare_tcc_extern(
+            "rayzor_tcc_add_value_symbol",
+            vec![IrType::I64, IrType::I64, IrType::I64],
+            IrType::I64,
+            2,
+        );
+        let relocate =
+            self.declare_tcc_extern("rayzor_tcc_relocate", vec![IrType::I64], IrType::I32, 3);
+        let get_symbol = self.declare_tcc_extern(
+            "rayzor_tcc_get_symbol",
+            vec![IrType::I64, IrType::I64],
+            IrType::I64,
+            4,
+        );
+        let delete =
+            self.declare_tcc_extern("rayzor_tcc_delete", vec![IrType::I64], IrType::Void, 5);
+        let call0 = self.declare_tcc_extern("rayzor_tcc_call0", vec![IrType::I64], IrType::I64, 6);
+        let free_value =
+            self.declare_tcc_extern("rayzor_tcc_free_value", vec![IrType::I64], IrType::Void, 7);
+        let string_ptr = IrType::Ptr(Box::new(IrType::String));
+        let string_replace = self.declare_tcc_extern(
+            "haxe_string_replace",
+            vec![string_ptr.clone(), string_ptr.clone(), string_ptr.clone()],
+            string_ptr,
+            8,
+        );
+
+        let ids = TccFuncIds {
+            create,
+            compile,
+            add_value_symbol,
+            relocate,
+            get_symbol,
+            delete,
+            call0,
+            free_value,
+            string_replace,
+        };
+        self.tcc_func_ids = Some(ids);
+        ids
+    }
+
+    /// Lower __c__("C code {0} {1}", arg0, arg1) to TCC JIT compilation + execution
+    fn lower_inline_code(
+        &mut self,
+        target: &str,
+        code_expr: &HirExpr,
+        args: &[HirExpr],
+    ) -> Option<IrId> {
+        if target != "__c__" {
+            self.errors.push(LoweringError {
+                message: format!(
+                    "Unsupported inline code target: '{}' (only '__c__' is supported)",
+                    target
+                ),
+                location: code_expr.source_location,
+            });
+            return None;
+        }
+
+        let tcc = self.ensure_tcc_runtime();
+        let create_id = tcc.create;
+        let compile_id = tcc.compile;
+        let add_value_symbol_id = tcc.add_value_symbol;
+        let free_value_id = tcc.free_value;
+        let relocate_id = tcc.relocate;
+        let get_symbol_id = tcc.get_symbol;
+        let delete_id = tcc.delete;
+        let call0_id = tcc.call0;
+        let replace_id = tcc.string_replace;
+
+        // Lower the code expression (string literal or concat like cdef() + "...")
+        let code_reg = self.lower_expression(code_expr)?;
+
+        // Lower all argument expressions
+        let mut arg_regs = Vec::new();
+        for arg in args {
+            if let Some(reg) = self.lower_expression(arg) {
+                arg_regs.push(reg);
+            }
+        }
+
+        // Build extern declarations prefix, do {N} -> __argN substitution, and concat
+        let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
+        let final_code_reg = if arg_regs.is_empty() {
+            code_reg
+        } else {
+            // Replace {0} -> __arg0, {1} -> __arg1, etc. in the code string
+            let mut current_code = code_reg;
+            for i in 0..arg_regs.len() {
+                let needle = self
+                    .builder
+                    .build_const(IrValue::String(format!("{{{}}}", i)))?;
+                let replacement = self
+                    .builder
+                    .build_const(IrValue::String(format!("__arg{}", i)))?;
+                current_code = self.builder.build_call_direct(
+                    replace_id,
+                    vec![current_code, needle, replacement],
+                    string_ptr_ty.clone(),
+                )?;
+            }
+
+            // Build "extern long __arg0;\nextern long __arg1;\n..." prefix
+            let mut prefix = String::new();
+            for i in 0..arg_regs.len() {
+                prefix.push_str(&format!("extern long __arg{};\n", i));
+            }
+            let prefix_reg = self.builder.build_const(IrValue::String(prefix))?;
+
+            // Concat: prefix + substituted_code via string_concat runtime
+            let concat_func_id = self.register_stdlib_mir_forward_ref(
+                "string_concat",
+                vec![string_ptr_ty.clone(), string_ptr_ty.clone()],
+                string_ptr_ty.clone(),
+            );
+            self.builder.build_call_direct(
+                concat_func_id,
+                vec![prefix_reg, current_code],
+                string_ptr_ty.clone(),
+            )?
+        };
+
+        // 1. state = rayzor_tcc_create()
+        let state = self
+            .builder
+            .build_call_direct(create_id, vec![], IrType::I64)?;
+
+        // 2. rayzor_tcc_compile(state, code)
+        self.builder
+            .build_call_direct(compile_id, vec![state, final_code_reg], IrType::I32);
+
+        // 3. Register arg values via add_value_symbol (heap-allocates each value so TCC can read it)
+        //    Must be after compile, before relocate (resolves extern symbols at link time)
+        let mut value_addrs = Vec::new();
+        for (i, arg_reg) in arg_regs.iter().enumerate() {
+            let name_reg = self
+                .builder
+                .build_const(IrValue::String(format!("__arg{}", i)))?;
+            let addr = self.builder.build_call_direct(
+                add_value_symbol_id,
+                vec![state, name_reg, *arg_reg],
+                IrType::I64,
+            )?;
+            value_addrs.push(addr);
+        }
+
+        // 4. rayzor_tcc_relocate(state)
+        self.builder
+            .build_call_direct(relocate_id, vec![state], IrType::I32);
+
+        // 5. entry = rayzor_tcc_get_symbol(state, "__entry__")
+        let entry_name = self
+            .builder
+            .build_const(IrValue::String("__entry__".to_string()))?;
+        let entry_addr =
+            self.builder
+                .build_call_direct(get_symbol_id, vec![state, entry_name], IrType::I64)?;
+
+        // 6. result = rayzor_tcc_call0(entry_addr)
+        let result = self
+            .builder
+            .build_call_direct(call0_id, vec![entry_addr], IrType::I64);
+
+        // 7. rayzor_tcc_delete(state)
+        self.builder
+            .build_call_direct(delete_id, vec![state], IrType::Void);
+
+        // 8. Free heap-allocated value symbols
+        for addr in &value_addrs {
+            self.builder
+                .build_call_direct(free_value_id, vec![*addr], IrType::Void);
+        }
+
+        result
     }
 
     fn lower_global(&mut self, symbol: SymbolId, global: &HirGlobal) {

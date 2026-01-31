@@ -131,6 +131,42 @@ pub extern "C" fn rayzor_tcc_add_symbol(state: *mut TCCState, name: *const HaxeS
     }
 }
 
+/// Add a symbol whose value is stored on the heap so TCC can read it via `extern long`.
+/// `tcc_add_symbol` maps a name to an *address* — for `extern long __arg0`,
+/// TCC reads the long at that address. So we Box the value and leak it.
+/// Returns the heap address (caller should free with rayzor_tcc_free_value after execution).
+#[no_mangle]
+pub extern "C" fn rayzor_tcc_add_value_symbol(
+    state: *mut TCCState,
+    name: *const HaxeString,
+    value: i64,
+) -> i64 {
+    if state.is_null() {
+        return 0;
+    }
+    unsafe {
+        let c_name = match haxe_string_to_cstring(name) {
+            Some(s) => s,
+            None => return 0,
+        };
+        let boxed = Box::new(value);
+        let ptr = Box::into_raw(boxed);
+        tcc_add_symbol(state, c_name.as_ptr(), ptr as *const std::ffi::c_void);
+        ptr as i64
+    }
+}
+
+/// Free a value allocated by rayzor_tcc_add_value_symbol.
+#[no_mangle]
+pub extern "C" fn rayzor_tcc_free_value(addr: i64) {
+    if addr == 0 {
+        return;
+    }
+    unsafe {
+        let _ = Box::from_raw(addr as *mut i64);
+    }
+}
+
 /// Relocate all compiled code into executable memory.
 /// Must be called after all compile() and addSymbol() calls.
 /// Returns 1 on success, 0 on failure.

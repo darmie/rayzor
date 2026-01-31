@@ -758,10 +758,11 @@ pub enum ExprKind {
         value: Box<Expr>,
     },
 
-    /// Compiler-specific code block: `__js__("console.log('hello')")`
+    /// Compiler-specific code block: `__c__("code {0} {1}", arg0, arg1)`
     CompilerSpecific {
         target: String,
         code: Box<Expr>,
+        args: Vec<Expr>,
     },
 }
 
