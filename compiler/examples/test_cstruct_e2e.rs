@@ -706,6 +706,45 @@ class Main {
 "#,
     ));
 
+    // ============================================================================
+    // TEST 19: @:cInclude with raylib raymath — header-only math library
+    //
+    // Uses @:cInclude to add raylib's include path, then #include <raymath.h>
+    // for Vector2Length, Clamp, Lerp (all static inline, no linking needed).
+    // Requires: brew install raylib
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "raylib_raymath",
+        r#"
+package test;
+
+@:cInclude(["/opt/homebrew/include"])
+class Main {
+    static function main() {
+        var result = untyped __c__('
+            #include <raymath.h>
+
+            long __entry__() {
+                // Vector2 length: sqrt(3^2 + 4^2) = 5
+                Vector2 v = { 3.0f, 4.0f };
+                float len = Vector2Length(v);
+
+                // Clamp
+                float c = Clamp(15.0f, 0.0f, 10.0f);  // -> 10.0
+
+                // Lerp
+                float l = Lerp(0.0f, 100.0f, 0.25f);  // -> 25.0
+
+                // Encode results: len=5, c=10, l=25 -> 5*10000 + 10*100 + 25 = 51025
+                return (long)(len * 10000.0f + c * 100.0f + l);
+            }
+        ');
+        trace(result);  // 51025
+    }
+}
+"#,
+    ));
+
     // Run all tests
     println!("╔══════════════════════════════════════════════════════════════════════╗");
     println!("║             @:cstruct Metadata — E2E Test Suite                    ║");
