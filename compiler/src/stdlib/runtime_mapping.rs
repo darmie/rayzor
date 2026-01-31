@@ -2804,6 +2804,12 @@ impl StdlibMapping {
             // cc.addFramework(name: String): Bool  (instance)
             map_method!(instance "rayzor_runtime_CC", "addFramework" => "rayzor_tcc_add_framework", params: 1, returns: primitive,
                 types: &[PtrVoid, PtrString] => I32),
+            // cc.addIncludePath(path: String): Bool  (instance)
+            map_method!(instance "rayzor_runtime_CC", "addIncludePath" => "rayzor_tcc_add_include_path", params: 1, returns: primitive,
+                types: &[PtrVoid, PtrString] => I32),
+            // cc.addFile(path: String): Bool  (instance)
+            map_method!(instance "rayzor_runtime_CC", "addFile" => "rayzor_tcc_add_file", params: 1, returns: primitive,
+                types: &[PtrVoid, PtrString] => I32),
             // cc.delete(): Void  (instance)
             map_method!(instance "rayzor_runtime_CC", "delete" => "rayzor_tcc_delete", params: 0, returns: void,
                 types: &[PtrVoid]),

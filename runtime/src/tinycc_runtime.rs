@@ -29,6 +29,7 @@ extern "C" {
     fn tcc_add_sysinclude_path(s: *mut TCCState, pathname: *const i8) -> i32;
     fn tcc_add_include_path(s: *mut TCCState, pathname: *const i8) -> i32;
     fn tcc_add_symbol(s: *mut TCCState, name: *const i8, val: *const std::ffi::c_void) -> i32;
+    fn tcc_add_file(s: *mut TCCState, filename: *const i8) -> i32;
     fn tcc_relocate(s: *mut TCCState) -> i32;
     fn tcc_get_symbol(s: *mut TCCState, name: *const i8) -> *mut std::ffi::c_void;
 
@@ -389,6 +390,161 @@ pub extern "C" fn rayzor_tcc_add_framework(state: *mut TCCState, name: *const Ha
 
         0
     }
+}
+
+/// Add a directory to the include search path.
+/// Returns 1 on success, 0 on failure.
+#[no_mangle]
+pub extern "C" fn rayzor_tcc_add_include_path(
+    state: *mut TCCState,
+    path: *const HaxeString,
+) -> i32 {
+    if state.is_null() {
+        return 0;
+    }
+    unsafe {
+        let c_path = match haxe_string_to_cstring(path) {
+            Some(s) => s,
+            None => return 0,
+        };
+        let ret = tcc_add_include_path(state, c_path.as_ptr());
+        if ret < 0 { 0 } else { 1 }
+    }
+}
+
+/// Add a file (.c, .o, .a, .dylib, .so, .dll) to the TCC context.
+/// C source files are compiled; object/archive/shared libs are linked.
+/// Returns 1 on success, panics on failure.
+#[no_mangle]
+pub extern "C" fn rayzor_tcc_add_file(
+    state: *mut TCCState,
+    path: *const HaxeString,
+) -> i32 {
+    if state.is_null() {
+        panic!("TCC addFile: null state");
+    }
+    unsafe {
+        let c_path = match haxe_string_to_cstring(path) {
+            Some(s) => s,
+            None => panic!("TCC addFile: invalid path string"),
+        };
+        let ret = tcc_add_file(state, c_path.as_ptr());
+        if ret < 0 {
+            let path_str = c_path.to_str().unwrap_or("<unknown>");
+            panic!("TCC addFile failed: '{}'", path_str);
+        }
+        1
+    }
+}
+
+/// Add a system library via pkg-config discovery.
+/// Runs `pkg-config --cflags --libs <name>` to discover include paths and
+/// shared library locations. Adds include paths to TCC and loads the library.
+/// Panics if pkg-config is not found or the library is not installed.
+#[no_mangle]
+pub extern "C" fn rayzor_tcc_add_clib(
+    state: *mut TCCState,
+    name: *const HaxeString,
+) -> i32 {
+    if state.is_null() {
+        panic!("TCC addClib: null state");
+    }
+    let lib_name = unsafe {
+        match haxe_string_to_cstring(name) {
+            Some(s) => s.to_str().unwrap_or("").to_string(),
+            None => panic!("TCC addClib: invalid library name"),
+        }
+    };
+
+    // Run pkg-config --cflags to get include paths
+    let cflags_output = std::process::Command::new("pkg-config")
+        .args(["--cflags", &lib_name])
+        .output();
+
+    match cflags_output {
+        Ok(output) if output.status.success() => {
+            let cflags = String::from_utf8_lossy(&output.stdout);
+            for flag in cflags.split_whitespace() {
+                if let Some(path) = flag.strip_prefix("-I") {
+                    if let Ok(c_path) = CString::new(path) {
+                        unsafe { tcc_add_include_path(state, c_path.as_ptr()); }
+                    }
+                }
+            }
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            panic!("pkg-config --cflags {} failed: {}", lib_name, stderr.trim());
+        }
+        Err(e) => {
+            panic!(
+                "pkg-config not found ({}). Install it via:\n  \
+                 macOS: brew install pkg-config\n  \
+                 Linux: apt install pkg-config\n  \
+                 Windows/MSYS2: pacman -S pkg-config",
+                e
+            );
+        }
+    }
+
+    // Run pkg-config --libs to get library flags, then dlopen the library
+    let libs_output = std::process::Command::new("pkg-config")
+        .args(["--libs", &lib_name])
+        .output();
+
+    match libs_output {
+        Ok(output) if output.status.success() => {
+            let libs = String::from_utf8_lossy(&output.stdout);
+            let mut lib_dirs: Vec<String> = Vec::new();
+            let mut lib_names: Vec<String> = Vec::new();
+
+            for flag in libs.split_whitespace() {
+                if let Some(dir) = flag.strip_prefix("-L") {
+                    lib_dirs.push(dir.to_string());
+                } else if let Some(l) = flag.strip_prefix("-l") {
+                    lib_names.push(l.to_string());
+                }
+            }
+
+            // Try to dlopen each library
+            for l in &lib_names {
+                // Try with explicit paths first, then system default
+                let mut loaded = false;
+                for dir in &lib_dirs {
+                    #[cfg(target_os = "macos")]
+                    let full_path = format!("{}/lib{}.dylib", dir, l);
+                    #[cfg(not(target_os = "macos"))]
+                    let full_path = format!("{}/lib{}.so", dir, l);
+
+                    if let Ok(c_path) = CString::new(full_path.as_str()) {
+                        let handle = unsafe { dlopen(c_path.as_ptr(), RTLD_LAZY) };
+                        if !handle.is_null() {
+                            loaded = true;
+                            break;
+                        }
+                    }
+                }
+                if !loaded {
+                    // Try system default path
+                    #[cfg(target_os = "macos")]
+                    let default_name = format!("lib{}.dylib", l);
+                    #[cfg(not(target_os = "macos"))]
+                    let default_name = format!("lib{}.so", l);
+
+                    if let Ok(c_path) = CString::new(default_name.as_str()) {
+                        unsafe { dlopen(c_path.as_ptr(), RTLD_LAZY); }
+                    }
+                }
+            }
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            panic!("pkg-config --libs {} failed: {}", lib_name, stderr.trim());
+        }
+        Err(_) => {} // Already handled above
+    }
+
+    1
 }
 
 /// Free the TCC compilation context.

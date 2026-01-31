@@ -111,6 +111,30 @@ extern class CC {
     public function addFramework(name:String):Bool;
 
     /**
+     * Add a directory to the include search path.
+     * Allows `#include "header.h"` and `#include <header.h>` to find
+     * headers in the specified directory.
+     *
+     * @param path Absolute or relative directory path
+     * @return true if path was added successfully
+     */
+    @:native("addIncludePath")
+    public function addIncludePath(path:String):Bool;
+
+    /**
+     * Add a C source file, object file, archive, or shared library.
+     * Supports `.c` (compiled into context), `.o`, `.a` (linked),
+     * and `.dylib`/`.so`/`.dll` (dynamically loaded).
+     *
+     * Must be called before relocate().
+     *
+     * @param path Path to the file
+     * @return true if file was added successfully
+     */
+    @:native("addFile")
+    public function addFile(path:String):Bool;
+
+    /**
      * Free the TCC compilation context and all associated resources.
      * Note: relocated code memory remains valid (intentional leak for JIT use).
      */

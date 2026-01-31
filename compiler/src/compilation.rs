@@ -679,6 +679,9 @@ impl CompilationUnit {
                 qualified_name: None,
                 native_name: None,
                 frameworks: None,
+                c_includes: None,
+                c_sources: None,
+                c_libs: None,
             };
 
             // Add symbol to symbol table

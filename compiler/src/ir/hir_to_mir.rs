@@ -213,7 +213,10 @@ struct TccFuncIds {
     call0: IrFunctionId,            // rayzor_tcc_call0(I64) -> I64
     free_value: IrFunctionId,       // rayzor_tcc_free_value(I64) -> Void
     string_replace: IrFunctionId, // haxe_string_replace(PtrString, PtrString, PtrString) -> PtrString
-    add_framework: IrFunctionId,  // rayzor_tcc_add_framework(I64, PtrString) -> I32
+    add_framework: IrFunctionId,    // rayzor_tcc_add_framework(I64, PtrString) -> I32
+    add_include_path: IrFunctionId, // rayzor_tcc_add_include_path(I64, PtrString) -> I32
+    add_file: IrFunctionId,         // rayzor_tcc_add_file(I64, PtrString) -> I32
+    add_clib: IrFunctionId,         // rayzor_tcc_add_clib(I64, PtrString) -> I32
 }
 
 /// SSA-derived optimization hints from DFG analysis
@@ -14275,6 +14278,24 @@ impl<'a> HirToMirContext<'a> {
             IrType::I32,
             9,
         );
+        let add_include_path = self.declare_tcc_extern(
+            "rayzor_tcc_add_include_path",
+            vec![IrType::I64, IrType::I64],
+            IrType::I32,
+            10,
+        );
+        let add_file = self.declare_tcc_extern(
+            "rayzor_tcc_add_file",
+            vec![IrType::I64, IrType::I64],
+            IrType::I32,
+            11,
+        );
+        let add_clib = self.declare_tcc_extern(
+            "rayzor_tcc_add_clib",
+            vec![IrType::I64, IrType::I64],
+            IrType::I32,
+            12,
+        );
 
         let ids = TccFuncIds {
             create,
@@ -14287,6 +14308,9 @@ impl<'a> HirToMirContext<'a> {
             free_value,
             string_replace,
             add_framework,
+            add_include_path,
+            add_file,
+            add_clib,
         };
         self.tcc_func_ids = Some(ids);
         ids
@@ -14392,39 +14416,59 @@ impl<'a> HirToMirContext<'a> {
             )?
         };
 
-        // Collect @:frameworks from module-local types for auto-loading
+        // Collect @:frameworks, @:cInclude, @:cSource from module-local types and current function
         let add_framework_id = tcc.add_framework;
+        let add_include_path_id = tcc.add_include_path;
+        let add_file_id = tcc.add_file;
+        let add_clib_id = tcc.add_clib;
         let mut framework_names: Vec<String> = Vec::new();
+        let mut include_paths: Vec<String> = Vec::new();
+        let mut source_files: Vec<String> = Vec::new();
+        let mut clib_names: Vec<String> = Vec::new();
         {
-            let mut seen = std::collections::HashSet::new();
+            let mut seen_fw = std::collections::HashSet::new();
+            let mut seen_inc = std::collections::HashSet::new();
+            let mut seen_src = std::collections::HashSet::new();
+            let mut seen_lib = std::collections::HashSet::new();
+
+            // Collect metadata from all relevant symbols
+            let mut sym_ids: Vec<SymbolId> = Vec::new();
             for (_type_id, type_decl) in self.current_hir_types {
-                let symbol_id = match type_decl {
-                    crate::ir::hir::HirTypeDecl::Class(c) => Some(c.symbol_id),
-                    _ => None,
-                };
-                if let Some(sid) = symbol_id {
-                    if let Some(sym) = self.symbol_table.get_symbol(sid) {
-                        if let Some(ref fws) = sym.frameworks {
-                            for fw in fws {
-                                if let Some(name) = self.string_interner.get(*fw) {
-                                    if seen.insert(name.to_string()) {
-                                        framework_names.push(name.to_string());
-                                    }
-                                }
+                if let crate::ir::hir::HirTypeDecl::Class(c) = type_decl {
+                    sym_ids.push(c.symbol_id);
+                }
+            }
+            if let Some(func_sym_id) = self.current_function_symbol {
+                sym_ids.push(func_sym_id);
+            }
+
+            for sid in &sym_ids {
+                if let Some(sym) = self.symbol_table.get_symbol(*sid) {
+                    if let Some(ref fws) = sym.frameworks {
+                        for f in fws {
+                            if let Some(n) = self.string_interner.get(*f) {
+                                if seen_fw.insert(n.to_string()) { framework_names.push(n.to_string()); }
                             }
                         }
                     }
-                }
-            }
-            // Also collect from current function's @:frameworks metadata
-            if let Some(func_sym_id) = self.current_function_symbol {
-                if let Some(sym) = self.symbol_table.get_symbol(func_sym_id) {
-                    if let Some(ref fws) = sym.frameworks {
-                        for fw in fws {
-                            if let Some(name) = self.string_interner.get(*fw) {
-                                if seen.insert(name.to_string()) {
-                                    framework_names.push(name.to_string());
-                                }
+                    if let Some(ref incs) = sym.c_includes {
+                        for i in incs {
+                            if let Some(n) = self.string_interner.get(*i) {
+                                if seen_inc.insert(n.to_string()) { include_paths.push(n.to_string()); }
+                            }
+                        }
+                    }
+                    if let Some(ref srcs) = sym.c_sources {
+                        for s in srcs {
+                            if let Some(n) = self.string_interner.get(*s) {
+                                if seen_src.insert(n.to_string()) { source_files.push(n.to_string()); }
+                            }
+                        }
+                    }
+                    if let Some(ref libs) = sym.c_libs {
+                        for l in libs {
+                            if let Some(n) = self.string_interner.get(*l) {
+                                if seen_lib.insert(n.to_string()) { clib_names.push(n.to_string()); }
                             }
                         }
                     }
@@ -14437,11 +14481,32 @@ impl<'a> HirToMirContext<'a> {
             .builder
             .build_call_direct(create_id, vec![], IrType::I64)?;
 
-        // 1b. Auto-load @:frameworks into TCC context
+        // 1b. Auto-load @:cInclude paths
+        for path in &include_paths {
+            let path_reg = self.builder.build_const(IrValue::String(path.clone()))?;
+            self.builder
+                .build_call_direct(add_include_path_id, vec![state, path_reg], IrType::I32);
+        }
+
+        // 1c. Auto-load @:frameworks into TCC context
         for fw_name in &framework_names {
             let name_reg = self.builder.build_const(IrValue::String(fw_name.clone()))?;
             self.builder
                 .build_call_direct(add_framework_id, vec![state, name_reg], IrType::I32);
+        }
+
+        // 1d. Auto-add @:cSource files (compiled before main code so symbols are available)
+        for src_path in &source_files {
+            let path_reg = self.builder.build_const(IrValue::String(src_path.clone()))?;
+            self.builder
+                .build_call_direct(add_file_id, vec![state, path_reg], IrType::I32);
+        }
+
+        // 1e. Auto-load @:clib libraries via pkg-config discovery
+        for lib_name in &clib_names {
+            let name_reg = self.builder.build_const(IrValue::String(lib_name.clone()))?;
+            self.builder
+                .build_call_direct(add_clib_id, vec![state, name_reg], IrType::I32);
         }
 
         // 2. rayzor_tcc_compile(state, code)

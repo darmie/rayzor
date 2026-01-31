@@ -805,6 +805,21 @@ register_symbol!(
     crate::tinycc_runtime::rayzor_tcc_add_framework
 );
 #[cfg(feature = "tcc-runtime")]
+register_symbol!(
+    "rayzor_tcc_add_include_path",
+    crate::tinycc_runtime::rayzor_tcc_add_include_path
+);
+#[cfg(feature = "tcc-runtime")]
+register_symbol!(
+    "rayzor_tcc_add_file",
+    crate::tinycc_runtime::rayzor_tcc_add_file
+);
+#[cfg(feature = "tcc-runtime")]
+register_symbol!(
+    "rayzor_tcc_add_clib",
+    crate::tinycc_runtime::rayzor_tcc_add_clib
+);
+#[cfg(feature = "tcc-runtime")]
 register_symbol!("rayzor_tcc_call0", crate::tinycc_runtime::rayzor_tcc_call0);
 #[cfg(feature = "tcc-runtime")]
 register_symbol!("rayzor_tcc_call1", crate::tinycc_runtime::rayzor_tcc_call1);

@@ -281,6 +281,15 @@ pub struct Symbol {
     /// Framework names from @:frameworks(["Accelerate", "CoreFoundation"]) metadata
     /// Auto-loaded into TCC context when using __c__() inline code
     pub frameworks: Option<Vec<InternedString>>,
+    /// Include paths from @:cInclude(["vendor/stb"]) metadata
+    /// Auto-added to TCC include search path for __c__() inline code
+    pub c_includes: Option<Vec<InternedString>>,
+    /// C source files from @:cSource(["vendor/stb_image.c"]) metadata
+    /// Auto-compiled into TCC context for __c__() inline code
+    pub c_sources: Option<Vec<InternedString>>,
+    /// System libraries from @:clib(["sqlite3"]) metadata
+    /// Discovered via pkg-config and loaded into TCC context
+    pub c_libs: Option<Vec<InternedString>>,
 }
 
 /// Bitflags for various symbol properties
@@ -399,6 +408,9 @@ impl Symbol {
             qualified_name: None,
             native_name: None,
             frameworks: None,
+            c_includes: None,
+            c_sources: None,
+            c_libs: None,
         }
     }
 
@@ -846,6 +858,9 @@ impl SymbolTable {
             qualified_name: None,
             native_name: None,
             frameworks: None,
+            c_includes: None,
+            c_sources: None,
+            c_libs: None,
         };
 
         // Add the symbol to the table
@@ -882,6 +897,9 @@ impl SymbolTable {
             qualified_name: None,
             native_name: None,
             frameworks: None,
+            c_includes: None,
+            c_sources: None,
+            c_libs: None,
         };
 
         // Add the symbol to the table
@@ -922,6 +940,9 @@ impl SymbolTable {
             qualified_name: None,
             native_name: None,
             frameworks: None,
+            c_includes: None,
+            c_sources: None,
+            c_libs: None,
         };
 
         // Add the symbol to the table
@@ -961,6 +982,9 @@ impl SymbolTable {
             qualified_name: None,
             native_name: None,
             frameworks: None,
+            c_includes: None,
+            c_sources: None,
+            c_libs: None,
         };
 
         self.add_symbol(symbol);
@@ -998,6 +1022,9 @@ impl SymbolTable {
             qualified_name: None,
             native_name: None,
             frameworks: None,
+            c_includes: None,
+            c_sources: None,
+            c_libs: None,
         };
 
         self.add_symbol(symbol);
@@ -1045,6 +1072,9 @@ impl SymbolTable {
             qualified_name: None,
             native_name: None,
             frameworks: None,
+            c_includes: None,
+            c_sources: None,
+            c_libs: None,
         };
 
         self.add_symbol(symbol);
@@ -1073,6 +1103,9 @@ impl SymbolTable {
             qualified_name: None,
             native_name: None,
             frameworks: None,
+            c_includes: None,
+            c_sources: None,
+            c_libs: None,
         };
 
         self.add_symbol(symbol);
@@ -1105,6 +1138,9 @@ impl SymbolTable {
             qualified_name: None,
             native_name: None,
             frameworks: None,
+            c_includes: None,
+            c_sources: None,
+            c_libs: None,
         };
 
         self.add_symbol(symbol);
@@ -1137,6 +1173,9 @@ impl SymbolTable {
             qualified_name: None,
             native_name: None,
             frameworks: None,
+            c_includes: None,
+            c_sources: None,
+            c_libs: None,
         };
 
         self.add_symbol(symbol);
@@ -1170,6 +1209,9 @@ impl SymbolTable {
             qualified_name: None,
             native_name: None,
             frameworks: None,
+            c_includes: None,
+            c_sources: None,
+            c_libs: None,
         };
 
         self.add_symbol(symbol);

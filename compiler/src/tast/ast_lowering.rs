@@ -661,21 +661,27 @@ impl<'a> AstLowering<'a> {
                     }
                 }
                 "no_mangle" => flags = flags.union(SymbolFlags::NO_MANGLE),
-                "frameworks" => {
-                    // @:frameworks(["Accelerate", "CoreFoundation"])
+                "frameworks" | "cInclude" | "cSource" | "clib" => {
+                    // @:frameworks(["Accelerate"]), @:cInclude(["vendor/stb"]), @:cSource(["lib.c"])
                     if let Some(first_param) = meta.params.first() {
                         if let parser::haxe_ast::ExprKind::Array(elements) = &first_param.kind {
-                            let mut fw_names = Vec::new();
+                            let mut names = Vec::new();
                             for elem in elements {
                                 if let parser::haxe_ast::ExprKind::String(s) = &elem.kind {
-                                    fw_names.push(self.context.string_interner.intern(s));
+                                    names.push(self.context.string_interner.intern(s));
                                 }
                             }
-                            if !fw_names.is_empty() {
+                            if !names.is_empty() {
                                 if let Some(sym) =
                                     self.context.symbol_table.get_symbol_mut(symbol_id)
                                 {
-                                    sym.frameworks = Some(fw_names);
+                                    match name {
+                                        "frameworks" => sym.frameworks = Some(names),
+                                        "cInclude" => sym.c_includes = Some(names),
+                                        "cSource" => sym.c_sources = Some(names),
+                                        "clib" => sym.c_libs = Some(names),
+                                        _ => {}
+                                    }
                                 }
                             }
                         }
@@ -1667,6 +1673,9 @@ impl<'a> AstLowering<'a> {
                 qualified_name: None,
                 native_name: None,
                 frameworks: None,
+                c_includes: None,
+                c_sources: None,
+                c_libs: None,
             };
 
             // Add symbol to symbol table
@@ -1841,6 +1850,9 @@ impl<'a> AstLowering<'a> {
                 qualified_name: None,
                 native_name: None,
                 frameworks: None,
+                c_includes: None,
+                c_sources: None,
+                c_libs: None,
             };
 
             self.context.symbol_table.add_symbol(func_symbol);
@@ -3887,20 +3899,26 @@ impl<'a> AstLowering<'a> {
                         }
                     }
                 }
-            } else if name == "frameworks" {
+            } else if matches!(name, "frameworks" | "cInclude" | "cSource" | "clib") {
                 if let Some(first_param) = meta.params.first() {
                     if let parser::haxe_ast::ExprKind::Array(elements) = &first_param.kind {
-                        let mut fw_names = Vec::new();
+                        let mut names = Vec::new();
                         for elem in elements {
                             if let parser::haxe_ast::ExprKind::String(s) = &elem.kind {
-                                fw_names.push(self.context.string_interner.intern(s));
+                                names.push(self.context.string_interner.intern(s));
                             }
                         }
-                        if !fw_names.is_empty() {
+                        if !names.is_empty() {
                             if let Some(sym) =
                                 self.context.symbol_table.get_symbol_mut(function_symbol)
                             {
-                                sym.frameworks = Some(fw_names);
+                                match name {
+                                    "frameworks" => sym.frameworks = Some(names),
+                                    "cInclude" => sym.c_includes = Some(names),
+                                    "cSource" => sym.c_sources = Some(names),
+                                    "clib" => sym.c_libs = Some(names),
+                                    _ => {}
+                                }
                             }
                         }
                     }
