@@ -243,6 +243,7 @@ impl StdlibMapping {
         mapping.register_ptr_methods();
         mapping.register_ref_methods();
         mapping.register_usize_methods();
+        mapping.register_cstring_methods();
 
         mapping
     }
@@ -2744,6 +2745,34 @@ impl StdlibMapping {
             // usize.isZero(): Bool  (instance, compare to 0)
             map_method!(instance "rayzor_Usize", "isZero" => "Usize_isZero", params: 0, mir_wrapper,
                 types: &[I64] => Bool),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // CString Methods (rayzor.CString — null-terminated C string)
+    // ============================================================================
+
+    fn register_cstring_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
+        let mappings = vec![
+            // CString.from(s: String): CString  (static, copies String to null-terminated buffer)
+            map_method!(static "rayzor_CString", "from" => "rayzor_cstring_from", params: 1, returns: primitive,
+                types: &[PtrString] => I64),
+            // cstring.toHaxeString(): String  (instance, creates HaxeString from null-terminated buffer)
+            map_method!(instance "rayzor_CString", "toHaxeString" => "rayzor_cstring_to_string", params: 0, returns: primitive,
+                types: &[I64] => PtrString),
+            // cstring.raw(): Int  (instance, identity — CString IS the raw address)
+            map_method!(instance "rayzor_CString", "raw" => "CString_raw", params: 0, mir_wrapper,
+                types: &[I64] => I64),
+            // CString.fromRaw(addr: Int): CString  (static, identity cast)
+            map_method!(static "rayzor_CString", "from_raw" => "CString_fromRaw", params: 1, mir_wrapper,
+                types: &[I64] => I64),
+            // cstring.free(): Void  (instance, frees the buffer)
+            map_method!(instance "rayzor_CString", "free" => "rayzor_cstring_free", params: 0, returns: void,
+                types: &[I64]),
         ];
 
         self.register_from_tuples(mappings);

@@ -31,6 +31,10 @@ pub fn build_systems_types(builder: &mut MirBuilder) {
     build_ref_raw(builder);
     build_ref_deref(builder);
 
+    // Build CString MIR wrappers (abstract over Int — raw/fromRaw are identity)
+    build_cstring_raw(builder);
+    build_cstring_from_raw(builder);
+
     // Build Usize MIR wrappers (no externs needed — native i64 ops)
     build_usize_from_int(builder);
     build_usize_to_int(builder);
@@ -611,4 +615,46 @@ fn build_usize_is_zero(builder: &mut MirBuilder) {
     let zero = builder.const_i64(0);
     let is_zero = builder.icmp(CompareOp::Eq, self_val, zero, IrType::Bool);
     builder.ret(Some(is_zero));
+}
+
+// ============================================================================
+// CString — MIR wrappers (abstract over Int — raw/fromRaw are identity)
+// ============================================================================
+
+/// CString_raw(self: i64) -> i64  — identity (CString IS the raw char* address)
+fn build_cstring_raw(builder: &mut MirBuilder) {
+    let i64_ty = IrType::I64;
+
+    let func_id = builder
+        .begin_function("CString_raw")
+        .param("self_val", i64_ty.clone())
+        .returns(i64_ty)
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let self_val = builder.get_param(0);
+    builder.ret(Some(self_val));
+}
+
+/// CString_fromRaw(addr: i64) -> i64  — identity cast
+fn build_cstring_from_raw(builder: &mut MirBuilder) {
+    let i64_ty = IrType::I64;
+
+    let func_id = builder
+        .begin_function("CString_fromRaw")
+        .param("addr", i64_ty.clone())
+        .returns(i64_ty)
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let addr = builder.get_param(0);
+    builder.ret(Some(addr));
 }

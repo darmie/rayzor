@@ -3852,6 +3852,21 @@ impl<'a> AstLowering<'a> {
             }
         }
 
+        // Process @:native metadata on method fields (sets native_name on the method symbol)
+        for meta in &field.meta {
+            let name = meta.name.strip_prefix(':').unwrap_or(&meta.name);
+            if name == "native" {
+                if let Some(first_param) = meta.params.first() {
+                    if let parser::haxe_ast::ExprKind::String(native_str) = &first_param.kind {
+                        let native_interned = self.context.string_interner.intern(native_str);
+                        if let Some(sym) = self.context.symbol_table.get_symbol_mut(function_symbol) {
+                            sym.native_name = Some(native_interned);
+                        }
+                    }
+                }
+            }
+        }
+
         // Enter function scope
         let function_scope = self.context.enter_scope(ScopeKind::Function);
 

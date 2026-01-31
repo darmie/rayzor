@@ -1451,6 +1451,23 @@ var value = arc.get();  // Must explicitly call .get()
 - Automatically insert `.get()` calls during MIR lowering
 - Handle nested wrappers (e.g., `Arc<Mutex<T>>`)
 
+### @:native Metadata Ignored on Extern Abstract Methods
+**Status:** Bug (workaround in place)
+**Affected Types:** `rayzor.CString`, `rayzor.Usize`, `rayzor.Ptr`, and any stdlib extern abstract
+
+`@:native` metadata on extern abstract method declarations (e.g., `@:native("to_haxe_string") public function toHaxeString():String`) is not processed during stdlib BLADE cache loading. The `symbol.native_name` field remains `None` for all stdlib extern abstract methods.
+
+This means `get_stdlib_runtime_info` cannot use the declared native name to look up the correct runtime mapping — it must use the Haxe method name (`symbol.name`) instead.
+
+**Workaround:** Runtime mapping keys in `runtime_mapping.rs` use Haxe method names (e.g., `"toHaxeString"`) instead of the `@:native` names (e.g., `"to_haxe_string"`). This works but defeats the purpose of `@:native`.
+
+**Root Cause:** Stdlib types are loaded via the BLADE cache path, which deserializes pre-built symbols. The `@:native` metadata processing added in `lower_function_from_field` (ast_lowering.rs) only runs for user-defined types, not for stdlib types loaded from cache.
+
+**Fix Required:**
+- Process `@:native` metadata during BLADE cache deserialization, or
+- Process `@:native` on extern abstract methods during stdlib loading (post-cache), or
+- Store `native_name` in the BLADE cache format itself
+
 ### String Concatenation with Trace
 **Status:** ✅ FIXED (2026-01-30)
 **Issue:** ~~Using string concatenation inside trace causes misaligned pointer dereference~~ — Resolved by using MIR register types instead of HIR types for string concat operands, and changing `int_to_string` to accept I64 directly.

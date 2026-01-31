@@ -846,7 +846,7 @@ impl<'a> HirToMirContext<'a> {
 
         if let Some((kind, _tid)) = type_info {
             match &kind {
-                // Abstract types: Ptr<T>, Ref<T>, Box<T>, Usize
+                // Abstract types: Ptr<T>, Ref<T>, Box<T>, Usize, CString
                 TypeKind::Abstract {
                     symbol_id,
                     type_args,
@@ -895,11 +895,25 @@ impl<'a> HirToMirContext<'a> {
                         "Usize" => {
                             return (8, 8, "size_t".to_string(), IrType::I64);
                         }
+                        "CString" => {
+                            return (8, 8, "char*".to_string(), IrType::I64);
+                        }
                         _ => {} // Fall through to IR-based matching
                     }
                 }
-                // Class types: check if it's a nested @:cstruct (inline embedding)
+                // Class types: check for CString or nested @:cstruct
                 TypeKind::Class { symbol_id, .. } => {
+                    // Check if this is CString (extern abstract stored as Class)
+                    if let Some(sym) = self.symbol_table.get_symbol(*symbol_id) {
+                        let is_cstring = sym.qualified_name
+                            .and_then(|n| self.string_interner.get(n))
+                            .map(|s| s == "rayzor.CString")
+                            .unwrap_or(false);
+                        if is_cstring {
+                            return (8, 8, "char*".to_string(), IrType::I64);
+                        }
+                    }
+
                     let is_nested_cstruct = self
                         .symbol_table
                         .get_symbol(*symbol_id)
@@ -2795,6 +2809,7 @@ impl<'a> HirToMirContext<'a> {
         &crate::stdlib::RuntimeFunctionCall,
     )> {
         // Get the method name and optional qualified name from the symbol table
+        // Prefer @:native name over Haxe name for runtime mapping lookup
         let (method_name, qualified_name) =
             if let Some(symbol) = self.symbol_table.get_symbol(method_symbol) {
                 let name = self.string_interner.get(symbol.name)?;
@@ -5271,11 +5286,21 @@ impl<'a> HirToMirContext<'a> {
                             if let Some(crate::tast::core::TypeKind::Class { symbol_id, .. }) =
                                 &type_kind
                             {
-                                // Get class name
-                                self.symbol_table
+                                // Skip extern abstracts (CString, Usize, Ptr, etc.)
+                                // — they appear as Class in the type table but don't have toString()
+                                let is_extern = self.symbol_table
                                     .get_symbol(*symbol_id)
-                                    .and_then(|s| self.string_interner.get(s.name))
-                                    .map(|name| name.to_string())
+                                    .map(|s| s.flags.contains(crate::tast::symbols::SymbolFlags::EXTERN))
+                                    .unwrap_or(false);
+                                if is_extern {
+                                    None
+                                } else {
+                                    // Get class name
+                                    self.symbol_table
+                                        .get_symbol(*symbol_id)
+                                        .and_then(|s| self.string_interner.get(s.name))
+                                        .map(|name| name.to_string())
+                                }
                             } else {
                                 None
                             };

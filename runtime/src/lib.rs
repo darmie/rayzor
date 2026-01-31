@@ -51,6 +51,9 @@ pub mod plugin_impl; // Plugin registration
 // Box<T> runtime — single-owner heap allocation
 pub mod box_runtime;
 
+// CString runtime — null-terminated C string interop (rayzor.CString)
+pub mod cstring_runtime;
+
 // TinyCC runtime API (rayzor.runtime.CC)
 #[cfg(feature = "tcc-runtime")]
 pub mod tinycc_runtime;

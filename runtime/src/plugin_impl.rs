@@ -1155,7 +1155,23 @@ register_symbol!("rayzor_tracked_realloc", crate::rayzor_tracked_realloc);
 register_symbol!("rayzor_tracked_free", crate::rayzor_tracked_free);
 
 // ============================================================================
-// TinyCC Runtime API (rayzor.runtime.CC) — registered above at lines 757-776
+// CString Runtime (rayzor.CString — null-terminated C string interop)
+// ============================================================================
+register_symbol!(
+    "rayzor_cstring_from",
+    crate::cstring_runtime::rayzor_cstring_from
+);
+register_symbol!(
+    "rayzor_cstring_to_string",
+    crate::cstring_runtime::rayzor_cstring_to_string
+);
+register_symbol!(
+    "rayzor_cstring_free",
+    crate::cstring_runtime::rayzor_cstring_free
+);
+
+// ============================================================================
+// TinyCC Runtime API (rayzor.runtime.CC) — registered above
 
 /// Rayzor Runtime Plugin
 pub struct RayzorRuntimePlugin;

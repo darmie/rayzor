@@ -443,6 +443,95 @@ class Main {
 "#,
     ));
 
+    // ============================================================================
+    // TEST 10: @:cstruct with CString field — maps to char* in cdef
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "cstruct_cstring_field",
+        r#"
+package test;
+
+import rayzor.CString;
+
+@:cstruct
+class NamedEntity {
+    public var id:Int;
+    public var name:CString;
+}
+
+class Main {
+    static function main() {
+        trace(NamedEntity.cdef());
+    }
+}
+"#,
+    ));
+
+    // ============================================================================
+    // TEST 11: CString basic — from, toString, raw
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "cstring_basic",
+        r#"
+package test;
+
+import rayzor.CString;
+
+class Main {
+    static function main() {
+        var cs = CString.from("hello world");
+        trace(cs.raw() != 0);   // true — allocated
+        trace(cs.toHaxeString());  // "hello world"
+        cs.free();
+    }
+}
+"#,
+    ));
+
+    // ============================================================================
+    // TEST 12: CString + CC interop — pass char* to C code
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "cstring_cc_interop",
+        r#"
+package test;
+
+import rayzor.CString;
+import rayzor.runtime.CC;
+
+class Main {
+    static function main() {
+        var cs = CString.from("rayzor");
+
+        var cc = CC.create();
+        cc.compile("
+            long str_len(long addr) {
+                const char* s = (const char*)addr;
+                long n = 0;
+                while (s[n]) n++;
+                return n;
+            }
+            long first_char(long addr) {
+                const char* s = (const char*)addr;
+                return (long)s[0];
+            }
+        ");
+        cc.relocate();
+
+        var strLenFn = cc.getSymbol("str_len");
+        var firstCharFn = cc.getSymbol("first_char");
+
+        // Pass CString raw address to C
+        trace(CC.call1(strLenFn, cs.raw()));     // 6
+        trace(CC.call1(firstCharFn, cs.raw()));  // 114 ('r')
+
+        cs.free();
+        cc.delete();
+    }
+}
+"#,
+    ));
+
     // Run all tests
     println!("╔══════════════════════════════════════════════════════════════════════╗");
     println!("║             @:cstruct Metadata — E2E Test Suite                    ║");
