@@ -1451,6 +1451,59 @@ All metadata works on both classes and functions. When `__c__()` is used, metada
 
 ---
 
+## 14. SIMD & Tensor / GPU Compute 🟡
+
+**Priority:** High
+**Complexity:** Very High
+**Dependencies:** SIMD4f (complete), Plugin system (complete)
+
+### 14.1 SIMD4f ✅ COMPLETE (2026-01-31)
+
+- [x] 128-bit SIMD vector (4×f32) as @:coreType abstract
+- [x] Tuple literal syntax: `var v:SIMD4f = (1.0, 2.0, 3.0, 4.0)`
+- [x] @:from Array literal with heap allocation warning
+- [x] Zero-cost operators: +, -, *, / via VectorBinOp
+- [x] Math ops: sqrt, abs, neg, min, max, ceil, floor, round
+- [x] Compound ops: clamp, lerp, normalize, cross3, distance, len
+- [x] Cranelift + LLVM backend support
+- [x] 16 E2E tests passing
+
+### 14.2 rayzor.ds.Tensor (CPU) 🔴
+
+- [ ] Tensor type with shape/strides/dtype (extern class, runtime in Rust)
+- [ ] DType enum (F32, F16, BF16, I32, I8, U8)
+- [ ] Construction: zeros, ones, full, fromArray, rand
+- [ ] View ops: reshape, transpose, permute, slice (no-copy via strides)
+- [ ] Elementwise ops: add, sub, mul, div, exp, log, sqrt
+- [ ] Reductions: sum, mean, max, min
+- [ ] Linear algebra: matmul, dot
+- [ ] Activations: relu, gelu, silu, softmax
+- [ ] Normalization: layerNorm, rmsNorm
+- [ ] SIMD4f vectorized CPU paths for f32 ops
+
+### 14.3 rayzor-gpu Plugin 🔴
+
+GPU compute is a **packaged plugin** (not core stdlib) — keeps core lean, optional dependency.
+Strategy: Tinygrad-style source code emission (Kernel IR → text per backend → runtime compile).
+
+- [ ] Kernel IR (~20 ops: elementwise, reduce, matmul, gather, scatter)
+- [ ] Source code emitters: CUDA C, MSL, WGSL, SPIR-V, OpenCL C
+- [ ] Runtime dispatch per backend (NVRTC, MTLDevice, wgpu, vkCreateShaderModule, clBuildProgram)
+- [ ] Device memory management (CPU↔GPU transfers)
+- [ ] CUDA backend (NVRTC) — NVIDIA GPUs
+- [ ] Metal backend (MTLDevice) — macOS/iOS
+- [ ] WebGPU backend (wgpu) — cross-platform
+- [ ] Vulkan backend (SPIR-V) — Windows/Linux/Android
+- [ ] OpenCL backend — cross-platform legacy
+
+### 14.4 Interpreter SIMD Correctness 🔴
+
+- [ ] Integrate `wide` crate for real SIMD in interpreter (currently returns void)
+- [ ] Or: force-promote SIMD functions to skip Tier 0
+- [ ] TCC Linker SIMD gap on Linux (final tier lacks SIMD)
+
+---
+
 ## Known Issues
 
 ### Deref Coercion for Wrapper Types

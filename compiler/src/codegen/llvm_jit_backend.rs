@@ -526,6 +526,14 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                         function.name, func_id, e
                     )
                 })?;
+
+            // Per-function verification to catch return type mismatches early
+            if !llvm_func.verify(false) {
+                return Err(format!(
+                    "LLVM verification failed for function '{}' ({:?})",
+                    function.name, func_id
+                ));
+            }
         }
         Ok(())
     }
@@ -585,19 +593,17 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         }
 
         // Verify the module before optimization
-        if self.module.verify().is_err() {
+        if let Err(msg) = self.module.verify() {
             // Print the module IR for debugging
             if std::env::var("RAYZOR_DUMP_LLVM_IR").is_ok() {
                 eprintln!("=== LLVM IR (verification failed) ===");
                 eprintln!("{}", self.module.print_to_string().to_string());
                 eprintln!("=== End LLVM IR ===");
             }
-            if let Err(msg) = self.module.verify() {
-                return Err(format!(
-                    "LLVM module verification failed: {}",
-                    msg.to_string()
-                ));
-            }
+            return Err(format!(
+                "LLVM module verification failed: {}",
+                msg.to_string()
+            ));
         }
 
         // Run LLVM optimization passes before JIT compilation
@@ -2404,7 +2410,22 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
             // === SIMD Vector Operations ===
             IrInstruction::VectorLoad { dest, ptr, vec_ty } => {
-                let ptr_val = self.get_value(*ptr)?.into_pointer_value();
+                let raw_ptr = self.get_value(*ptr)?;
+                let ptr_val = if raw_ptr.is_pointer_value() {
+                    raw_ptr.into_pointer_value()
+                } else if raw_ptr.is_int_value() {
+                    self.builder
+                        .build_int_to_ptr(
+                            raw_ptr.into_int_value(),
+                            self.context.ptr_type(AddressSpace::default()),
+                            &format!("vload_ptr_{}", ptr.as_u32()),
+                        )
+                        .map_err(|e| {
+                            format!("Failed to convert int to ptr for vector load: {}", e)
+                        })?
+                } else {
+                    return Err(format!("VectorLoad ptr {:?} has unexpected type", ptr));
+                };
                 let vec_llvm_ty = self.translate_type(vec_ty)?;
                 let loaded = self
                     .builder
@@ -2418,7 +2439,22 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 value,
                 vec_ty: _,
             } => {
-                let ptr_val = self.get_value(*ptr)?.into_pointer_value();
+                let raw_ptr = self.get_value(*ptr)?;
+                let ptr_val = if raw_ptr.is_pointer_value() {
+                    raw_ptr.into_pointer_value()
+                } else if raw_ptr.is_int_value() {
+                    self.builder
+                        .build_int_to_ptr(
+                            raw_ptr.into_int_value(),
+                            self.context.ptr_type(AddressSpace::default()),
+                            &format!("vstore_ptr_{}", ptr.as_u32()),
+                        )
+                        .map_err(|e| {
+                            format!("Failed to convert int to ptr for vector store: {}", e)
+                        })?
+                } else {
+                    return Err(format!("VectorStore ptr {:?} has unexpected type", ptr));
+                };
                 let vec_val = self.get_value(*value)?;
                 self.builder
                     .build_store(ptr_val, vec_val)
@@ -4340,7 +4376,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             let src_float = src.into_float_value();
             let target_float_ty = target_llvm_ty.into_float_type();
             // Just build the cast regardless of source size (LLVM will handle it)
-            let result = if src_float.get_type().get_context().f64_type() == target_float_ty {
+            let result = if src_float.get_type() == target_float_ty {
                 // Same type, just return
                 return Ok(src);
             } else if src_float.get_type().get_context().f32_type() == src_float.get_type() {
