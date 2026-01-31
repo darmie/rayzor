@@ -48,7 +48,9 @@ struct CStructLayout {
     c_name: String,
     /// All dependency typedefs (for nested cstructs), in topological order
     dep_cdefs: Vec<String>,
-    /// This struct's own typedef
+    /// This struct's own typedef line (without deps)
+    own_cdef: String,
+    /// Full cdef: deps + own typedef
     cdef_string: String,
 }
 
@@ -838,6 +840,7 @@ impl<'a> HirToMirContext<'a> {
             alignment: max_align,
             c_name,
             dep_cdefs,
+            own_cdef,
             cdef_string: full_cdef,
         };
 
@@ -14315,9 +14318,28 @@ impl<'a> HirToMirContext<'a> {
             }
         }
 
-        // Build extern declarations prefix, do {N} -> __argN substitution, and concat
+        // Auto-inject module-local @:cstruct typedefs into TCC context
+        // Use already-cached cstruct_layouts (populated by field accesses, constructors, cdef() calls)
+        let mut cstruct_prefix = String::new();
+        {
+            let mut seen_typedefs = std::collections::HashSet::new();
+            let layouts: Vec<_> = self.cstruct_layouts.values().cloned().collect();
+            for layout in &layouts {
+                for dep in &layout.dep_cdefs {
+                    if seen_typedefs.insert(dep.clone()) {
+                        cstruct_prefix.push_str(dep);
+                    }
+                }
+                if seen_typedefs.insert(layout.own_cdef.clone()) {
+                    cstruct_prefix.push_str(&layout.own_cdef);
+                }
+            }
+        }
+
+        // Build prefix: cstruct typedefs + extern declarations, do {N} -> __argN substitution
         let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
-        let final_code_reg = if arg_regs.is_empty() {
+        let has_prefix = !cstruct_prefix.is_empty() || !arg_regs.is_empty();
+        let final_code_reg = if !has_prefix {
             code_reg
         } else {
             // Replace {0} -> __arg0, {1} -> __arg1, etc. in the code string
@@ -14336,8 +14358,8 @@ impl<'a> HirToMirContext<'a> {
                 )?;
             }
 
-            // Build "extern long __arg0;\nextern long __arg1;\n..." prefix
-            let mut prefix = String::new();
+            // Build compile-time prefix: cstruct typedefs + extern long declarations
+            let mut prefix = cstruct_prefix;
             for i in 0..arg_regs.len() {
                 prefix.push_str(&format!("extern long __arg{};\n", i));
             }

@@ -594,7 +594,7 @@ class Main {
         v.x = 5;
         v.y = 7;
 
-        untyped __c__(Vec2.cdef() + "
+        untyped __c__("
             void __entry__() {
                 Vec2* v = (Vec2*){0};
                 v->x = v->x * 10;
