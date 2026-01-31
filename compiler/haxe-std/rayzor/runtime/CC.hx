@@ -3,17 +3,44 @@ package rayzor.runtime;
 /**
  * TinyCC runtime compiler — compile and execute C code at runtime.
  *
- * Example:
- * ```haxe
- * import rayzor.runtime.CC;
+ * Standard C library functions (strlen, printf, malloc, sin, etc.) are
+ * available automatically. System headers like `<string.h>`, `<stdio.h>`,
+ * and `<math.h>` can be used via `#include`.
  *
+ * ## System Requirements
+ *
+ * System headers require platform SDK headers to be installed:
+ *   - **macOS**: Install CommandLineTools via `xcode-select --install` (~1GB).
+ *     Full Xcode.app also works but is not required.
+ *   - **Linux**: Install build-essential (or equivalent) for `/usr/include`.
+ *
+ * Pure C code (no `#include`) and `@:cstruct` interop work without any SDK.
+ *
+ * ## Usage
+ *
+ * Explicit CC API:
+ * ```haxe
  * var cc = CC.create();
- * cc.compile("
- *     int add(int a, int b) { return a + b; }
- * ");
+ * cc.compile('
+ *     #include <string.h>
+ *     long my_strlen(long addr) {
+ *         return (long)strlen((const char*)addr);
+ *     }
+ * ');
  * cc.relocate();
- * var addPtr = cc.getSymbol("add");
+ * var fn = cc.getSymbol("my_strlen");
+ * trace(CC.call1(fn, cs.raw()));
  * cc.delete();
+ * ```
+ *
+ * Inline `__c__()` syntax (auto-manages TCC lifecycle):
+ * ```haxe
+ * var len = untyped __c__('
+ *     #include <string.h>
+ *     long __entry__() {
+ *         return (long)strlen((const char*){0});
+ *     }
+ * ', cs.raw());
  * ```
  */
 @:native("rayzor::runtime::CC")
@@ -67,6 +94,21 @@ extern class CC {
      */
     @:native("getSymbol")
     public function getSymbol(name:String):Int;
+
+    /**
+     * Load a macOS framework or shared library so its symbols and headers
+     * are available to compiled C code.
+     *
+     * Frameworks (macOS): `cc.addFramework("Accelerate")` enables
+     * `#include <Accelerate/Accelerate.h>` and links framework symbols.
+     *
+     * Shared libraries: `cc.addFramework("z")` loads libz.dylib/libz.so.
+     *
+     * @param name Framework or library name (without lib prefix or extension)
+     * @return true if loaded successfully
+     */
+    @:native("addFramework")
+    public function addFramework(name:String):Bool;
 
     /**
      * Free the TCC compilation context and all associated resources.

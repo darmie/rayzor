@@ -196,6 +196,9 @@ pub struct HirToMirContext<'a> {
 
     /// Lazily-initialized TCC runtime function IDs for __c__ inline code
     tcc_func_ids: Option<TccFuncIds>,
+
+    /// Current function's SymbolId (for function-level metadata like @:frameworks)
+    current_function_symbol: Option<SymbolId>,
 }
 
 /// TCC runtime function IDs for __c__ inline code lowering
@@ -210,6 +213,7 @@ struct TccFuncIds {
     call0: IrFunctionId,            // rayzor_tcc_call0(I64) -> I64
     free_value: IrFunctionId,       // rayzor_tcc_free_value(I64) -> Void
     string_replace: IrFunctionId, // haxe_string_replace(PtrString, PtrString, PtrString) -> PtrString
+    add_framework: IrFunctionId,  // rayzor_tcc_add_framework(I64, PtrString) -> I32
 }
 
 /// SSA-derived optimization hints from DFG analysis
@@ -325,6 +329,7 @@ impl<'a> HirToMirContext<'a> {
             reassigned_in_scope: HashSet::new(),
             cstruct_layouts: HashMap::new(),
             tcc_func_ids: None,
+            current_function_symbol: None,
         };
 
         // Pre-declare malloc so it's available for heap allocations during lowering
@@ -1627,6 +1632,7 @@ impl<'a> HirToMirContext<'a> {
 
         self.builder.current_function = Some(func_id);
         self.builder.current_block = Some(func.entry_block());
+        self.current_function_symbol = Some(symbol_id);
 
         // Clear per-function drop tracking state
         // Note: We track owned heap values to free them on reassignment (Rust-style drop)
@@ -14263,6 +14269,13 @@ impl<'a> HirToMirContext<'a> {
             8,
         );
 
+        let add_framework = self.declare_tcc_extern(
+            "rayzor_tcc_add_framework",
+            vec![IrType::I64, IrType::I64],
+            IrType::I32,
+            9,
+        );
+
         let ids = TccFuncIds {
             create,
             compile,
@@ -14273,6 +14286,7 @@ impl<'a> HirToMirContext<'a> {
             call0,
             free_value,
             string_replace,
+            add_framework,
         };
         self.tcc_func_ids = Some(ids);
         ids
@@ -14378,10 +14392,57 @@ impl<'a> HirToMirContext<'a> {
             )?
         };
 
+        // Collect @:frameworks from module-local types for auto-loading
+        let add_framework_id = tcc.add_framework;
+        let mut framework_names: Vec<String> = Vec::new();
+        {
+            let mut seen = std::collections::HashSet::new();
+            for (_type_id, type_decl) in self.current_hir_types {
+                let symbol_id = match type_decl {
+                    crate::ir::hir::HirTypeDecl::Class(c) => Some(c.symbol_id),
+                    _ => None,
+                };
+                if let Some(sid) = symbol_id {
+                    if let Some(sym) = self.symbol_table.get_symbol(sid) {
+                        if let Some(ref fws) = sym.frameworks {
+                            for fw in fws {
+                                if let Some(name) = self.string_interner.get(*fw) {
+                                    if seen.insert(name.to_string()) {
+                                        framework_names.push(name.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Also collect from current function's @:frameworks metadata
+            if let Some(func_sym_id) = self.current_function_symbol {
+                if let Some(sym) = self.symbol_table.get_symbol(func_sym_id) {
+                    if let Some(ref fws) = sym.frameworks {
+                        for fw in fws {
+                            if let Some(name) = self.string_interner.get(*fw) {
+                                if seen.insert(name.to_string()) {
+                                    framework_names.push(name.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // 1. state = rayzor_tcc_create()
         let state = self
             .builder
             .build_call_direct(create_id, vec![], IrType::I64)?;
+
+        // 1b. Auto-load @:frameworks into TCC context
+        for fw_name in &framework_names {
+            let name_reg = self.builder.build_const(IrValue::String(fw_name.clone()))?;
+            self.builder
+                .build_call_direct(add_framework_id, vec![state, name_reg], IrType::I32);
+        }
 
         // 2. rayzor_tcc_compile(state, code)
         self.builder

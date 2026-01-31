@@ -24,7 +24,9 @@ fn build_tcc() {
         .include(tcc_dir)
         .define("ONE_SOURCE", "1")
         .define("TCC_LIBTCC", "1")
-        .define("CONFIG_TCC_STATIC", "1")
+        // NOTE: do NOT define CONFIG_TCC_STATIC — it replaces dlsym/dlopen
+        // with dummies that only know 4 symbols. We need real dlsym so TCC
+        // can resolve any libc/libm/system symbol during JIT relocation.
         .define("CONFIG_TCCDIR", tcc_dir_quoted.as_str())
         .warnings(false);
 

@@ -609,6 +609,103 @@ class Main {
 "#,
     ));
 
+    // ============================================================================
+    // TEST 16: __c__ with system #include — validates SDK path discovery
+    //
+    // Requires macOS CommandLineTools or Xcode SDK (for <string.h>).
+    //   macOS: install via `xcode-select --install` (CommandLineTools, ~1GB)
+    //          or full Xcode.app from the App Store.
+    //   Linux: system headers at /usr/include (install build-essential or equivalent).
+    //
+    // TCC auto-discovers SDK paths at runtime — see tinycc_runtime.rs.
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "inline_c_sysinclude",
+        r#"
+package test;
+
+import rayzor.CString;
+import rayzor.runtime.CC;
+
+class Main {
+    static function main() {
+        var cs = CString.from("hello");
+
+        // Use strlen from <string.h> via __c__
+        var len = untyped __c__("
+            #include <string.h>
+            long __entry__() {
+                const char* s = (const char*){0};
+                return (long)strlen(s);
+            }
+        ", cs.raw());
+
+        trace(len);  // 5
+        cs.free();
+    }
+}
+"#,
+    ));
+
+    // ============================================================================
+    // TEST 17: @:frameworks metadata — auto-load Accelerate in __c__()
+    //
+    // Uses cblas_sdot (dot product) from Accelerate.framework.
+    // @:frameworks(["Accelerate"]) on Main auto-loads the framework
+    // when __c__() is used in the same module.
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "frameworks_metadata",
+        r#"
+package test;
+
+@:frameworks(["Accelerate"])
+class Main {
+    static function main() {
+        // cblas_sdot is available via @:frameworks auto-loading
+        var result = untyped __c__("
+            extern float cblas_sdot(int N, const float *X, int incX, const float *Y, int incY);
+            long __entry__() {
+                float x[] = {1.0f, 2.0f, 3.0f};
+                float y[] = {4.0f, 5.0f, 6.0f};
+                float r = cblas_sdot(3, x, 1, y, 1);
+                return (long)r;
+            }
+        ");
+        trace(result);  // 32
+    }
+}
+"#,
+    ));
+
+    // ============================================================================
+    // TEST 18: @:frameworks on function — scoped framework loading
+    //
+    // Same as test 17 but @:frameworks is on the function, not the class.
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "frameworks_on_function",
+        r#"
+package test;
+
+class Main {
+    @:frameworks(["Accelerate"])
+    static function main() {
+        var result = untyped __c__("
+            extern float cblas_sdot(int N, const float *X, int incX, const float *Y, int incY);
+            long __entry__() {
+                float x[] = {1.0f, 2.0f, 3.0f};
+                float y[] = {4.0f, 5.0f, 6.0f};
+                float r = cblas_sdot(3, x, 1, y, 1);
+                return (long)r;
+            }
+        ");
+        trace(result);  // 32
+    }
+}
+"#,
+    ));
+
     // Run all tests
     println!("╔══════════════════════════════════════════════════════════════════════╗");
     println!("║             @:cstruct Metadata — E2E Test Suite                    ║");

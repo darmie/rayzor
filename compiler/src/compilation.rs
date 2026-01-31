@@ -678,6 +678,7 @@ impl CompilationUnit {
                 package_id: None,
                 qualified_name: None,
                 native_name: None,
+                frameworks: None,
             };
 
             // Add symbol to symbol table

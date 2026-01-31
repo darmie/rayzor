@@ -1077,7 +1077,10 @@ ST_FUNC void relocate_syms(TCCState *s1, Section *symtab, int do_resolve)
                 /* dlsym() needs the undecorated name.  */
                 const char *name_ud = &name[s1->leading_underscore];
                 void *addr = NULL;
-                if (!s1->nostdlib)
+                /* Rayzor: always resolve via dlsym in memory mode.
+                   -nostdlib only skips library *file* loading (line ~1810),
+                   not runtime symbol resolution from the host process. */
+                if (!s1->nostdlib || s1->output_type == TCC_OUTPUT_MEMORY)
                     addr = dlsym(RTLD_DEFAULT, name_ud);
 		if (addr == NULL) {
 		    int i;

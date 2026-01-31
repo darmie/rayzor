@@ -2801,6 +2801,9 @@ impl StdlibMapping {
             // cc.getSymbol(name: String): Int  (instance)
             map_method!(instance "rayzor_runtime_CC", "getSymbol" => "rayzor_tcc_get_symbol", params: 1, returns: primitive,
                 types: &[PtrVoid, PtrString] => I64),
+            // cc.addFramework(name: String): Bool  (instance)
+            map_method!(instance "rayzor_runtime_CC", "addFramework" => "rayzor_tcc_add_framework", params: 1, returns: primitive,
+                types: &[PtrVoid, PtrString] => I32),
             // cc.delete(): Void  (instance)
             map_method!(instance "rayzor_runtime_CC", "delete" => "rayzor_tcc_delete", params: 0, returns: void,
                 types: &[PtrVoid]),

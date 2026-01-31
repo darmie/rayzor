@@ -278,6 +278,9 @@ pub struct Symbol {
     /// Native name from @:native metadata (e.g., "rayzor::concurrent::Arc")
     /// Used for runtime mapping lookup. Lowered form replaces :: with _
     pub native_name: Option<InternedString>,
+    /// Framework names from @:frameworks(["Accelerate", "CoreFoundation"]) metadata
+    /// Auto-loaded into TCC context when using __c__() inline code
+    pub frameworks: Option<Vec<InternedString>>,
 }
 
 /// Bitflags for various symbol properties
@@ -395,6 +398,7 @@ impl Symbol {
             package_id: None,
             qualified_name: None,
             native_name: None,
+            frameworks: None,
         }
     }
 
@@ -841,6 +845,7 @@ impl SymbolTable {
             package_id: None,
             qualified_name: None,
             native_name: None,
+            frameworks: None,
         };
 
         // Add the symbol to the table
@@ -876,6 +881,7 @@ impl SymbolTable {
             package_id: None,
             qualified_name: None,
             native_name: None,
+            frameworks: None,
         };
 
         // Add the symbol to the table
@@ -915,6 +921,7 @@ impl SymbolTable {
             package_id: None,
             qualified_name: None,
             native_name: None,
+            frameworks: None,
         };
 
         // Add the symbol to the table
@@ -953,6 +960,7 @@ impl SymbolTable {
             package_id: None,
             qualified_name: None,
             native_name: None,
+            frameworks: None,
         };
 
         self.add_symbol(symbol);
@@ -989,6 +997,7 @@ impl SymbolTable {
             package_id: None,
             qualified_name: None,
             native_name: None,
+            frameworks: None,
         };
 
         self.add_symbol(symbol);
@@ -1035,6 +1044,7 @@ impl SymbolTable {
             package_id: None,
             qualified_name: None,
             native_name: None,
+            frameworks: None,
         };
 
         self.add_symbol(symbol);
@@ -1062,6 +1072,7 @@ impl SymbolTable {
             package_id: None,
             qualified_name: None,
             native_name: None,
+            frameworks: None,
         };
 
         self.add_symbol(symbol);
@@ -1093,6 +1104,7 @@ impl SymbolTable {
             package_id: None,
             qualified_name: None,
             native_name: None,
+            frameworks: None,
         };
 
         self.add_symbol(symbol);
@@ -1124,6 +1136,7 @@ impl SymbolTable {
             package_id: None,
             qualified_name: None,
             native_name: None,
+            frameworks: None,
         };
 
         self.add_symbol(symbol);
@@ -1156,6 +1169,7 @@ impl SymbolTable {
             package_id: None,
             qualified_name: None,
             native_name: None,
+            frameworks: None,
         };
 
         self.add_symbol(symbol);
