@@ -38,7 +38,8 @@ use inkwell::{
 
 use crate::ir::{
     BinaryOp, CompareOp, IrBasicBlock, IrBlockId, IrFunction, IrFunctionId, IrId, IrInstruction,
-    IrModule, IrPhiNode, IrTerminator, IrType, IrValue, UnaryOp,
+    IrModule, IrPhiNode, IrTerminator, IrType, IrValue, UnaryOp, VectorMinMaxKind,
+    VectorUnaryOpKind,
 };
 use std::collections::HashMap;
 use std::sync::{Mutex, Once};
@@ -2670,6 +2671,244 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     };
                 }
                 self.value_map.insert(*dest, acc);
+            }
+
+            IrInstruction::VectorUnaryOp {
+                dest,
+                op,
+                operand,
+                vec_ty: _,
+            } => {
+                let operand_val = self.get_value(*operand)?.into_vector_value();
+                let vec_ty = operand_val.get_type();
+                let lane_count = vec_ty.get_size();
+                let elem_ty = vec_ty.get_element_type().into_float_type();
+
+                // Apply unary op lane-by-lane (LLVM intrinsics work on scalars)
+                let mut result: inkwell::values::BasicValueEnum = operand_val.into();
+                for i in 0..lane_count {
+                    let idx = self.context.i32_type().const_int(i as u64, false);
+                    let elem = self
+                        .builder
+                        .build_extract_element(operand_val, idx, &format!("unary_{}", i))
+                        .map_err(|e| format!("VectorUnaryOp extract failed: {}", e))?
+                        .into_float_value();
+
+                    let processed = match op {
+                        VectorUnaryOpKind::Sqrt => {
+                            let intrinsic = inkwell::intrinsics::Intrinsic::find(&format!(
+                                "llvm.sqrt.f{}",
+                                if elem_ty == self.context.f32_type() {
+                                    32
+                                } else {
+                                    64
+                                }
+                            ))
+                            .ok_or("sqrt intrinsic not found")?;
+                            let func = intrinsic
+                                .get_declaration(&self.module, &[elem_ty.into()])
+                                .ok_or("sqrt declaration failed")?;
+                            self.builder
+                                .build_call(func, &[elem.into()], "sqrt")
+                                .map_err(|e| format!("sqrt call failed: {}", e))?
+                                .try_as_basic_value()
+                                .left()
+                                .ok_or("sqrt returned void")?
+                                .into_float_value()
+                        }
+                        VectorUnaryOpKind::Abs => {
+                            let intrinsic = inkwell::intrinsics::Intrinsic::find(&format!(
+                                "llvm.fabs.f{}",
+                                if elem_ty == self.context.f32_type() {
+                                    32
+                                } else {
+                                    64
+                                }
+                            ))
+                            .ok_or("fabs intrinsic not found")?;
+                            let func = intrinsic
+                                .get_declaration(&self.module, &[elem_ty.into()])
+                                .ok_or("fabs declaration failed")?;
+                            self.builder
+                                .build_call(func, &[elem.into()], "fabs")
+                                .map_err(|e| format!("fabs call failed: {}", e))?
+                                .try_as_basic_value()
+                                .left()
+                                .ok_or("fabs returned void")?
+                                .into_float_value()
+                        }
+                        VectorUnaryOpKind::Neg => self
+                            .builder
+                            .build_float_neg(elem, "fneg")
+                            .map_err(|e| format!("fneg failed: {}", e))?,
+                        VectorUnaryOpKind::Ceil => {
+                            let intrinsic = inkwell::intrinsics::Intrinsic::find(&format!(
+                                "llvm.ceil.f{}",
+                                if elem_ty == self.context.f32_type() {
+                                    32
+                                } else {
+                                    64
+                                }
+                            ))
+                            .ok_or("ceil intrinsic not found")?;
+                            let func = intrinsic
+                                .get_declaration(&self.module, &[elem_ty.into()])
+                                .ok_or("ceil declaration failed")?;
+                            self.builder
+                                .build_call(func, &[elem.into()], "ceil")
+                                .map_err(|e| format!("ceil call failed: {}", e))?
+                                .try_as_basic_value()
+                                .left()
+                                .ok_or("ceil returned void")?
+                                .into_float_value()
+                        }
+                        VectorUnaryOpKind::Floor => {
+                            let intrinsic = inkwell::intrinsics::Intrinsic::find(&format!(
+                                "llvm.floor.f{}",
+                                if elem_ty == self.context.f32_type() {
+                                    32
+                                } else {
+                                    64
+                                }
+                            ))
+                            .ok_or("floor intrinsic not found")?;
+                            let func = intrinsic
+                                .get_declaration(&self.module, &[elem_ty.into()])
+                                .ok_or("floor declaration failed")?;
+                            self.builder
+                                .build_call(func, &[elem.into()], "floor")
+                                .map_err(|e| format!("floor call failed: {}", e))?
+                                .try_as_basic_value()
+                                .left()
+                                .ok_or("floor returned void")?
+                                .into_float_value()
+                        }
+                        VectorUnaryOpKind::Trunc => {
+                            let intrinsic = inkwell::intrinsics::Intrinsic::find(&format!(
+                                "llvm.trunc.f{}",
+                                if elem_ty == self.context.f32_type() {
+                                    32
+                                } else {
+                                    64
+                                }
+                            ))
+                            .ok_or("trunc intrinsic not found")?;
+                            let func = intrinsic
+                                .get_declaration(&self.module, &[elem_ty.into()])
+                                .ok_or("trunc declaration failed")?;
+                            self.builder
+                                .build_call(func, &[elem.into()], "trunc")
+                                .map_err(|e| format!("trunc call failed: {}", e))?
+                                .try_as_basic_value()
+                                .left()
+                                .ok_or("trunc returned void")?
+                                .into_float_value()
+                        }
+                        VectorUnaryOpKind::Round => {
+                            let intrinsic = inkwell::intrinsics::Intrinsic::find(&format!(
+                                "llvm.round.f{}",
+                                if elem_ty == self.context.f32_type() {
+                                    32
+                                } else {
+                                    64
+                                }
+                            ))
+                            .ok_or("round intrinsic not found")?;
+                            let func = intrinsic
+                                .get_declaration(&self.module, &[elem_ty.into()])
+                                .ok_or("round declaration failed")?;
+                            self.builder
+                                .build_call(func, &[elem.into()], "round")
+                                .map_err(|e| format!("round call failed: {}", e))?
+                                .try_as_basic_value()
+                                .left()
+                                .ok_or("round returned void")?
+                                .into_float_value()
+                        }
+                    };
+
+                    result = self
+                        .builder
+                        .build_insert_element(
+                            result.into_vector_value(),
+                            processed,
+                            idx,
+                            &format!("unary_insert_{}", i),
+                        )
+                        .map_err(|e| format!("VectorUnaryOp insert failed: {}", e))?
+                        .into();
+                }
+                self.value_map.insert(*dest, result);
+            }
+
+            IrInstruction::VectorMinMax {
+                dest,
+                op,
+                left,
+                right,
+                vec_ty: _,
+            } => {
+                let lhs = self.get_value(*left)?.into_vector_value();
+                let rhs = self.get_value(*right)?.into_vector_value();
+                let vec_ty = lhs.get_type();
+                let lane_count = vec_ty.get_size();
+                let elem_ty = vec_ty.get_element_type().into_float_type();
+
+                let intrinsic_name = match op {
+                    VectorMinMaxKind::Min => format!(
+                        "llvm.minnum.f{}",
+                        if elem_ty == self.context.f32_type() {
+                            32
+                        } else {
+                            64
+                        }
+                    ),
+                    VectorMinMaxKind::Max => format!(
+                        "llvm.maxnum.f{}",
+                        if elem_ty == self.context.f32_type() {
+                            32
+                        } else {
+                            64
+                        }
+                    ),
+                };
+
+                let intrinsic = inkwell::intrinsics::Intrinsic::find(&intrinsic_name)
+                    .ok_or(format!("{} not found", intrinsic_name))?;
+                let func = intrinsic
+                    .get_declaration(&self.module, &[elem_ty.into()])
+                    .ok_or(format!("{} declaration failed", intrinsic_name))?;
+
+                let mut result: inkwell::values::BasicValueEnum = lhs.into();
+                for i in 0..lane_count {
+                    let idx = self.context.i32_type().const_int(i as u64, false);
+                    let l = self
+                        .builder
+                        .build_extract_element(lhs, idx, &format!("minmax_l_{}", i))
+                        .map_err(|e| format!("MinMax extract failed: {}", e))?;
+                    let r = self
+                        .builder
+                        .build_extract_element(rhs, idx, &format!("minmax_r_{}", i))
+                        .map_err(|e| format!("MinMax extract failed: {}", e))?;
+                    let val = self
+                        .builder
+                        .build_call(func, &[l.into(), r.into()], "minmax")
+                        .map_err(|e| format!("MinMax call failed: {}", e))?
+                        .try_as_basic_value()
+                        .left()
+                        .ok_or("minmax returned void")?;
+                    result = self
+                        .builder
+                        .build_insert_element(
+                            result.into_vector_value(),
+                            val.into_float_value(),
+                            idx,
+                            &format!("minmax_insert_{}", i),
+                        )
+                        .map_err(|e| format!("MinMax insert failed: {}", e))?
+                        .into();
+                }
+                self.value_map.insert(*dest, result);
             }
 
             // Global variable access

@@ -43,6 +43,7 @@ use super::{
     InlineHint, IrBasicBlock, IrBlockId, IrControlFlowGraph, IrFunction, IrFunctionId,
     IrFunctionSignature, IrId, IrInstruction, IrLocal, IrModule, IrParameter, IrSourceLocation,
     IrTerminator, IrType, IrTypeParam, IrValue, Linkage, StructField, UnaryOp, UnionVariant,
+    VectorMinMaxKind, VectorUnaryOpKind,
 };
 use std::collections::HashMap;
 
@@ -529,13 +530,7 @@ impl MirBuilder {
     // === SIMD Vector Helper Methods ===
 
     /// SIMD element-wise binary operation
-    pub fn vector_bin_op(
-        &mut self,
-        op: BinaryOp,
-        left: IrId,
-        right: IrId,
-        vec_ty: IrType,
-    ) -> IrId {
+    pub fn vector_bin_op(&mut self, op: BinaryOp, left: IrId, right: IrId, vec_ty: IrType) -> IrId {
         let dest = self.alloc_reg_typed(vec_ty.clone());
         self.insert_inst(IrInstruction::VectorBinOp {
             dest,
@@ -570,13 +565,7 @@ impl MirBuilder {
     }
 
     /// Insert scalar into vector lane
-    pub fn vector_insert(
-        &mut self,
-        vector: IrId,
-        scalar: IrId,
-        index: u8,
-        vec_ty: IrType,
-    ) -> IrId {
+    pub fn vector_insert(&mut self, vector: IrId, scalar: IrId, index: u8, vec_ty: IrType) -> IrId {
         let dest = self.alloc_reg_typed(vec_ty);
         self.insert_inst(IrInstruction::VectorInsert {
             dest,
@@ -604,6 +593,42 @@ impl MirBuilder {
     /// Store SIMD vector to contiguous memory
     pub fn vector_store(&mut self, ptr: IrId, value: IrId, vec_ty: IrType) {
         self.insert_inst(IrInstruction::VectorStore { ptr, value, vec_ty });
+    }
+
+    /// Element-wise unary operation on a vector (sqrt, abs, neg, ceil, floor, round)
+    pub fn vector_unary_op(
+        &mut self,
+        op: VectorUnaryOpKind,
+        operand: IrId,
+        vec_ty: IrType,
+    ) -> IrId {
+        let dest = self.alloc_reg_typed(vec_ty.clone());
+        self.insert_inst(IrInstruction::VectorUnaryOp {
+            dest,
+            op,
+            operand,
+            vec_ty,
+        });
+        dest
+    }
+
+    /// Element-wise min/max of two vectors
+    pub fn vector_min_max(
+        &mut self,
+        op: VectorMinMaxKind,
+        left: IrId,
+        right: IrId,
+        vec_ty: IrType,
+    ) -> IrId {
+        let dest = self.alloc_reg_typed(vec_ty.clone());
+        self.insert_inst(IrInstruction::VectorMinMax {
+            dest,
+            op,
+            left,
+            right,
+            vec_ty,
+        });
+        dest
     }
 
     // === Special Values ===

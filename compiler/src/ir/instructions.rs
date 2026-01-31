@@ -361,6 +361,23 @@ pub enum IrInstruction {
         op: BinaryOp, // Add, Mul, And, Or, Xor for reductions
         vector: IrId,
     },
+
+    /// SIMD element-wise unary operation (sqrt, abs, neg, ceil, floor, round)
+    VectorUnaryOp {
+        dest: IrId,
+        op: VectorUnaryOpKind,
+        operand: IrId,
+        vec_ty: IrType,
+    },
+
+    /// SIMD element-wise min/max
+    VectorMinMax {
+        dest: IrId,
+        op: VectorMinMaxKind,
+        left: IrId,
+        right: IrId,
+        vec_ty: IrType,
+    },
 }
 
 /// Binary operations
@@ -399,6 +416,25 @@ pub enum UnaryOp {
 
     // Floating point
     FNeg,
+}
+
+/// SIMD vector unary operations
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VectorUnaryOpKind {
+    Sqrt,
+    Abs,
+    Neg,
+    Ceil,
+    Floor,
+    Trunc,
+    Round, // nearest
+}
+
+/// SIMD vector min/max operations
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VectorMinMaxKind {
+    Min,
+    Max,
 }
 
 /// Comparison operations
@@ -472,7 +508,9 @@ impl IrInstruction {
             IrInstruction::VectorSplat { dest, .. } |
             IrInstruction::VectorExtract { dest, .. } |
             IrInstruction::VectorInsert { dest, .. } |
-            IrInstruction::VectorReduce { dest, .. } => Some(*dest),
+            IrInstruction::VectorReduce { dest, .. } |
+            IrInstruction::VectorUnaryOp { dest, .. } |
+            IrInstruction::VectorMinMax { dest, .. } => Some(*dest),
 
             IrInstruction::CallDirect { dest, .. } |
             IrInstruction::CallIndirect { dest, .. } |
@@ -537,6 +575,8 @@ impl IrInstruction {
             IrInstruction::VectorExtract { vector, .. } => vec![*vector],
             IrInstruction::VectorInsert { vector, scalar, .. } => vec![*vector, *scalar],
             IrInstruction::VectorReduce { vector, .. } => vec![*vector],
+            IrInstruction::VectorUnaryOp { operand, .. } => vec![*operand],
+            IrInstruction::VectorMinMax { left, right, .. } => vec![*left, *right],
             // Move/borrow instructions
             IrInstruction::Move { src, .. } => vec![*src],
             IrInstruction::BorrowImmutable { src, .. } => vec![*src],

@@ -290,6 +290,194 @@ class Main {
 "#,
     ));
 
+    // ============================================================================
+    // TEST 8: SIMD4f.sqrt — element-wise square root
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "simd4f_sqrt",
+        r#"
+package test;
+
+import rayzor.SIMD4f;
+
+class Main {
+    static function main() {
+        var a = SIMD4f.make(4.0, 9.0, 16.0, 25.0);
+        var b = a.sqrt();
+        trace(b.sum());  // 2+3+4+5 = 14.0
+    }
+}
+"#,
+    ));
+
+    // ============================================================================
+    // TEST 9: SIMD4f.abs — element-wise absolute value
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "simd4f_abs",
+        r#"
+package test;
+
+import rayzor.SIMD4f;
+
+class Main {
+    static function main() {
+        var a = SIMD4f.make(-1.0, 2.0, -3.0, 4.0);
+        var b = a.abs();
+        trace(b.sum());  // 1+2+3+4 = 10.0
+    }
+}
+"#,
+    ));
+
+    // ============================================================================
+    // TEST 10: SIMD4f.min / max
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "simd4f_min_max",
+        r#"
+package test;
+
+import rayzor.SIMD4f;
+
+class Main {
+    static function main() {
+        var a = SIMD4f.make(1.0, 5.0, 3.0, 7.0);
+        var b = SIMD4f.make(4.0, 2.0, 6.0, 1.0);
+        var lo = a.min(b);
+        var hi = a.max(b);
+        trace(lo.sum());  // 1+2+3+1 = 7.0
+        trace(hi.sum());  // 4+5+6+7 = 22.0
+    }
+}
+"#,
+    ));
+
+    // ============================================================================
+    // TEST 11: SIMD4f.ceil / floor / round
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "simd4f_rounding",
+        r#"
+package test;
+
+import rayzor.SIMD4f;
+
+class Main {
+    static function main() {
+        var a = SIMD4f.make(1.3, 2.7, -1.3, -2.7);
+        var c = a.ceil();
+        var f = a.floor();
+        trace(c.sum());   // 2+3+(-1)+(-2) = 2.0
+        trace(f.sum());   // 1+2+(-2)+(-3) = -2.0
+    }
+}
+"#,
+    ));
+
+    // ============================================================================
+    // TEST 12: SIMD4f.normalize — unit vector
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "simd4f_normalize",
+        r#"
+package test;
+
+import rayzor.SIMD4f;
+
+class Main {
+    static function main() {
+        var a = SIMD4f.make(3.0, 0.0, 0.0, 0.0);
+        var n = a.normalize();
+        trace(true);  // normalize completed
+    }
+}
+"#,
+    ));
+
+    // ============================================================================
+    // TEST 13: SIMD4f.magnitude — vector magnitude
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "simd4f_len",
+        r#"
+package test;
+
+import rayzor.SIMD4f;
+
+class Main {
+    static function main() {
+        var a = SIMD4f.make(3.0, 4.0, 0.0, 0.0);
+        var l = a.len();
+        trace(l);  // 5.0
+    }
+}
+"#,
+    ));
+
+    // ============================================================================
+    // TEST 14: SIMD4f.lerp — linear interpolation
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "simd4f_lerp",
+        r#"
+package test;
+
+import rayzor.SIMD4f;
+
+class Main {
+    static function main() {
+        var a = SIMD4f.splat(0.0);
+        var b = SIMD4f.splat(10.0);
+        var mid = a.lerp(b, 0.5);
+        trace(mid.sum());  // 5+5+5+5 = 20.0
+    }
+}
+"#,
+    ));
+
+    // ============================================================================
+    // TEST 15: SIMD4f.cross3 — 3D cross product
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "simd4f_cross3",
+        r#"
+package test;
+
+import rayzor.SIMD4f;
+
+class Main {
+    static function main() {
+        var x = SIMD4f.make(1.0, 0.0, 0.0, 0.0);
+        var y = SIMD4f.make(0.0, 1.0, 0.0, 0.0);
+        var z = x.cross3(y);
+        trace(z.sum());  // 0+0+1+0 = 1.0
+    }
+}
+"#,
+    ));
+
+    // ============================================================================
+    // TEST 16: SIMD4f.distance
+    // ============================================================================
+    tests.push(E2ETestCase::new(
+        "simd4f_distance",
+        r#"
+package test;
+
+import rayzor.SIMD4f;
+
+class Main {
+    static function main() {
+        var a = SIMD4f.make(0.0, 0.0, 0.0, 0.0);
+        var b = SIMD4f.make(3.0, 4.0, 0.0, 0.0);
+        var d = a.distance(b);
+        trace(d);  // 5.0
+    }
+}
+"#,
+    ));
+
     // Run all tests
     println!("╔══════════════════════════════════════════════════════════════════════╗");
     println!("║            SIMD4f — E2E Test Suite                                 ║");

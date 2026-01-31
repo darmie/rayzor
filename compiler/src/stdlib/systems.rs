@@ -5,7 +5,9 @@
 /// Ptr/Ref operations are direct load/store/arithmetic MIR instructions.
 /// Usize operations are native i64 arithmetic.
 use crate::ir::mir_builder::MirBuilder;
-use crate::ir::{BinaryOp, CallingConvention, CompareOp, IrType, IrValue};
+use crate::ir::{
+    BinaryOp, CallingConvention, CompareOp, IrType, IrValue, VectorMinMaxKind, VectorUnaryOpKind,
+};
 
 /// Build all systems-level type functions
 pub fn build_systems_types(builder: &mut MirBuilder) {
@@ -57,6 +59,22 @@ pub fn build_systems_types(builder: &mut MirBuilder) {
     build_simd4f_sum(builder);
     build_simd4f_dot(builder);
     build_simd4f_from_array(builder);
+    // Math operations
+    build_simd4f_sqrt(builder);
+    build_simd4f_abs(builder);
+    build_simd4f_neg(builder);
+    build_simd4f_min(builder);
+    build_simd4f_max(builder);
+    build_simd4f_ceil(builder);
+    build_simd4f_floor(builder);
+    build_simd4f_round(builder);
+    // Compound operations
+    build_simd4f_clamp(builder);
+    build_simd4f_lerp(builder);
+    build_simd4f_length(builder);
+    build_simd4f_normalize(builder);
+    build_simd4f_cross3(builder);
+    build_simd4f_distance(builder);
 }
 
 // ============================================================================
@@ -910,4 +928,273 @@ fn build_simd4f_from_array(builder: &mut MirBuilder) {
     }
 
     builder.ret(Some(vec));
+}
+
+// ============================================================================
+// SIMD4f math operations — single IR instruction wrappers
+// ============================================================================
+
+fn build_simd4f_unary(builder: &mut MirBuilder, name: &str, op: VectorUnaryOpKind) {
+    let vec_ty = IrType::vector(IrType::F32, 4);
+
+    let func_id = builder
+        .begin_function(name)
+        .param("self_val", vec_ty.clone())
+        .returns(vec_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let self_val = builder.get_param(0);
+    let result = builder.vector_unary_op(op, self_val, vec_ty);
+    builder.ret(Some(result));
+}
+
+fn build_simd4f_sqrt(builder: &mut MirBuilder) {
+    build_simd4f_unary(builder, "SIMD4f_sqrt", VectorUnaryOpKind::Sqrt);
+}
+
+fn build_simd4f_abs(builder: &mut MirBuilder) {
+    build_simd4f_unary(builder, "SIMD4f_abs", VectorUnaryOpKind::Abs);
+}
+
+fn build_simd4f_neg(builder: &mut MirBuilder) {
+    build_simd4f_unary(builder, "SIMD4f_neg", VectorUnaryOpKind::Neg);
+}
+
+fn build_simd4f_ceil(builder: &mut MirBuilder) {
+    build_simd4f_unary(builder, "SIMD4f_ceil", VectorUnaryOpKind::Ceil);
+}
+
+fn build_simd4f_floor(builder: &mut MirBuilder) {
+    build_simd4f_unary(builder, "SIMD4f_floor", VectorUnaryOpKind::Floor);
+}
+
+fn build_simd4f_round(builder: &mut MirBuilder) {
+    build_simd4f_unary(builder, "SIMD4f_round", VectorUnaryOpKind::Round);
+}
+
+fn build_simd4f_minmax(builder: &mut MirBuilder, name: &str, op: VectorMinMaxKind) {
+    let vec_ty = IrType::vector(IrType::F32, 4);
+
+    let func_id = builder
+        .begin_function(name)
+        .param("self_val", vec_ty.clone())
+        .param("other", vec_ty.clone())
+        .returns(vec_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let self_val = builder.get_param(0);
+    let other = builder.get_param(1);
+    let result = builder.vector_min_max(op, self_val, other, vec_ty);
+    builder.ret(Some(result));
+}
+
+fn build_simd4f_min(builder: &mut MirBuilder) {
+    build_simd4f_minmax(builder, "SIMD4f_min", VectorMinMaxKind::Min);
+}
+
+fn build_simd4f_max(builder: &mut MirBuilder) {
+    build_simd4f_minmax(builder, "SIMD4f_max", VectorMinMaxKind::Max);
+}
+
+// ============================================================================
+// SIMD4f compound operations — built from primitive vector ops
+// ============================================================================
+
+/// clamp(lo, hi) = max(lo, min(hi, self))
+fn build_simd4f_clamp(builder: &mut MirBuilder) {
+    let vec_ty = IrType::vector(IrType::F32, 4);
+
+    let func_id = builder
+        .begin_function("SIMD4f_clamp")
+        .param("self_val", vec_ty.clone())
+        .param("lo", vec_ty.clone())
+        .param("hi", vec_ty.clone())
+        .returns(vec_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let self_val = builder.get_param(0);
+    let lo = builder.get_param(1);
+    let hi = builder.get_param(2);
+    let clamped_hi = builder.vector_min_max(VectorMinMaxKind::Min, self_val, hi, vec_ty.clone());
+    let result = builder.vector_min_max(VectorMinMaxKind::Max, clamped_hi, lo, vec_ty);
+    builder.ret(Some(result));
+}
+
+/// lerp(other, t) = self + (other - self) * t
+fn build_simd4f_lerp(builder: &mut MirBuilder) {
+    let vec_ty = IrType::vector(IrType::F32, 4);
+    let f32_ty = IrType::F32;
+    let f64_ty = IrType::F64;
+
+    let func_id = builder
+        .begin_function("SIMD4f_lerp")
+        .param("self_val", vec_ty.clone())
+        .param("other", vec_ty.clone())
+        .param("t", f64_ty.clone())
+        .returns(vec_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let self_val = builder.get_param(0);
+    let other = builder.get_param(1);
+    let t_f64 = builder.get_param(2);
+    let t_scalar = builder.cast(t_f64, f64_ty, f32_ty);
+    let t = builder.vector_splat(t_scalar, vec_ty.clone());
+    let diff = builder.vector_bin_op(BinaryOp::Sub, other, self_val, vec_ty.clone());
+    let scaled = builder.vector_bin_op(BinaryOp::Mul, diff, t, vec_ty.clone());
+    let result = builder.vector_bin_op(BinaryOp::Add, self_val, scaled, vec_ty);
+    builder.ret(Some(result));
+}
+
+/// length() = sqrt(dot(self, self))
+fn build_simd4f_length(builder: &mut MirBuilder) {
+    let vec_ty = IrType::vector(IrType::F32, 4);
+    let f32_ty = IrType::F32;
+    let f64_ty = IrType::F64;
+
+    let func_id = builder
+        .begin_function("SIMD4f_length")
+        .param("self_val", vec_ty.clone())
+        .returns(f64_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let self_val = builder.get_param(0);
+    let product = builder.vector_bin_op(BinaryOp::Mul, self_val, self_val, vec_ty.clone());
+    let sum_f32 = builder.vector_reduce(BinaryOp::Add, product, f32_ty.clone());
+    // sqrt of the sum
+    let sqrt_val = builder.vector_splat(sum_f32, vec_ty.clone());
+    let sqrt_vec = builder.vector_unary_op(VectorUnaryOpKind::Sqrt, sqrt_val, vec_ty);
+    let sqrt_f32 = builder.vector_extract(sqrt_vec, 0, f32_ty.clone());
+    let result = builder.cast(sqrt_f32, f32_ty, f64_ty);
+    builder.ret(Some(result));
+}
+
+/// normalize() = self / splat(length(self))
+fn build_simd4f_normalize(builder: &mut MirBuilder) {
+    let vec_ty = IrType::vector(IrType::F32, 4);
+    let f32_ty = IrType::F32;
+
+    let func_id = builder
+        .begin_function("SIMD4f_normalize")
+        .param("self_val", vec_ty.clone())
+        .returns(vec_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let self_val = builder.get_param(0);
+    let product = builder.vector_bin_op(BinaryOp::Mul, self_val, self_val, vec_ty.clone());
+    let sum_f32 = builder.vector_reduce(BinaryOp::Add, product, f32_ty.clone());
+    let sum_vec = builder.vector_splat(sum_f32, vec_ty.clone());
+    let sqrt_vec = builder.vector_unary_op(VectorUnaryOpKind::Sqrt, sum_vec, vec_ty.clone());
+    let result = builder.vector_bin_op(BinaryOp::Div, self_val, sqrt_vec, vec_ty);
+    builder.ret(Some(result));
+}
+
+/// cross3(other) — 3D cross product (w lane = 0)
+/// cross = (ay*bz - az*by, az*bx - ax*bz, ax*by - ay*bx, 0)
+fn build_simd4f_cross3(builder: &mut MirBuilder) {
+    let vec_ty = IrType::vector(IrType::F32, 4);
+    let f32_ty = IrType::F32;
+
+    let func_id = builder
+        .begin_function("SIMD4f_cross3")
+        .param("self_val", vec_ty.clone())
+        .param("other", vec_ty.clone())
+        .returns(vec_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let a = builder.get_param(0);
+    let b = builder.get_param(1);
+
+    // Extract components
+    let ax = builder.vector_extract(a, 0, f32_ty.clone());
+    let ay = builder.vector_extract(a, 1, f32_ty.clone());
+    let az = builder.vector_extract(a, 2, f32_ty.clone());
+    let bx = builder.vector_extract(b, 0, f32_ty.clone());
+    let by = builder.vector_extract(b, 1, f32_ty.clone());
+    let bz = builder.vector_extract(b, 2, f32_ty.clone());
+
+    // Build (ay*bz, az*bx, ax*by, 0) and (az*by, ax*bz, ay*bx, 0)
+    let zero = builder.const_value(IrValue::F32(0.0));
+    let mut lhs = builder.vector_splat(zero, vec_ty.clone());
+    let ay_bz = builder.bin_op(BinaryOp::FMul, ay, bz);
+    let az_bx = builder.bin_op(BinaryOp::FMul, az, bx);
+    let ax_by = builder.bin_op(BinaryOp::FMul, ax, by);
+    lhs = builder.vector_insert(lhs, ay_bz, 0, vec_ty.clone());
+    lhs = builder.vector_insert(lhs, az_bx, 1, vec_ty.clone());
+    lhs = builder.vector_insert(lhs, ax_by, 2, vec_ty.clone());
+
+    let mut rhs = builder.vector_splat(zero, vec_ty.clone());
+    let az_by = builder.bin_op(BinaryOp::FMul, az, by);
+    let ax_bz = builder.bin_op(BinaryOp::FMul, ax, bz);
+    let ay_bx = builder.bin_op(BinaryOp::FMul, ay, bx);
+    rhs = builder.vector_insert(rhs, az_by, 0, vec_ty.clone());
+    rhs = builder.vector_insert(rhs, ax_bz, 1, vec_ty.clone());
+    rhs = builder.vector_insert(rhs, ay_bx, 2, vec_ty.clone());
+
+    let result = builder.vector_bin_op(BinaryOp::Sub, lhs, rhs, vec_ty);
+    builder.ret(Some(result));
+}
+
+/// distance(other) = length(self - other)
+fn build_simd4f_distance(builder: &mut MirBuilder) {
+    let vec_ty = IrType::vector(IrType::F32, 4);
+    let f32_ty = IrType::F32;
+    let f64_ty = IrType::F64;
+
+    let func_id = builder
+        .begin_function("SIMD4f_distance")
+        .param("self_val", vec_ty.clone())
+        .param("other", vec_ty.clone())
+        .returns(f64_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let self_val = builder.get_param(0);
+    let other = builder.get_param(1);
+    let diff = builder.vector_bin_op(BinaryOp::Sub, self_val, other, vec_ty.clone());
+    let product = builder.vector_bin_op(BinaryOp::Mul, diff, diff, vec_ty.clone());
+    let sum_f32 = builder.vector_reduce(BinaryOp::Add, product, f32_ty.clone());
+    let sum_vec = builder.vector_splat(sum_f32, vec_ty.clone());
+    let sqrt_vec = builder.vector_unary_op(VectorUnaryOpKind::Sqrt, sum_vec, vec_ty);
+    let sqrt_f32 = builder.vector_extract(sqrt_vec, 0, f32_ty.clone());
+    let result = builder.cast(sqrt_f32, f32_ty, f64_ty);
+    builder.ret(Some(result));
 }

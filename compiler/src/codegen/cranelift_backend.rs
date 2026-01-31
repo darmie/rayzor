@@ -3085,6 +3085,49 @@ impl CraneliftBackend {
                 value_map.insert(*dest, result);
             }
 
+            IrInstruction::VectorUnaryOp {
+                dest,
+                op,
+                operand,
+                vec_ty: _,
+            } => {
+                let operand_val = *value_map
+                    .get(operand)
+                    .ok_or_else(|| format!("VectorUnaryOp operand {:?} not found", operand))?;
+
+                let result = match op {
+                    crate::ir::VectorUnaryOpKind::Sqrt => builder.ins().sqrt(operand_val),
+                    crate::ir::VectorUnaryOpKind::Abs => builder.ins().fabs(operand_val),
+                    crate::ir::VectorUnaryOpKind::Neg => builder.ins().fneg(operand_val),
+                    crate::ir::VectorUnaryOpKind::Ceil => builder.ins().ceil(operand_val),
+                    crate::ir::VectorUnaryOpKind::Floor => builder.ins().floor(operand_val),
+                    crate::ir::VectorUnaryOpKind::Trunc => builder.ins().trunc(operand_val),
+                    crate::ir::VectorUnaryOpKind::Round => builder.ins().nearest(operand_val),
+                };
+                value_map.insert(*dest, result);
+            }
+
+            IrInstruction::VectorMinMax {
+                dest,
+                op,
+                left,
+                right,
+                vec_ty: _,
+            } => {
+                let lhs = *value_map
+                    .get(left)
+                    .ok_or_else(|| format!("VectorMinMax left {:?} not found", left))?;
+                let rhs = *value_map
+                    .get(right)
+                    .ok_or_else(|| format!("VectorMinMax right {:?} not found", right))?;
+
+                let result = match op {
+                    crate::ir::VectorMinMaxKind::Min => builder.ins().fmin(lhs, rhs),
+                    crate::ir::VectorMinMaxKind::Max => builder.ins().fmax(lhs, rhs),
+                };
+                value_map.insert(*dest, result);
+            }
+
             // Global variable access - uses runtime functions for storage
             IrInstruction::LoadGlobal {
                 dest,

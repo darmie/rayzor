@@ -534,11 +534,13 @@ pub enum Opcode {
     VectorExtract = 49,
     VectorInsert = 50,
     VectorReduce = 51,
+    VectorUnaryOp = 52,
+    VectorMinMax = 53,
     // Global variable access
-    LoadGlobal = 52,
-    StoreGlobal = 53,
+    LoadGlobal = 54,
+    StoreGlobal = 55,
     // Sentinel for table size
-    _Count = 54,
+    _Count = 56,
 }
 
 impl Opcode {
@@ -599,6 +601,8 @@ impl Opcode {
             IrInstruction::VectorExtract { .. } => Opcode::VectorExtract,
             IrInstruction::VectorInsert { .. } => Opcode::VectorInsert,
             IrInstruction::VectorReduce { .. } => Opcode::VectorReduce,
+            IrInstruction::VectorUnaryOp { .. } => Opcode::VectorUnaryOp,
+            IrInstruction::VectorMinMax { .. } => Opcode::VectorMinMax,
             // Global variable access
             IrInstruction::LoadGlobal { .. } => Opcode::LoadGlobal,
             IrInstruction::StoreGlobal { .. } => Opcode::StoreGlobal,
@@ -1929,6 +1933,16 @@ impl MirInterpreter {
                     .set(*dest, NanBoxedValue::void());
             }
             IrInstruction::VectorReduce { dest, .. } => {
+                self.current_frame_mut()
+                    .registers
+                    .set(*dest, NanBoxedValue::void());
+            }
+            IrInstruction::VectorUnaryOp { dest, .. } => {
+                self.current_frame_mut()
+                    .registers
+                    .set(*dest, NanBoxedValue::void());
+            }
+            IrInstruction::VectorMinMax { dest, .. } => {
                 self.current_frame_mut()
                     .registers
                     .set(*dest, NanBoxedValue::void());

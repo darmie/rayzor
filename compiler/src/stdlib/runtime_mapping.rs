@@ -2821,6 +2821,50 @@ impl StdlibMapping {
             // SIMD4f.fromArray(arr): SIMD4f  (static, @:from conversion)
             map_method!(static "rayzor_SIMD4f", "fromArray" => "SIMD4f_fromArray", params: 1, mir_wrapper,
                 types: &[PtrVoid] => VecF32x4),
+            // --- Math operations ---
+            // simd.sqrt(): SIMD4f
+            map_method!(instance "rayzor_SIMD4f", "sqrt" => "SIMD4f_sqrt", params: 0, mir_wrapper,
+                types: &[VecF32x4] => VecF32x4),
+            // simd.abs(): SIMD4f
+            map_method!(instance "rayzor_SIMD4f", "abs" => "SIMD4f_abs", params: 0, mir_wrapper,
+                types: &[VecF32x4] => VecF32x4),
+            // simd.neg(): SIMD4f
+            map_method!(instance "rayzor_SIMD4f", "neg" => "SIMD4f_neg", params: 0, mir_wrapper,
+                types: &[VecF32x4] => VecF32x4),
+            // simd.min(other): SIMD4f
+            map_method!(instance "rayzor_SIMD4f", "min" => "SIMD4f_min", params: 1, mir_wrapper,
+                types: &[VecF32x4, VecF32x4] => VecF32x4),
+            // simd.max(other): SIMD4f
+            map_method!(instance "rayzor_SIMD4f", "max" => "SIMD4f_max", params: 1, mir_wrapper,
+                types: &[VecF32x4, VecF32x4] => VecF32x4),
+            // simd.ceil(): SIMD4f
+            map_method!(instance "rayzor_SIMD4f", "ceil" => "SIMD4f_ceil", params: 0, mir_wrapper,
+                types: &[VecF32x4] => VecF32x4),
+            // simd.floor(): SIMD4f
+            map_method!(instance "rayzor_SIMD4f", "floor" => "SIMD4f_floor", params: 0, mir_wrapper,
+                types: &[VecF32x4] => VecF32x4),
+            // simd.round(): SIMD4f
+            map_method!(instance "rayzor_SIMD4f", "round" => "SIMD4f_round", params: 0, mir_wrapper,
+                types: &[VecF32x4] => VecF32x4),
+            // --- Compound operations ---
+            // simd.clamp(lo, hi): SIMD4f
+            map_method!(instance "rayzor_SIMD4f", "clamp" => "SIMD4f_clamp", params: 2, mir_wrapper,
+                types: &[VecF32x4, VecF32x4, VecF32x4] => VecF32x4),
+            // simd.lerp(other, t): SIMD4f
+            map_method!(instance "rayzor_SIMD4f", "lerp" => "SIMD4f_lerp", params: 2, mir_wrapper,
+                types: &[VecF32x4, VecF32x4, F64] => VecF32x4),
+            // simd.len(): Float
+            map_method!(instance "rayzor_SIMD4f", "len" => "SIMD4f_length", params: 0, mir_wrapper,
+                types: &[VecF32x4] => F64),
+            // simd.normalize(): SIMD4f
+            map_method!(instance "rayzor_SIMD4f", "normalize" => "SIMD4f_normalize", params: 0, mir_wrapper,
+                types: &[VecF32x4] => VecF32x4),
+            // simd.cross3(other): SIMD4f
+            map_method!(instance "rayzor_SIMD4f", "cross3" => "SIMD4f_cross3", params: 1, mir_wrapper,
+                types: &[VecF32x4, VecF32x4] => VecF32x4),
+            // simd.distance(other): Float
+            map_method!(instance "rayzor_SIMD4f", "distance" => "SIMD4f_distance", params: 1, mir_wrapper,
+                types: &[VecF32x4, VecF32x4] => F64),
         ];
 
         self.register_from_tuples(mappings);

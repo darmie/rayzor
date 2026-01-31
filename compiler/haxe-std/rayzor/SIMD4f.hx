@@ -78,4 +78,65 @@ abstract SIMD4f {
     /** Dot product: sum(a[i] * b[i]) */
     @:native("dot")
     public function dot(other:SIMD4f):Float;
+
+    // --- Math operations (single vector instruction each) ---
+
+    /** Element-wise square root */
+    @:native("sqrt")
+    public function sqrt():SIMD4f;
+
+    /** Element-wise absolute value */
+    @:native("abs")
+    public function abs():SIMD4f;
+
+    /** Element-wise negation */
+    @:native("neg")
+    @:op(-A)
+    public function neg():SIMD4f;
+
+    /** Element-wise minimum */
+    @:native("min")
+    public function min(other:SIMD4f):SIMD4f;
+
+    /** Element-wise maximum */
+    @:native("max")
+    public function max(other:SIMD4f):SIMD4f;
+
+    /** Element-wise ceiling */
+    @:native("ceil")
+    public function ceil():SIMD4f;
+
+    /** Element-wise floor */
+    @:native("floor")
+    public function floor():SIMD4f;
+
+    /** Element-wise round to nearest */
+    @:native("round")
+    public function round():SIMD4f;
+
+    // --- Compound operations ---
+
+    /** Clamp each lane to [lo, hi] */
+    @:native("clamp")
+    public function clamp(lo:SIMD4f, hi:SIMD4f):SIMD4f;
+
+    /** Linear interpolation: self + (other - self) * t */
+    @:native("lerp")
+    public function lerp(other:SIMD4f, t:Float):SIMD4f;
+
+    /** Vector length: sqrt(dot(self, self)) */
+    @:native("len")
+    public function len():Float;
+
+    /** Normalize to unit vector */
+    @:native("normalize")
+    public function normalize():SIMD4f;
+
+    /** 3D cross product (w lane = 0) */
+    @:native("cross3")
+    public function cross3(other:SIMD4f):SIMD4f;
+
+    /** Euclidean distance to another vector */
+    @:native("distance")
+    public function distance(other:SIMD4f):Float;
 }
