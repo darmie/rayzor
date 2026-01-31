@@ -213,10 +213,10 @@ struct TccFuncIds {
     call0: IrFunctionId,            // rayzor_tcc_call0(I64) -> I64
     free_value: IrFunctionId,       // rayzor_tcc_free_value(I64) -> Void
     string_replace: IrFunctionId, // haxe_string_replace(PtrString, PtrString, PtrString) -> PtrString
-    add_framework: IrFunctionId,    // rayzor_tcc_add_framework(I64, PtrString) -> I32
+    add_framework: IrFunctionId,  // rayzor_tcc_add_framework(I64, PtrString) -> I32
     add_include_path: IrFunctionId, // rayzor_tcc_add_include_path(I64, PtrString) -> I32
-    add_file: IrFunctionId,         // rayzor_tcc_add_file(I64, PtrString) -> I32
-    add_clib: IrFunctionId,         // rayzor_tcc_add_clib(I64, PtrString) -> I32
+    add_file: IrFunctionId,       // rayzor_tcc_add_file(I64, PtrString) -> I32
+    add_clib: IrFunctionId,       // rayzor_tcc_add_clib(I64, PtrString) -> I32
 }
 
 /// SSA-derived optimization hints from DFG analysis
@@ -14447,28 +14447,36 @@ impl<'a> HirToMirContext<'a> {
                     if let Some(ref fws) = sym.frameworks {
                         for f in fws {
                             if let Some(n) = self.string_interner.get(*f) {
-                                if seen_fw.insert(n.to_string()) { framework_names.push(n.to_string()); }
+                                if seen_fw.insert(n.to_string()) {
+                                    framework_names.push(n.to_string());
+                                }
                             }
                         }
                     }
                     if let Some(ref incs) = sym.c_includes {
                         for i in incs {
                             if let Some(n) = self.string_interner.get(*i) {
-                                if seen_inc.insert(n.to_string()) { include_paths.push(n.to_string()); }
+                                if seen_inc.insert(n.to_string()) {
+                                    include_paths.push(n.to_string());
+                                }
                             }
                         }
                     }
                     if let Some(ref srcs) = sym.c_sources {
                         for s in srcs {
                             if let Some(n) = self.string_interner.get(*s) {
-                                if seen_src.insert(n.to_string()) { source_files.push(n.to_string()); }
+                                if seen_src.insert(n.to_string()) {
+                                    source_files.push(n.to_string());
+                                }
                             }
                         }
                     }
                     if let Some(ref libs) = sym.c_libs {
                         for l in libs {
                             if let Some(n) = self.string_interner.get(*l) {
-                                if seen_lib.insert(n.to_string()) { clib_names.push(n.to_string()); }
+                                if seen_lib.insert(n.to_string()) {
+                                    clib_names.push(n.to_string());
+                                }
                             }
                         }
                     }
@@ -14497,14 +14505,18 @@ impl<'a> HirToMirContext<'a> {
 
         // 1d. Auto-add @:cSource files (compiled before main code so symbols are available)
         for src_path in &source_files {
-            let path_reg = self.builder.build_const(IrValue::String(src_path.clone()))?;
+            let path_reg = self
+                .builder
+                .build_const(IrValue::String(src_path.clone()))?;
             self.builder
                 .build_call_direct(add_file_id, vec![state, path_reg], IrType::I32);
         }
 
         // 1e. Auto-load @:clib libraries via pkg-config discovery
         for lib_name in &clib_names {
-            let name_reg = self.builder.build_const(IrValue::String(lib_name.clone()))?;
+            let name_reg = self
+                .builder
+                .build_const(IrValue::String(lib_name.clone()))?;
             self.builder
                 .build_call_direct(add_clib_id, vec![state, name_reg], IrType::I32);
         }

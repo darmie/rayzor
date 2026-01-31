@@ -408,7 +408,11 @@ pub extern "C" fn rayzor_tcc_add_include_path(
             None => return 0,
         };
         let ret = tcc_add_include_path(state, c_path.as_ptr());
-        if ret < 0 { 0 } else { 1 }
+        if ret < 0 {
+            0
+        } else {
+            1
+        }
     }
 }
 
@@ -416,10 +420,7 @@ pub extern "C" fn rayzor_tcc_add_include_path(
 /// C source files are compiled; object/archive/shared libs are linked.
 /// Returns 1 on success, panics on failure.
 #[no_mangle]
-pub extern "C" fn rayzor_tcc_add_file(
-    state: *mut TCCState,
-    path: *const HaxeString,
-) -> i32 {
+pub extern "C" fn rayzor_tcc_add_file(state: *mut TCCState, path: *const HaxeString) -> i32 {
     if state.is_null() {
         panic!("TCC addFile: null state");
     }
@@ -442,10 +443,7 @@ pub extern "C" fn rayzor_tcc_add_file(
 /// shared library locations. Adds include paths to TCC and loads the library.
 /// Panics if pkg-config is not found or the library is not installed.
 #[no_mangle]
-pub extern "C" fn rayzor_tcc_add_clib(
-    state: *mut TCCState,
-    name: *const HaxeString,
-) -> i32 {
+pub extern "C" fn rayzor_tcc_add_clib(state: *mut TCCState, name: *const HaxeString) -> i32 {
     if state.is_null() {
         panic!("TCC addClib: null state");
     }
@@ -467,7 +465,9 @@ pub extern "C" fn rayzor_tcc_add_clib(
             for flag in cflags.split_whitespace() {
                 if let Some(path) = flag.strip_prefix("-I") {
                     if let Ok(c_path) = CString::new(path) {
-                        unsafe { tcc_add_include_path(state, c_path.as_ptr()); }
+                        unsafe {
+                            tcc_add_include_path(state, c_path.as_ptr());
+                        }
                     }
                 }
             }
@@ -532,7 +532,9 @@ pub extern "C" fn rayzor_tcc_add_clib(
                     let default_name = format!("lib{}.so", l);
 
                     if let Ok(c_path) = CString::new(default_name.as_str()) {
-                        unsafe { dlopen(c_path.as_ptr(), RTLD_LAZY); }
+                        unsafe {
+                            dlopen(c_path.as_ptr(), RTLD_LAZY);
+                        }
                     }
                 }
             }
