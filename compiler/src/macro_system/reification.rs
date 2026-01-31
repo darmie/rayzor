@@ -211,6 +211,16 @@ impl ReificationEngine {
                 })
             }
 
+            ExprKind::Tuple(elements) => {
+                let new_elements = elements.iter()
+                    .map(|e| Self::process_expr(e, env))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Expr {
+                    kind: ExprKind::Tuple(new_elements),
+                    span: expr.span,
+                })
+            }
+
             // Leaf nodes — return as-is
             _ => Ok(expr.clone()),
         }

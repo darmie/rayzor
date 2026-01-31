@@ -259,6 +259,26 @@ impl IrBuilder {
         Some(dest)
     }
 
+    /// Build a SIMD vector binary operation (element-wise)
+    pub fn build_vector_binop(
+        &mut self,
+        op: BinaryOp,
+        left: IrId,
+        right: IrId,
+        vec_ty: IrType,
+    ) -> Option<IrId> {
+        let dest = self.alloc_reg()?;
+        self.set_register_type(dest, vec_ty.clone());
+        self.add_instruction(IrInstruction::VectorBinOp {
+            dest,
+            op,
+            left,
+            right,
+            vec_ty,
+        })?;
+        Some(dest)
+    }
+
     /// Build a function call
     /// Build a direct function call (callee known at compile time)
     pub fn build_call_direct(
@@ -326,7 +346,15 @@ impl IrBuilder {
                 );
                 let expected_is_ptr = matches!(ty, IrType::Ptr(_));
 
-                if actual_is_ptr && expected_is_scalar {
+                let actual_is_vector = actual_return_type.is_vector();
+
+                if actual_is_vector {
+                    // Vector types (e.g., F32X4 from SIMD4f) should never be cast.
+                    // The function returns the correct vector type; the caller's expected
+                    // type may be Ptr(Void) due to abstract type resolution.
+                    debug!("DEBUG: CallDirect type mismatch - function returns {:?}, expected {:?}, but NOT inserting cast (vector type)",
+                              actual_return_type, ty);
+                } else if actual_is_ptr && expected_is_scalar {
                     debug!("DEBUG: CallDirect type mismatch - function returns {:?}, expected {:?}, but NOT inserting cast (pointer->scalar would lose data)",
                               actual_return_type, ty);
                     // Type already registered above - trust actual type

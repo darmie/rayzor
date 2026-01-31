@@ -730,6 +730,9 @@ pub enum ExprKind {
     /// Parentheses: `(expr)`
     Paren(Box<Expr>),
 
+    /// Tuple literal: `(expr, expr, ...)`
+    Tuple(Vec<Expr>),
+
     /// Macro expression: `macro expr`
     Macro(Box<Expr>),
 

@@ -5735,6 +5735,15 @@ impl<'a> AstLowering<'a> {
                 // Parentheses just pass through the inner expression
                 return self.lower_expression(expr);
             }
+            ExprKind::Tuple(elements) => {
+                // Standalone tuple without a known target type — desugar to array literal.
+                // e.g., (1, 2, 3) becomes [1, 2, 3]
+                let array_expr = parser::Expr {
+                    kind: parser::ExprKind::Array(elements.clone()),
+                    span: expression.span,
+                };
+                return self.lower_expression(&array_expr);
+            }
             ExprKind::Cast { expr, type_hint } => {
                 let typed_expr = self.lower_expression(expr)?;
                 let target_type = if let Some(hint) = type_hint {
@@ -5838,6 +5847,87 @@ impl<'a> AstLowering<'a> {
                 // Variable declaration as expression: `var x = 5` returns 5
                 let var_name = self.context.intern_string(name);
 
+                // Resolve target type FIRST for type-directed desugaring (e.g., tuples)
+                let declared_type = if let Some(th) = type_hint {
+                    Some(self.lower_type(th)?)
+                } else {
+                    None
+                };
+
+                // Check for tuple → SIMD4f.make() desugaring
+                if let (Some(init_expr), Some(target_ty)) = (expr.as_ref(), declared_type) {
+                    if let ExprKind::Tuple(elements) = &init_expr.kind {
+                        if let Some(desugared) = self.try_desugar_tuple_to_make(elements, target_ty, expression)? {
+                            // Successfully desugared tuple to a static method call.
+                            // Wrap in VarDeclarationExpr.
+                            let var_symbol = self.context.symbol_table.create_variable_with_type(
+                                var_name,
+                                self.context.current_scope,
+                                target_ty,
+                            );
+                            if let Some(scope) = self.context.scope_tree.get_scope_mut(self.context.current_scope) {
+                                scope.add_symbol(var_symbol, var_name);
+                            }
+                            return Ok(TypedExpression {
+                                kind: TypedExpressionKind::VarDeclarationExpr {
+                                    symbol_id: var_symbol,
+                                    var_type: target_ty,
+                                    initializer: Box::new(desugared),
+                                },
+                                expr_type: target_ty,
+                                usage: VariableUsage::Copy,
+                                lifetime_id: LifetimeId::from_raw(1),
+                                source_location: self.context.span_to_location(&expression.span),
+                                metadata: ExpressionMetadata::default(),
+                            });
+                        }
+                    }
+                }
+
+                // Check for array literal → SIMD4f @:from conversion
+                if let (Some(init_expr), Some(target_ty)) = (expr.as_ref(), declared_type) {
+                    if matches!(&init_expr.kind, ExprKind::Array(_)) && self.is_simd4f_type(target_ty) {
+                        warn!(
+                            "SIMD4f from Array<Float> allocates a temporary heap array. \
+                             Use tuple syntax instead: var v:SIMD4f = (1.0, 2.0, 3.0, 4.0)"
+                        );
+                        // Lower the array, then wrap in an implicit cast to SIMD4f
+                        let array_expr = self.lower_expression(init_expr)?;
+                        let cast_expr = TypedExpression {
+                            kind: TypedExpressionKind::Cast {
+                                expression: Box::new(array_expr),
+                                target_type: target_ty,
+                                cast_kind: crate::tast::node::CastKind::Implicit,
+                            },
+                            expr_type: target_ty,
+                            usage: VariableUsage::Copy,
+                            lifetime_id: LifetimeId::from_raw(1),
+                            source_location: self.context.span_to_location(&expression.span),
+                            metadata: ExpressionMetadata::default(),
+                        };
+                        let var_symbol = self.context.symbol_table.create_variable_with_type(
+                            var_name,
+                            self.context.current_scope,
+                            target_ty,
+                        );
+                        if let Some(scope) = self.context.scope_tree.get_scope_mut(self.context.current_scope) {
+                            scope.add_symbol(var_symbol, var_name);
+                        }
+                        return Ok(TypedExpression {
+                            kind: TypedExpressionKind::VarDeclarationExpr {
+                                symbol_id: var_symbol,
+                                var_type: target_ty,
+                                initializer: Box::new(cast_expr),
+                            },
+                            expr_type: target_ty,
+                            usage: VariableUsage::Copy,
+                            lifetime_id: LifetimeId::from_raw(1),
+                            source_location: self.context.span_to_location(&expression.span),
+                            metadata: ExpressionMetadata::default(),
+                        });
+                    }
+                }
+
                 // Lower initializer expression first if it exists
                 let initializer = if let Some(init_expr) = expr {
                     self.lower_expression(init_expr)?
@@ -5853,15 +5943,10 @@ impl<'a> AstLowering<'a> {
                     }
                 };
 
-                // Determine variable type
-                let var_type = if let Some(type_hint) = type_hint {
-                    self.lower_type(type_hint)?
+                // Determine variable type (use already-resolved declared_type if available)
+                let var_type = if let Some(dt) = declared_type {
+                    dt
                 } else {
-                    // Infer type from initializer
-                    // eprintln!(
-                    //     "DEBUG: Var '{}' inferring type from initializer: {:?}",
-                    //     name, initializer.expr_type
-                    // );
                     initializer.expr_type
                 };
 
@@ -5895,6 +5980,41 @@ impl<'a> AstLowering<'a> {
                 // Final declaration as expression: `final x = 5` returns 5
                 let var_name = self.context.intern_string(name);
 
+                // Resolve target type FIRST for type-directed desugaring
+                let declared_type = if let Some(th) = type_hint {
+                    Some(self.lower_type(th)?)
+                } else {
+                    None
+                };
+
+                // Check for tuple → SIMD4f.make() desugaring
+                if let (Some(init_expr), Some(target_ty)) = (expr.as_ref(), declared_type) {
+                    if let ExprKind::Tuple(elements) = &init_expr.kind {
+                        if let Some(desugared) = self.try_desugar_tuple_to_make(elements, target_ty, expression)? {
+                            let var_symbol = self.context.symbol_table.create_variable_with_type(
+                                var_name,
+                                self.context.current_scope,
+                                target_ty,
+                            );
+                            if let Some(scope) = self.context.scope_tree.get_scope_mut(self.context.current_scope) {
+                                scope.add_symbol(var_symbol, var_name);
+                            }
+                            return Ok(TypedExpression {
+                                kind: TypedExpressionKind::FinalDeclarationExpr {
+                                    symbol_id: var_symbol,
+                                    var_type: target_ty,
+                                    initializer: Box::new(desugared),
+                                },
+                                expr_type: target_ty,
+                                usage: VariableUsage::Copy,
+                                lifetime_id: LifetimeId::from_raw(1),
+                                source_location: self.context.span_to_location(&expression.span),
+                                metadata: ExpressionMetadata::default(),
+                            });
+                        }
+                    }
+                }
+
                 // Final variables must have an initializer
                 let initializer = if let Some(init_expr) = expr {
                     self.lower_expression(init_expr)?
@@ -5906,8 +6026,8 @@ impl<'a> AstLowering<'a> {
                 };
 
                 // Determine variable type
-                let var_type = if let Some(type_hint) = type_hint {
-                    self.lower_type(type_hint)?
+                let var_type = if let Some(dt) = declared_type {
+                    dt
                 } else {
                     // Infer type from initializer
                     initializer.expr_type
@@ -10518,6 +10638,121 @@ impl<'a> AstLowering<'a> {
         metadata.iter().any(|m| m.name == "arrayAccess")
     }
 
+    /// Check if a type is SIMD4f (by native_name or symbol name).
+    fn is_simd4f_type(&self, ty: crate::tast::TypeId) -> bool {
+        use crate::tast::core::TypeKind;
+        let type_table = self.context.type_table.borrow();
+        let sym_id = type_table.get(ty).and_then(|ti| match &ti.kind {
+            TypeKind::Abstract { symbol_id, .. } | TypeKind::Class { symbol_id, .. } => Some(*symbol_id),
+            _ => None,
+        });
+        if let Some(sid) = sym_id {
+            self.context.symbol_table.get_symbol(sid).map(|s| {
+                let by_native = s.native_name
+                    .and_then(|nn| self.context.string_interner.get(nn))
+                    .map(|n| n == "rayzor::SIMD4f")
+                    .unwrap_or(false);
+                let by_name = self.context.string_interner.get(s.name)
+                    .map(|n| n == "SIMD4f")
+                    .unwrap_or(false);
+                by_native || by_name
+            }).unwrap_or(false)
+        } else {
+            false
+        }
+    }
+
+    /// Try to desugar a tuple literal to a static method call (e.g., SIMD4f.make()).
+    /// Returns Ok(Some(expr)) if desugared, Ok(None) if the target type doesn't support tuple construction.
+    fn try_desugar_tuple_to_make(
+        &mut self,
+        elements: &[parser::Expr],
+        target_ty: crate::tast::TypeId,
+        original_expr: &parser::Expr,
+    ) -> LoweringResult<Option<TypedExpression>> {
+        use crate::tast::core::TypeKind;
+
+        // Check if target type is an abstract or class with a known native name
+        let (class_symbol_id, native_name) = {
+            let type_table = self.context.type_table.borrow();
+            if let Some(type_info) = type_table.get(target_ty) {
+                let sym_id = match &type_info.kind {
+                    TypeKind::Abstract { symbol_id, .. } => Some(*symbol_id),
+                    TypeKind::Class { symbol_id, .. } => Some(*symbol_id),
+                    _ => None,
+                };
+                if let Some(sid) = sym_id {
+                    let nn = self.context.symbol_table.get_symbol(sid).and_then(|s| {
+                        s.native_name
+                            .and_then(|nn| self.context.string_interner.get(nn))
+                            .map(|s| s.to_string())
+                    });
+                    (Some(sid), nn)
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            }
+        };
+
+        // Currently only SIMD4f supports tuple construction
+        // Check by native_name or symbol name
+        let is_simd4f = match (class_symbol_id, native_name.as_deref()) {
+            (Some(_), Some("rayzor::SIMD4f")) => true,
+            (Some(sid), _) => {
+                // Fallback: check symbol name directly
+                self.context.symbol_table.get_symbol(sid)
+                    .and_then(|s| self.context.string_interner.get(s.name))
+                    .map(|n| n == "SIMD4f")
+                    .unwrap_or(false)
+            }
+            _ => false,
+        };
+        let class_symbol_id = match (is_simd4f, class_symbol_id) {
+            (true, Some(sid)) => sid,
+            _ => return Ok(None),
+        };
+
+        // Validate element count
+        if elements.len() != 4 {
+            return Err(LoweringError::InternalError {
+                message: format!(
+                    "SIMD4f tuple literal requires exactly 4 elements, got {}",
+                    elements.len()
+                ),
+                location: self.context.span_to_location(&original_expr.span),
+            });
+        }
+
+        // AST-level rewriting: construct a synthetic `SIMD4f.make(e1, e2, e3, e4)` expression
+        // and lower it through the normal path, which handles static method resolution.
+        let span = original_expr.span;
+        let simd_ident = parser::Expr {
+            kind: parser::ExprKind::Ident("SIMD4f".to_string()),
+            span,
+        };
+        let field_access = parser::Expr {
+            kind: parser::ExprKind::Field {
+                expr: Box::new(simd_ident),
+                field: "make".to_string(),
+                is_optional: false,
+            },
+            span,
+        };
+        let args: Vec<parser::Expr> = elements.to_vec();
+        let make_call = parser::Expr {
+            kind: parser::ExprKind::Call {
+                expr: Box::new(field_access),
+                args,
+            },
+            span,
+        };
+
+        let lowered = self.lower_expression(&make_call)?;
+        Ok(Some(lowered))
+    }
+
     /// Convert a parser expression to a string representation
     /// Used for extracting metadata parameter values
     fn expr_to_string(&self, expr: &parser::Expr) -> String {
@@ -10540,6 +10775,10 @@ impl<'a> AstLowering<'a> {
             }
             parser::ExprKind::Paren(inner) => {
                 format!("({})", self.expr_to_string(inner))
+            }
+            parser::ExprKind::Tuple(elements) => {
+                let parts: Vec<_> = elements.iter().map(|e| self.expr_to_string(e)).collect();
+                format!("({})", parts.join(", "))
             }
             _ => format!("{:?}", expr.kind), // Fallback for complex expressions
         }

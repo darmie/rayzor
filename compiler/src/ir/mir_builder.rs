@@ -526,6 +526,86 @@ impl MirBuilder {
         self.bin_op(BinaryOp::Mul, left, right)
     }
 
+    // === SIMD Vector Helper Methods ===
+
+    /// SIMD element-wise binary operation
+    pub fn vector_bin_op(
+        &mut self,
+        op: BinaryOp,
+        left: IrId,
+        right: IrId,
+        vec_ty: IrType,
+    ) -> IrId {
+        let dest = self.alloc_reg_typed(vec_ty.clone());
+        self.insert_inst(IrInstruction::VectorBinOp {
+            dest,
+            op,
+            left,
+            right,
+            vec_ty,
+        });
+        dest
+    }
+
+    /// Broadcast scalar to all vector lanes
+    pub fn vector_splat(&mut self, scalar: IrId, vec_ty: IrType) -> IrId {
+        let dest = self.alloc_reg_typed(vec_ty.clone());
+        self.insert_inst(IrInstruction::VectorSplat {
+            dest,
+            scalar,
+            vec_ty,
+        });
+        dest
+    }
+
+    /// Extract scalar from vector lane
+    pub fn vector_extract(&mut self, vector: IrId, index: u8, elem_ty: IrType) -> IrId {
+        let dest = self.alloc_reg_typed(elem_ty);
+        self.insert_inst(IrInstruction::VectorExtract {
+            dest,
+            vector,
+            index,
+        });
+        dest
+    }
+
+    /// Insert scalar into vector lane
+    pub fn vector_insert(
+        &mut self,
+        vector: IrId,
+        scalar: IrId,
+        index: u8,
+        vec_ty: IrType,
+    ) -> IrId {
+        let dest = self.alloc_reg_typed(vec_ty);
+        self.insert_inst(IrInstruction::VectorInsert {
+            dest,
+            vector,
+            scalar,
+            index,
+        });
+        dest
+    }
+
+    /// Horizontal reduction (e.g., sum all elements)
+    pub fn vector_reduce(&mut self, op: BinaryOp, vector: IrId, elem_ty: IrType) -> IrId {
+        let dest = self.alloc_reg_typed(elem_ty);
+        self.insert_inst(IrInstruction::VectorReduce { dest, op, vector });
+        dest
+    }
+
+    /// Load contiguous elements into a SIMD vector
+    pub fn vector_load(&mut self, ptr: IrId, vec_ty: IrType) -> IrId {
+        let dest = self.alloc_reg_typed(vec_ty.clone());
+        self.insert_inst(IrInstruction::VectorLoad { dest, ptr, vec_ty });
+        dest
+    }
+
+    /// Store SIMD vector to contiguous memory
+    pub fn vector_store(&mut self, ptr: IrId, value: IrId, vec_ty: IrType) {
+        self.insert_inst(IrInstruction::VectorStore { ptr, value, vec_ty });
+    }
+
     // === Special Values ===
 
     /// Undefined value (uninitialized)

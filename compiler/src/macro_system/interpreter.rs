@@ -187,6 +187,10 @@ impl MacroInterpreter {
 
             // --- Parenthesized expression ---
             ExprKind::Paren(inner) => self.eval_expr(inner),
+            ExprKind::Tuple(_) => Err(MacroError::RuntimeError {
+                message: "Tuple literals not supported in macro context".to_string(),
+                location: SourceLocation::unknown(),
+            }),
 
             // --- Block ---
             ExprKind::Block(elements) => self.eval_block(elements),

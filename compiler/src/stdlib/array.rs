@@ -92,6 +92,16 @@ fn declare_array_externs(builder: &mut MirBuilder) {
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
+
+    // haxe_array_get_f64(arr: *const HaxeArray, index: usize) -> f64
+    let func_id = builder
+        .begin_function("haxe_array_get_f64")
+        .param("arr", ptr_void.clone())
+        .param("index", i64_ty.clone())
+        .returns(IrType::F64)
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
 }
 
 /// Build: fn array_push(arr: Any, value: Any) -> void

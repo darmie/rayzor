@@ -3052,7 +3052,7 @@ impl CraneliftBackend {
                 // Get vector type info to determine lane count
                 let vec_type = builder.func.dfg.value_type(vec_val);
                 let lane_count = vec_type.lane_count() as u8;
-                let is_float = vec_type.is_float();
+                let is_float = vec_type.lane_type().is_float();
 
                 // Implement horizontal reduction by extracting lanes and combining
                 // Start with lane 0

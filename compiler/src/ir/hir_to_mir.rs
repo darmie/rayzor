@@ -4032,9 +4032,12 @@ impl<'a> HirToMirContext<'a> {
                             // which are used by concurrency primitives (Mutex, Thread, Channel, etc.)
                             let actual_is_string_ptr = matches!(&actual_type, IrType::Ptr(inner) if matches!(**inner, IrType::String));
 
+                            let actual_is_vector = actual_type.is_vector();
+
                             let should_skip_cast = (actual_is_ptr && !expected_is_ptr)  // pointer to scalar
                                 || (actual_is_specific && expected_is_void_ptr)          // specific type to void pointer
-                                || (actual_is_string_ptr && expected_is_void_ptr); // Ptr(String) to Ptr(Void)
+                                || (actual_is_string_ptr && expected_is_void_ptr)        // Ptr(String) to Ptr(Void)
+                                || actual_is_vector;                                     // vector types (SIMD) should never be cast
 
                             if should_skip_cast {
                                 debug!("Variable type mismatch - symbol={:?}, actual: {:?}, expected: {:?}, SKIPPING cast (would lose type info)", symbol, actual_type, expected_type);
@@ -8747,17 +8750,38 @@ impl<'a> HirToMirContext<'a> {
                         .build_cast(rhs_reg, rhs_type.clone(), IrType::F64)?;
                 }
 
-                let result_reg = match self.convert_binary_op_to_mir(*op) {
-                    MirBinaryOp::Binary(bin_op) => {
-                        self.builder.build_binop(bin_op, lhs_reg, rhs_reg)?
-                    }
-                    MirBinaryOp::Compare(cmp_op) => {
-                        self.builder.build_cmp(cmp_op, lhs_reg, rhs_reg)?
+                // Check if result is a SIMD vector type — emit VectorBinOp directly (zero overhead)
+                // We check operand types (from register_types) rather than convert_type(expr.ty)
+                // because @:coreType abstracts may not resolve correctly through convert_type.
+                let lhs_actual_type = self.builder.get_register_type(lhs_reg).unwrap_or(IrType::I64);
+                let result_type = if lhs_actual_type.is_vector() {
+                    lhs_actual_type.clone()
+                } else {
+                    self.convert_type(expr.ty)
+                };
+                let result_reg = if result_type.is_vector() {
+                    let bin_op = match op {
+                        HirBinaryOp::Add => BinaryOp::Add,
+                        HirBinaryOp::Sub => BinaryOp::Sub,
+                        HirBinaryOp::Mul => BinaryOp::Mul,
+                        HirBinaryOp::Div => BinaryOp::Div,
+                        _ => {
+                            debug!("Unsupported vector binary op: {:?}", op);
+                            return None;
+                        }
+                    };
+                    self.builder
+                        .build_vector_binop(bin_op, lhs_reg, rhs_reg, result_type.clone())?
+                } else {
+                    match self.convert_binary_op_to_mir(*op) {
+                        MirBinaryOp::Binary(bin_op) => {
+                            self.builder.build_binop(bin_op, lhs_reg, rhs_reg)?
+                        }
+                        MirBinaryOp::Compare(cmp_op) => {
+                            self.builder.build_cmp(cmp_op, lhs_reg, rhs_reg)?
+                        }
                     }
                 };
-
-                // Register the result with its type so Cranelift can find it
-                let result_type = self.convert_type(expr.ty);
                 let src_loc = self.convert_source_location(&expr.source_location);
                 if let Some(func) = self.builder.current_function_mut() {
                     func.locals.insert(
@@ -8776,6 +8800,49 @@ impl<'a> HirToMirContext<'a> {
             }
 
             HirExprKind::Cast { expr, target, .. } => {
+                // Check if target is a @:coreType abstract with @:from (e.g., SIMD4f)
+                // In that case, emit a function call to the @:from wrapper instead of a cast
+                let is_simd4f_target = {
+                    let type_table = self.type_table.borrow();
+                    type_table.get(*target).map(|ti| {
+                        let sym_id = match &ti.kind {
+                            TypeKind::Abstract { symbol_id, .. } => Some(*symbol_id),
+                            TypeKind::Class { symbol_id, .. } => Some(*symbol_id),
+                            _ => None,
+                        };
+                        sym_id.map(|sid| {
+                            self.symbol_table.get_symbol(sid).map(|s| {
+                                // Check native_name first, then symbol name
+                                let by_native = s.native_name
+                                    .and_then(|nn| self.string_interner.get(nn))
+                                    .map(|n| n == "rayzor::SIMD4f")
+                                    .unwrap_or(false);
+                                let by_name = self.string_interner.get(s.name)
+                                    .map(|n| n == "SIMD4f")
+                                    .unwrap_or(false);
+                                by_native || by_name
+                            }).unwrap_or(false)
+                        }).unwrap_or(false)
+                    }).unwrap_or(false)
+                };
+
+                if is_simd4f_target {
+                    // @:from implicit cast → call SIMD4f_fromArray wrapper
+                    let value_reg = self.lower_expression(expr)?;
+                    let param_types = vec![self.builder.get_register_type(value_reg).unwrap_or(IrType::Ptr(Box::new(IrType::Void)))];
+                    let return_type = IrType::vector(IrType::F32, 4);
+                    let func_id = self.register_stdlib_mir_forward_ref(
+                        "SIMD4f_fromArray",
+                        param_types,
+                        return_type.clone(),
+                    );
+                    return self.builder.build_call_direct(
+                        func_id,
+                        vec![value_reg],
+                        return_type,
+                    );
+                }
+
                 let value_reg = self.lower_expression(expr)?;
                 let from_type = self.convert_type(expr.ty);
                 let to_type = self.convert_type(*target);
@@ -9694,7 +9761,23 @@ impl<'a> HirToMirContext<'a> {
                     // If underlying type is specified, use it
                     self.convert_type(*underlying_type)
                 } else {
-                    // No underlying type specified — check if this is a systems type
+                    // No underlying type specified — check for SIMD vector types first
+                    let native_name = self
+                        .symbol_table
+                        .get_symbol(*symbol_id)
+                        .and_then(|sym| {
+                            sym.native_name
+                                .and_then(|nn| self.string_interner.get(nn))
+                                .map(|s| s.to_string())
+                        });
+                    if let Some(ref nn) = native_name {
+                        match nn.as_str() {
+                            "rayzor::SIMD4f" => return IrType::vector(IrType::F32, 4),
+                            _ => {}
+                        }
+                    }
+
+                    // Check if this is a systems type
                     // (Ptr, Ref, Box, Usize) which are all i64 (pointer-sized) abstracts over Int
                     let is_systems_type = self
                         .symbol_table
@@ -14016,6 +14099,21 @@ impl<'a> HirToMirContext<'a> {
                         self.builder
                             .build_cast(elem_val, IrType::I32, IrType::I64)
                             .unwrap_or(elem_val)
+                    }
+                    Some(IrType::F64) => {
+                        // F64 → I64: bitcast (reinterpret bits as integer)
+                        self.builder
+                            .build_bitcast(elem_val, IrType::I64)
+                            .unwrap_or(elem_val)
+                    }
+                    Some(IrType::F32) => {
+                        // F32 → I32 → I64
+                        let as_i32 = self.builder
+                            .build_bitcast(elem_val, IrType::I32)
+                            .unwrap_or(elem_val);
+                        self.builder
+                            .build_cast(as_i32, IrType::I32, IrType::I64)
+                            .unwrap_or(as_i32)
                     }
                     _ => elem_val,
                 };

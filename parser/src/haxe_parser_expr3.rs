@@ -331,15 +331,33 @@ pub fn paren_expr<'a>(full: &'a str, input: &'a str) -> PResult<'a, Expr> {
         ));
     }
 
-    // Regular parenthesized expression
-    let (input, expr) = expression(full, input)?;
+    // Regular parenthesized expression or tuple literal
+    let (input, first_expr) = expression(full, input)?;
+
+    // Check for tuple: (expr, expr, ...)
+    if let Ok((input, _)) = symbol(",").parse(input) {
+        let mut elements = vec![first_expr];
+        let (input, rest) = separated_list0(symbol(","), |i| expression(full, i)).parse(input)?;
+        elements.extend(rest);
+        let (input, _) = opt(symbol(",")).parse(input)?; // trailing comma
+        let (input, _) = symbol(")")(input)?;
+        let end = position(full, input);
+        return Ok((
+            input,
+            Expr {
+                kind: ExprKind::Tuple(elements),
+                span: Span::new(start, end),
+            },
+        ));
+    }
+
     let (input, _) = symbol(")").parse(input)?;
     let end = position(full, input);
 
     Ok((
         input,
         Expr {
-            kind: ExprKind::Paren(Box::new(expr)),
+            kind: ExprKind::Paren(Box::new(first_expr)),
             span: Span::new(start, end),
         },
     ))

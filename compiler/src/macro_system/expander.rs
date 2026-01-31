@@ -372,6 +372,7 @@ impl MacroExpander {
             | ExprKind::Unary { .. }
             | ExprKind::Ternary { .. }
             | ExprKind::Paren(_)
+            | ExprKind::Tuple(_)
             | ExprKind::Return(_)
             | ExprKind::Throw(_)
             | ExprKind::Var { .. }
@@ -490,6 +491,16 @@ impl MacroExpander {
                 let (expanded, c) = self.walk_expr(*inner)?;
                 changed |= c;
                 ExprKind::Paren(Box::new(expanded))
+            }
+
+            ExprKind::Tuple(elements) => {
+                let mut new_elements = Vec::new();
+                for elem in elements {
+                    let (expanded, c) = self.walk_expr(elem)?;
+                    changed |= c;
+                    new_elements.push(expanded);
+                }
+                ExprKind::Tuple(new_elements)
             }
 
             ExprKind::Binary { left, op, right } => {

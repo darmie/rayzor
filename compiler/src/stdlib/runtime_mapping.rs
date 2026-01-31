@@ -62,6 +62,8 @@ pub enum IrTypeDescriptor {
     PtrI32,
     /// Ptr(I64) - pointer to i64
     PtrI64,
+    /// SIMD vector: 4 × f32 (128-bit)
+    VecF32x4,
 }
 
 impl IrTypeDescriptor {
@@ -82,6 +84,7 @@ impl IrTypeDescriptor {
             IrTypeDescriptor::PtrString => IrType::Ptr(Box::new(IrType::String)),
             IrTypeDescriptor::PtrI32 => IrType::Ptr(Box::new(IrType::I32)),
             IrTypeDescriptor::PtrI64 => IrType::Ptr(Box::new(IrType::I64)),
+            IrTypeDescriptor::VecF32x4 => IrType::vector(IrType::F32, 4),
         }
     }
 }
@@ -244,6 +247,7 @@ impl StdlibMapping {
         mapping.register_ref_methods();
         mapping.register_usize_methods();
         mapping.register_cstring_methods();
+        mapping.register_simd4f_methods();
 
         mapping
     }
@@ -2773,6 +2777,50 @@ impl StdlibMapping {
             // cstring.free(): Void  (instance, frees the buffer)
             map_method!(instance "rayzor_CString", "free" => "rayzor_cstring_free", params: 0, returns: void,
                 types: &[I64]),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // SIMD4f Methods (rayzor.SIMD4f — 128-bit SIMD vector of 4×f32)
+    // ============================================================================
+    //
+    // Arithmetic operators (+, -, *, /) are NOT registered here — they use the
+    // zero-overhead @:op inline path (Binary → VectorBinOp in hir_to_mir).
+    // Only non-operator methods need MIR wrapper registration.
+
+    fn register_simd4f_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
+        let mappings = vec![
+            // SIMD4f.splat(v: Float): SIMD4f  (static, broadcast scalar to all lanes)
+            map_method!(static "rayzor_SIMD4f", "splat" => "SIMD4f_splat", params: 1, mir_wrapper,
+                types: &[F32] => VecF32x4),
+            // SIMD4f.make(x, y, z, w): SIMD4f  (static, construct from 4 scalars)
+            map_method!(static "rayzor_SIMD4f", "make" => "SIMD4f_make", params: 4, mir_wrapper,
+                types: &[F32, F32, F32, F32] => VecF32x4),
+            // SIMD4f.load(ptr): SIMD4f  (static, load 4 contiguous f32)
+            map_method!(static "rayzor_SIMD4f", "load" => "SIMD4f_load", params: 1, mir_wrapper,
+                types: &[I64] => VecF32x4),
+            // simd.store(ptr): Void  (instance, store 4 f32 to memory)
+            map_method!(instance "rayzor_SIMD4f", "store" => "SIMD4f_store", params: 1, mir_wrapper,
+                types: &[VecF32x4, I64]),
+            // simd.get(lane): Float  (instance, @:arrayAccess read — returns f64 to match Haxe Float)
+            map_method!(instance "rayzor_SIMD4f", "get" => "SIMD4f_extract", params: 1, mir_wrapper,
+                types: &[VecF32x4, I32] => F64),
+            // simd.set(lane, value): SIMD4f  (instance, @:arrayAccess write)
+            map_method!(instance "rayzor_SIMD4f", "set" => "SIMD4f_insert", params: 2, mir_wrapper,
+                types: &[VecF32x4, I32, F32] => VecF32x4),
+            // simd.sum(): Float  (instance, horizontal sum — returns f64 to match Haxe Float)
+            map_method!(instance "rayzor_SIMD4f", "sum" => "SIMD4f_sum", params: 0, mir_wrapper,
+                types: &[VecF32x4] => F64),
+            // simd.dot(other): Float  (instance, dot product — returns f64 to match Haxe Float)
+            map_method!(instance "rayzor_SIMD4f", "dot" => "SIMD4f_dot", params: 1, mir_wrapper,
+                types: &[VecF32x4, VecF32x4] => F64),
+            // SIMD4f.fromArray(arr): SIMD4f  (static, @:from conversion)
+            map_method!(static "rayzor_SIMD4f", "fromArray" => "SIMD4f_fromArray", params: 1, mir_wrapper,
+                types: &[PtrVoid] => VecF32x4),
         ];
 
         self.register_from_tuples(mappings);

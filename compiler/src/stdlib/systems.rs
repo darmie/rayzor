@@ -5,7 +5,7 @@
 /// Ptr/Ref operations are direct load/store/arithmetic MIR instructions.
 /// Usize operations are native i64 arithmetic.
 use crate::ir::mir_builder::MirBuilder;
-use crate::ir::{BinaryOp, CallingConvention, CompareOp, IrType};
+use crate::ir::{BinaryOp, CallingConvention, CompareOp, IrType, IrValue};
 
 /// Build all systems-level type functions
 pub fn build_systems_types(builder: &mut MirBuilder) {
@@ -46,6 +46,17 @@ pub fn build_systems_types(builder: &mut MirBuilder) {
     build_usize_shr(builder);
     build_usize_align_up(builder);
     build_usize_is_zero(builder);
+
+    // Build SIMD4f MIR wrappers (no externs needed — native vector MIR ops)
+    build_simd4f_splat(builder);
+    build_simd4f_make(builder);
+    build_simd4f_load(builder);
+    build_simd4f_store(builder);
+    build_simd4f_extract(builder);
+    build_simd4f_insert(builder);
+    build_simd4f_sum(builder);
+    build_simd4f_dot(builder);
+    build_simd4f_from_array(builder);
 }
 
 // ============================================================================
@@ -657,4 +668,246 @@ fn build_cstring_from_raw(builder: &mut MirBuilder) {
 
     let addr = builder.get_param(0);
     builder.ret(Some(addr));
+}
+
+// ============================================================================
+// SIMD4f — 128-bit vector of 4×f32 (native SIMD instructions)
+// ============================================================================
+
+/// SIMD4f_splat(scalar: f32) -> vec<f32; 4>
+fn build_simd4f_splat(builder: &mut MirBuilder) {
+    let f32_ty = IrType::F32;
+    let vec_ty = IrType::vector(IrType::F32, 4);
+
+    let func_id = builder
+        .begin_function("SIMD4f_splat")
+        .param("scalar", f32_ty)
+        .returns(vec_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let scalar = builder.get_param(0);
+    let result = builder.vector_splat(scalar, vec_ty);
+    builder.ret(Some(result));
+}
+
+/// SIMD4f_make(x: f32, y: f32, z: f32, w: f32) -> vec<f32; 4>
+fn build_simd4f_make(builder: &mut MirBuilder) {
+    let f32_ty = IrType::F32;
+    let vec_ty = IrType::vector(IrType::F32, 4);
+
+    let func_id = builder
+        .begin_function("SIMD4f_make")
+        .param("x", f32_ty.clone())
+        .param("y", f32_ty.clone())
+        .param("z", f32_ty.clone())
+        .param("w", f32_ty)
+        .returns(vec_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let x = builder.get_param(0);
+    let y = builder.get_param(1);
+    let z = builder.get_param(2);
+    let w = builder.get_param(3);
+
+    // Splat x, then insert y, z, w into lanes 1, 2, 3
+    let v0 = builder.vector_splat(x, vec_ty.clone());
+    let v1 = builder.vector_insert(v0, y, 1, vec_ty.clone());
+    let v2 = builder.vector_insert(v1, z, 2, vec_ty.clone());
+    let v3 = builder.vector_insert(v2, w, 3, vec_ty);
+    builder.ret(Some(v3));
+}
+
+/// SIMD4f_load(ptr: i64) -> vec<f32; 4>
+fn build_simd4f_load(builder: &mut MirBuilder) {
+    let i64_ty = IrType::I64;
+    let vec_ty = IrType::vector(IrType::F32, 4);
+
+    let func_id = builder
+        .begin_function("SIMD4f_load")
+        .param("ptr", i64_ty)
+        .returns(vec_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let ptr = builder.get_param(0);
+    let result = builder.vector_load(ptr, vec_ty);
+    builder.ret(Some(result));
+}
+
+/// SIMD4f_store(self: vec<f32; 4>, ptr: i64) -> void
+fn build_simd4f_store(builder: &mut MirBuilder) {
+    let vec_ty = IrType::vector(IrType::F32, 4);
+    let i64_ty = IrType::I64;
+
+    let func_id = builder
+        .begin_function("SIMD4f_store")
+        .param("self_val", vec_ty.clone())
+        .param("ptr", i64_ty)
+        .returns(IrType::Void)
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let self_val = builder.get_param(0);
+    let ptr = builder.get_param(1);
+    builder.vector_store(ptr, self_val, vec_ty);
+    builder.ret(None);
+}
+
+/// SIMD4f_extract(self: vec<f32; 4>, lane: i32) -> f32
+fn build_simd4f_extract(builder: &mut MirBuilder) {
+    let vec_ty = IrType::vector(IrType::F32, 4);
+    let f32_ty = IrType::F32;
+    let f64_ty = IrType::F64;
+    let i32_ty = IrType::I32;
+
+    let func_id = builder
+        .begin_function("SIMD4f_extract")
+        .param("self_val", vec_ty)
+        .param("lane", i32_ty)
+        .returns(f64_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let self_val = builder.get_param(0);
+    let f32_result = builder.vector_extract(self_val, 0, f32_ty.clone());
+    let result = builder.cast(f32_result, f32_ty, f64_ty);
+    builder.ret(Some(result));
+}
+
+/// SIMD4f_insert(self: vec<f32; 4>, lane: i32, value: f32) -> vec<f32; 4>
+fn build_simd4f_insert(builder: &mut MirBuilder) {
+    let vec_ty = IrType::vector(IrType::F32, 4);
+    let f32_ty = IrType::F32;
+    let i32_ty = IrType::I32;
+
+    let func_id = builder
+        .begin_function("SIMD4f_insert")
+        .param("self_val", vec_ty.clone())
+        .param("lane", i32_ty)
+        .param("value", f32_ty)
+        .returns(vec_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let self_val = builder.get_param(0);
+    let value = builder.get_param(2);
+    // Static lane 0 for now (same limitation as extract)
+    let result = builder.vector_insert(self_val, value, 0, vec_ty);
+    builder.ret(Some(result));
+}
+
+/// SIMD4f_sum(self: vec<f32; 4>) -> f32  — horizontal add
+fn build_simd4f_sum(builder: &mut MirBuilder) {
+    let vec_ty = IrType::vector(IrType::F32, 4);
+    let f32_ty = IrType::F32;
+    let f64_ty = IrType::F64;
+
+    let func_id = builder
+        .begin_function("SIMD4f_sum")
+        .param("self_val", vec_ty)
+        .returns(f64_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let self_val = builder.get_param(0);
+    let f32_result = builder.vector_reduce(BinaryOp::Add, self_val, f32_ty.clone());
+    let result = builder.cast(f32_result, f32_ty, f64_ty);
+    builder.ret(Some(result));
+}
+
+/// SIMD4f_dot(self: vec<f32; 4>, other: vec<f32; 4>) -> f32
+fn build_simd4f_dot(builder: &mut MirBuilder) {
+    let vec_ty = IrType::vector(IrType::F32, 4);
+    let f32_ty = IrType::F32;
+    let f64_ty = IrType::F64;
+
+    let func_id = builder
+        .begin_function("SIMD4f_dot")
+        .param("self_val", vec_ty.clone())
+        .param("other", vec_ty.clone())
+        .returns(f64_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let self_val = builder.get_param(0);
+    let other = builder.get_param(1);
+    let product = builder.vector_bin_op(BinaryOp::Mul, self_val, other, vec_ty);
+    let f32_result = builder.vector_reduce(BinaryOp::Add, product, f32_ty.clone());
+    let result = builder.cast(f32_result, f32_ty, f64_ty);
+    builder.ret(Some(result));
+}
+
+/// SIMD4f_fromArray(arr: PtrVoid) -> vec<f32; 4>  — @:from Array<Float>
+fn build_simd4f_from_array(builder: &mut MirBuilder) {
+    let ptr_void_ty = IrType::Ptr(Box::new(IrType::Void));
+    let vec_ty = IrType::vector(IrType::F32, 4);
+    let f32_ty = IrType::F32;
+    let f64_ty = IrType::F64;
+
+    let func_id = builder
+        .begin_function("SIMD4f_fromArray")
+        .param("arr", ptr_void_ty)
+        .returns(vec_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    // Look up haxe_array_get_f64 (declared in array.rs, same module)
+    let get_f64_id = builder
+        .get_function_by_name("haxe_array_get_f64")
+        .expect("haxe_array_get_f64 must be declared before SIMD4f_fromArray");
+
+    let arr = builder.get_param(0);
+
+    // Extract 4 elements as f64, cast to f32, insert into vector
+    let zero = builder.const_value(IrValue::F32(0.0));
+    let mut vec = builder.vector_splat(zero, vec_ty.clone());
+
+    for i in 0..4u8 {
+        let idx = builder.const_value(IrValue::I64(i as i64));
+        let val_f64 = builder
+            .call(get_f64_id, vec![arr, idx])
+            .expect("haxe_array_get_f64 returns f64");
+        let val_f32 = builder.cast(val_f64, f64_ty.clone(), f32_ty.clone());
+        vec = builder.vector_insert(vec, val_f32, i, vec_ty.clone());
+    }
+
+    builder.ret(Some(vec));
 }

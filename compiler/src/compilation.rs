@@ -1553,6 +1553,11 @@ impl CompilationUnit {
                 | ExprKind::Reify(e) => {
                     extract_expr_deps(e, deps);
                 }
+                ExprKind::Tuple(elements) => {
+                    for e in elements {
+                        extract_expr_deps(e, deps);
+                    }
+                }
                 ExprKind::ArrayComprehension { for_parts, expr } => {
                     for part in for_parts {
                         extract_expr_deps(&part.iter, deps);
