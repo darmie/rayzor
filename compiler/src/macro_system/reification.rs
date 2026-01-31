@@ -212,7 +212,8 @@ impl ReificationEngine {
             }
 
             ExprKind::Tuple(elements) => {
-                let new_elements = elements.iter()
+                let new_elements = elements
+                    .iter()
                     .map(|e| Self::process_expr(e, env))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Expr {

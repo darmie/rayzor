@@ -4037,7 +4037,7 @@ impl<'a> HirToMirContext<'a> {
                             let should_skip_cast = (actual_is_ptr && !expected_is_ptr)  // pointer to scalar
                                 || (actual_is_specific && expected_is_void_ptr)          // specific type to void pointer
                                 || (actual_is_string_ptr && expected_is_void_ptr)        // Ptr(String) to Ptr(Void)
-                                || actual_is_vector;                                     // vector types (SIMD) should never be cast
+                                || actual_is_vector; // vector types (SIMD) should never be cast
 
                             if should_skip_cast {
                                 debug!("Variable type mismatch - symbol={:?}, actual: {:?}, expected: {:?}, SKIPPING cast (would lose type info)", symbol, actual_type, expected_type);
@@ -8753,7 +8753,10 @@ impl<'a> HirToMirContext<'a> {
                 // Check if result is a SIMD vector type — emit VectorBinOp directly (zero overhead)
                 // We check operand types (from register_types) rather than convert_type(expr.ty)
                 // because @:coreType abstracts may not resolve correctly through convert_type.
-                let lhs_actual_type = self.builder.get_register_type(lhs_reg).unwrap_or(IrType::I64);
+                let lhs_actual_type = self
+                    .builder
+                    .get_register_type(lhs_reg)
+                    .unwrap_or(IrType::I64);
                 let result_type = if lhs_actual_type.is_vector() {
                     lhs_actual_type.clone()
                 } else {
@@ -8770,8 +8773,12 @@ impl<'a> HirToMirContext<'a> {
                             return None;
                         }
                     };
-                    self.builder
-                        .build_vector_binop(bin_op, lhs_reg, rhs_reg, result_type.clone())?
+                    self.builder.build_vector_binop(
+                        bin_op,
+                        lhs_reg,
+                        rhs_reg,
+                        result_type.clone(),
+                    )?
                 } else {
                     match self.convert_binary_op_to_mir(*op) {
                         MirBinaryOp::Binary(bin_op) => {
@@ -8804,43 +8811,55 @@ impl<'a> HirToMirContext<'a> {
                 // In that case, emit a function call to the @:from wrapper instead of a cast
                 let is_simd4f_target = {
                     let type_table = self.type_table.borrow();
-                    type_table.get(*target).map(|ti| {
-                        let sym_id = match &ti.kind {
-                            TypeKind::Abstract { symbol_id, .. } => Some(*symbol_id),
-                            TypeKind::Class { symbol_id, .. } => Some(*symbol_id),
-                            _ => None,
-                        };
-                        sym_id.map(|sid| {
-                            self.symbol_table.get_symbol(sid).map(|s| {
-                                // Check native_name first, then symbol name
-                                let by_native = s.native_name
-                                    .and_then(|nn| self.string_interner.get(nn))
-                                    .map(|n| n == "rayzor::SIMD4f")
-                                    .unwrap_or(false);
-                                let by_name = self.string_interner.get(s.name)
-                                    .map(|n| n == "SIMD4f")
-                                    .unwrap_or(false);
-                                by_native || by_name
-                            }).unwrap_or(false)
-                        }).unwrap_or(false)
-                    }).unwrap_or(false)
+                    type_table
+                        .get(*target)
+                        .map(|ti| {
+                            let sym_id = match &ti.kind {
+                                TypeKind::Abstract { symbol_id, .. } => Some(*symbol_id),
+                                TypeKind::Class { symbol_id, .. } => Some(*symbol_id),
+                                _ => None,
+                            };
+                            sym_id
+                                .map(|sid| {
+                                    self.symbol_table
+                                        .get_symbol(sid)
+                                        .map(|s| {
+                                            // Check native_name first, then symbol name
+                                            let by_native = s
+                                                .native_name
+                                                .and_then(|nn| self.string_interner.get(nn))
+                                                .map(|n| n == "rayzor::SIMD4f")
+                                                .unwrap_or(false);
+                                            let by_name = self
+                                                .string_interner
+                                                .get(s.name)
+                                                .map(|n| n == "SIMD4f")
+                                                .unwrap_or(false);
+                                            by_native || by_name
+                                        })
+                                        .unwrap_or(false)
+                                })
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(false)
                 };
 
                 if is_simd4f_target {
                     // @:from implicit cast → call SIMD4f_fromArray wrapper
                     let value_reg = self.lower_expression(expr)?;
-                    let param_types = vec![self.builder.get_register_type(value_reg).unwrap_or(IrType::Ptr(Box::new(IrType::Void)))];
+                    let param_types = vec![self
+                        .builder
+                        .get_register_type(value_reg)
+                        .unwrap_or(IrType::Ptr(Box::new(IrType::Void)))];
                     let return_type = IrType::vector(IrType::F32, 4);
                     let func_id = self.register_stdlib_mir_forward_ref(
                         "SIMD4f_fromArray",
                         param_types,
                         return_type.clone(),
                     );
-                    return self.builder.build_call_direct(
-                        func_id,
-                        vec![value_reg],
-                        return_type,
-                    );
+                    return self
+                        .builder
+                        .build_call_direct(func_id, vec![value_reg], return_type);
                 }
 
                 let value_reg = self.lower_expression(expr)?;
@@ -9762,14 +9781,11 @@ impl<'a> HirToMirContext<'a> {
                     self.convert_type(*underlying_type)
                 } else {
                     // No underlying type specified — check for SIMD vector types first
-                    let native_name = self
-                        .symbol_table
-                        .get_symbol(*symbol_id)
-                        .and_then(|sym| {
-                            sym.native_name
-                                .and_then(|nn| self.string_interner.get(nn))
-                                .map(|s| s.to_string())
-                        });
+                    let native_name = self.symbol_table.get_symbol(*symbol_id).and_then(|sym| {
+                        sym.native_name
+                            .and_then(|nn| self.string_interner.get(nn))
+                            .map(|s| s.to_string())
+                    });
                     if let Some(ref nn) = native_name {
                         match nn.as_str() {
                             "rayzor::SIMD4f" => return IrType::vector(IrType::F32, 4),
@@ -14108,7 +14124,8 @@ impl<'a> HirToMirContext<'a> {
                     }
                     Some(IrType::F32) => {
                         // F32 → I32 → I64
-                        let as_i32 = self.builder
+                        let as_i32 = self
+                            .builder
                             .build_bitcast(elem_val, IrType::I32)
                             .unwrap_or(elem_val);
                         self.builder

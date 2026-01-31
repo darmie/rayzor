@@ -5857,7 +5857,9 @@ impl<'a> AstLowering<'a> {
                 // Check for tuple → SIMD4f.make() desugaring
                 if let (Some(init_expr), Some(target_ty)) = (expr.as_ref(), declared_type) {
                     if let ExprKind::Tuple(elements) = &init_expr.kind {
-                        if let Some(desugared) = self.try_desugar_tuple_to_make(elements, target_ty, expression)? {
+                        if let Some(desugared) =
+                            self.try_desugar_tuple_to_make(elements, target_ty, expression)?
+                        {
                             // Successfully desugared tuple to a static method call.
                             // Wrap in VarDeclarationExpr.
                             let var_symbol = self.context.symbol_table.create_variable_with_type(
@@ -5865,7 +5867,11 @@ impl<'a> AstLowering<'a> {
                                 self.context.current_scope,
                                 target_ty,
                             );
-                            if let Some(scope) = self.context.scope_tree.get_scope_mut(self.context.current_scope) {
+                            if let Some(scope) = self
+                                .context
+                                .scope_tree
+                                .get_scope_mut(self.context.current_scope)
+                            {
                                 scope.add_symbol(var_symbol, var_name);
                             }
                             return Ok(TypedExpression {
@@ -5886,7 +5892,9 @@ impl<'a> AstLowering<'a> {
 
                 // Check for array literal → SIMD4f @:from conversion
                 if let (Some(init_expr), Some(target_ty)) = (expr.as_ref(), declared_type) {
-                    if matches!(&init_expr.kind, ExprKind::Array(_)) && self.is_simd4f_type(target_ty) {
+                    if matches!(&init_expr.kind, ExprKind::Array(_))
+                        && self.is_simd4f_type(target_ty)
+                    {
                         warn!(
                             "SIMD4f from Array<Float> allocates a temporary heap array. \
                              Use tuple syntax instead: var v:SIMD4f = (1.0, 2.0, 3.0, 4.0)"
@@ -5910,7 +5918,11 @@ impl<'a> AstLowering<'a> {
                             self.context.current_scope,
                             target_ty,
                         );
-                        if let Some(scope) = self.context.scope_tree.get_scope_mut(self.context.current_scope) {
+                        if let Some(scope) = self
+                            .context
+                            .scope_tree
+                            .get_scope_mut(self.context.current_scope)
+                        {
                             scope.add_symbol(var_symbol, var_name);
                         }
                         return Ok(TypedExpression {
@@ -5990,13 +6002,19 @@ impl<'a> AstLowering<'a> {
                 // Check for tuple → SIMD4f.make() desugaring
                 if let (Some(init_expr), Some(target_ty)) = (expr.as_ref(), declared_type) {
                     if let ExprKind::Tuple(elements) = &init_expr.kind {
-                        if let Some(desugared) = self.try_desugar_tuple_to_make(elements, target_ty, expression)? {
+                        if let Some(desugared) =
+                            self.try_desugar_tuple_to_make(elements, target_ty, expression)?
+                        {
                             let var_symbol = self.context.symbol_table.create_variable_with_type(
                                 var_name,
                                 self.context.current_scope,
                                 target_ty,
                             );
-                            if let Some(scope) = self.context.scope_tree.get_scope_mut(self.context.current_scope) {
+                            if let Some(scope) = self
+                                .context
+                                .scope_tree
+                                .get_scope_mut(self.context.current_scope)
+                            {
                                 scope.add_symbol(var_symbol, var_name);
                             }
                             return Ok(TypedExpression {
@@ -10643,20 +10661,30 @@ impl<'a> AstLowering<'a> {
         use crate::tast::core::TypeKind;
         let type_table = self.context.type_table.borrow();
         let sym_id = type_table.get(ty).and_then(|ti| match &ti.kind {
-            TypeKind::Abstract { symbol_id, .. } | TypeKind::Class { symbol_id, .. } => Some(*symbol_id),
+            TypeKind::Abstract { symbol_id, .. } | TypeKind::Class { symbol_id, .. } => {
+                Some(*symbol_id)
+            }
             _ => None,
         });
         if let Some(sid) = sym_id {
-            self.context.symbol_table.get_symbol(sid).map(|s| {
-                let by_native = s.native_name
-                    .and_then(|nn| self.context.string_interner.get(nn))
-                    .map(|n| n == "rayzor::SIMD4f")
-                    .unwrap_or(false);
-                let by_name = self.context.string_interner.get(s.name)
-                    .map(|n| n == "SIMD4f")
-                    .unwrap_or(false);
-                by_native || by_name
-            }).unwrap_or(false)
+            self.context
+                .symbol_table
+                .get_symbol(sid)
+                .map(|s| {
+                    let by_native = s
+                        .native_name
+                        .and_then(|nn| self.context.string_interner.get(nn))
+                        .map(|n| n == "rayzor::SIMD4f")
+                        .unwrap_or(false);
+                    let by_name = self
+                        .context
+                        .string_interner
+                        .get(s.name)
+                        .map(|n| n == "SIMD4f")
+                        .unwrap_or(false);
+                    by_native || by_name
+                })
+                .unwrap_or(false)
         } else {
             false
         }
@@ -10702,7 +10730,9 @@ impl<'a> AstLowering<'a> {
             (Some(_), Some("rayzor::SIMD4f")) => true,
             (Some(sid), _) => {
                 // Fallback: check symbol name directly
-                self.context.symbol_table.get_symbol(sid)
+                self.context
+                    .symbol_table
+                    .get_symbol(sid)
                     .and_then(|s| self.context.string_interner.get(s.name))
                     .map(|n| n == "SIMD4f")
                     .unwrap_or(false)
