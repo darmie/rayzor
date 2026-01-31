@@ -1317,117 +1317,137 @@ E2E test infrastructure now supports all levels:
 
 ---
 
-## 13. Inline C / TinyCC Runtime API 🔴
+## 13. Inline C / TinyCC Runtime API 🟢
 
 **Priority:** Medium
 **Complexity:** Medium-High
 **Dependencies:** TCC linker integration (complete), stdlib infrastructure
-**Status:** Not Started
+**Status:** ✅ Core Complete (2026-01-31)
 
 ### Overview
 
-Expose TinyCC as a first-class API in `rayzor.runtime` for runtime C compilation, and support Haxe's `untyped {}` block semantics for inline C code embedded directly in Haxe source files.
+TinyCC is exposed as a first-class API in `rayzor.runtime.CC` for runtime C compilation, plus `untyped __c__()` syntax for inline C code with automatic TCC lifecycle management. See [runtime/CC_FEATURES.md](runtime/CC_FEATURES.md) for full documentation.
 
-### 13.1 Explicit API: `rayzor.runtime.TinyCC` Extern Class
+### 13.1 Explicit API: `rayzor.runtime.CC` Extern Class
 
-**Status:** 🔴 Not Started
+**Status:** 🟢 Complete
 
-**Haxe API:**
-```haxe
-package rayzor.runtime;
+**Related Files:**
+- `compiler/haxe-std/rayzor/runtime/CC.hx` - Extern class declaration
+- `runtime/src/tinycc_runtime.rs` - Rust runtime (16 functions)
+- `runtime/src/plugin_impl.rs` - Symbol registration
+- `compiler/src/stdlib/runtime_mapping.rs` - Stdlib mappings
 
-extern class TinyCC {
-    static function create():TinyCC;
-    function compileString(code:String):Bool;
-    function addSymbol(name:String, address:Int):Void;
-    function relocate():Bool;
-    function getSymbol(name:String):Int;  // returns function pointer
-    function delete():Void;
-}
-```
+**Implemented Methods:**
+- [x] `CC.create()` — create TCC context (output to memory)
+- [x] `cc.compile(code)` — compile C source string (panics on failure)
+- [x] `cc.addSymbol(name, value)` — register symbol for `extern long` access
+- [x] `cc.relocate()` — link and relocate into executable memory (panics on failure)
+- [x] `cc.getSymbol(name)` — get function/symbol address (panics if not found)
+- [x] `cc.addFramework(name)` — load macOS framework or shared library via dlopen
+- [x] `cc.addIncludePath(path)` — add include search directory
+- [x] `cc.addFile(path)` — add .c, .o, .a, .dylib/.so/.dll file
+- [x] `cc.delete()` — free TCC context (JIT code remains valid)
+- [x] `CC.call0(fn)` through `CC.call3(fn, a, b, c)` — call JIT functions
 
-**Usage:**
-```haxe
-import rayzor.runtime.TinyCC;
+**E2E Tests:** 6 tests in `compiler/examples/test_cc_e2e.rs`
 
-var cc = TinyCC.create();
-cc.compileString("
-    int add(int a, int b) { return a + b; }
-");
-cc.relocate();
-var addPtr = cc.getSymbol("add");
-// call via function pointer or FFI bridge
-cc.delete();
-```
+### 13.2 Inline C: `untyped __c__()` Syntax
 
-**Tasks:**
-- [ ] Create `compiler/haxe-std/rayzor/runtime/TinyCC.hx` extern class
-- [ ] Implement runtime functions in Rust wrapping TCC FFI (`rayzor_tcc_create`, `rayzor_tcc_compile_string`, etc.)
-- [ ] Register symbols in `runtime/src/plugin_impl.rs`
-- [ ] Add stdlib lowering mappings for TinyCC methods
-- [ ] Function pointer call support (cast Int to callable)
-- [ ] Error handling — surface TCC compilation errors to Haxe
+**Status:** 🟢 Complete
 
-### 13.2 Implicit API: `untyped {}` Block with Inline C
+**Related Files:**
+- `compiler/src/ir/hir_to_mir.rs` — `lower_inline_code()` (~200 lines)
+- `compiler/src/tast/ast_lowering.rs` — metadata parsing
 
-**Status:** 🔴 Not Started
+**Features:**
+- [x] `untyped __c__("C code")` — auto-manages TCC lifecycle (create → compile → relocate → call → delete)
+- [x] Argument passing via `{0}`, `{1}`, ... placeholders → `extern long __argN` symbols
+- [x] Return value support (long → Int)
+- [x] Module-local `@:cstruct` typedef auto-injection (no manual `cdef()` needed)
+- [x] System header support (`#include <string.h>`, etc.) with auto-discovered SDK paths
+- [x] Error handling — TCC compile/relocate/symbol errors trigger panics (catchable via try-catch)
 
-Haxe's `untyped {}` blocks allow escaping the type system. In Rayzor, these blocks can contain inline C code that gets compiled at runtime via TCC.
+**E2E Tests:** Tests 13-16 in `compiler/examples/test_cstruct_e2e.rs`
 
-**Syntax:**
-```haxe
-class MyClass {
-    public function fastCompute(x:Int, y:Int):Int {
-        return untyped {
-            // Raw C code compiled via TCC at runtime
-            __c__("
-                int result = x * x + y * y;
-                return result;
-            ");
-        };
-    }
-}
+### 13.3 Metadata for 3rd Party Library Integration
 
-// Or direct untyped block with C literal:
-var result:Int = untyped __c__("
-    #include <math.h>
-    return (int)sqrt(144.0);
-");
-```
+**Status:** 🟢 Complete
 
-**Tasks:**
-- [ ] Parser: recognize `untyped {}` blocks (already parsed as UntypedExpr)
-- [ ] Parser: recognize `__c__("...")` intrinsic inside untyped blocks
-- [ ] TAST lowering: extract C source string from `__c__` calls
-- [ ] MIR: add `InlineC { source: String, captures: Vec<(String, Register)> }` instruction
-- [ ] Codegen: compile inline C via TCC at JIT time, bind captured variables as symbols
-- [ ] Type marshalling: pass Haxe values (Int, Float, Bool, String, pointers) to C and back
-- [ ] Scoping: capture local variables from surrounding Haxe scope into TCC symbol table
-- [ ] Caching: hash C source to avoid recompiling identical blocks
+All metadata works on both classes and functions. When `__c__()` is used, metadata from the enclosing function and all module-local classes is collected automatically.
 
-### 13.3 Safety and Restrictions
+**Related Files:**
+- `compiler/src/tast/symbols.rs` — `frameworks`, `c_includes`, `c_sources`, `c_libs` fields on Symbol
+- `compiler/src/tast/ast_lowering.rs` — metadata parsing (class-level + method-level)
+- `compiler/src/ir/hir_to_mir.rs` — collection and injection in `lower_inline_code()`
 
-**Tasks:**
-- [ ] Inline C blocks bypass Rayzor's memory safety — document this clearly
-- [ ] Add `@:unsafe` metadata requirement (or warn) when using `__c__`
-- [ ] Sandbox: restrict `#include` paths, disallow system calls by default
-- [ ] Optional `@:allowSyscalls` metadata to unlock full C capabilities
+**Implemented Metadata:**
+- [x] `@:frameworks(["Accelerate"])` — load macOS frameworks, add SDK header paths
+- [x] `@:cInclude(["/opt/homebrew/include"])` — add include search directories
+- [x] `@:cSource(["vendor/stb_image.c"])` — compile additional C source files into TCC context
+- [x] `@:clib(["sqlite3"])` — discover and load libraries via `pkg-config` (cross-platform)
 
-### Acceptance Criteria
+**`@:clib` pkg-config discovery:**
+- Runs `pkg-config --cflags <name>` → extracts `-I` paths → `tcc_add_include_path()`
+- Runs `pkg-config --libs <name>` → extracts `-L`/`-l` → `dlopen()` libraries
+- Cross-platform: macOS (brew), Linux (apt), Windows/MSYS2 (pacman)
 
-```haxe
-// Explicit API
-var cc = TinyCC.create();
-cc.compileString("double square(double x) { return x * x; }");
-cc.relocate();
-var sq = cc.getSymbol("square");
-// call sq(3.0) → 9.0
+**E2E Tests:** Tests 17-19 in `compiler/examples/test_cstruct_e2e.rs` (frameworks, function-level frameworks, raylib raymath)
 
-// Implicit inline C
-var x = 42;
-var doubled:Int = untyped __c__("return x * 2;");
-trace(doubled);  // 84
-```
+### 13.4 @:cstruct C-Compatible Memory Layout
+
+**Status:** 🟢 Complete
+
+**Related Files:**
+- `compiler/src/ir/hir_to_mir.rs` — cstruct layout computation, cdef generation, auto-injection
+- `compiler/src/tast/ast_lowering.rs` — `@:cstruct` metadata extraction
+
+**Features:**
+- [x] `@:cstruct` metadata — flat C-compatible memory layout (no object header)
+- [x] Field read/write via byte offsets
+- [x] `cdef()` static method — returns C typedef string for explicit use
+- [x] Auto-injection of module-local `@:cstruct` typedefs into `__c__()` contexts
+- [x] Dependency resolution — nested cstructs included in topological order
+- [x] Supported field types: Int (long), Float (double), Bool (int), Ptr<T> (void*/T*), Usize (size_t), CString (char*)
+
+**E2E Tests:** Tests 1-12 in `compiler/examples/test_cstruct_e2e.rs`
+
+### 13.5 System Path Discovery
+
+**Status:** 🟢 Complete
+
+- [x] macOS: auto-discovers CommandLineTools/Xcode SDK via candidate paths, adds `<SDK>/usr/include`
+- [x] macOS: framework headers from `<SDK>/System/Library/Frameworks/<Name>.framework/Headers/`
+- [x] Linux: probes `/usr/include`, `/usr/local/include`
+- [x] TCC lib path set to vendored `compiler/vendor/tinycc/` (includes `tccdefs.h`)
+- [x] `-nostdlib` flag prevents TCC from loading macOS `.tbd` stubs (incompatible with TCC linker)
+- [x] Symbol resolution via `dlsym(RTLD_DEFAULT)` during `tcc_relocate`
+
+### 13.6 CString Extern Abstract
+
+**Status:** 🟢 Complete
+
+- [x] `CString.from(s)` — allocate null-terminated copy from Haxe String
+- [x] `cs.toHaxeString()` — convert back to Haxe String
+- [x] `cs.raw()` — get raw `char*` address as Int
+- [x] `CString.fromRaw(addr)` — wrap existing `char*`
+- [x] `cs.free()` — free the buffer
+- [x] CString fields in `@:cstruct` map to `char*` in C typedef
+
+### 13.7 Remaining / Future Enhancements
+
+- [ ] Source caching: hash C source to avoid recompiling identical `__c__()` blocks
+- [ ] `@:unsafe` metadata warning when using `__c__` (currently allowed without annotation)
+- [ ] CC.addClib() explicit API method (currently `@:clib` metadata only)
+- [ ] Windows: test MSYS2/MinGW pkg-config integration end-to-end
+
+### Test Summary
+
+| Test File | Tests | Status |
+|-----------|-------|--------|
+| `test_cstruct_e2e.rs` | 19 | ✅ 19/19 PASS |
+| `test_cc_e2e.rs` | 6 | ✅ 6/6 PASS |
+| `test_systems_e2e.rs` | 8 | ✅ 8/8 PASS |
 
 ---
 
@@ -1501,7 +1521,35 @@ trace("The point is: " + p);    // ✅ (calls toString())
 - **Async state machines** build on generics and memory safety
 - Implementation should follow dependency order to avoid rework
 
-**Last Updated:** 2026-01-30 (String Concat & Vec Fixes)
+**Last Updated:** 2026-01-31 (Inline C / TinyCC Runtime API Complete)
+
+## Recent Progress (Session 2026-01-31 - Inline C / TinyCC Runtime API)
+
+**TinyCC Runtime API:** ✅ Complete
+
+- ✅ **`rayzor.runtime.CC` extern class** — 13 methods (create, compile, relocate, getSymbol, addSymbol, addFramework, addIncludePath, addFile, delete, call0-call3)
+- ✅ **`untyped __c__()` inline C syntax** — auto-manages TCC lifecycle, argument passing via `{0}`/`{1}` placeholders, return values, module-local `@:cstruct` auto-injection
+- ✅ **`@:cstruct` metadata** — C-compatible memory layout, `cdef()` static method, nested struct dependency resolution, field types: Int/Float/Bool/Ptr/Usize/CString
+- ✅ **`rayzor.CString` extern abstract** — from/toHaxeString/raw/fromRaw/free, maps to `char*` in cstruct
+- ✅ **System path discovery** — macOS SDK auto-detection, Linux `/usr/include`, TCC vendored headers
+- ✅ **`@:frameworks(["Accelerate"])`** — load macOS frameworks + SDK headers into TCC context (class or function level)
+- ✅ **`@:cInclude(["/path"])`** — add include search paths (class or function level)
+- ✅ **`@:cSource(["file.c"])`** — compile additional C sources into TCC context (class or function level)
+- ✅ **`@:clib(["sqlite3"])`** — pkg-config discovery for cross-platform library loading (class or function level)
+- ✅ **TCC error handling** — compile/relocate/symbol errors trigger panics (catchable via try-catch)
+- ✅ **Raylib raymath E2E test** — `@:cInclude` with header-only raylib math library (Vector2Length, Clamp, Lerp)
+- ✅ **CC_FEATURES.md** — comprehensive documentation of all CC/TCC features
+
+**Runtime Functions:** 16 Rust functions in `runtime/src/tinycc_runtime.rs`, all registered in `plugin_impl.rs`
+
+**E2E Tests:**
+- ✅ test_cstruct_e2e: **19/19 PASS** (cstruct, CString, inline C, frameworks, cInclude, raylib)
+- ✅ test_cc_e2e: **6/6 PASS** (explicit CC API)
+- ✅ test_systems_e2e: **8/8 PASS** (Box, Ptr, Ref, Usize, Arc)
+
+**Commits:** c0d3597 → 147d557 (8 commits across sessions)
+
+---
 
 ## Recent Progress (Session 2026-01-30b - String Concat & Vec Fixes)
 
