@@ -18,10 +18,10 @@ pub mod blade; // BLADE format - Blazing Language Artifact Deployment Environmen
 pub mod blocks;
 pub mod builder;
 pub mod environment_layout; // Closure environment layout abstraction
+pub mod escape_analysis; // Intra-loop escape analysis for Alloc hoisting
 pub mod functions;
 pub mod inlining; // Function inlining and call graph analysis
 pub mod instructions;
-pub mod escape_analysis; // Intra-loop escape analysis for Alloc hoisting
 pub mod loop_analysis; // Loop analysis: dominators, natural loops, nesting
 pub mod lowering; // Legacy TAST to MIR (being phased out)
 pub mod mir_builder; // Programmatic MIR construction API

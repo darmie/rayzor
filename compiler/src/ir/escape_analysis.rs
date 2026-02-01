@@ -163,12 +163,8 @@ fn build_tracked_pointers(
             };
             for inst in &block.instructions {
                 let derived_from_tracked = match inst {
-                    IrInstruction::PtrAdd { dest, ptr, .. } if tracked.contains(ptr) => {
-                        Some(*dest)
-                    }
-                    IrInstruction::GetElementPtr { dest, ptr, .. }
-                        if tracked.contains(ptr) =>
-                    {
+                    IrInstruction::PtrAdd { dest, ptr, .. } if tracked.contains(ptr) => Some(*dest),
+                    IrInstruction::GetElementPtr { dest, ptr, .. } if tracked.contains(ptr) => {
                         Some(*dest)
                     }
                     IrInstruction::Cast { dest, src, .. } if tracked.contains(src) => Some(*dest),

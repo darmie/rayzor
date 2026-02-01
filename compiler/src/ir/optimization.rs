@@ -947,9 +947,7 @@ impl OptimizationPass for LICMPass {
                     if !info.escapes {
                         if let Some(free_loc) = info.free_location {
                             // Grab the Alloc instruction
-                            if let Some(block) =
-                                function.cfg.get_block(info.alloc_location.0)
-                            {
+                            if let Some(block) = function.cfg.get_block(info.alloc_location.0) {
                                 if info.alloc_location.1 < block.instructions.len() {
                                     alloc_to_hoist.push((
                                         info.alloc_location.0,
