@@ -189,11 +189,10 @@ fn run_benchmark_precompiled(
     let bundle = load_bundle(&bundle_path).map_err(|e| format!("load bundle: {:?}", e))?;
 
     // Use CraneliftBackend directly with "speed" optimization (same as cranelift target)
-    // Previously used TieredBackend at Baseline tier (Cranelift "none"), which was unfairly slow
     let mut backend =
         CraneliftBackend::with_symbols(symbols).map_err(|e| format!("backend: {}", e))?;
 
-    // Load ALL modules from bundle (not just entry)
+    // Load ALL modules from bundle (MIR should already be optimized at bundle creation time)
     for module in bundle.modules() {
         backend
             .compile_module(&std::sync::Arc::new(module.clone()))
