@@ -2732,14 +2732,29 @@ impl<'a> HirToMirContext<'a> {
                             if let Some(method_name) = self.string_interner.get(field_sym.name) {
                                 // Check if this is a stdlib class method that returns the same class type
                                 // Methods like init, clone, tryLock return the same class or a related type
-                                let returns_same_class =
-                                    matches!(method_name, "init" | "clone" | "new");
+                                let returns_same_class = matches!(
+                                    method_name,
+                                    "init"
+                                        | "clone"
+                                        | "new"
+                                        | "zeros"
+                                        | "ones"
+                                        | "full"
+                                        | "fromArray"
+                                        | "rand"
+                                );
                                 if returns_same_class && self.is_stdlib_class_by_symbol(sym_info) {
+                                    // For Tensor class, map to runtime class name
+                                    let runtime_class_name = if class_name == "Tensor" {
+                                        "rayzor_ds_Tensor".to_string()
+                                    } else {
+                                        class_name.to_string()
+                                    };
                                     debug!(
                                         "[STDLIB CLASS DETECT] Static call {}.{}() returns {}",
-                                        class_name, method_name, class_name
+                                        class_name, method_name, runtime_class_name
                                     );
-                                    return Some(class_name.to_string());
+                                    return Some(runtime_class_name);
                                 }
                             }
                         }
@@ -2785,19 +2800,35 @@ impl<'a> HirToMirContext<'a> {
                 if let Some(method_name) = self.string_interner.get(sym_info.name) {
                     // Check if this method name corresponds to a stdlib class factory method
                     // Methods like "init", "new", "clone" that return a stdlib class type
-                    let factory_methods = ["init", "new", "clone"];
+                    let factory_methods = [
+                        "init",
+                        "new",
+                        "clone",
+                        "zeros",
+                        "ones",
+                        "full",
+                        "fromArray",
+                        "rand",
+                    ];
                     if factory_methods.contains(&method_name) {
                         // Try to find which stdlib class has this method
                         let stdlib_classes = self.stdlib_mapping.get_all_classes();
                         for class_name in &stdlib_classes {
                             // Check if this class has the method with appropriate param count
-                            let is_static_factory = matches!(method_name, "init" | "new");
+                            let is_static_factory = matches!(
+                                method_name,
+                                "init" | "new" | "zeros" | "ones" | "full" | "fromArray" | "rand"
+                            );
                             if is_static_factory {
                                 // Static method - check if class has this static method
                                 if let Some((_sig, _)) = self
                                     .stdlib_mapping
                                     .find_static_method(class_name, method_name)
                                 {
+                                    debug!(
+                                        "[DETECT-CLASS Case3] Found {}.{}() -> {}",
+                                        class_name, method_name, class_name
+                                    );
                                     return Some(class_name.to_string());
                                 }
                             } else if method_name == "clone" {
@@ -2829,11 +2860,13 @@ impl<'a> HirToMirContext<'a> {
     ///
     /// Returns (class_name, method_name, runtime_function_name) if this is a stdlib method
     /// If `param_count` is provided, it's used to disambiguate overloaded methods
+    /// If `receiver_class_hint` is provided, it's used to disambiguate when multiple classes have the same method
     fn get_stdlib_runtime_info(
         &self,
         method_symbol: SymbolId,
         receiver_type: TypeId,
         param_count: Option<usize>,
+        receiver_class_hint: Option<&str>,
     ) -> Option<(
         &'static str,
         &'static str,
@@ -2855,6 +2888,9 @@ impl<'a> HirToMirContext<'a> {
         // Get the class name and type args from the receiver type
         let type_table = self.type_table.borrow();
         let type_info = type_table.get(receiver_type);
+
+        debug!("[get_stdlib_runtime_info] method={}, receiver_type={:?}, type_info_exists={}, qualified_name={:?}",
+            method_name, receiver_type, type_info.is_some(), qualified_name);
 
         // FALLBACK: If receiver_type is invalid (extern classes like Vec), try to detect class from qualified name
         if type_info.is_none() {
@@ -2888,6 +2924,51 @@ impl<'a> HirToMirContext<'a> {
                                     class_name, method_name, variant
                                 );
                                 return Some((sig.class, sig.method, mapping));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // FALLBACK 1.5: Try to get class name from HIR type declarations.
+            // This handles extern classes (like Tensor) whose receiver_type isn't in
+            // the type_table but IS in current_hir_types.
+            if let Some(type_decl) = self.current_hir_types.get(&receiver_type) {
+                if let HirTypeDecl::Class(class) = type_decl {
+                    let class_name_str = self.string_interner.get(class.name).unwrap_or("");
+                    // Try with class name directly (e.g., "Tensor")
+                    if let Some((sig, mapping)) = self
+                        .stdlib_mapping
+                        .find_by_name(class_name_str, method_name)
+                    {
+                        debug!(
+                            "[FALLBACK1.5] Found {}.{} via HIR type decl",
+                            class_name_str, method_name
+                        );
+                        return Some((sig.class, sig.method, mapping));
+                    }
+                    // Try with native name metadata (e.g., "rayzor::ds::Tensor" -> "rayzor_ds_Tensor")
+                    for attr in &class.metadata {
+                        let attr_name = self.string_interner.get(attr.name).unwrap_or("");
+                        if attr_name == "native" {
+                            if let Some(first_arg) = attr.args.first() {
+                                if let crate::ir::hir::HirAttributeArg::Literal(
+                                    crate::ir::hir::HirLiteral::String(s),
+                                ) = first_arg
+                                {
+                                    let native_str = self.string_interner.get(*s).unwrap_or("");
+                                    // Convert "rayzor::ds::Tensor" to "rayzor_ds_Tensor"
+                                    let normalized = native_str.replace("::", "_");
+                                    if let Some((sig, mapping)) =
+                                        self.stdlib_mapping.find_by_name(&normalized, method_name)
+                                    {
+                                        debug!(
+                                            "[FALLBACK1.5] Found {}.{} via @:native class name",
+                                            normalized, method_name
+                                        );
+                                        return Some((sig.class, sig.method, mapping));
+                                    }
+                                }
                             }
                         }
                     }
@@ -2931,6 +3012,48 @@ impl<'a> HirToMirContext<'a> {
                         sig.class, sig.method, mapping.runtime_name
                     );
                     return Some((sig.class, sig.method, mapping));
+                } else if matches.len() > 1 {
+                    // Multiple matches — try to disambiguate:
+                    // 1. Exclude SIMD4f (uses f32x4 types, not i64 opaque pointers)
+                    // 2. Exclude static methods when this is an instance method call
+                    // 3. If receiver_class_hint is provided, prefer matches that match the hint
+                    debug!(
+                        "[FALLBACK2] {} matches for method '{}': {:?}",
+                        matches.len(),
+                        method_name,
+                        matches.iter().map(|(s, _)| &s.class).collect::<Vec<_>>()
+                    );
+                    let mut filtered: Vec<_> = matches
+                        .iter()
+                        .filter(|(sig, _)| !sig.class.contains("SIMD") && !sig.is_static)
+                        .collect();
+                    debug!("[FALLBACK2] After filter: {} matches", filtered.len());
+
+                    // If we have a receiver class hint, use it for further disambiguation
+                    if let Some(hint) = receiver_class_hint {
+                        let hint_filtered: Vec<_> = filtered
+                            .iter()
+                            .filter(|(sig, _)| sig.class == hint)
+                            .copied()
+                            .collect();
+                        if !hint_filtered.is_empty() {
+                            debug!(
+                                "[FALLBACK2] After hint filter ({}): {} matches",
+                                hint,
+                                hint_filtered.len()
+                            );
+                            filtered = hint_filtered;
+                        }
+                    }
+
+                    if filtered.len() == 1 {
+                        let (sig, mapping) = filtered[0];
+                        debug!(
+                            "[FALLBACK2] Disambiguated {}.{} by filtering -> {}",
+                            sig.class, sig.method, mapping.runtime_name
+                        );
+                        return Some((sig.class, sig.method, mapping));
+                    }
                 }
             }
 
@@ -4292,6 +4415,19 @@ impl<'a> HirToMirContext<'a> {
                     }
                 }
 
+                if let HirExprKind::Variable { symbol, .. } = &callee.kind {
+                    let vname = self
+                        .symbol_table
+                        .get_symbol(*symbol)
+                        .and_then(|s| self.string_interner.get(s.name))
+                        .unwrap_or("?");
+                    debug!(
+                        "[CALL-VAR] callee='{}', is_method={}, args.len()={}",
+                        vname,
+                        is_method,
+                        args.len()
+                    );
+                }
                 if let HirExprKind::Field { object, field } = &callee.kind {
                     // This is a method call: object.method(args)
                     // The method symbol should be in our function_map (local or external)
@@ -4363,7 +4499,17 @@ impl<'a> HirToMirContext<'a> {
                         }
                     }
 
-                    if let Some(func_id) = self.get_function_id(field) {
+                    let maybe_func_id = self.get_function_id(field);
+                    let field_name = self
+                        .symbol_table
+                        .get_symbol(*field)
+                        .and_then(|s| self.string_interner.get(s.name))
+                        .unwrap_or("?");
+                    eprintln!(
+                        "[METHOD] field={}, func_id={:?}, object.ty={:?}",
+                        field_name, maybe_func_id, object.ty
+                    );
+                    if let Some(func_id) = maybe_func_id {
                         // FIRST: Try to route through runtime mapping for extern class methods
                         // Check if there's a runtime mapping using the standard approach
                         // BUT: for String methods with optional params, use param-count-aware lookup
@@ -4404,6 +4550,7 @@ impl<'a> HirToMirContext<'a> {
                                                 *field,
                                                 object.ty,
                                                 Some(arg_count),
+                                                None,
                                             )
                                         })
                                 } else if mn == "tryAcquire" {
@@ -4425,22 +4572,25 @@ impl<'a> HirToMirContext<'a> {
                                                 *field,
                                                 object.ty,
                                                 Some(arg_count),
+                                                None,
                                             )
                                         })
                                 } else {
-                                    self.get_stdlib_runtime_info(*field, object.ty, None)
+                                    self.get_stdlib_runtime_info(*field, object.ty, None, None)
                                 }
                             } else {
-                                self.get_stdlib_runtime_info(*field, object.ty, None)
+                                self.get_stdlib_runtime_info(*field, object.ty, None, None)
                             }
                         };
 
+                        eprintln!(
+                            "[DISPATCH] stdlib_info={:?} for field {:?}",
+                            stdlib_info.as_ref().map(|(c, m, r)| (c, m, r.runtime_name)),
+                            field
+                        );
                         if let Some((class_name, method_name, runtime_call)) = stdlib_info {
                             let runtime_func = runtime_call.runtime_name;
-                            debug!(
-                                "[Extern method redirect] {}.{} -> {} (param_count={})",
-                                class_name, method_name, runtime_func, runtime_call.param_count
-                            );
+                            // Method redirected via runtime mapping
 
                             // Get expected parameter types from the extern function signature
                             // This is critical for generic classes like Deque<T> where the runtime
@@ -4698,6 +4848,16 @@ impl<'a> HirToMirContext<'a> {
                                 } else {
                                     None
                                 };
+
+                            // Also try HIR type declarations for extern classes not in type_table
+                            let class_symbol_id = class_symbol_id.or_else(|| {
+                                if let Some(type_decl) = self.current_hir_types.get(&object_type) {
+                                    if let HirTypeDecl::Class(class) = type_decl {
+                                        return Some(class.symbol_id);
+                                    }
+                                }
+                                None
+                            });
 
                             if let Some(sym_id) = class_symbol_id {
                                 // Get the class name from qualified_name
@@ -5180,12 +5340,39 @@ impl<'a> HirToMirContext<'a> {
                     if *is_method && !args.is_empty() {
                         let receiver = &args[0];
                         let receiver_type = receiver.ty;
+
+                        // Extract receiver class hint for disambiguation (e.g., "rayzor_ds_Tensor")
+                        let receiver_class_hint = if let HirExprKind::Variable {
+                            symbol: recv_sym,
+                            ..
+                        } = &receiver.kind
+                        {
+                            self.monomorphized_var_types
+                                .get(recv_sym)
+                                .map(|s| s.as_str())
+                        } else {
+                            None
+                        };
+
                         // Calculate actual param count (excluding the receiver) for overload disambiguation
                         // e.g., s.indexOf("World", 0) has args=[s, "World", 0], param_count=2
                         let param_count = args.len().saturating_sub(1);
                         // Try to find stdlib runtime mapping for this method
-                        let runtime_info =
-                            self.get_stdlib_runtime_info(*symbol, receiver_type, Some(param_count));
+                        let runtime_info = self.get_stdlib_runtime_info(
+                            *symbol,
+                            receiver_type,
+                            Some(param_count),
+                            receiver_class_hint,
+                        );
+                        debug!(
+                            "[EXTERN-VAR-DISPATCH] method={:?}, runtime_info={:?}",
+                            self.symbol_table
+                                .get_symbol(*symbol)
+                                .and_then(|s| self.string_interner.get(s.name)),
+                            runtime_info
+                                .as_ref()
+                                .map(|(c, m, r)| (*c, *m, r.runtime_name))
+                        );
                         if let Some((class_name, method_name, runtime_call)) = runtime_info {
                             // Skip methods that need ptr_conversion - let them fall through to
                             // the existing handler which properly handles params_need_ptr_conversion
@@ -6148,6 +6335,7 @@ impl<'a> HirToMirContext<'a> {
                                     *symbol,
                                     receiver_type,
                                     Some(method_param_count),
+                                    None,
                                 )
                             {
                                 let runtime_func = runtime_call.runtime_name;
@@ -11424,7 +11612,7 @@ impl<'a> HirToMirContext<'a> {
         );
 
         if let Some((_class, _method, runtime_call)) =
-            self.get_stdlib_runtime_info(field, receiver_ty, None)
+            self.get_stdlib_runtime_info(field, receiver_ty, None, None)
         {
             let runtime_func = runtime_call.runtime_name;
             debug!(
@@ -11531,7 +11719,7 @@ impl<'a> HirToMirContext<'a> {
                 // Check if this field is a stdlib property for this class
                 if let Some(class_ty) = matching_type_id {
                     if let Some((_class, _method, runtime_call)) =
-                        self.get_stdlib_runtime_info(field, class_ty, None)
+                        self.get_stdlib_runtime_info(field, class_ty, None, None)
                     {
                         let runtime_func = runtime_call.runtime_name;
                         debug!(
@@ -11908,7 +12096,7 @@ impl<'a> HirToMirContext<'a> {
             if let Some(class_ty) = matching_type_id {
                 debug!("[lower_field_access_for_class] Checking get_stdlib_runtime_info for field={:?}, class_ty={:?}", field, class_ty);
                 if let Some((_class, _method, runtime_call)) =
-                    self.get_stdlib_runtime_info(field, class_ty, None)
+                    self.get_stdlib_runtime_info(field, class_ty, None, None)
                 {
                     let runtime_func = runtime_call.runtime_name;
                     debug!(

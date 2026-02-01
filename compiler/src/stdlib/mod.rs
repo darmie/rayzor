@@ -43,6 +43,9 @@ pub mod thread;
 // Rayzor systems-level types (Box, Ptr, Ref, Usize)
 pub mod systems;
 
+// Rayzor data science types (Tensor)
+pub mod tensor;
+
 // Hashlink compatibility
 pub mod hdll_plugin;
 pub mod hl_types;
@@ -98,6 +101,9 @@ pub fn build_stdlib() -> IrModule {
     // Build systems-level types (Box, Ptr, Ref, Usize)
     systems::build_systems_types(&mut builder);
 
+    // Build tensor types (rayzor.ds.Tensor)
+    tensor::build_tensor_types(&mut builder);
+
     // Build Vec<T> extern declarations (monomorphized specializations)
     vec::build_vec_externs(&mut builder);
 
@@ -122,6 +128,7 @@ pub fn build_stdlib_with_plugins(registry: &CompilerPluginRegistry) -> IrModule 
     channel::build_channel_type(&mut builder);
     sync::build_sync_types(&mut builder);
     systems::build_systems_types(&mut builder);
+    tensor::build_tensor_types(&mut builder);
     vec::build_vec_externs(&mut builder);
 
     // Plugin-provided extern declarations and MIR wrappers

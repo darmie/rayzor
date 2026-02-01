@@ -248,6 +248,7 @@ impl StdlibMapping {
         mapping.register_usize_methods();
         mapping.register_cstring_methods();
         mapping.register_simd4f_methods();
+        mapping.register_tensor_methods();
 
         mapping
     }
@@ -2865,6 +2866,106 @@ impl StdlibMapping {
             // simd.distance(other): Float
             map_method!(instance "rayzor_SIMD4f", "distance" => "SIMD4f_distance", params: 1, mir_wrapper,
                 types: &[VecF32x4, VecF32x4] => F64),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    // ============================================================================
+    // Tensor Methods (rayzor.ds.Tensor)
+    // ============================================================================
+
+    fn register_tensor_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
+        let mappings = vec![
+            // --- Construction (static) ---
+            // Tensor.zeros(shape: Array<Int>, dtype: DType): Tensor
+            map_method!(static "rayzor_ds_Tensor", "zeros" => "Tensor_zeros", params: 2, mir_wrapper,
+                types: &[PtrVoid, I64] => PtrVoid),
+            // Tensor.ones(shape: Array<Int>, dtype: DType): Tensor
+            map_method!(static "rayzor_ds_Tensor", "ones" => "Tensor_ones", params: 2, mir_wrapper,
+                types: &[PtrVoid, I64] => PtrVoid),
+            // Tensor.full(shape: Array<Int>, value: Float, dtype: DType): Tensor
+            map_method!(static "rayzor_ds_Tensor", "full" => "Tensor_full", params: 3, mir_wrapper,
+                types: &[PtrVoid, F64, I64] => PtrVoid),
+            // Tensor.fromArray(data: Array<Float>, shape: Array<Int>): Tensor
+            map_method!(static "rayzor_ds_Tensor", "fromArray" => "Tensor_fromArray", params: 2, mir_wrapper,
+                types: &[PtrVoid, PtrVoid] => PtrVoid),
+            // Tensor.rand(shape: Array<Int>, dtype: DType): Tensor
+            map_method!(static "rayzor_ds_Tensor", "rand" => "Tensor_rand", params: 2, mir_wrapper,
+                types: &[PtrVoid, I64] => PtrVoid),
+            // --- Properties (instance) ---
+            // tensor.ndim(): Int
+            map_method!(instance "rayzor_ds_Tensor", "ndim" => "Tensor_ndim", params: 0, mir_wrapper,
+                types: &[PtrVoid] => I64),
+            // tensor.numel(): Int
+            map_method!(instance "rayzor_ds_Tensor", "numel" => "Tensor_numel", params: 0, mir_wrapper,
+                types: &[PtrVoid] => I64),
+            // tensor.dtype(): DType (returns i64 tag)
+            map_method!(instance "rayzor_ds_Tensor", "dtype" => "Tensor_dtype", params: 0, mir_wrapper,
+                types: &[PtrVoid] => I64),
+            // --- Element access ---
+            // tensor.get(indices: Array<Int>): Float
+            map_method!(instance "rayzor_ds_Tensor", "get" => "Tensor_get", params: 1, mir_wrapper,
+                types: &[PtrVoid, PtrVoid] => F64),
+            // tensor.set(indices: Array<Int>, value: Float): Void
+            map_method!(instance "rayzor_ds_Tensor", "set" => "Tensor_set", params: 2, mir_wrapper,
+                types: &[PtrVoid, PtrVoid, F64]),
+            // --- Reshape / transpose ---
+            // tensor.reshape(shape: Array<Int>): Tensor
+            map_method!(instance "rayzor_ds_Tensor", "reshape" => "Tensor_reshape", params: 1, mir_wrapper,
+                types: &[PtrVoid, PtrVoid] => PtrVoid),
+            // tensor.transpose(): Tensor
+            map_method!(instance "rayzor_ds_Tensor", "transpose" => "Tensor_transpose", params: 0, mir_wrapper,
+                types: &[PtrVoid] => PtrVoid),
+            // --- Arithmetic (binary, instance) ---
+            // tensor.add(other: Tensor): Tensor
+            map_method!(instance "rayzor_ds_Tensor", "add" => "Tensor_add", params: 1, mir_wrapper,
+                types: &[PtrVoid, PtrVoid] => PtrVoid),
+            // tensor.sub(other: Tensor): Tensor
+            map_method!(instance "rayzor_ds_Tensor", "sub" => "Tensor_sub", params: 1, mir_wrapper,
+                types: &[PtrVoid, PtrVoid] => PtrVoid),
+            // tensor.mul(other: Tensor): Tensor
+            map_method!(instance "rayzor_ds_Tensor", "mul" => "Tensor_mul", params: 1, mir_wrapper,
+                types: &[PtrVoid, PtrVoid] => PtrVoid),
+            // tensor.div(other: Tensor): Tensor
+            map_method!(instance "rayzor_ds_Tensor", "div" => "Tensor_div", params: 1, mir_wrapper,
+                types: &[PtrVoid, PtrVoid] => PtrVoid),
+            // --- Linear algebra ---
+            // tensor.matmul(other: Tensor): Tensor
+            map_method!(instance "rayzor_ds_Tensor", "matmul" => "Tensor_matmul", params: 1, mir_wrapper,
+                types: &[PtrVoid, PtrVoid] => PtrVoid),
+            // tensor.dot(other: Tensor): Float
+            map_method!(instance "rayzor_ds_Tensor", "dot" => "Tensor_dot", params: 1, mir_wrapper,
+                types: &[PtrVoid, PtrVoid] => F64),
+            // --- Reductions ---
+            // tensor.sum(): Float
+            map_method!(instance "rayzor_ds_Tensor", "sum" => "Tensor_sum", params: 0, mir_wrapper,
+                types: &[PtrVoid] => F64),
+            // tensor.mean(): Float
+            map_method!(instance "rayzor_ds_Tensor", "mean" => "Tensor_mean", params: 0, mir_wrapper,
+                types: &[PtrVoid] => F64),
+            // --- Math (unary) ---
+            // tensor.sqrt(): Tensor
+            map_method!(instance "rayzor_ds_Tensor", "sqrt" => "Tensor_sqrt", params: 0, mir_wrapper,
+                types: &[PtrVoid] => PtrVoid),
+            // tensor.exp(): Tensor
+            map_method!(instance "rayzor_ds_Tensor", "exp" => "Tensor_exp", params: 0, mir_wrapper,
+                types: &[PtrVoid] => PtrVoid),
+            // tensor.log(): Tensor
+            map_method!(instance "rayzor_ds_Tensor", "log" => "Tensor_log", params: 0, mir_wrapper,
+                types: &[PtrVoid] => PtrVoid),
+            // tensor.relu(): Tensor
+            map_method!(instance "rayzor_ds_Tensor", "relu" => "Tensor_relu", params: 0, mir_wrapper,
+                types: &[PtrVoid] => PtrVoid),
+            // --- Interop ---
+            // tensor.data(): Ptr<Float>
+            map_method!(instance "rayzor_ds_Tensor", "data" => "Tensor_data", params: 0, mir_wrapper,
+                types: &[PtrVoid] => I64),
+            // tensor.free(): Void
+            map_method!(instance "rayzor_ds_Tensor", "free" => "Tensor_free", params: 0, mir_wrapper,
+                types: &[PtrVoid]),
         ];
 
         self.register_from_tuples(mappings);

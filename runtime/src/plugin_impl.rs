@@ -1205,6 +1205,71 @@ register_symbol!(
 );
 
 // ============================================================================
+// Tensor Runtime (rayzor.ds.Tensor)
+// ============================================================================
+
+// Construction
+register_symbol!("rayzor_tensor_zeros", crate::tensor::rayzor_tensor_zeros);
+register_symbol!("rayzor_tensor_ones", crate::tensor::rayzor_tensor_ones);
+register_symbol!("rayzor_tensor_full", crate::tensor::rayzor_tensor_full);
+register_symbol!(
+    "rayzor_tensor_from_array",
+    crate::tensor::rayzor_tensor_from_array
+);
+register_symbol!("rayzor_tensor_rand", crate::tensor::rayzor_tensor_rand);
+
+// Properties
+register_symbol!("rayzor_tensor_ndim", crate::tensor::rayzor_tensor_ndim);
+register_symbol!("rayzor_tensor_numel", crate::tensor::rayzor_tensor_numel);
+register_symbol!("rayzor_tensor_dtype", crate::tensor::rayzor_tensor_dtype);
+register_symbol!(
+    "rayzor_tensor_shape_ptr",
+    crate::tensor::rayzor_tensor_shape_ptr
+);
+register_symbol!(
+    "rayzor_tensor_shape_ndim",
+    crate::tensor::rayzor_tensor_shape_ndim
+);
+
+// Element access
+register_symbol!("rayzor_tensor_get", crate::tensor::rayzor_tensor_get);
+register_symbol!("rayzor_tensor_set", crate::tensor::rayzor_tensor_set);
+
+// Reshape / Transpose
+register_symbol!(
+    "rayzor_tensor_reshape",
+    crate::tensor::rayzor_tensor_reshape
+);
+register_symbol!(
+    "rayzor_tensor_transpose",
+    crate::tensor::rayzor_tensor_transpose
+);
+
+// Arithmetic
+register_symbol!("rayzor_tensor_add", crate::tensor::rayzor_tensor_add);
+register_symbol!("rayzor_tensor_sub", crate::tensor::rayzor_tensor_sub);
+register_symbol!("rayzor_tensor_mul", crate::tensor::rayzor_tensor_mul);
+register_symbol!("rayzor_tensor_div", crate::tensor::rayzor_tensor_div);
+
+// Math
+register_symbol!("rayzor_tensor_sqrt", crate::tensor::rayzor_tensor_sqrt);
+register_symbol!("rayzor_tensor_exp", crate::tensor::rayzor_tensor_exp);
+register_symbol!("rayzor_tensor_log", crate::tensor::rayzor_tensor_log);
+register_symbol!("rayzor_tensor_relu", crate::tensor::rayzor_tensor_relu);
+
+// Reductions
+register_symbol!("rayzor_tensor_sum", crate::tensor::rayzor_tensor_sum);
+register_symbol!("rayzor_tensor_mean", crate::tensor::rayzor_tensor_mean);
+register_symbol!("rayzor_tensor_dot", crate::tensor::rayzor_tensor_dot);
+
+// Linear algebra
+register_symbol!("rayzor_tensor_matmul", crate::tensor::rayzor_tensor_matmul);
+
+// Interop
+register_symbol!("rayzor_tensor_data", crate::tensor::rayzor_tensor_data);
+register_symbol!("rayzor_tensor_free", crate::tensor::rayzor_tensor_free);
+
+// ============================================================================
 // TinyCC Runtime API (rayzor.runtime.CC) — registered above
 
 /// Rayzor Runtime Plugin

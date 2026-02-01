@@ -54,6 +54,9 @@ pub mod box_runtime;
 // CString runtime — null-terminated C string interop (rayzor.CString)
 pub mod cstring_runtime;
 
+// Tensor runtime — N-dimensional array (rayzor.ds.Tensor)
+pub mod tensor;
+
 // TinyCC runtime API (rayzor.runtime.CC)
 #[cfg(feature = "tcc-runtime")]
 pub mod tinycc_runtime;

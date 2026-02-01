@@ -1,0 +1,686 @@
+/// Tensor MIR wrappers (rayzor.ds.Tensor)
+///
+/// Tensor is an extern class — an opaque i64 pointer to a heap-allocated
+/// RayzorTensor struct. All methods delegate to runtime extern functions.
+///
+/// The key complexity is that Haxe `Array<Int>` parameters (for shapes/indices)
+/// need to be decomposed into (data_ptr, len) pairs for the runtime.
+/// HaxeArray layout: [ptr: *mut u8, len: usize, cap: usize, elem_size: usize]
+/// So: data_ptr = load(array_ptr + 0), len = load(array_ptr + 8)
+use crate::ir::mir_builder::MirBuilder;
+use crate::ir::{BinaryOp, CallingConvention, IrType};
+
+/// Build all tensor type functions
+pub fn build_tensor_types(builder: &mut MirBuilder) {
+    // Declare all extern runtime functions
+    declare_tensor_externs(builder);
+
+    // Build MIR wrappers
+    build_tensor_zeros(builder);
+    build_tensor_ones(builder);
+    build_tensor_full(builder);
+    build_tensor_from_array(builder);
+    build_tensor_rand(builder);
+
+    // Properties
+    build_tensor_ndim(builder);
+    build_tensor_numel(builder);
+    build_tensor_dtype(builder);
+
+    // Element access
+    build_tensor_get(builder);
+    build_tensor_set(builder);
+
+    // Reshape / transpose
+    build_tensor_reshape(builder);
+    build_tensor_transpose(builder);
+
+    // Arithmetic (binary)
+    build_tensor_add(builder);
+    build_tensor_sub(builder);
+    build_tensor_mul(builder);
+    build_tensor_div(builder);
+
+    // Math (unary)
+    build_tensor_sqrt(builder);
+    build_tensor_exp(builder);
+    build_tensor_log(builder);
+    build_tensor_relu(builder);
+
+    // Reductions
+    build_tensor_sum(builder);
+    build_tensor_mean(builder);
+    build_tensor_dot(builder);
+
+    // Linear algebra
+    build_tensor_matmul(builder);
+
+    // Interop
+    build_tensor_data(builder);
+    build_tensor_free(builder);
+}
+
+// ============================================================================
+// Extern declarations
+// ============================================================================
+
+fn declare_tensor_externs(builder: &mut MirBuilder) {
+    let i64_ty = IrType::I64;
+    let f64_ty = IrType::F64;
+    let void_ty = IrType::Void;
+
+    // Construction: (shape_ptr: i64, ndim: i64, dtype: i64) -> i64
+    for name in &[
+        "rayzor_tensor_zeros",
+        "rayzor_tensor_ones",
+        "rayzor_tensor_rand",
+    ] {
+        let func_id = builder
+            .begin_function(*name)
+            .param("shape_ptr", i64_ty.clone())
+            .param("ndim", i64_ty.clone())
+            .param("dtype", i64_ty.clone())
+            .returns(i64_ty.clone())
+            .calling_convention(CallingConvention::C)
+            .build();
+        builder.mark_as_extern(func_id);
+    }
+
+    // full: (shape_ptr, ndim, value, dtype) -> i64
+    let func_id = builder
+        .begin_function("rayzor_tensor_full")
+        .param("shape_ptr", i64_ty.clone())
+        .param("ndim", i64_ty.clone())
+        .param("value", f64_ty.clone())
+        .param("dtype", i64_ty.clone())
+        .returns(i64_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // from_array: (data_ptr, data_len, shape_ptr, ndim) -> i64
+    let func_id = builder
+        .begin_function("rayzor_tensor_from_array")
+        .param("data_ptr", i64_ty.clone())
+        .param("data_len", i64_ty.clone())
+        .param("shape_ptr", i64_ty.clone())
+        .param("ndim", i64_ty.clone())
+        .returns(i64_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // Properties: (tensor: i64) -> i64
+    for name in &[
+        "rayzor_tensor_ndim",
+        "rayzor_tensor_numel",
+        "rayzor_tensor_dtype",
+        "rayzor_tensor_shape_ptr",
+        "rayzor_tensor_shape_ndim",
+    ] {
+        let func_id = builder
+            .begin_function(*name)
+            .param("tensor", i64_ty.clone())
+            .returns(i64_ty.clone())
+            .calling_convention(CallingConvention::C)
+            .build();
+        builder.mark_as_extern(func_id);
+    }
+
+    // get: (tensor, indices_ptr, ndim) -> f64
+    let func_id = builder
+        .begin_function("rayzor_tensor_get")
+        .param("tensor", i64_ty.clone())
+        .param("indices_ptr", i64_ty.clone())
+        .param("ndim", i64_ty.clone())
+        .returns(f64_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // set: (tensor, indices_ptr, ndim, value) -> void
+    let func_id = builder
+        .begin_function("rayzor_tensor_set")
+        .param("tensor", i64_ty.clone())
+        .param("indices_ptr", i64_ty.clone())
+        .param("ndim", i64_ty.clone())
+        .param("value", f64_ty.clone())
+        .returns(void_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // reshape: (tensor, shape_ptr, ndim) -> i64
+    let func_id = builder
+        .begin_function("rayzor_tensor_reshape")
+        .param("tensor", i64_ty.clone())
+        .param("shape_ptr", i64_ty.clone())
+        .param("ndim", i64_ty.clone())
+        .returns(i64_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // transpose: (tensor) -> i64
+    let func_id = builder
+        .begin_function("rayzor_tensor_transpose")
+        .param("tensor", i64_ty.clone())
+        .returns(i64_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // Binary ops: (a, b) -> i64
+    for name in &[
+        "rayzor_tensor_add",
+        "rayzor_tensor_sub",
+        "rayzor_tensor_mul",
+        "rayzor_tensor_div",
+        "rayzor_tensor_matmul",
+    ] {
+        let func_id = builder
+            .begin_function(*name)
+            .param("a", i64_ty.clone())
+            .param("b", i64_ty.clone())
+            .returns(i64_ty.clone())
+            .calling_convention(CallingConvention::C)
+            .build();
+        builder.mark_as_extern(func_id);
+    }
+
+    // Unary ops: (tensor) -> i64
+    for name in &[
+        "rayzor_tensor_sqrt",
+        "rayzor_tensor_exp",
+        "rayzor_tensor_log",
+        "rayzor_tensor_relu",
+    ] {
+        let func_id = builder
+            .begin_function(*name)
+            .param("tensor", i64_ty.clone())
+            .returns(i64_ty.clone())
+            .calling_convention(CallingConvention::C)
+            .build();
+        builder.mark_as_extern(func_id);
+    }
+
+    // Reductions: (tensor) -> f64
+    for name in &["rayzor_tensor_sum", "rayzor_tensor_mean"] {
+        let func_id = builder
+            .begin_function(*name)
+            .param("tensor", i64_ty.clone())
+            .returns(f64_ty.clone())
+            .calling_convention(CallingConvention::C)
+            .build();
+        builder.mark_as_extern(func_id);
+    }
+
+    // dot: (a, b) -> f64
+    let func_id = builder
+        .begin_function("rayzor_tensor_dot")
+        .param("a", i64_ty.clone())
+        .param("b", i64_ty.clone())
+        .returns(f64_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // data: (tensor) -> i64
+    let func_id = builder
+        .begin_function("rayzor_tensor_data")
+        .param("tensor", i64_ty.clone())
+        .returns(i64_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // free: (tensor) -> void
+    let func_id = builder
+        .begin_function("rayzor_tensor_free")
+        .param("tensor", i64_ty.clone())
+        .returns(void_ty)
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+}
+
+// ============================================================================
+// Helper: extract (data_ptr, len) from a HaxeArray pointer
+// ============================================================================
+
+/// Given a HaxeArray pointer (i64), extract the data pointer and length.
+/// HaxeArray layout: { ptr: *mut u8 (offset 0), len: usize (offset 8), ... }
+fn extract_array_ptr_len(
+    builder: &mut MirBuilder,
+    arr: crate::ir::IrId,
+) -> (crate::ir::IrId, crate::ir::IrId) {
+    let i64_ty = IrType::I64;
+
+    // data_ptr = load i64 from arr + 0
+    let data_ptr = builder.load(arr, i64_ty.clone());
+
+    // len_addr = arr + 8
+    let eight = builder.const_i64(8);
+    let len_addr = builder.bin_op(BinaryOp::Add, arr, eight);
+
+    // len = load i64 from len_addr
+    let len = builder.load(len_addr, i64_ty);
+
+    (data_ptr, len)
+}
+
+// ============================================================================
+// Construction wrappers
+// ============================================================================
+
+/// Tensor_zeros(shape_arr: i64, dtype: i64) -> i64
+/// shape_arr is a HaxeArray pointer
+fn build_tensor_zeros(builder: &mut MirBuilder) {
+    let i64_ty = IrType::I64;
+
+    let func_id = builder
+        .begin_function("Tensor_zeros")
+        .param("shape_arr", i64_ty.clone())
+        .param("dtype", i64_ty.clone())
+        .returns(i64_ty)
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let shape_arr = builder.get_param(0);
+    let dtype = builder.get_param(1);
+    let (data_ptr, len) = extract_array_ptr_len(builder, shape_arr);
+
+    let extern_id = builder
+        .get_function_by_name("rayzor_tensor_zeros")
+        .expect("rayzor_tensor_zeros not found");
+    let result = builder.call(extern_id, vec![data_ptr, len, dtype]).unwrap();
+    builder.ret(Some(result));
+}
+
+/// Tensor_ones(shape_arr: i64, dtype: i64) -> i64
+fn build_tensor_ones(builder: &mut MirBuilder) {
+    let i64_ty = IrType::I64;
+
+    let func_id = builder
+        .begin_function("Tensor_ones")
+        .param("shape_arr", i64_ty.clone())
+        .param("dtype", i64_ty.clone())
+        .returns(i64_ty)
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let shape_arr = builder.get_param(0);
+    let dtype = builder.get_param(1);
+    let (data_ptr, len) = extract_array_ptr_len(builder, shape_arr);
+
+    let extern_id = builder
+        .get_function_by_name("rayzor_tensor_ones")
+        .expect("rayzor_tensor_ones not found");
+    let result = builder.call(extern_id, vec![data_ptr, len, dtype]).unwrap();
+    builder.ret(Some(result));
+}
+
+/// Tensor_full(shape_arr: i64, value: f64, dtype: i64) -> i64
+fn build_tensor_full(builder: &mut MirBuilder) {
+    let i64_ty = IrType::I64;
+    let f64_ty = IrType::F64;
+
+    let func_id = builder
+        .begin_function("Tensor_full")
+        .param("shape_arr", i64_ty.clone())
+        .param("value", f64_ty)
+        .param("dtype", i64_ty.clone())
+        .returns(i64_ty)
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let shape_arr = builder.get_param(0);
+    let value = builder.get_param(1);
+    let dtype = builder.get_param(2);
+    let (data_ptr, len) = extract_array_ptr_len(builder, shape_arr);
+
+    let extern_id = builder
+        .get_function_by_name("rayzor_tensor_full")
+        .expect("rayzor_tensor_full not found");
+    let result = builder
+        .call(extern_id, vec![data_ptr, len, value, dtype])
+        .unwrap();
+    builder.ret(Some(result));
+}
+
+/// Tensor_fromArray(data_arr: i64, shape_arr: i64) -> i64
+fn build_tensor_from_array(builder: &mut MirBuilder) {
+    let i64_ty = IrType::I64;
+
+    let func_id = builder
+        .begin_function("Tensor_fromArray")
+        .param("data_arr", i64_ty.clone())
+        .param("shape_arr", i64_ty.clone())
+        .returns(i64_ty)
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let data_arr = builder.get_param(0);
+    let shape_arr = builder.get_param(1);
+    let (data_ptr, data_len) = extract_array_ptr_len(builder, data_arr);
+    let (shape_ptr, shape_ndim) = extract_array_ptr_len(builder, shape_arr);
+
+    let extern_id = builder
+        .get_function_by_name("rayzor_tensor_from_array")
+        .expect("rayzor_tensor_from_array not found");
+    let result = builder
+        .call(extern_id, vec![data_ptr, data_len, shape_ptr, shape_ndim])
+        .unwrap();
+    builder.ret(Some(result));
+}
+
+/// Tensor_rand(shape_arr: i64, dtype: i64) -> i64
+fn build_tensor_rand(builder: &mut MirBuilder) {
+    let i64_ty = IrType::I64;
+
+    let func_id = builder
+        .begin_function("Tensor_rand")
+        .param("shape_arr", i64_ty.clone())
+        .param("dtype", i64_ty.clone())
+        .returns(i64_ty)
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let shape_arr = builder.get_param(0);
+    let dtype = builder.get_param(1);
+    let (data_ptr, len) = extract_array_ptr_len(builder, shape_arr);
+
+    let extern_id = builder
+        .get_function_by_name("rayzor_tensor_rand")
+        .expect("rayzor_tensor_rand not found");
+    let result = builder.call(extern_id, vec![data_ptr, len, dtype]).unwrap();
+    builder.ret(Some(result));
+}
+
+// ============================================================================
+// Property wrappers (simple pass-through: tensor_ptr -> runtime)
+// ============================================================================
+
+macro_rules! build_simple_i64_to_i64 {
+    ($fn_name:ident, $mir_name:expr, $extern_name:expr) => {
+        fn $fn_name(builder: &mut MirBuilder) {
+            let i64_ty = IrType::I64;
+
+            let func_id = builder
+                .begin_function($mir_name)
+                .param("self", i64_ty.clone())
+                .returns(i64_ty)
+                .calling_convention(CallingConvention::C)
+                .build();
+
+            builder.set_current_function(func_id);
+            let entry = builder.create_block("entry");
+            builder.set_insert_point(entry);
+
+            let self_val = builder.get_param(0);
+            let extern_id = builder
+                .get_function_by_name($extern_name)
+                .expect(concat!($extern_name, " not found"));
+            let result = builder.call(extern_id, vec![self_val]).unwrap();
+            builder.ret(Some(result));
+        }
+    };
+}
+
+macro_rules! build_simple_i64_to_f64 {
+    ($fn_name:ident, $mir_name:expr, $extern_name:expr) => {
+        fn $fn_name(builder: &mut MirBuilder) {
+            let i64_ty = IrType::I64;
+            let f64_ty = IrType::F64;
+
+            let func_id = builder
+                .begin_function($mir_name)
+                .param("self", i64_ty)
+                .returns(f64_ty)
+                .calling_convention(CallingConvention::C)
+                .build();
+
+            builder.set_current_function(func_id);
+            let entry = builder.create_block("entry");
+            builder.set_insert_point(entry);
+
+            let self_val = builder.get_param(0);
+            let extern_id = builder
+                .get_function_by_name($extern_name)
+                .expect(concat!($extern_name, " not found"));
+            let result = builder.call(extern_id, vec![self_val]).unwrap();
+            builder.ret(Some(result));
+        }
+    };
+}
+
+macro_rules! build_simple_i64_to_void {
+    ($fn_name:ident, $mir_name:expr, $extern_name:expr) => {
+        fn $fn_name(builder: &mut MirBuilder) {
+            let i64_ty = IrType::I64;
+            let void_ty = IrType::Void;
+
+            let func_id = builder
+                .begin_function($mir_name)
+                .param("self", i64_ty)
+                .returns(void_ty)
+                .calling_convention(CallingConvention::C)
+                .build();
+
+            builder.set_current_function(func_id);
+            let entry = builder.create_block("entry");
+            builder.set_insert_point(entry);
+
+            let self_val = builder.get_param(0);
+            let extern_id = builder
+                .get_function_by_name($extern_name)
+                .expect(concat!($extern_name, " not found"));
+            builder.call(extern_id, vec![self_val]);
+            builder.ret(None);
+        }
+    };
+}
+
+macro_rules! build_binop_i64 {
+    ($fn_name:ident, $mir_name:expr, $extern_name:expr) => {
+        fn $fn_name(builder: &mut MirBuilder) {
+            let i64_ty = IrType::I64;
+
+            let func_id = builder
+                .begin_function($mir_name)
+                .param("self", i64_ty.clone())
+                .param("other", i64_ty.clone())
+                .returns(i64_ty)
+                .calling_convention(CallingConvention::C)
+                .build();
+
+            builder.set_current_function(func_id);
+            let entry = builder.create_block("entry");
+            builder.set_insert_point(entry);
+
+            let self_val = builder.get_param(0);
+            let other = builder.get_param(1);
+            let extern_id = builder
+                .get_function_by_name($extern_name)
+                .expect(concat!($extern_name, " not found"));
+            let result = builder.call(extern_id, vec![self_val, other]).unwrap();
+            builder.ret(Some(result));
+        }
+    };
+}
+
+// Properties
+build_simple_i64_to_i64!(build_tensor_ndim, "Tensor_ndim", "rayzor_tensor_ndim");
+build_simple_i64_to_i64!(build_tensor_numel, "Tensor_numel", "rayzor_tensor_numel");
+build_simple_i64_to_i64!(build_tensor_dtype, "Tensor_dtype", "rayzor_tensor_dtype");
+
+// Transpose (no extra params)
+build_simple_i64_to_i64!(
+    build_tensor_transpose,
+    "Tensor_transpose",
+    "rayzor_tensor_transpose"
+);
+
+// Unary math ops
+build_simple_i64_to_i64!(build_tensor_sqrt, "Tensor_sqrt", "rayzor_tensor_sqrt");
+build_simple_i64_to_i64!(build_tensor_exp, "Tensor_exp", "rayzor_tensor_exp");
+build_simple_i64_to_i64!(build_tensor_log, "Tensor_log", "rayzor_tensor_log");
+build_simple_i64_to_i64!(build_tensor_relu, "Tensor_relu", "rayzor_tensor_relu");
+
+// Reductions
+build_simple_i64_to_f64!(build_tensor_sum, "Tensor_sum", "rayzor_tensor_sum");
+build_simple_i64_to_f64!(build_tensor_mean, "Tensor_mean", "rayzor_tensor_mean");
+
+// Interop
+build_simple_i64_to_i64!(build_tensor_data, "Tensor_data", "rayzor_tensor_data");
+build_simple_i64_to_void!(build_tensor_free, "Tensor_free", "rayzor_tensor_free");
+
+// Binary ops (tensor, tensor) -> tensor
+build_binop_i64!(build_tensor_add, "Tensor_add", "rayzor_tensor_add");
+build_binop_i64!(build_tensor_sub, "Tensor_sub", "rayzor_tensor_sub");
+build_binop_i64!(build_tensor_mul, "Tensor_mul", "rayzor_tensor_mul");
+build_binop_i64!(build_tensor_div, "Tensor_div", "rayzor_tensor_div");
+build_binop_i64!(build_tensor_matmul, "Tensor_matmul", "rayzor_tensor_matmul");
+
+// ============================================================================
+// Dot product: (tensor, tensor) -> f64
+// ============================================================================
+
+fn build_tensor_dot(builder: &mut MirBuilder) {
+    let i64_ty = IrType::I64;
+    let f64_ty = IrType::F64;
+
+    let func_id = builder
+        .begin_function("Tensor_dot")
+        .param("self", i64_ty.clone())
+        .param("other", i64_ty)
+        .returns(f64_ty)
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let self_val = builder.get_param(0);
+    let other = builder.get_param(1);
+    let extern_id = builder
+        .get_function_by_name("rayzor_tensor_dot")
+        .expect("rayzor_tensor_dot not found");
+    let result = builder.call(extern_id, vec![self_val, other]).unwrap();
+    builder.ret(Some(result));
+}
+
+// ============================================================================
+// Element access with array decomposition
+// ============================================================================
+
+/// Tensor_get(tensor: i64, indices_arr: i64) -> f64
+fn build_tensor_get(builder: &mut MirBuilder) {
+    let i64_ty = IrType::I64;
+    let f64_ty = IrType::F64;
+
+    let func_id = builder
+        .begin_function("Tensor_get")
+        .param("self", i64_ty.clone())
+        .param("indices_arr", i64_ty)
+        .returns(f64_ty)
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let self_val = builder.get_param(0);
+    let indices_arr = builder.get_param(1);
+    let (indices_ptr, ndim) = extract_array_ptr_len(builder, indices_arr);
+
+    let extern_id = builder
+        .get_function_by_name("rayzor_tensor_get")
+        .expect("rayzor_tensor_get not found");
+    let result = builder
+        .call(extern_id, vec![self_val, indices_ptr, ndim])
+        .unwrap();
+    builder.ret(Some(result));
+}
+
+/// Tensor_set(tensor: i64, indices_arr: i64, value: f64) -> void
+fn build_tensor_set(builder: &mut MirBuilder) {
+    let i64_ty = IrType::I64;
+    let f64_ty = IrType::F64;
+    let void_ty = IrType::Void;
+
+    let func_id = builder
+        .begin_function("Tensor_set")
+        .param("self", i64_ty.clone())
+        .param("indices_arr", i64_ty)
+        .param("value", f64_ty)
+        .returns(void_ty)
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let self_val = builder.get_param(0);
+    let indices_arr = builder.get_param(1);
+    let value = builder.get_param(2);
+    let (indices_ptr, ndim) = extract_array_ptr_len(builder, indices_arr);
+
+    let extern_id = builder
+        .get_function_by_name("rayzor_tensor_set")
+        .expect("rayzor_tensor_set not found");
+    builder.call(extern_id, vec![self_val, indices_ptr, ndim, value]);
+    builder.ret(None);
+}
+
+/// Tensor_reshape(tensor: i64, shape_arr: i64) -> i64
+fn build_tensor_reshape(builder: &mut MirBuilder) {
+    let i64_ty = IrType::I64;
+
+    let func_id = builder
+        .begin_function("Tensor_reshape")
+        .param("self", i64_ty.clone())
+        .param("shape_arr", i64_ty.clone())
+        .returns(i64_ty)
+        .calling_convention(CallingConvention::C)
+        .build();
+
+    builder.set_current_function(func_id);
+    let entry = builder.create_block("entry");
+    builder.set_insert_point(entry);
+
+    let self_val = builder.get_param(0);
+    let shape_arr = builder.get_param(1);
+    let (shape_ptr, ndim) = extract_array_ptr_len(builder, shape_arr);
+
+    let extern_id = builder
+        .get_function_by_name("rayzor_tensor_reshape")
+        .expect("rayzor_tensor_reshape not found");
+    let result = builder
+        .call(extern_id, vec![self_val, shape_ptr, ndim])
+        .unwrap();
+    builder.ret(Some(result));
+}
