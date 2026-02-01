@@ -26,10 +26,10 @@ pub mod loop_analysis; // Loop analysis: dominators, natural loops, nesting
 pub mod lowering; // Legacy TAST to MIR (being phased out)
 pub mod mir_builder; // Programmatic MIR construction API
 pub mod modules;
-pub mod tree_shake; // Dead-code elimination for .rzb bundles
 pub mod monomorphize; // Monomorphization pass for generics
 pub mod optimizable; // Generic optimization trait for different IR levels
 pub mod optimization;
+pub mod tree_shake; // Dead-code elimination for .rzb bundles
 pub mod types;
 pub mod validation;
 pub mod vectorization; // SIMD auto-vectorization for loops

@@ -721,12 +721,13 @@ pub fn save_bundle(path: impl AsRef<Path>, bundle: &RayzorBundle) -> Result<(), 
 pub fn load_bundle(path: impl AsRef<Path>) -> Result<RayzorBundle, BladeError> {
     let raw = fs::read(path)?;
     // Detect zstd compression via magic bytes (0x28 0xB5 0x2F 0xFD)
-    let bytes = if raw.len() >= 4 && raw[0] == 0x28 && raw[1] == 0xB5 && raw[2] == 0x2F && raw[3] == 0xFD {
-        zstd::decode_all(raw.as_slice())
-            .map_err(|e| BladeError::Compression(format!("zstd decompress: {}", e)))?
-    } else {
-        raw
-    };
+    let bytes =
+        if raw.len() >= 4 && raw[0] == 0x28 && raw[1] == 0xB5 && raw[2] == 0x2F && raw[3] == 0xFD {
+            zstd::decode_all(raw.as_slice())
+                .map_err(|e| BladeError::Compression(format!("zstd decompress: {}", e)))?
+        } else {
+            raw
+        };
     let bundle: RayzorBundle = postcard::from_bytes(&bytes)?;
 
     // Validate magic
@@ -746,7 +747,12 @@ pub fn load_bundle(path: impl AsRef<Path>) -> Result<RayzorBundle, BladeError> {
 pub fn load_bundle_from_bytes(bytes: &[u8]) -> Result<RayzorBundle, BladeError> {
     // Detect zstd compression via magic bytes
     let decompressed;
-    let data = if bytes.len() >= 4 && bytes[0] == 0x28 && bytes[1] == 0xB5 && bytes[2] == 0x2F && bytes[3] == 0xFD {
+    let data = if bytes.len() >= 4
+        && bytes[0] == 0x28
+        && bytes[1] == 0xB5
+        && bytes[2] == 0x2F
+        && bytes[3] == 0xFD
+    {
         decompressed = zstd::decode_all(bytes)
             .map_err(|e| BladeError::Compression(format!("zstd decompress: {}", e)))?;
         &decompressed[..]

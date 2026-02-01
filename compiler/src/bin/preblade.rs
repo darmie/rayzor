@@ -104,7 +104,14 @@ fn main() {
             std::process::exit(1);
         }
 
-        match create_bundle(&bundle_out, &source_files, verbose, opt_level, strip, compress) {
+        match create_bundle(
+            &bundle_out,
+            &source_files,
+            verbose,
+            opt_level,
+            strip,
+            compress,
+        ) {
             Ok(module_count) => {
                 println!();
                 println!("Bundle created: {}", bundle_out.display());
@@ -293,8 +300,7 @@ fn create_bundle(
         if verbose {
             println!("  Tree-shaking...");
         }
-        let stats =
-            tree_shake::tree_shake_bundle(&mut modules, &entry_module, &entry_function);
+        let stats = tree_shake::tree_shake_bundle(&mut modules, &entry_module, &entry_function);
         if verbose {
             println!(
                 "    Removed: {} functions, {} externs, {} globals, {} empty modules",

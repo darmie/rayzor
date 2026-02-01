@@ -73,7 +73,9 @@ pub fn tree_shake_bundle(
         for block in function.cfg.blocks.values() {
             for inst in &block.instructions {
                 match inst {
-                    IrInstruction::CallDirect { func_id: callee, .. } => {
+                    IrInstruction::CallDirect {
+                        func_id: callee, ..
+                    } => {
                         // Callee could be in functions or extern_functions of same module
                         if module.functions.contains_key(callee) {
                             worklist.push((mod_idx, *callee));
@@ -81,14 +83,19 @@ pub fn tree_shake_bundle(
                             reachable_externs.insert((mod_idx, *callee));
                         }
                     }
-                    IrInstruction::FunctionRef { func_id: ref_id, .. } => {
+                    IrInstruction::FunctionRef {
+                        func_id: ref_id, ..
+                    } => {
                         if module.functions.contains_key(ref_id) {
                             worklist.push((mod_idx, *ref_id));
                         } else if module.extern_functions.contains_key(ref_id) {
                             reachable_externs.insert((mod_idx, *ref_id));
                         }
                     }
-                    IrInstruction::MakeClosure { func_id: closure_id, .. } => {
+                    IrInstruction::MakeClosure {
+                        func_id: closure_id,
+                        ..
+                    } => {
                         if module.functions.contains_key(closure_id) {
                             worklist.push((mod_idx, *closure_id));
                         } else if module.extern_functions.contains_key(closure_id) {
@@ -155,9 +162,7 @@ fn find_entry(
     // Fallback: search all modules for function name match
     for (idx, module) in modules.iter().enumerate() {
         for (func_id, func) in &module.functions {
-            if func.name == entry_function
-                || func.name.ends_with(&format!("_{}", entry_function))
-            {
+            if func.name == entry_function || func.name.ends_with(&format!("_{}", entry_function)) {
                 return Some((idx, *func_id));
             }
         }
