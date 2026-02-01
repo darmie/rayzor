@@ -32,6 +32,7 @@ use compiler::ir::blade::{
     BladeTypeAliasInfo, BladeTypeInfo, RayzorBundle,
 };
 use compiler::ir::optimization::{OptimizationLevel, PassManager};
+use compiler::ir::tree_shake;
 use parser;
 
 fn main() {
@@ -44,6 +45,8 @@ fn main() {
     let mut list_only = false;
     let mut verbose = false;
     let mut opt_level: Option<OptimizationLevel> = None;
+    let mut strip = true; // Tree-shake by default
+    let mut compress = true; // Compress by default
 
     let mut i = 1;
     while i < args.len() {
@@ -72,6 +75,10 @@ fn main() {
             "-O1" => opt_level = Some(OptimizationLevel::O1),
             "-O2" => opt_level = Some(OptimizationLevel::O2),
             "-O3" => opt_level = Some(OptimizationLevel::O3),
+            "--strip" => strip = true,
+            "--no-strip" => strip = false,
+            "--compress" => compress = true,
+            "--no-compress" => compress = false,
             "--list" | "-l" => list_only = true,
             "--verbose" | "-v" => verbose = true,
             "--help" | "-h" => {
@@ -97,7 +104,7 @@ fn main() {
             std::process::exit(1);
         }
 
-        match create_bundle(&bundle_out, &source_files, verbose, opt_level) {
+        match create_bundle(&bundle_out, &source_files, verbose, opt_level, strip, compress) {
             Ok(module_count) => {
                 println!();
                 println!("Bundle created: {}", bundle_out.display());
@@ -158,6 +165,8 @@ fn print_usage() {
     println!("  --bundle, -b <FILE>   Create a .rzb bundle from source files");
     println!("  --optimize, -O <N>    Apply MIR optimizations (0-3, default: 2)");
     println!("  -O0, -O1, -O2, -O3   Shorthand for --optimize N");
+    println!("  --no-strip            Disable dead-code stripping (on by default)");
+    println!("  --no-compress         Disable zstd compression (on by default)");
     println!("  --list, -l            List types without generating files");
     println!("  --verbose, -v         Show detailed output");
     println!("  --help, -h            Show this help message");
@@ -186,6 +195,8 @@ fn create_bundle(
     source_files: &[String],
     verbose: bool,
     opt_level: Option<OptimizationLevel>,
+    strip: bool,
+    compress: bool,
 ) -> Result<usize, String> {
     use std::time::Instant;
 
@@ -277,8 +288,33 @@ fn create_bundle(
         println!("  Entry: {}::{}", entry_module, entry_function);
     }
 
+    // Tree-shake unused functions, externs, and globals
+    if strip {
+        if verbose {
+            println!("  Tree-shaking...");
+        }
+        let stats =
+            tree_shake::tree_shake_bundle(&mut modules, &entry_module, &entry_function);
+        if verbose {
+            println!(
+                "    Removed: {} functions, {} externs, {} globals, {} empty modules",
+                stats.functions_removed,
+                stats.extern_functions_removed,
+                stats.globals_removed,
+                stats.modules_removed
+            );
+            println!(
+                "    Kept: {} functions, {} externs",
+                stats.functions_kept, stats.extern_functions_kept
+            );
+        }
+    }
+
     // Create and save bundle
-    let bundle = RayzorBundle::new(modules, &entry_module, &entry_function, None);
+    let mut bundle = RayzorBundle::new(modules, &entry_module, &entry_function, None);
+    if compress {
+        bundle.flags.compressed = true;
+    }
 
     if verbose {
         println!("  Saving bundle...");
