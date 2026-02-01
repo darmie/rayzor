@@ -188,34 +188,30 @@ fn run_benchmark_precompiled(
 
     let bundle = load_bundle(&bundle_path).map_err(|e| format!("load bundle: {:?}", e))?;
 
-    // Get entry function ID (pre-computed in bundle for O(1) lookup)
-    let entry_func_id = bundle
-        .entry_function_id()
-        .ok_or("No entry function ID in bundle")?;
-
-    // Use Script preset for single-run execution - starts with Cranelift JIT
-    // (Benchmark preset starts interpreted, which would be slower for single run)
-    let mut config = TierPreset::Script.to_config();
-    config.start_interpreted = false; // Start with Cranelift (Baseline tier)
-    config.verbosity = 0;
-
+    // Use CraneliftBackend directly with "speed" optimization (same as cranelift target)
+    // Previously used TieredBackend at Baseline tier (Cranelift "none"), which was unfairly slow
     let mut backend =
-        TieredBackend::with_symbols(config, symbols).map_err(|e| format!("backend: {}", e))?;
+        CraneliftBackend::with_symbols(symbols).map_err(|e| format!("backend: {}", e))?;
 
     // Load ALL modules from bundle (not just entry)
     for module in bundle.modules() {
         backend
-            .compile_module(module.clone())
+            .compile_module(&std::sync::Arc::new(module.clone()))
             .map_err(|e| format!("load module: {}", e))?;
     }
 
     let load_time = load_start.elapsed();
 
-    // Execute
+    // Execute - find and call main
     let exec_start = Instant::now();
-    backend
-        .execute_function(entry_func_id, vec![])
-        .map_err(|e| format!("exec: {}", e))?;
+    for module in bundle.modules().iter().rev() {
+        if backend
+            .call_main(&std::sync::Arc::new(module.clone()))
+            .is_ok()
+        {
+            break;
+        }
+    }
     let exec_time = exec_start.elapsed();
 
     Ok((load_time, exec_time))

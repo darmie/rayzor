@@ -31,6 +31,7 @@ use compiler::ir::blade::{
     BladeEnumVariantInfo, BladeFieldInfo, BladeMethodInfo, BladeModuleSymbols, BladeParamInfo,
     BladeTypeAliasInfo, BladeTypeInfo, RayzorBundle,
 };
+use compiler::ir::optimization::{OptimizationLevel, PassManager};
 use parser;
 
 fn main() {
@@ -42,6 +43,7 @@ fn main() {
     let mut source_files: Vec<String> = Vec::new();
     let mut list_only = false;
     let mut verbose = false;
+    let mut opt_level: Option<OptimizationLevel> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -58,13 +60,25 @@ fn main() {
                     bundle_path = Some(PathBuf::from(&args[i]));
                 }
             }
+            "--optimize" | "-O" => {
+                i += 1;
+                if i < args.len() {
+                    opt_level = Some(parse_opt_level(&args[i]));
+                } else {
+                    opt_level = Some(OptimizationLevel::O2);
+                }
+            }
+            "-O0" => opt_level = Some(OptimizationLevel::O0),
+            "-O1" => opt_level = Some(OptimizationLevel::O1),
+            "-O2" => opt_level = Some(OptimizationLevel::O2),
+            "-O3" => opt_level = Some(OptimizationLevel::O3),
             "--list" | "-l" => list_only = true,
             "--verbose" | "-v" => verbose = true,
             "--help" | "-h" => {
                 print_usage();
                 return;
             }
-            arg if !arg.starts_with("-") => {
+            arg if !arg.starts_with('-') => {
                 // Source file
                 source_files.push(arg.to_string());
             }
@@ -83,7 +97,7 @@ fn main() {
             std::process::exit(1);
         }
 
-        match create_bundle(&bundle_out, &source_files, verbose) {
+        match create_bundle(&bundle_out, &source_files, verbose, opt_level) {
             Ok(module_count) => {
                 println!();
                 println!("Bundle created: {}", bundle_out.display());
@@ -142,6 +156,8 @@ fn print_usage() {
     println!("Options:");
     println!("  --out, -o <PATH>      Output directory for .bsym files");
     println!("  --bundle, -b <FILE>   Create a .rzb bundle from source files");
+    println!("  --optimize, -O <N>    Apply MIR optimizations (0-3, default: 2)");
+    println!("  -O0, -O1, -O2, -O3   Shorthand for --optimize N");
     println!("  --list, -l            List types without generating files");
     println!("  --verbose, -v         Show detailed output");
     println!("  --help, -h            Show this help message");
@@ -152,7 +168,25 @@ fn print_usage() {
 }
 
 /// Create a .rzb bundle from source files
-fn create_bundle(output: &Path, source_files: &[String], verbose: bool) -> Result<usize, String> {
+fn parse_opt_level(s: &str) -> OptimizationLevel {
+    match s {
+        "0" => OptimizationLevel::O0,
+        "1" => OptimizationLevel::O1,
+        "2" => OptimizationLevel::O2,
+        "3" => OptimizationLevel::O3,
+        _ => {
+            eprintln!("Warning: Unknown optimization level '{}', using O2", s);
+            OptimizationLevel::O2
+        }
+    }
+}
+
+fn create_bundle(
+    output: &Path,
+    source_files: &[String],
+    verbose: bool,
+    opt_level: Option<OptimizationLevel>,
+) -> Result<usize, String> {
     use std::time::Instant;
 
     println!("Creating Rayzor Bundle: {}", output.display());
@@ -199,7 +233,20 @@ fn create_bundle(output: &Path, source_files: &[String], verbose: bool) -> Resul
     }
 
     // Convert Arc<IrModule> to IrModule for the bundle
-    let modules: Vec<_> = mir_modules.iter().map(|m| (**m).clone()).collect();
+    let mut modules: Vec<_> = mir_modules.iter().map(|m| (**m).clone()).collect();
+
+    // Apply MIR optimizations if requested
+    if let Some(level) = opt_level {
+        if level != OptimizationLevel::O0 {
+            if verbose {
+                println!("  Applying MIR optimizations ({:?})...", level);
+            }
+            let mut pass_manager = PassManager::for_level(level);
+            for module in &mut modules {
+                let _ = pass_manager.run(module);
+            }
+        }
+    }
 
     let module_count = modules.len();
 
