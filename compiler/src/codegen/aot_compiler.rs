@@ -1,0 +1,486 @@
+//! AOT (Ahead-of-Time) Compiler for Rayzor
+//!
+//! Compiles Haxe source files to native executables via LLVM.
+//! Supports cross-compilation to any LLVM target triple.
+
+#[cfg(feature = "llvm-backend")]
+use inkwell::context::Context;
+#[cfg(feature = "llvm-backend")]
+use inkwell::targets::RelocMode;
+
+use crate::compilation::{CompilationConfig, CompilationUnit};
+use crate::ir::optimization::{OptimizationLevel, PassManager};
+use crate::ir::tree_shake;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// Output format for AOT compilation
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OutputFormat {
+    /// Linked native executable (default)
+    Executable,
+    /// Object file (.o) — user links manually
+    ObjectFile,
+    /// LLVM IR text (.ll)
+    LlvmIr,
+    /// LLVM bitcode (.bc)
+    LlvmBitcode,
+    /// Native assembly (.s)
+    Assembly,
+}
+
+/// Result of AOT compilation
+pub struct AotOutput {
+    pub path: PathBuf,
+    pub format: OutputFormat,
+    pub target_triple: String,
+    pub code_size: u64,
+}
+
+/// AOT compiler configuration
+pub struct AotCompiler {
+    /// Target triple (None = host)
+    pub target_triple: Option<String>,
+    /// MIR optimization level
+    pub opt_level: OptimizationLevel,
+    /// Output format
+    pub output_format: OutputFormat,
+    /// Whether to tree-shake unused code
+    pub strip: bool,
+    /// Verbose output
+    pub verbose: bool,
+    /// Custom linker path
+    pub linker: Option<String>,
+    /// Path to librayzor_runtime.a
+    pub runtime_dir: Option<PathBuf>,
+    /// Sysroot for cross-compilation
+    pub sysroot: Option<PathBuf>,
+    /// Strip debug symbols from binary
+    pub strip_symbols: bool,
+}
+
+impl Default for AotCompiler {
+    fn default() -> Self {
+        Self {
+            target_triple: None,
+            opt_level: OptimizationLevel::O2,
+            output_format: OutputFormat::Executable,
+            strip: true,
+            verbose: false,
+            linker: None,
+            runtime_dir: None,
+            sysroot: None,
+            strip_symbols: false,
+        }
+    }
+}
+
+impl AotCompiler {
+    /// Compile Haxe source files to native output.
+    #[cfg(feature = "llvm-backend")]
+    pub fn compile(
+        &self,
+        source_files: &[String],
+        output_path: &Path,
+    ) -> Result<AotOutput, String> {
+        use crate::codegen::llvm_aot_backend;
+        use crate::codegen::llvm_jit_backend::LLVMJitBackend;
+        use std::time::Instant;
+
+        let t0 = Instant::now();
+
+        // --- Phase 1: Parse and compile to MIR ---
+        if self.verbose {
+            println!("  Parsing and lowering to MIR...");
+        }
+
+        let mut unit = CompilationUnit::new(CompilationConfig::default());
+        unit.load_stdlib()
+            .map_err(|e| format!("Failed to load stdlib: {}", e))?;
+
+        for source_file in source_files {
+            let source = std::fs::read_to_string(source_file)
+                .map_err(|e| format!("Failed to read {}: {}", source_file, e))?;
+            unit.add_file(&source, source_file)
+                .map_err(|e| format!("Failed to add {}: {}", source_file, e))?;
+        }
+
+        unit.lower_to_tast()
+            .map_err(|errors| format!("Compilation failed: {:?}", errors))?;
+
+        let mir_modules = unit.get_mir_modules();
+        if mir_modules.is_empty() {
+            return Err("No MIR modules generated".to_string());
+        }
+
+        let mut modules: Vec<_> = mir_modules.iter().map(|m| (**m).clone()).collect();
+
+        // --- Phase 2: MIR optimizations ---
+        // Cap MIR passes at O2 (O3 MIR passes can be very slow on large functions).
+        // LLVM handles aggressive optimization at O3 much more effectively.
+        let mir_opt = match self.opt_level {
+            OptimizationLevel::O3 => OptimizationLevel::O2,
+            other => other,
+        };
+        if mir_opt != OptimizationLevel::O0 {
+            if self.verbose {
+                println!("  Applying MIR optimizations ({:?})...", mir_opt);
+            }
+            let mut pass_manager = PassManager::for_level(mir_opt);
+            for module in &mut modules {
+                let _ = pass_manager.run(module);
+            }
+        }
+
+        // --- Phase 3: Find entry point ---
+        let (entry_module_name, entry_function_name) = find_entry_point(&modules)?;
+        if self.verbose {
+            println!(
+                "  Entry point: {}::{}",
+                entry_module_name, entry_function_name
+            );
+        }
+
+        // --- Phase 4: Tree-shake ---
+        if self.strip {
+            if self.verbose {
+                println!("  Tree-shaking...");
+            }
+            let stats = tree_shake::tree_shake_bundle(
+                &mut modules,
+                &entry_module_name,
+                &entry_function_name,
+            );
+            if self.verbose {
+                println!(
+                    "    Removed: {} functions, {} externs, {} globals, {} empty modules",
+                    stats.functions_removed,
+                    stats.extern_functions_removed,
+                    stats.globals_removed,
+                    stats.modules_removed
+                );
+                println!(
+                    "    Kept: {} functions, {} externs",
+                    stats.functions_kept, stats.extern_functions_kept
+                );
+            }
+        }
+
+        // --- Phase 5: LLVM compilation ---
+        if self.verbose {
+            println!("  Compiling to LLVM IR...");
+        }
+
+        llvm_aot_backend::init_llvm_aot();
+
+        let llvm_opt = match self.opt_level {
+            OptimizationLevel::O0 => inkwell::OptimizationLevel::None,
+            OptimizationLevel::O1 => inkwell::OptimizationLevel::Less,
+            OptimizationLevel::O2 => inkwell::OptimizationLevel::Default,
+            OptimizationLevel::O3 => inkwell::OptimizationLevel::Aggressive,
+        };
+
+        let context = Context::create();
+        let mut backend = LLVMJitBackend::with_aot_mode(&context, llvm_opt)?;
+
+        // Two-pass: declare all, then compile all bodies
+        for module in &modules {
+            backend.declare_module(module)?;
+        }
+        for module in &modules {
+            backend.compile_module_bodies(module)?;
+        }
+
+        // Find the LLVM function name for the entry point
+        let entry_llvm_name = find_entry_llvm_name(&backend, &modules, &entry_function_name)?;
+
+        // --- Phase 6: AOT-specific emit via llvm_aot_backend ---
+        let module = backend.get_module();
+
+        // Generate main() wrapper
+        if self.output_format == OutputFormat::Executable {
+            if self.verbose {
+                println!("  Generating main() wrapper → {}...", entry_llvm_name);
+            }
+            llvm_aot_backend::generate_main_wrapper(module, &entry_llvm_name)?;
+        }
+
+        let target_triple_str = self.target_triple.as_deref();
+
+        match self.output_format {
+            OutputFormat::LlvmIr => {
+                if self.verbose {
+                    println!("  Emitting LLVM IR...");
+                }
+                llvm_aot_backend::emit_llvm_ir(module, output_path)?;
+            }
+            OutputFormat::LlvmBitcode => {
+                if self.verbose {
+                    println!("  Emitting LLVM bitcode...");
+                }
+                llvm_aot_backend::emit_llvm_bitcode(module, output_path)?;
+            }
+            OutputFormat::Assembly => {
+                if self.verbose {
+                    println!("  Emitting assembly...");
+                }
+                llvm_aot_backend::emit_assembly(module, output_path, target_triple_str, llvm_opt)?;
+            }
+            OutputFormat::ObjectFile => {
+                if self.verbose {
+                    println!("  Emitting object file...");
+                }
+                llvm_aot_backend::compile_to_object_file(
+                    module,
+                    output_path,
+                    target_triple_str,
+                    RelocMode::Default,
+                    llvm_opt,
+                )?;
+            }
+            OutputFormat::Executable => {
+                let obj_path = output_path.with_extension("o");
+                if self.verbose {
+                    println!("  Emitting object file...");
+                }
+                llvm_aot_backend::compile_to_object_file(
+                    module,
+                    &obj_path,
+                    target_triple_str,
+                    RelocMode::Default,
+                    llvm_opt,
+                )?;
+
+                if self.verbose {
+                    println!("  Linking...");
+                }
+                self.link_executable(&obj_path, output_path)?;
+
+                let _ = std::fs::remove_file(&obj_path);
+            }
+        }
+
+        let elapsed = t0.elapsed();
+        let code_size = std::fs::metadata(output_path).map(|m| m.len()).unwrap_or(0);
+
+        let actual_triple = self.target_triple.clone().unwrap_or_else(|| {
+            #[cfg(feature = "llvm-backend")]
+            {
+                use inkwell::targets::TargetMachine;
+                TargetMachine::get_default_triple()
+                    .as_str()
+                    .to_string_lossy()
+                    .to_string()
+            }
+            #[cfg(not(feature = "llvm-backend"))]
+            {
+                "unknown".to_string()
+            }
+        });
+
+        if self.verbose {
+            println!("  Done in {:?}", elapsed);
+        }
+
+        Ok(AotOutput {
+            path: output_path.to_path_buf(),
+            format: self.output_format,
+            target_triple: actual_triple,
+            code_size,
+        })
+    }
+
+    /// Link an object file into a native executable
+    fn link_executable(&self, obj_path: &Path, output_path: &Path) -> Result<(), String> {
+        let linker = self.find_linker()?;
+        let runtime_path = self.find_runtime()?;
+
+        let mut cmd = Command::new(&linker);
+
+        // Output path
+        cmd.arg("-o").arg(output_path);
+
+        // Object file
+        cmd.arg(obj_path);
+
+        // Runtime library (static)
+        cmd.arg(&runtime_path);
+
+        // Cross-compilation target
+        if let Some(ref triple) = self.target_triple {
+            cmd.arg(format!("--target={}", triple));
+        }
+
+        // Sysroot for cross-compilation
+        if let Some(ref sysroot) = self.sysroot {
+            cmd.arg(format!("--sysroot={}", sysroot.display()));
+        }
+
+        // Platform-specific linker flags
+        let triple_str = self.target_triple.as_deref().unwrap_or("");
+        if triple_str.contains("darwin") || triple_str.is_empty() && cfg!(target_os = "macos") {
+            // macOS
+            cmd.args(["-lSystem", "-lc", "-lm", "-lpthread"]);
+            cmd.args(["-framework", "CoreFoundation", "-framework", "Security"]);
+        } else if triple_str.contains("windows") {
+            // Windows
+            cmd.args(["kernel32.lib", "ws2_32.lib", "userenv.lib", "bcrypt.lib"]);
+        } else {
+            // Linux / other Unix
+            cmd.args(["-lc", "-lm", "-lpthread", "-ldl"]);
+        }
+
+        // Strip debug symbols
+        if self.strip_symbols {
+            cmd.arg("-s");
+        }
+
+        if self.verbose {
+            println!("    {}", format_command(&cmd));
+        }
+
+        let output = cmd
+            .output()
+            .map_err(|e| format!("Failed to run linker: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("Linking failed:\n{}", stderr));
+        }
+
+        Ok(())
+    }
+
+    /// Find a suitable linker
+    fn find_linker(&self) -> Result<String, String> {
+        if let Some(ref linker) = self.linker {
+            return Ok(linker.clone());
+        }
+
+        // Try common linkers in order of preference
+        for candidate in &["clang", "gcc", "cc"] {
+            if Command::new(candidate)
+                .arg("--version")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+            {
+                return Ok(candidate.to_string());
+            }
+        }
+
+        Err("No linker found. Install clang or gcc, or pass --linker <path>.".to_string())
+    }
+
+    /// Find the runtime static library
+    fn find_runtime(&self) -> Result<PathBuf, String> {
+        // 1. Explicit --runtime-dir
+        if let Some(ref dir) = self.runtime_dir {
+            let path = dir.join("librayzor_runtime.a");
+            if path.exists() {
+                return Ok(path);
+            }
+            return Err(format!(
+                "librayzor_runtime.a not found in {}",
+                dir.display()
+            ));
+        }
+
+        // 2. RAYZOR_RUNTIME_DIR env var
+        if let Ok(dir) = std::env::var("RAYZOR_RUNTIME_DIR") {
+            let path = PathBuf::from(&dir).join("librayzor_runtime.a");
+            if path.exists() {
+                return Ok(path);
+            }
+        }
+
+        // 3. Check relative to cargo workspace (target/release and target/debug)
+        for profile in &["release", "debug"] {
+            let path = PathBuf::from(format!("target/{}/librayzor_runtime.a", profile));
+            if path.exists() {
+                return Ok(path);
+            }
+        }
+
+        // 4. Check relative to executable location
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                let path = exe_dir.join("librayzor_runtime.a");
+                if path.exists() {
+                    return Ok(path);
+                }
+            }
+        }
+
+        Err("librayzor_runtime.a not found. Build it with:\n  \
+             cargo build --release -p rayzor-runtime\n\
+             Or pass --runtime-dir <path>"
+            .to_string())
+    }
+
+    #[cfg(not(feature = "llvm-backend"))]
+    pub fn compile(
+        &self,
+        _source_files: &[String],
+        _output_path: &Path,
+    ) -> Result<AotOutput, String> {
+        Err("AOT compilation requires the llvm-backend feature. \
+             Rebuild with: cargo build --features llvm-backend"
+            .to_string())
+    }
+}
+
+/// Find the entry point (module name, function name) from MIR modules
+fn find_entry_point(modules: &[crate::ir::IrModule]) -> Result<(String, String), String> {
+    // Search for a function named "main" in user modules (at the end)
+    for module in modules.iter().rev() {
+        for (_func_id, func) in &module.functions {
+            if func.name == "main" || func.name.ends_with("_main") {
+                return Ok((module.name.clone(), func.name.clone()));
+            }
+        }
+    }
+    Err("No entry point found. Define a main() function.".to_string())
+}
+
+/// Find the LLVM function name for the entry point
+#[cfg(feature = "llvm-backend")]
+fn find_entry_llvm_name(
+    backend: &crate::codegen::llvm_jit_backend::LLVMJitBackend,
+    modules: &[crate::ir::IrModule],
+    entry_function_name: &str,
+) -> Result<String, String> {
+    // Get function symbols and find the one matching our entry point
+    let symbols = backend.get_function_symbols();
+    for (_id, name) in &symbols {
+        if name == entry_function_name || name.ends_with(&format!("_{}", entry_function_name)) {
+            return Ok(name.clone());
+        }
+    }
+
+    // Also check if the mangled name exists directly in the module
+    // The LLVM module may have mangled the name
+    for module in modules.iter().rev() {
+        for (func_id, func) in &module.functions {
+            if func.name == entry_function_name || func.name.ends_with("_main") {
+                if let Some(name) = symbols.get(func_id) {
+                    return Ok(name.clone());
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "Entry function '{}' not found in compiled LLVM module",
+        entry_function_name
+    ))
+}
+
+fn format_command(cmd: &Command) -> String {
+    let prog = cmd.get_program().to_string_lossy().to_string();
+    let args: Vec<_> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().to_string())
+        .collect();
+    format!("{} {}", prog, args.join(" "))
+}

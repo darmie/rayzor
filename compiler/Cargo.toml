@@ -56,6 +56,11 @@ tcc-linker = []
 all-backends = ["cranelift-backend", "llvm-backend"]
 
 [[bin]]
+name = "rayzor-build"
+path = "src/bin/rayzor_build.rs"
+required-features = ["llvm-backend"]
+
+[[bin]]
 name = "validate_pipeline"
 path = "src/bin/validate_pipeline.rs"
 

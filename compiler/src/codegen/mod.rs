@@ -6,8 +6,10 @@
 /// - Cranelift (JIT with tiered compilation, Phases 1-3)
 /// - LLVM (maximum optimization, Phase 4)
 /// - WebAssembly (cross-platform AOT - future)
+pub mod aot_compiler;
 pub mod cranelift_backend;
 mod instruction_lowering;
+pub mod llvm_aot_backend;
 pub mod llvm_jit_backend;
 pub mod mir_interpreter;
 pub mod profiling;

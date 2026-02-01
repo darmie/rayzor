@@ -165,6 +165,10 @@ pub struct LLVMJitBackend<'ctx> {
     /// Current sret pointer for the function being compiled
     /// Set at the start of compile_function_body, used in Return terminator
     current_sret_ptr: Option<inkwell::values::PointerValue<'ctx>>,
+
+    /// AOT mode: when true, struct→ptr coercion for extern calls uses
+    /// alloca+store (C ABI), and per-function verification prints errors.
+    aot_mode: bool,
 }
 
 #[cfg(feature = "llvm-backend")]
@@ -223,7 +227,19 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             extern_function_ids: std::collections::HashSet::new(),
             sret_function_ids: std::collections::HashSet::new(),
             current_sret_ptr: None,
+            aot_mode: false,
         })
+    }
+
+    /// Create a backend in AOT mode. In AOT mode, struct→ptr coercion for
+    /// extern (C ABI) calls uses alloca+store instead of field extraction.
+    pub fn with_aot_mode(
+        context: &'ctx Context,
+        opt_level: OptimizationLevel,
+    ) -> Result<Self, String> {
+        let mut backend = Self::with_opt_level(context, opt_level)?;
+        backend.aot_mode = true;
+        Ok(backend)
     }
 
     /// Create a new LLVM JIT backend with runtime symbols for FFI
@@ -471,6 +487,15 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
         let func_name = Self::mangle_function_name(&extern_fn.name);
 
+        // AOT mode: replace known math runtime functions with LLVM intrinsic wrappers
+        // so LLVM can inline them (e.g. fsqrt instruction instead of function call)
+        if self.aot_mode {
+            if let Some(llvm_func) = self.try_create_math_intrinsic(&func_name, &fn_type)? {
+                self.function_map.insert(func_id, llvm_func);
+                return Ok(llvm_func);
+            }
+        }
+
         // Check if already declared with MATCHING signature
         if let Some(existing_func) = self.module.get_function(&func_name) {
             let existing_params = existing_func.get_type().get_param_types();
@@ -501,6 +526,79 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         Ok(llvm_func)
     }
 
+    /// In AOT mode, replace known math runtime functions with inline LLVM intrinsic
+    /// wrappers. Returns Some(func) if replaced, None if not a known math function.
+    fn try_create_math_intrinsic(
+        &self,
+        func_name: &str,
+        fn_type: &inkwell::types::FunctionType<'ctx>,
+    ) -> Result<Option<FunctionValue<'ctx>>, String> {
+        use inkwell::intrinsics::Intrinsic;
+
+        // Map runtime function names to LLVM intrinsic names
+        let intrinsic_name = match func_name {
+            "haxe_math_sqrt" => "llvm.sqrt.f64",
+            "haxe_math_abs" => "llvm.fabs.f64",
+            "haxe_math_floor" => "llvm.floor.f64",
+            "haxe_math_ceil" => "llvm.ceil.f64",
+            "haxe_math_round" => "llvm.round.f64",
+            "haxe_math_sin" => "llvm.sin.f64",
+            "haxe_math_cos" => "llvm.cos.f64",
+            "haxe_math_exp" => "llvm.exp.f64",
+            "haxe_math_log" => "llvm.log.f64",
+            "haxe_math_pow" => "llvm.pow.f64",
+            "haxe_math_fround" => "llvm.round.f64",
+            _ => return Ok(None),
+        };
+
+        let intrinsic = Intrinsic::find(intrinsic_name)
+            .ok_or_else(|| format!("LLVM intrinsic {} not found", intrinsic_name))?;
+
+        let f64_type = self.context.f64_type();
+        let intrinsic_func = intrinsic
+            .get_declaration(&self.module, &[f64_type.into()])
+            .ok_or_else(|| format!("Failed to get {} declaration", intrinsic_name))?;
+
+        // Create a wrapper function with internal linkage (avoids duplicate symbol with runtime)
+        let wrapper = self.module.add_function(
+            func_name,
+            *fn_type,
+            Some(inkwell::module::Linkage::Internal),
+        );
+        wrapper.add_attribute(
+            inkwell::attributes::AttributeLoc::Function,
+            self.context.create_enum_attribute(
+                inkwell::attributes::Attribute::get_named_enum_kind_id("alwaysinline"),
+                0,
+            ),
+        );
+
+        let bb = self.context.append_basic_block(wrapper, "entry");
+        let builder = self.context.create_builder();
+        builder.position_at_end(bb);
+
+        // Collect non-void args (the intrinsic takes only the f64 args, not env)
+        let params: Vec<inkwell::values::BasicMetadataValueEnum> = wrapper
+            .get_params()
+            .into_iter()
+            .filter(|p| p.is_float_value())
+            .map(|p| p.into())
+            .collect();
+
+        let result = builder
+            .build_call(intrinsic_func, &params, "result")
+            .map_err(|e| format!("Failed to build intrinsic call: {}", e))?
+            .try_as_basic_value()
+            .left()
+            .ok_or("Intrinsic returned void unexpectedly")?;
+
+        builder
+            .build_return(Some(&result))
+            .map_err(|e| format!("Failed to build return: {}", e))?;
+
+        Ok(Some(wrapper))
+    }
+
     /// Compile function bodies for a module (call declare_module for ALL modules first)
     pub fn compile_module_bodies(&mut self, module: &IrModule) -> Result<(), String> {
         for (func_id, function) in &module.functions {
@@ -528,10 +626,17 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 })?;
 
             // Per-function verification to catch return type mismatches early
-            if !llvm_func.verify(false) {
+            if !llvm_func.verify(self.aot_mode) {
+                // In AOT mode, verify(true) prints the error to stderr
                 return Err(format!(
-                    "LLVM verification failed for function '{}' ({:?})",
-                    function.name, func_id
+                    "LLVM verification failed for function '{}' ({:?}). {}",
+                    function.name,
+                    func_id,
+                    if self.aot_mode {
+                        "Check stderr for details."
+                    } else {
+                        ""
+                    }
                 ));
             }
         }
@@ -784,6 +889,11 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             .map_err(|e| format!("Failed to write object file: {}", e))?;
 
         Ok(())
+    }
+
+    /// Get a reference to the underlying LLVM module (for AOT operations).
+    pub fn get_module(&self) -> &Module<'ctx> {
+        &self.module
     }
 
     /// Get all function symbol names that will be exported in the dylib
@@ -1040,6 +1150,13 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 let return_type = self.translate_type(&function.signature.return_type)?;
                 return_type.fn_type(&param_types, false)
             };
+
+            // Replace known math runtime functions with LLVM intrinsic wrappers
+            // (e.g. haxe_math_sqrt → @llvm.sqrt.f64 → single fsqrt instruction)
+            if let Some(llvm_func) = self.try_create_math_intrinsic(&func_name, &fn_type)? {
+                self.function_map.insert(func_id, llvm_func);
+                return Ok(llvm_func);
+            }
 
             // Check if already declared
             if let Some(existing_func) = self.module.get_function(&func_name) {
@@ -1679,82 +1796,98 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             }
 
             IrInstruction::Alloc { dest, ty, count } => {
-                // IMPORTANT: Use malloc() for heap allocation, NOT alloca()!
-                // The MIR layer emits Free instructions that call C free(), so we must
-                // allocate via malloc to match. Using alloca would crash when free() is
-                // called on stack pointers.
                 let alloc_ty = self.translate_type(ty)?;
 
-                // Get element size - use 8 bytes as default for unknown types
-                let element_size = if let Some(size_val) = alloc_ty.size_of() {
-                    self.builder
-                        .build_int_z_extend_or_bit_cast(
-                            size_val,
-                            self.context.i64_type(),
-                            "elem_size",
-                        )
-                        .map_err(|e| format!("Failed to cast element size: {}", e))?
+                // Use alloca (stack allocation) for fixed-size allocations without a
+                // dynamic count. The MIR Free instructions become no-ops. This eliminates
+                // malloc/free overhead in hot loops (89% of mandelbrot time was in allocator).
+                if count.is_none() {
+                    let alloca = self
+                        .builder
+                        .build_alloca(alloc_ty, &format!("stack_{}", dest.as_u32()))
+                        .map_err(|e| format!("Failed to build alloca: {}", e))?;
+                    self.value_map.insert(*dest, alloca.into());
                 } else {
-                    self.context.i64_type().const_int(8, false)
-                };
+                    // JIT mode or dynamic-count: use malloc() for heap allocation.
+                    // The MIR layer emits Free instructions that call C free(), so we must
+                    // allocate via malloc to match. Using alloca would crash when free() is
+                    // called on stack pointers.
 
-                let total_size = if let Some(count_id) = count {
-                    let count_raw = self.get_value(*count_id)?;
-                    let count_val = if count_raw.is_float_value() {
+                    // Get element size - use 8 bytes as default for unknown types
+                    let element_size = if let Some(size_val) = alloc_ty.size_of() {
                         self.builder
-                            .build_float_to_signed_int(
-                                count_raw.into_float_value(),
+                            .build_int_z_extend_or_bit_cast(
+                                size_val,
                                 self.context.i64_type(),
-                                "alloc_count_cast",
+                                "elem_size",
                             )
-                            .map_err(|e| format!("Failed to cast alloc count: {}", e))?
+                            .map_err(|e| format!("Failed to cast element size: {}", e))?
                     } else {
-                        let raw_int = count_raw.into_int_value();
-                        if raw_int.get_type().get_bit_width() < 64 {
+                        self.context.i64_type().const_int(8, false)
+                    };
+
+                    let total_size = if let Some(count_id) = count {
+                        let count_raw = self.get_value(*count_id)?;
+                        let count_val = if count_raw.is_float_value() {
                             self.builder
-                                .build_int_z_extend(raw_int, self.context.i64_type(), "count_ext")
-                                .map_err(|e| format!("Failed to extend count: {}", e))?
+                                .build_float_to_signed_int(
+                                    count_raw.into_float_value(),
+                                    self.context.i64_type(),
+                                    "alloc_count_cast",
+                                )
+                                .map_err(|e| format!("Failed to cast alloc count: {}", e))?
                         } else {
-                            raw_int
+                            let raw_int = count_raw.into_int_value();
+                            if raw_int.get_type().get_bit_width() < 64 {
+                                self.builder
+                                    .build_int_z_extend(
+                                        raw_int,
+                                        self.context.i64_type(),
+                                        "count_ext",
+                                    )
+                                    .map_err(|e| format!("Failed to extend count: {}", e))?
+                            } else {
+                                raw_int
+                            }
+                        };
+                        // total_size = element_size * count
+                        self.builder
+                            .build_int_mul(element_size, count_val, "total_size")
+                            .map_err(|e| format!("Failed to compute total size: {}", e))?
+                    } else {
+                        element_size
+                    };
+
+                    // Get or declare malloc function
+                    let malloc_fn = match self.module.get_function("malloc") {
+                        Some(f) => f,
+                        None => {
+                            let malloc_fn_type = self
+                                .context
+                                .ptr_type(AddressSpace::default())
+                                .fn_type(&[self.context.i64_type().into()], false);
+                            self.module.add_function("malloc", malloc_fn_type, None)
                         }
                     };
-                    // total_size = element_size * count
-                    self.builder
-                        .build_int_mul(element_size, count_val, "total_size")
-                        .map_err(|e| format!("Failed to compute total size: {}", e))?
-                } else {
-                    element_size
-                };
 
-                // Get or declare malloc function
-                let malloc_fn = match self.module.get_function("malloc") {
-                    Some(f) => f,
-                    None => {
-                        let malloc_fn_type = self
-                            .context
-                            .ptr_type(AddressSpace::default())
-                            .fn_type(&[self.context.i64_type().into()], false);
-                        self.module.add_function("malloc", malloc_fn_type, None)
-                    }
-                };
+                    // Call malloc(total_size)
+                    let malloc_result = self
+                        .builder
+                        .build_call(
+                            malloc_fn,
+                            &[total_size.into()],
+                            &format!("malloc_{}", dest.as_u32()),
+                        )
+                        .map_err(|e| format!("Failed to build malloc call: {}", e))?;
 
-                // Call malloc(total_size)
-                let malloc_result = self
-                    .builder
-                    .build_call(
-                        malloc_fn,
-                        &[total_size.into()],
-                        &format!("malloc_{}", dest.as_u32()),
-                    )
-                    .map_err(|e| format!("Failed to build malloc call: {}", e))?;
+                    let ptr = malloc_result
+                        .try_as_basic_value()
+                        .left()
+                        .ok_or("malloc did not return a value")?
+                        .into_pointer_value();
 
-                let ptr = malloc_result
-                    .try_as_basic_value()
-                    .left()
-                    .ok_or("malloc did not return a value")?
-                    .into_pointer_value();
-
-                self.value_map.insert(*dest, ptr.into());
+                    self.value_map.insert(*dest, ptr.into());
+                }
             }
 
             IrInstruction::GetElementPtr {
@@ -1941,23 +2074,9 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             }
 
             IrInstruction::Free { ptr } => {
-                let ptr_val = self.get_value(*ptr)?.into_pointer_value();
-
-                // Get or declare free function (must reuse same declaration to avoid free.1, free.2, etc.)
-                let free_fn = match self.module.get_function("free") {
-                    Some(f) => f,
-                    None => {
-                        let free_fn_type = self.context.void_type().fn_type(
-                            &[self.context.ptr_type(AddressSpace::default()).into()],
-                            false,
-                        );
-                        self.module.add_function("free", free_fn_type, None)
-                    }
-                };
-
-                self.builder
-                    .build_call(free_fn, &[ptr_val.into()], "")
-                    .map_err(|e| format!("Failed to build free call: {}", e))?;
+                // Alloc uses alloca (stack), so Free is a no-op.
+                // Stack memory is automatically reclaimed on function return.
+                let _ = ptr;
             }
 
             IrInstruction::MemCopy { dest, src, size } => {
@@ -4201,12 +4320,44 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
                     // Handle struct -> ptr coercion (e.g., {i64, ptr} -> ptr)
                     if val.is_struct_value() && expected_ty.is_pointer_type() {
-                        // Extract pointer from struct (assume it's at index 1 for {len, ptr})
                         let struct_val = val.into_struct_value();
-                        self.builder
-                            .build_extract_value(struct_val, 1, &cast_name)
-                            .map_err(|e| format!("Failed to extract ptr from struct: {}", e))?
-                            .into()
+                        if self.aot_mode && self.extern_function_ids.contains(&func_id) {
+                            // AOT: for extern calls, check the struct type to decide:
+                            // - {ptr, i64} = string struct → alloca+store (pass by reference)
+                            // - {i64, ptr} = object wrapper → extract ptr field (index 1)
+                            let struct_ty = struct_val.get_type();
+                            let first_field_is_ptr = struct_ty.count_fields() >= 2
+                                && struct_ty
+                                    .get_field_type_at_index(0)
+                                    .map(|t| t.is_pointer_type())
+                                    .unwrap_or(false);
+
+                            if first_field_is_ptr {
+                                // String-like struct {ptr, i64} — pass pointer to struct
+                                let alloca =
+                                    self.builder.build_alloca(struct_ty, &cast_name).map_err(
+                                        |e| format!("Failed to alloca for struct->ptr: {}", e),
+                                    )?;
+                                self.builder.build_store(alloca, struct_val).map_err(|e| {
+                                    format!("Failed to store struct for ptr: {}", e)
+                                })?;
+                                alloca.into()
+                            } else {
+                                // Object wrapper {i64, ptr} — extract the pointer field
+                                self.builder
+                                    .build_extract_value(struct_val, 1, &cast_name)
+                                    .map_err(|e| {
+                                        format!("Failed to extract ptr from struct: {}", e)
+                                    })?
+                                    .into()
+                            }
+                        } else {
+                            // JIT: extract pointer from struct (index 1 for {len, ptr})
+                            self.builder
+                                .build_extract_value(struct_val, 1, &cast_name)
+                                .map_err(|e| format!("Failed to extract ptr from struct: {}", e))?
+                                .into()
+                        }
                     } else if val.is_struct_value() && expected_ty.is_int_type() {
                         // Extract i64 from struct (field 0 is the length in {i64, ptr})
                         let struct_val = val.into_struct_value();
@@ -4514,6 +4665,36 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 .map_err(|e| format!("Failed to build int to ptr: {}", e))?;
 
             return Ok(result.into());
+        }
+
+        // AOT: struct to pointer cast
+        if self.aot_mode && src.is_struct_value() && to_ty.is_pointer() {
+            let struct_val = src.into_struct_value();
+            let struct_ty = struct_val.get_type();
+            let first_field_is_ptr = struct_ty.count_fields() >= 2
+                && struct_ty
+                    .get_field_type_at_index(0)
+                    .map(|t| t.is_pointer_type())
+                    .unwrap_or(false);
+
+            if first_field_is_ptr {
+                // String-like struct {ptr, i64} → alloca+store, pass by reference
+                let alloca = self
+                    .builder
+                    .build_alloca(struct_ty, &name)
+                    .map_err(|e| format!("Failed to alloca for struct->ptr cast: {}", e))?;
+                self.builder
+                    .build_store(alloca, struct_val)
+                    .map_err(|e| format!("Failed to store struct for ptr cast: {}", e))?;
+                return Ok(alloca.into());
+            } else {
+                // Object wrapper {i64, ptr} → extract the pointer field
+                let extracted = self
+                    .builder
+                    .build_extract_value(struct_val, 1, &name)
+                    .map_err(|e| format!("Failed to extract ptr from struct cast: {}", e))?;
+                return Ok(extracted);
+            }
         }
 
         Err(format!(

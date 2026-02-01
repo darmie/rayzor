@@ -357,8 +357,6 @@ class Main {
 }
 "#,
         ),
-        // StringTools tests (direct static call - using syntax has a bug, see TODO)
-        // TODO: Fix `using StringTools;` + s.startsWith() syntax - causes Cranelift return type mismatch
         (
             "stringtools_startswith",
             r#"

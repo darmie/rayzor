@@ -1504,6 +1504,101 @@ Strategy: Tinygrad-style source code emission (Kernel IR → text per backend �
 
 ---
 
+## 15. AOT Compilation & Static Linking 🟢
+
+**Priority:** High
+**Complexity:** High
+**Dependencies:** LLVM backend (complete), Runtime staticlib (complete), Tree-shaking (complete)
+
+### 15.1 AOT Compiler Driver
+
+**Status:** 🟢 Complete (2026-02-01)
+
+**Related Files:**
+- `compiler/src/codegen/aot_compiler.rs` — AOT compilation pipeline
+- `compiler/src/codegen/llvm_aot_backend.rs` — AOT-specific LLVM operations (free functions, separate from JIT)
+- `compiler/src/bin/rayzor_build.rs` — CLI binary
+- `compiler/src/codegen/llvm_jit_backend.rs` — Shared LLVM codegen (aot_mode flag)
+
+**Architecture:**
+```
+Haxe Source (.hx) → MIR → MIR Optimize (O2 cap) → Tree-shake → LLVM IR → LLVM O3 → Object File (.o) → Native Executable
+```
+
+**Tasks:**
+- [x] `AotCompiler` struct with compile pipeline (parse → optimize → tree-shake → LLVM → link)
+- [x] Generate LLVM IR `main()` wrapper that calls Haxe entry point
+- [x] `llvm_aot_backend.rs` with free functions for AOT operations (no JIT regression)
+- [x] `compile_to_object_file()` with configurable target triple
+- [x] Support all LLVM target triples for cross-compilation (`init_llvm_aot` → `Target::initialize_all`)
+- [x] Platform-specific linker invocation (macOS/Linux/Windows)
+- [x] Runtime library discovery (`librayzor_runtime.a`) — 4 search paths
+- [x] Multiple output formats: exe, obj, llvm-ir, llvm-bc, asm
+
+### 15.2 CLI Interface (`rayzor-build`)
+
+**Status:** 🟢 Complete (2026-02-01)
+
+**Usage:**
+```bash
+rayzor-build -O2 -o hello hello.hx                              # Host target
+rayzor-build --target aarch64-unknown-linux-gnu -o hello hello.hx # Cross-compile
+rayzor-build --emit llvm-ir -o hello.ll hello.hx                  # Emit IR
+rayzor-build --emit asm -o hello.s hello.hx                       # Emit assembly
+rayzor-build -O3 -v -o hello hello.hx                            # Verbose O3
+```
+
+**Tasks:**
+- [x] Argument parsing (--target, --emit, -O, --runtime-dir, --linker, --sysroot, --strip, -v)
+- [x] Default output naming
+- [x] Verbose compilation progress output with timing
+- [x] Error messages for missing runtime / linker
+
+### 15.3 Static Linking
+
+**Status:** 🟢 Complete (2026-02-01)
+
+**Design:** Link `librayzor_runtime.a` (Rust staticlib) directly into native binary. No shared library dependencies beyond system libc/libm/libpthread.
+
+**Tasks:**
+- [x] macOS linking (clang + frameworks: CoreFoundation, Security)
+- [x] Linux linking (clang/gcc + -lc -lm -lpthread -ldl)
+- [x] Windows linking (kernel32.lib, ws2_32.lib, userenv.lib, bcrypt.lib)
+- [ ] Fully static linking with musl
+- [x] Strip debug symbols option (--strip)
+
+### 15.4 Cross-Compilation
+
+**Status:** 🟡 Infrastructure Complete, Testing Needed
+
+**Tasks:**
+- [x] Configurable target triple in LLVM codegen
+- [x] Sysroot support for cross-compilation (--sysroot flag)
+- [ ] Runtime library for target arch (build-on-demand or user-provided)
+- [ ] CI testing for cross-compilation (x86_64 → aarch64, etc.)
+
+### 15.5 LLVM Codegen Performance Optimizations
+
+**Status:** 🟢 Complete (2026-02-01)
+
+Two optimizations applied to the shared LLVM codegen (benefits both JIT and AOT):
+
+**1. Math Intrinsics:** Known runtime math functions (`haxe_math_sqrt`, `haxe_math_abs`, `haxe_math_floor`, `haxe_math_ceil`, `haxe_math_round`, `haxe_math_sin`, `haxe_math_cos`, `haxe_math_exp`, `haxe_math_log`, `haxe_math_pow`) replaced with inline LLVM intrinsic wrappers (e.g. `@llvm.sqrt.f64` → single `fsqrt` instruction). Wrappers use `alwaysinline` + `Internal` linkage.
+
+**2. Stack Allocation:** Fixed-size `Alloc` instructions use `alloca` (stack) instead of `malloc` (heap). `Free` instructions become no-ops. Profiling showed **89% of mandelbrot time was in malloc/free**. Dynamic-count allocations still use malloc.
+
+**Benchmark Results (mandelbrot, 875×500, 1000 max iterations):**
+
+| Target | Before (2026-01-31) | After (2026-02-01) | Speedup |
+|--------|---------------------|---------------------|---------|
+| rayzor-llvm (JIT) | 893ms | **343ms** | **2.6x** |
+| rayzor-tiered (JIT) | 874ms | **153ms** | **5.7x** |
+| rayzor-precompiled-tiered | 914ms | **154ms** | **5.9x** |
+| AOT native binary | 870ms | **155ms** | **5.6x** |
+| rayzor-cranelift | 2840ms | 2869ms | — (no LLVM) |
+
+---
+
 ## Known Issues
 
 ### Deref Coercion for Wrapper Types
