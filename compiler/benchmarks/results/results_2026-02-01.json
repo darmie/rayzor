@@ -1,0 +1,102 @@
+{
+  "date": "2026-02-01",
+  "system_info": {
+    "os": "macos",
+    "arch": "aarch64",
+    "cpu_cores": 10,
+    "ram_mb": 16384,
+    "hostname": "Damilares-MBP.lan"
+  },
+  "benchmarks": [
+    {
+      "name": "nbody",
+      "results": [
+        {
+          "name": "nbody",
+          "target": "rayzor-cranelift",
+          "compile_time_ms": 494.02416700000003,
+          "runtime_ms": 440.9165,
+          "total_time_ms": 934.940667,
+          "iterations": 10
+        },
+        {
+          "name": "nbody",
+          "target": "rayzor-llvm",
+          "compile_time_ms": 246.45624999999998,
+          "runtime_ms": 494.492916,
+          "total_time_ms": 740.9491660000001,
+          "iterations": 10
+        },
+        {
+          "name": "nbody",
+          "target": "rayzor-precompiled",
+          "compile_time_ms": 1.741959,
+          "runtime_ms": 758.342167,
+          "total_time_ms": 760.084126,
+          "iterations": 10
+        },
+        {
+          "name": "nbody",
+          "target": "rayzor-precompiled-tiered",
+          "compile_time_ms": 5.789417,
+          "runtime_ms": 552.424625,
+          "total_time_ms": 558.2140420000001,
+          "iterations": 10
+        },
+        {
+          "name": "nbody",
+          "target": "rayzor-tiered",
+          "compile_time_ms": 239.196958,
+          "runtime_ms": 397.14462499999996,
+          "total_time_ms": 636.341583,
+          "iterations": 10
+        }
+      ]
+    },
+    {
+      "name": "mandelbrot",
+      "results": [
+        {
+          "name": "mandelbrot",
+          "target": "rayzor-cranelift",
+          "compile_time_ms": 151.015125,
+          "runtime_ms": 3083.577541,
+          "total_time_ms": 3234.592666,
+          "iterations": 10
+        },
+        {
+          "name": "mandelbrot",
+          "target": "rayzor-llvm",
+          "compile_time_ms": 490.148292,
+          "runtime_ms": 1257.855,
+          "total_time_ms": 1748.003292,
+          "iterations": 10
+        },
+        {
+          "name": "mandelbrot",
+          "target": "rayzor-precompiled",
+          "compile_time_ms": 0.853417,
+          "runtime_ms": 3195.317791,
+          "total_time_ms": 3196.171208,
+          "iterations": 10
+        },
+        {
+          "name": "mandelbrot",
+          "target": "rayzor-precompiled-tiered",
+          "compile_time_ms": 1.571375,
+          "runtime_ms": 1005.134292,
+          "total_time_ms": 1006.705667,
+          "iterations": 10
+        },
+        {
+          "name": "mandelbrot",
+          "target": "rayzor-tiered",
+          "compile_time_ms": 138.50929200000002,
+          "runtime_ms": 901.789584,
+          "total_time_ms": 1040.298876,
+          "iterations": 10
+        }
+      ]
+    }
+  ]
+}

@@ -931,7 +931,44 @@ impl OptimizationPass for LICMPass {
                     }
                 }
 
-                if to_hoist.is_empty() {
+                // Phase 2: Escape analysis for non-escaping Alloc hoisting
+                let alloc_infos = super::escape_analysis::analyze_alloc_escapes(
+                    &function.cfg,
+                    &loop_data.blocks,
+                    loop_data.header,
+                    &[loop_data.back_edge_source],
+                );
+
+                let mut alloc_to_hoist: Vec<(IrBlockId, usize, IrInstruction)> = Vec::new();
+                let mut free_to_remove: Vec<(IrBlockId, usize)> = Vec::new();
+                let mut free_insts_to_sink: Vec<IrInstruction> = Vec::new();
+
+                for info in &alloc_infos {
+                    if !info.escapes {
+                        if let Some(free_loc) = info.free_location {
+                            // Grab the Alloc instruction
+                            if let Some(block) =
+                                function.cfg.get_block(info.alloc_location.0)
+                            {
+                                if info.alloc_location.1 < block.instructions.len() {
+                                    alloc_to_hoist.push((
+                                        info.alloc_location.0,
+                                        info.alloc_location.1,
+                                        block.instructions[info.alloc_location.1].clone(),
+                                    ));
+                                    free_to_remove.push(free_loc);
+                                    free_insts_to_sink.push(IrInstruction::Free {
+                                        ptr: info.alloc_dest,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let has_alloc_hoists = !alloc_to_hoist.is_empty();
+
+                if to_hoist.is_empty() && !has_alloc_hoists {
                     continue;
                 }
 
@@ -939,12 +976,19 @@ impl OptimizationPass for LICMPass {
                 let preheader =
                     Self::ensure_preheader(&mut function.cfg, loop_data.header, &loop_data.blocks);
 
+                // Collect ALL indices to remove (regular hoists + alloc hoists + free removals)
+                let mut indices_to_remove: HashMap<IrBlockId, Vec<usize>> = HashMap::new();
+
                 // Sort hoisted instructions by original position to maintain order
                 to_hoist.sort_by_key(|(block_id, idx, _)| (block_id.as_u32(), *idx));
 
-                // Collect indices to remove per block
-                let mut indices_to_remove: HashMap<IrBlockId, Vec<usize>> = HashMap::new();
                 for (block_id, idx, _) in &to_hoist {
+                    indices_to_remove.entry(*block_id).or_default().push(*idx);
+                }
+                for (block_id, idx, _) in &alloc_to_hoist {
+                    indices_to_remove.entry(*block_id).or_default().push(*idx);
+                }
+                for (block_id, idx) in &free_to_remove {
                     indices_to_remove.entry(*block_id).or_default().push(*idx);
                 }
 
@@ -953,7 +997,9 @@ impl OptimizationPass for LICMPass {
                     if let Some(block) = function.cfg.get_block_mut(block_id) {
                         // Remove in reverse order to preserve indices
                         let mut indices_sorted = indices;
-                        indices_sorted.sort_by(|a, b| b.cmp(a));
+                        indices_sorted.sort_unstable();
+                        indices_sorted.dedup();
+                        indices_sorted.reverse();
                         for idx in indices_sorted {
                             if idx < block.instructions.len() {
                                 block.instructions.remove(idx);
@@ -962,7 +1008,7 @@ impl OptimizationPass for LICMPass {
                     }
                 }
 
-                // Add instructions to preheader
+                // Add regular hoisted instructions to preheader
                 if let Some(preheader_block) = function.cfg.get_block_mut(preheader) {
                     for (_, _, inst) in to_hoist {
                         preheader_block.instructions.push(inst);
@@ -971,6 +1017,41 @@ impl OptimizationPass for LICMPass {
                             .stats
                             .entry("instructions_hoisted".to_string())
                             .or_insert(0) += 1;
+                    }
+
+                    // Add hoisted Alloc instructions to preheader
+                    for (_, _, inst) in alloc_to_hoist {
+                        preheader_block.instructions.push(inst);
+                        result.modified = true;
+                        *result
+                            .stats
+                            .entry("allocs_hoisted".to_string())
+                            .or_insert(0) += 1;
+                    }
+                }
+
+                // Sink Free instructions to after the loop exits
+                if !free_insts_to_sink.is_empty() {
+                    // Find exit targets: successors of exit blocks that are outside the loop
+                    let mut exit_targets: HashSet<IrBlockId> = HashSet::new();
+                    for &exit_block in &loop_data.exit_blocks {
+                        if let Some(block) = function.cfg.get_block(exit_block) {
+                            for succ in block.successors() {
+                                if !loop_data.blocks.contains(&succ) {
+                                    exit_targets.insert(succ);
+                                }
+                            }
+                        }
+                    }
+
+                    // Insert Free at the beginning of each exit target
+                    for target in exit_targets {
+                        if let Some(target_block) = function.cfg.get_block_mut(target) {
+                            // Insert Frees at position 0 (before existing instructions)
+                            for (i, free_inst) in free_insts_to_sink.iter().enumerate() {
+                                target_block.instructions.insert(i, free_inst.clone());
+                            }
+                        }
                     }
                 }
             }

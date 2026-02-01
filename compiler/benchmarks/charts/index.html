@@ -13,15 +13,20 @@
 </head>
 <body>
     <h1>Rayzor Benchmark Results</h1>
-    <p style="text-align: center">Generated: 2026-01-27</p>
+    <p style="text-align: center">Generated: 2026-02-01</p>
+    <div class="summary">
+        <h3>System</h3>
+        <p><strong>OS:</strong> macos | <strong>Arch:</strong> aarch64 | <strong>CPU cores:</strong> 10 | <strong>RAM:</strong> 16.0 GB | <strong>Host:</strong> Damilares-MBP.lan</p>
+    </div>
     <div class="summary">
         <h3>Summary</h3>
         <ul>
-            <li><strong>mandelbrot</strong>: 4 targets measured</li>
+            <li><strong>nbody</strong>: 5 targets measured</li>
+            <li><strong>mandelbrot</strong>: 5 targets measured</li>
         </ul>
     </div>
 
-    <h2>mandelbrot</h2>
+    <h2>nbody</h2>
     <div class="chart-container">
         <canvas id="chart_0"></canvas>
     </div>
@@ -29,16 +34,51 @@
         new Chart(document.getElementById('chart_0'), {
             type: 'bar',
             data: {
-                labels: ['rayzor-cranelift', 'rayzor-precompiled', 'rayzor-precompiled-tiered', 'rayzor-tiered'],
+                labels: ['rayzor-cranelift', 'rayzor-llvm', 'rayzor-precompiled', 'rayzor-precompiled-tiered', 'rayzor-tiered'],
                 datasets: [
                     {
                         label: 'Compile (ms)',
-                        data: [93.88, 0.68, 1.61, 78.89],
+                        data: [494.02, 246.46, 1.74, 5.79, 239.20],
                         backgroundColor: 'rgba(54, 162, 235, 0.8)'
                     },
                     {
                         label: 'Execute (ms)',
-                        data: [2835.80, 2856.71, 897.66, 868.92],
+                        data: [440.92, 494.49, 758.34, 552.42, 397.14],
+                        backgroundColor: 'rgba(255, 99, 132, 0.8)'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    x: { stacked: true },
+                    y: { stacked: true, title: { display: true, text: 'Time (ms)' } }
+                },
+                plugins: {
+                    title: { display: true, text: 'nbody' }
+                }
+            }
+        });
+    </script>
+
+    <h2>mandelbrot</h2>
+    <div class="chart-container">
+        <canvas id="chart_1"></canvas>
+    </div>
+    <script>
+        new Chart(document.getElementById('chart_1'), {
+            type: 'bar',
+            data: {
+                labels: ['rayzor-cranelift', 'rayzor-llvm', 'rayzor-precompiled', 'rayzor-precompiled-tiered', 'rayzor-tiered'],
+                datasets: [
+                    {
+                        label: 'Compile (ms)',
+                        data: [151.02, 490.15, 0.85, 1.57, 138.51],
+                        backgroundColor: 'rgba(54, 162, 235, 0.8)'
+                    },
+                    {
+                        label: 'Execute (ms)',
+                        data: [3083.58, 1257.86, 3195.32, 1005.13, 901.79],
                         backgroundColor: 'rgba(255, 99, 132, 0.8)'
                     }
                 ]
