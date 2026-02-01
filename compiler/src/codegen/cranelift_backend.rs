@@ -1907,14 +1907,44 @@ impl CraneliftBackend {
                         arg_values.push(cl_value);
                     }
 
-                    // Make the call
-                    let call_inst = builder.ins().call(func_ref, &arg_values);
+                    // Check if this is a math function we can replace with a native instruction
+                    let math_result = match extern_func.name.as_str() {
+                        "haxe_math_sqrt" | "haxe_math_abs" | "haxe_math_floor"
+                        | "haxe_math_ceil" | "haxe_math_round"
+                            if arg_values.len() == 1 =>
+                        {
+                            let arg = arg_values[0];
+                            let result = match extern_func.name.as_str() {
+                                "haxe_math_sqrt" => builder.ins().sqrt(arg),
+                                "haxe_math_abs" => builder.ins().fabs(arg),
+                                "haxe_math_floor" => builder.ins().floor(arg),
+                                "haxe_math_ceil" => builder.ins().ceil(arg),
+                                "haxe_math_round" => builder.ins().nearest(arg),
+                                _ => unreachable!(),
+                            };
+                            debug!(
+                                "Math intrinsic: {} → native Cranelift instruction",
+                                extern_func.name
+                            );
+                            Some(result)
+                        }
+                        _ => None,
+                    };
 
-                    // Get return value if any
-                    if let Some(dest_reg) = dest {
-                        let results = builder.inst_results(call_inst);
-                        if !results.is_empty() {
-                            value_map.insert(*dest_reg, results[0]);
+                    if let Some(result) = math_result {
+                        if let Some(dest_reg) = dest {
+                            value_map.insert(*dest_reg, result);
+                        }
+                    } else {
+                        // Make the call
+                        let call_inst = builder.ins().call(func_ref, &arg_values);
+
+                        // Get return value if any
+                        if let Some(dest_reg) = dest {
+                            let results = builder.inst_results(call_inst);
+                            if !results.is_empty() {
+                                value_map.insert(*dest_reg, results[0]);
+                            }
                         }
                     }
                 } else {
