@@ -590,7 +590,7 @@ fn replace_terminator_uses(term: &mut IrTerminator, replacements: &HashMap<IrId,
 }
 
 // Extension trait for instruction manipulation
-trait InstructionExt {
+pub(super) trait InstructionExt {
     fn uses(&self) -> Vec<IrId>;
     fn dest(&self) -> Option<IrId>;
     fn has_side_effects(&self) -> bool;

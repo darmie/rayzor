@@ -174,25 +174,28 @@ fn get_precompiled_path(name: &str) -> std::path::PathBuf {
         .join(format!("{}.rzb", name))
 }
 
-/// Run benchmark using precompiled .rzb bundle
-/// This measures the performance benefit of skipping source parsing/lowering
-/// The .rzb bundle contains pre-compiled MIR that still needs JIT compilation
-fn run_benchmark_precompiled(
+/// Precompiled benchmark state - load once, run many iterations
+struct PrecompiledState {
+    backend: CraneliftBackend,
+    main_module: std::sync::Arc<IrModule>,
+    load_time: Duration,
+}
+
+/// Setup precompiled benchmark: load .rzb bundle and JIT compile once
+fn setup_precompiled_benchmark(
     name: &str,
     symbols: &[(&str, *const u8)],
-) -> Result<(Duration, Duration), String> {
+) -> Result<PrecompiledState, String> {
     let bundle_path = get_precompiled_path(name);
 
-    // Load time = "compile time" for precompiled (should be ~500µs)
     let load_start = Instant::now();
 
     let bundle = load_bundle(&bundle_path).map_err(|e| format!("load bundle: {:?}", e))?;
 
-    // Use CraneliftBackend directly with "speed" optimization (same as cranelift target)
     let mut backend =
         CraneliftBackend::with_symbols(symbols).map_err(|e| format!("backend: {}", e))?;
 
-    // Load ALL modules from bundle (MIR should already be optimized at bundle creation time)
+    // Load ALL modules from bundle (MIR already optimized at bundle creation time)
     for module in bundle.modules() {
         backend
             .compile_module(&std::sync::Arc::new(module.clone()))
@@ -201,19 +204,27 @@ fn run_benchmark_precompiled(
 
     let load_time = load_start.elapsed();
 
-    // Execute - find and call main
-    let exec_start = Instant::now();
-    for module in bundle.modules().iter().rev() {
-        if backend
-            .call_main(&std::sync::Arc::new(module.clone()))
-            .is_ok()
-        {
-            break;
-        }
-    }
-    let exec_time = exec_start.elapsed();
+    // Use the last module (same order as the old per-iteration approach)
+    let main_module = bundle
+        .modules()
+        .last()
+        .ok_or_else(|| "No modules in bundle".to_string())?;
 
-    Ok((load_time, exec_time))
+    Ok(PrecompiledState {
+        backend,
+        main_module: std::sync::Arc::new(main_module.clone()),
+        load_time,
+    })
+}
+
+/// Run one iteration of a precompiled benchmark
+fn run_precompiled_iteration(state: &mut PrecompiledState) -> Result<Duration, String> {
+    let exec_start = Instant::now();
+    state
+        .backend
+        .call_main(&state.main_module)
+        .map_err(|e| format!("exec: {}", e))?;
+    Ok(exec_start.elapsed())
 }
 
 /// Precompiled-tiered benchmark state - loads from .rzb then warms up through tiers
@@ -686,16 +697,21 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
             }
         }
 
-        // Precompiled .rzb bundles: each iteration loads fresh (measures AOT benefits)
+        // Precompiled .rzb bundles: load + JIT once, then run warm iterations
         Target::RayzorPrecompiled => {
+            let mut state = setup_precompiled_benchmark(&bench.name, &symbols)?;
+            let load_time = state.load_time;
+
+            // Warmup runs (same compiled code, warm caches)
             for _ in 0..WARMUP_RUNS {
-                let _ = run_benchmark_precompiled(&bench.name, &symbols);
+                let _ = run_precompiled_iteration(&mut state);
             }
 
+            // Benchmark runs
             for _ in 0..BENCH_RUNS {
-                match run_benchmark_precompiled(&bench.name, &symbols) {
-                    Ok((load, exec)) => {
-                        compile_times.push(load); // Load time = "compile time"
+                match run_precompiled_iteration(&mut state) {
+                    Ok(exec) => {
+                        compile_times.push(load_time);
                         exec_times.push(exec);
                     }
                     Err(e) => return Err(e),
@@ -997,6 +1013,20 @@ fn generate_chart_html(suite: &BenchmarkSuite) -> Result<(), String> {
 
     html.push_str(
         r#"        </ul>
+    </div>
+    <div class="summary">
+        <h3>Methodology</h3>
+        <p>Each benchmark is run <strong>15 warmup iterations</strong> followed by <strong>10 measured iterations</strong>.
+        Compile time and execution time are measured separately. Results show the <strong>mean</strong> of measured iterations.</p>
+        <ul>
+            <li><strong>rayzor-cranelift</strong> &mdash; Source &rarr; MIR (O2) &rarr; Cranelift JIT. Compile includes parsing, type-checking, MIR lowering, optimization, and JIT compilation.</li>
+            <li><strong>rayzor-llvm</strong> &mdash; Source &rarr; MIR (O2) &rarr; LLVM MCJIT. Same frontend pipeline, LLVM backend for peak throughput.</li>
+            <li><strong>rayzor-tiered</strong> &mdash; Source &rarr; interpreter &rarr; Cranelift JIT. Uses the <em>Benchmark</em> tier preset: interpreter thresholds (2/3/5), immediate bailout, synchronous optimization. Compile includes parsing + module loading; execution includes interpreter startup and JIT tier-up.</li>
+            <li><strong>rayzor-precompiled</strong> &mdash; Pre-bundled .rzb (MIR already O2-optimized) &rarr; Cranelift JIT. Compile is bundle load + JIT only (no parsing/lowering).</li>
+            <li><strong>rayzor-precompiled-tiered</strong> &mdash; Pre-bundled .rzb &rarr; tiered execution with LLVM upgrade after warmup.</li>
+        </ul>
+        <p>All targets share the same runtime (<code>librayzor_runtime</code>) and execute the same Haxe source code.
+        MIR optimization level O2 includes: dead code elimination, constant folding, copy propagation, function inlining, LICM, and CSE.</p>
     </div>
 "#,
     );

@@ -482,12 +482,19 @@ impl IrInstruction {
         match self {
             IrInstruction::Const { dest, .. } |
             IrInstruction::Copy { dest, .. } |
+            IrInstruction::Move { dest, .. } |
+            IrInstruction::BorrowImmutable { dest, .. } |
+            IrInstruction::BorrowMutable { dest, .. } |
+            IrInstruction::Clone { dest, .. } |
             IrInstruction::Load { dest, .. } |
+            IrInstruction::LoadGlobal { dest, .. } |
             IrInstruction::BinOp { dest, .. } |
             IrInstruction::UnOp { dest, .. } |
             IrInstruction::Cmp { dest, .. } |
             IrInstruction::Alloc { dest, .. } |
             IrInstruction::GetElementPtr { dest, .. } |
+            IrInstruction::MemCopy { dest, .. } |
+            IrInstruction::MemSet { dest, .. } |
             IrInstruction::Cast { dest, .. } |
             IrInstruction::BitCast { dest, .. } |
             IrInstruction::LandingPad { dest, .. } |
@@ -495,6 +502,9 @@ impl IrInstruction {
             IrInstruction::Select { dest, .. } |
             IrInstruction::ExtractValue { dest, .. } |
             IrInstruction::InsertValue { dest, .. } |
+            IrInstruction::MakeClosure { dest, .. } |
+            IrInstruction::ClosureFunc { dest, .. } |
+            IrInstruction::ClosureEnv { dest, .. } |
             IrInstruction::CreateUnion { dest, .. } |
             IrInstruction::ExtractDiscriminant { dest, .. } |
             IrInstruction::ExtractUnionValue { dest, .. } |
@@ -517,6 +527,58 @@ impl IrInstruction {
             IrInstruction::InlineAsm { dest, .. } => *dest,
 
             _ => None,
+        }
+    }
+
+    /// Replace the destination register of this instruction
+    pub fn replace_dest(&mut self, new_dest: IrId) {
+        match self {
+            IrInstruction::Const { dest, .. }
+            | IrInstruction::Copy { dest, .. }
+            | IrInstruction::Move { dest, .. }
+            | IrInstruction::BorrowImmutable { dest, .. }
+            | IrInstruction::BorrowMutable { dest, .. }
+            | IrInstruction::Clone { dest, .. }
+            | IrInstruction::Load { dest, .. }
+            | IrInstruction::LoadGlobal { dest, .. }
+            | IrInstruction::MemCopy { dest, .. }
+            | IrInstruction::MemSet { dest, .. }
+            | IrInstruction::BinOp { dest, .. }
+            | IrInstruction::UnOp { dest, .. }
+            | IrInstruction::Cmp { dest, .. }
+            | IrInstruction::Alloc { dest, .. }
+            | IrInstruction::GetElementPtr { dest, .. }
+            | IrInstruction::Cast { dest, .. }
+            | IrInstruction::BitCast { dest, .. }
+            | IrInstruction::LandingPad { dest, .. }
+            | IrInstruction::Phi { dest, .. }
+            | IrInstruction::Select { dest, .. }
+            | IrInstruction::ExtractValue { dest, .. }
+            | IrInstruction::InsertValue { dest, .. }
+            | IrInstruction::MakeClosure { dest, .. }
+            | IrInstruction::ClosureFunc { dest, .. }
+            | IrInstruction::ClosureEnv { dest, .. }
+            | IrInstruction::CreateUnion { dest, .. }
+            | IrInstruction::ExtractDiscriminant { dest, .. }
+            | IrInstruction::ExtractUnionValue { dest, .. }
+            | IrInstruction::CreateStruct { dest, .. }
+            | IrInstruction::PtrAdd { dest, .. }
+            | IrInstruction::Undef { dest, .. }
+            | IrInstruction::FunctionRef { dest, .. }
+            | IrInstruction::VectorLoad { dest, .. }
+            | IrInstruction::VectorBinOp { dest, .. }
+            | IrInstruction::VectorSplat { dest, .. }
+            | IrInstruction::VectorExtract { dest, .. }
+            | IrInstruction::VectorInsert { dest, .. }
+            | IrInstruction::VectorReduce { dest, .. }
+            | IrInstruction::VectorUnaryOp { dest, .. }
+            | IrInstruction::VectorMinMax { dest, .. } => *dest = new_dest,
+
+            IrInstruction::CallDirect { dest, .. }
+            | IrInstruction::CallIndirect { dest, .. }
+            | IrInstruction::InlineAsm { dest, .. } => *dest = Some(new_dest),
+
+            _ => {}
         }
     }
 

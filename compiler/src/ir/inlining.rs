@@ -6,7 +6,7 @@
 //! - Function body cloning and integration
 
 use super::loop_analysis::{DominatorTree, LoopNestInfo};
-use super::optimization::{OptimizationPass, OptimizationResult};
+use super::optimization::{InstructionExt, OptimizationPass, OptimizationResult};
 use super::{
     IrBasicBlock, IrBlockId, IrFunction, IrFunctionId, IrId, IrInstruction, IrModule, IrPhiNode,
     IrTerminator, IrType,
@@ -289,6 +289,13 @@ impl InliningPass {
             }
         }
 
+        // Copy register types from callee to caller with remapped IDs
+        for (old_reg, new_reg) in &reg_map {
+            if let Some(ty) = callee.register_types.get(old_reg) {
+                caller.register_types.insert(*new_reg, ty.clone());
+            }
+        }
+
         // Create block mapping: callee blocks -> new blocks in caller
         let mut block_map: HashMap<IrBlockId, IrBlockId> = HashMap::new();
         for &block_id in callee.cfg.blocks.keys() {
@@ -317,7 +324,12 @@ impl InliningPass {
                     let new_block = *block_map.get(block).ok_or_else(|| {
                         format!("Phi incoming block {:?} not found in block_map", block)
                     })?;
-                    let new_val = *reg_map.get(val).unwrap_or(val);
+                    let new_val = *reg_map.get(val).ok_or_else(|| {
+                        format!(
+                            "Phi incoming value {:?} not found in reg_map (phi dest={:?}, from callee block {:?}). reg_map keys: {:?}",
+                            val, phi.dest, block, reg_map.keys().collect::<Vec<_>>()
+                        )
+                    })?;
                     incoming.push((new_block, new_val));
                 }
 
@@ -442,8 +454,43 @@ impl InliningPass {
             }
         }
 
-        // Update predecessor info (simplified - full update would require more work)
+        // Update predecessor info
         caller.cfg.connect_blocks(call_block_id, inlined_entry);
+
+        // Update phi nodes in successor blocks: replace call_block_id with continuation_block
+        // because the original terminator now lives in the continuation block
+        let successor_blocks: Vec<IrBlockId> = {
+            if let Some(cont_block) = caller.cfg.get_block(continuation_block) {
+                match &cont_block.terminator {
+                    IrTerminator::Branch { target } => vec![*target],
+                    IrTerminator::CondBranch {
+                        true_target,
+                        false_target,
+                        ..
+                    } => vec![*true_target, *false_target],
+                    IrTerminator::Switch { cases, default, .. } => {
+                        let mut targets: Vec<IrBlockId> = cases.iter().map(|(_, t)| *t).collect();
+                        targets.push(*default);
+                        targets
+                    }
+                    _ => vec![],
+                }
+            } else {
+                vec![]
+            }
+        };
+
+        for succ_id in successor_blocks {
+            if let Some(succ_block) = caller.cfg.get_block_mut(succ_id) {
+                for phi in &mut succ_block.phi_nodes {
+                    for (block, _) in &mut phi.incoming {
+                        if *block == call_block_id {
+                            *block = continuation_block;
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(())
     }
@@ -454,67 +501,20 @@ impl InliningPass {
         reg_map: &HashMap<IrId, IrId>,
         _block_map: &HashMap<IrBlockId, IrBlockId>,
     ) -> IrInstruction {
-        let remap = |id: &IrId| -> IrId { *reg_map.get(id).unwrap_or(id) };
+        // Clone the instruction, then remap all register uses and dests
+        let mut remapped = inst.clone();
 
-        match inst {
-            IrInstruction::BinOp {
-                dest,
-                op,
-                left,
-                right,
-            } => IrInstruction::BinOp {
-                dest: remap(dest),
-                op: *op,
-                left: remap(left),
-                right: remap(right),
-            },
-            IrInstruction::UnOp { dest, op, operand } => IrInstruction::UnOp {
-                dest: remap(dest),
-                op: *op,
-                operand: remap(operand),
-            },
-            IrInstruction::Copy { dest, src } => IrInstruction::Copy {
-                dest: remap(dest),
-                src: remap(src),
-            },
-            IrInstruction::Const { dest, value } => IrInstruction::Const {
-                dest: remap(dest),
-                value: value.clone(),
-            },
-            IrInstruction::Cmp {
-                dest,
-                op,
-                left,
-                right,
-            } => IrInstruction::Cmp {
-                dest: remap(dest),
-                op: *op,
-                left: remap(left),
-                right: remap(right),
-            },
-            IrInstruction::Load { dest, ptr, ty } => IrInstruction::Load {
-                dest: remap(dest),
-                ptr: remap(ptr),
-                ty: ty.clone(),
-            },
-            IrInstruction::Store { ptr, value } => IrInstruction::Store {
-                ptr: remap(ptr),
-                value: remap(value),
-            },
-            IrInstruction::Cast {
-                dest,
-                src,
-                from_ty,
-                to_ty,
-            } => IrInstruction::Cast {
-                dest: remap(dest),
-                src: remap(src),
-                from_ty: from_ty.clone(),
-                to_ty: to_ty.clone(),
-            },
-            // For other instructions, just clone (may need extension for full support)
-            other => other.clone(),
+        // Remap uses (operands)
+        remapped.replace_uses(reg_map);
+
+        // Remap dest register if present
+        if let Some(dest) = inst.dest() {
+            if let Some(&new_dest) = reg_map.get(&dest) {
+                remapped.replace_dest(new_dest);
+            }
         }
+
+        remapped
     }
 }
 

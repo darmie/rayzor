@@ -1259,16 +1259,63 @@ impl CraneliftBackend {
         }
 
         // Second pass: Translate instructions for each block
-        // Process entry block first, then others in ID order for determinism
-        let mut blocks_to_process: Vec<_> = function.cfg.blocks.iter().collect();
-        blocks_to_process.sort_by_key(|(id, _)| (if id.is_entry() { 0 } else { 1 }, id.0));
+        // Process blocks in reverse post-order (RPO) to ensure definitions are
+        // visited before uses, which is critical after inlining creates blocks
+        // with higher IDs in the middle of control flow.
+        let blocks_to_process = {
+            let mut rpo = Vec::new();
+            let mut visited = std::collections::HashSet::new();
+            let mut stack = vec![(function.cfg.entry_block, false)];
+            while let Some((block_id, processed)) = stack.pop() {
+                if processed {
+                    if let Some(block) = function.cfg.blocks.get(&block_id) {
+                        rpo.push((block_id, block));
+                    }
+                    continue;
+                }
+                if !visited.insert(block_id) {
+                    continue;
+                }
+                stack.push((block_id, true));
+                // Push successors in reverse order so they're processed in forward order
+                let successors: Vec<IrBlockId> =
+                    match function.cfg.blocks.get(&block_id).map(|b| &b.terminator) {
+                        Some(IrTerminator::Branch { target }) => vec![*target],
+                        Some(IrTerminator::CondBranch {
+                            true_target,
+                            false_target,
+                            ..
+                        }) => vec![*true_target, *false_target],
+                        Some(IrTerminator::Switch { cases, default, .. }) => {
+                            let mut targets: Vec<IrBlockId> =
+                                cases.iter().map(|(_, t)| *t).collect();
+                            targets.push(*default);
+                            targets
+                        }
+                        _ => vec![],
+                    };
+                for succ in successors.into_iter().rev() {
+                    if !visited.contains(&succ) {
+                        stack.push((succ, false));
+                    }
+                }
+            }
+            rpo.reverse();
+            // Add any unreachable blocks not visited by RPO
+            for (block_id, block) in &function.cfg.blocks {
+                if !visited.contains(block_id) {
+                    rpo.push((*block_id, block));
+                }
+            }
+            rpo
+        };
 
         // Track which blocks have been translated
         let mut translated_blocks = std::collections::HashSet::new();
 
         for (mir_block_id, mir_block) in blocks_to_process {
             let cl_block = *block_map
-                .get(mir_block_id)
+                .get(&mir_block_id)
                 .ok_or_else(|| format!("Block {:?} not found in block_map", mir_block_id))?;
 
             // Switch to this block (entry block is already active, but switch anyway for clarity)
@@ -1330,7 +1377,7 @@ impl CraneliftBackend {
                 return Err(e);
             }
 
-            translated_blocks.insert(*mir_block_id);
+            translated_blocks.insert(mir_block_id);
         }
 
         // Third pass: Seal all blocks after all have been translated
@@ -1411,8 +1458,8 @@ impl CraneliftBackend {
             // Look up the Cranelift value for this MIR value
             let cl_value = *value_map.get(incoming_value).ok_or_else(|| {
                 format!(
-                    "Value {:?} not found in value_map for phi incoming",
-                    incoming_value
+                    "Value {:?} not found in value_map for phi incoming (phi dest={:?}, from_block={:?}, target_block={:?}, func={})",
+                    incoming_value, phi_node.dest, from_block, target_block, function.name
                 )
             })?;
 
