@@ -25,7 +25,6 @@
 
 use std::alloc::{alloc, dealloc, realloc, Layout};
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::ptr;
 
 // Export Vec module (old API - keeping for backward compat)
