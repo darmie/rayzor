@@ -1929,9 +1929,11 @@ impl CraneliftBackend {
                             );
                             Some(result)
                         }
-                        // Array length: load len field at offset 8 from array pointer
+                        // Array intrinsics (arm64 only — regresses on x86_64)
                         // HaxeArray layout: { ptr: *mut u8 (0), len: usize (8), cap: usize (16), elem_size: usize (24) }
-                        "haxe_array_length" if arg_values.len() == 1 => {
+                        "haxe_array_length"
+                            if cfg!(target_arch = "aarch64") && arg_values.len() == 1 =>
+                        {
                             let arr_ptr = arg_values[0];
                             let len = builder.ins().load(
                                 types::I64,
@@ -1944,7 +1946,9 @@ impl CraneliftBackend {
                         }
                         // Array get_ptr: compute ptr + index * elem_size
                         // Returns pointer to element at given index
-                        "haxe_array_get_ptr" if arg_values.len() == 2 => {
+                        "haxe_array_get_ptr"
+                            if cfg!(target_arch = "aarch64") && arg_values.len() == 2 =>
+                        {
                             let arr_ptr = arg_values[0];
                             let index = arg_values[1];
                             // Load base data pointer (offset 0)
