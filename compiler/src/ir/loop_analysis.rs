@@ -50,8 +50,18 @@ impl DominatorTree {
 
         // Iterative dataflow until fixed point
         let mut changed = true;
+        let max_iterations = rpo.len() * 2 + 10; // Convergence guaranteed in O(n) for reducible CFGs
+        let mut iteration = 0;
         while changed {
             changed = false;
+            iteration += 1;
+            if iteration > max_iterations {
+                tracing::warn!(
+                    "DominatorTree::compute: exceeded {} iterations, breaking",
+                    max_iterations
+                );
+                break;
+            }
 
             for &block in &rpo {
                 if block == entry {
@@ -161,7 +171,13 @@ impl DominatorTree {
         rpo_index: &HashMap<IrBlockId, usize>,
     ) -> IrBlockId {
         // Walk up the dominator tree until we find a common dominator
+        let max_steps = idom.len() + 1;
+        let mut steps = 0;
         while b1 != b2 {
+            steps += 1;
+            if steps > max_steps {
+                return b1; // Safety: prevent infinite loop on malformed CFG
+            }
             let mut idx1 = rpo_index.get(&b1).copied().unwrap_or(usize::MAX);
             let mut idx2 = rpo_index.get(&b2).copied().unwrap_or(usize::MAX);
 

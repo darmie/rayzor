@@ -116,8 +116,9 @@ impl PassManager {
     /// Run all passes on a module
     pub fn run(&mut self, module: &mut IrModule) -> OptimizationResult {
         let mut total_result = OptimizationResult::unchanged();
+        let max_pipeline_iterations = 10;
 
-        loop {
+        for _pipeline_iter in 0..max_pipeline_iterations {
             let mut changed = false;
 
             for pass in &mut self.passes {
@@ -1555,6 +1556,7 @@ impl PassManager {
             }
             OptimizationLevel::O2 => {
                 // Standard optimizations
+                // NOTE: InliningPass causes hangs on stdlib-using programs — only enabled at O3
                 // manager.add_pass(GlobalLoadCachingPass::new()); // TODO: fix hang on global-using programs
                 manager.add_pass(DeadCodeEliminationPass::new());
                 manager.add_pass(ConstantFoldingPass::new());
