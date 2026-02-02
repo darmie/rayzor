@@ -22,7 +22,7 @@
         <h3>Summary</h3>
         <ul>
             <li><strong>nbody</strong>: 6 targets measured</li>
-            <li><strong>mandelbrot</strong>: 1 targets measured</li>
+            <li><strong>mandelbrot</strong>: 5 targets measured</li>
             <li><strong>arithmetic</strong>: 1 targets measured</li>
             <li><strong>mandelbrot_tiny</strong>: 1 targets measured</li>
             <li><strong>chained_alloc_test</strong>: 1 targets measured</li>
@@ -88,16 +88,16 @@
         new Chart(document.getElementById('chart_1'), {
             type: 'bar',
             data: {
-                labels: ['rayzor-cranelift'],
+                labels: ['haxe-interp', 'rayzor-cranelift', 'rayzor-precompiled', 'rayzor-precompiled-tiered', 'rayzor-tiered'],
                 datasets: [
                     {
                         label: 'Compile (ms)',
-                        data: [128.23],
+                        data: [0.00, 133.43, 2.03, 0.28, 106.20],
                         backgroundColor: 'rgba(54, 162, 235, 0.8)'
                     },
                     {
                         label: 'Execute (ms)',
-                        data: [2642.40],
+                        data: [42080.63, 5936.48, 5791.89, 5850.59, 5805.62],
                         backgroundColor: 'rgba(255, 99, 132, 0.8)'
                     }
                 ]

@@ -4799,10 +4799,21 @@ impl<'a> HirToMirContext<'a> {
                             self.temp_heap_values.push(obj_reg);
                         }
 
-                        // Lower the arguments
-                        let arg_regs: Vec<_> = std::iter::once(obj_reg)  // Add 'this' as first arg
-                            .chain(args.iter().filter_map(|a| self.lower_expression(a)))
-                            .collect();
+                        // Lower the arguments, tracking heap intermediates
+                        let mut method_arg_regs = vec![obj_reg]; // 'this' as first arg
+                        for arg in args.iter() {
+                            if let Some(reg) = self.lower_expression(arg) {
+                                let is_heap_intermediate = matches!(
+                                    &arg.kind,
+                                    HirExprKind::New { .. } | HirExprKind::Call { .. }
+                                ) && self.type_needs_drop(arg.ty);
+                                if is_heap_intermediate {
+                                    self.temp_heap_values.push(reg);
+                                }
+                                method_arg_regs.push(reg);
+                            }
+                        }
+                        let arg_regs = method_arg_regs;
 
                         // IMPORTANT: Use the function's actual return type, not expr.ty
                         // expr.ty can be incorrect (e.g., unresolved TypeParameter or wrong type)
@@ -7896,22 +7907,17 @@ impl<'a> HirToMirContext<'a> {
 
                         // Handle method calls where the object is passed as first argument
                         if *is_method {
-                            // debug!("Method call (is_method=true) - symbol={:?}, args.len()={}", symbol, args.len());
                             // For method calls, args already includes the object as first arg
-                            // Track the receiver (args[0]) as a temp if it's a heap-allocated intermediate
+                            // Track ALL args that are heap-allocated intermediates (not just receiver)
                             let mut arg_regs = Vec::new();
-                            for (i, arg) in args.iter().enumerate() {
+                            for arg in args.iter() {
                                 if let Some(reg) = self.lower_expression(arg) {
-                                    // Track receiver (first arg) if it's a heap-allocated Call/New result
-                                    if i == 0 {
-                                        let is_heap_intermediate = matches!(
-                                            &arg.kind,
-                                            HirExprKind::New { .. } | HirExprKind::Call { .. }
-                                        ) && self
-                                            .type_needs_drop(arg.ty);
-                                        if is_heap_intermediate {
-                                            self.temp_heap_values.push(reg);
-                                        }
+                                    let is_heap_intermediate = matches!(
+                                        &arg.kind,
+                                        HirExprKind::New { .. } | HirExprKind::Call { .. }
+                                    ) && self.type_needs_drop(arg.ty);
+                                    if is_heap_intermediate {
+                                        self.temp_heap_values.push(reg);
                                     }
                                     arg_regs.push(reg);
                                 }
@@ -7974,10 +7980,22 @@ impl<'a> HirToMirContext<'a> {
                             return result;
                         } else {
                             // Direct function call (static method or free function)
-                            let arg_regs: Vec<_> = args
-                                .iter()
-                                .filter_map(|a| self.lower_expression(a))
-                                .collect();
+                            // Track heap-allocated intermediates passed as arguments
+                            // e.g., complexAdd(complexSquare(val), offset) — complexSquare result
+                            // is a heap alloc that must be freed after complexAdd returns
+                            let mut arg_regs = Vec::new();
+                            for arg in args.iter() {
+                                if let Some(reg) = self.lower_expression(arg) {
+                                    let is_heap_intermediate = matches!(
+                                        &arg.kind,
+                                        HirExprKind::New { .. } | HirExprKind::Call { .. }
+                                    ) && self.type_needs_drop(arg.ty);
+                                    if is_heap_intermediate {
+                                        self.temp_heap_values.push(reg);
+                                    }
+                                    arg_regs.push(reg);
+                                }
+                            }
 
                             // Infer type_args for static generic calls if not already provided
                             let final_type_args = if converted_hir_type_args.is_empty() {

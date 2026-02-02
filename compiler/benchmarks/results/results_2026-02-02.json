@@ -22,8 +22,8 @@
         {
           "name": "nbody",
           "target": "rayzor-cranelift",
-          "compile_time_ms": 202.57274999999998,
-          "runtime_ms": 1261.0145420000001,
+          "compile_time_ms": 202.57275,
+          "runtime_ms": 1261.014542,
           "total_time_ms": 1463.587292,
           "iterations": 10
         },
@@ -31,14 +31,14 @@
           "name": "nbody",
           "target": "rayzor-llvm",
           "compile_time_ms": 223.658791,
-          "runtime_ms": 1597.6502500000001,
-          "total_time_ms": 1821.3090410000002,
+          "runtime_ms": 1597.65025,
+          "total_time_ms": 1821.309041,
           "iterations": 10
         },
         {
           "name": "nbody",
           "target": "rayzor-precompiled",
-          "compile_time_ms": 26.976625000000002,
+          "compile_time_ms": 26.976625,
           "runtime_ms": 1249.848,
           "total_time_ms": 1276.824625,
           "iterations": 10
@@ -66,10 +66,42 @@
       "results": [
         {
           "name": "mandelbrot",
+          "target": "haxe-interp",
+          "compile_time_ms": 0.0,
+          "runtime_ms": 42080.629417,
+          "total_time_ms": 42080.629417,
+          "iterations": 10
+        },
+        {
+          "name": "mandelbrot",
           "target": "rayzor-cranelift",
-          "compile_time_ms": 128.233541,
-          "runtime_ms": 2642.3995,
-          "total_time_ms": 2770.633041,
+          "compile_time_ms": 133.4335,
+          "runtime_ms": 5936.4812090000005,
+          "total_time_ms": 6069.914709,
+          "iterations": 10
+        },
+        {
+          "name": "mandelbrot",
+          "target": "rayzor-precompiled",
+          "compile_time_ms": 2.0304580000000003,
+          "runtime_ms": 5791.889,
+          "total_time_ms": 5793.919457999999,
+          "iterations": 10
+        },
+        {
+          "name": "mandelbrot",
+          "target": "rayzor-precompiled-tiered",
+          "compile_time_ms": 0.28162499999999996,
+          "runtime_ms": 5850.586458000001,
+          "total_time_ms": 5850.868083,
+          "iterations": 10
+        },
+        {
+          "name": "mandelbrot",
+          "target": "rayzor-tiered",
+          "compile_time_ms": 106.195708,
+          "runtime_ms": 5805.6185,
+          "total_time_ms": 5911.814208,
           "iterations": 10
         }
       ]
