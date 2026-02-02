@@ -2451,7 +2451,7 @@ impl<'a> HirToMirContext<'a> {
                         &expr.kind,
                         HirExprKind::New { .. } | HirExprKind::Call { .. }
                     );
-                    if is_heap_expr && self.type_needs_drop(expr.ty) {
+                    if is_heap_expr && self.get_drop_behavior(expr.ty) == DropBehavior::AutoDrop {
                         self.temp_heap_values.push(result_id);
                     }
                 }
@@ -4304,7 +4304,8 @@ impl<'a> HirToMirContext<'a> {
                 let is_owned_heap_value = matches!(
                     &object.kind,
                     HirExprKind::New { .. } | HirExprKind::Call { .. }
-                ) && self.type_needs_drop(object.ty);
+                ) && self.get_drop_behavior(object.ty)
+                    == DropBehavior::AutoDrop;
 
                 if is_owned_heap_value {
                     self.temp_heap_values.push(obj_reg);
@@ -4794,7 +4795,8 @@ impl<'a> HirToMirContext<'a> {
                         let is_owned_heap_value = matches!(
                             &object.kind,
                             HirExprKind::New { .. } | HirExprKind::Call { .. }
-                        ) && self.type_needs_drop(object.ty);
+                        ) && self.get_drop_behavior(object.ty)
+                            == DropBehavior::AutoDrop;
                         if is_owned_heap_value {
                             self.temp_heap_values.push(obj_reg);
                         }
@@ -4806,7 +4808,8 @@ impl<'a> HirToMirContext<'a> {
                                 let is_heap_intermediate = matches!(
                                     &arg.kind,
                                     HirExprKind::New { .. } | HirExprKind::Call { .. }
-                                ) && self.type_needs_drop(arg.ty);
+                                ) && self.get_drop_behavior(arg.ty)
+                                    == DropBehavior::AutoDrop;
                                 if is_heap_intermediate {
                                     self.temp_heap_values.push(reg);
                                 }
@@ -7908,16 +7911,21 @@ impl<'a> HirToMirContext<'a> {
                         // Handle method calls where the object is passed as first argument
                         if *is_method {
                             // For method calls, args already includes the object as first arg
-                            // Track ALL args that are heap-allocated intermediates (not just receiver)
+                            // Track non-receiver args that are heap-allocated intermediates.
+                            // Skip arg[0] (receiver) — it may be a borrowed `this` reference.
                             let mut arg_regs = Vec::new();
-                            for arg in args.iter() {
+                            for (i, arg) in args.iter().enumerate() {
                                 if let Some(reg) = self.lower_expression(arg) {
-                                    let is_heap_intermediate = matches!(
-                                        &arg.kind,
-                                        HirExprKind::New { .. } | HirExprKind::Call { .. }
-                                    ) && self.type_needs_drop(arg.ty);
-                                    if is_heap_intermediate {
-                                        self.temp_heap_values.push(reg);
+                                    if i > 0 {
+                                        let is_heap_intermediate = matches!(
+                                            &arg.kind,
+                                            HirExprKind::New { .. } | HirExprKind::Call { .. }
+                                        ) && self
+                                            .get_drop_behavior(arg.ty)
+                                            == DropBehavior::AutoDrop;
+                                        if is_heap_intermediate {
+                                            self.temp_heap_values.push(reg);
+                                        }
                                     }
                                     arg_regs.push(reg);
                                 }
@@ -7983,13 +7991,19 @@ impl<'a> HirToMirContext<'a> {
                             // Track heap-allocated intermediates passed as arguments
                             // e.g., complexAdd(complexSquare(val), offset) — complexSquare result
                             // is a heap alloc that must be freed after complexAdd returns
+                            //
+                            // We track both `new` expressions AND call expressions that return
+                            // a user-defined class (AutoDrop). This is safe for static calls
+                            // because static functions returning a class type always return
+                            // a freshly allocated object (via `new` internally).
                             let mut arg_regs = Vec::new();
                             for arg in args.iter() {
                                 if let Some(reg) = self.lower_expression(arg) {
                                     let is_heap_intermediate = matches!(
                                         &arg.kind,
                                         HirExprKind::New { .. } | HirExprKind::Call { .. }
-                                    ) && self.type_needs_drop(arg.ty);
+                                    ) && self.get_drop_behavior(arg.ty)
+                                        == DropBehavior::AutoDrop;
                                     if is_heap_intermediate {
                                         self.temp_heap_values.push(reg);
                                     }
