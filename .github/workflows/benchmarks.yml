@@ -25,6 +25,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # --- Install Haxe 4 + HashLink + hxcpp ---
+      - name: Install Haxe 4.3.6
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: 4.3.6
+
+      - name: Install HashLink
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpng-dev libturbojpeg-dev libvorbis-dev libopenal-dev libsdl2-dev libmbedtls-dev libuv1-dev
+          git clone https://github.com/HaxeFoundation/hashlink.git /tmp/hashlink
+          cd /tmp/hashlink
+          make
+          sudo make install
+          sudo ldconfig
+
+      - name: Install hxcpp
+        run: |
+          haxelib setup ~/haxelib
+          haxelib install hxcpp --always
+
+      - name: Verify Haxe installation
+        run: |
+          haxe --version
+          hl --version || true
+          echo "hxcpp installed: $(haxelib path hxcpp 2>/dev/null | head -1)"
+
+      # --- Install LLVM 18 for Rayzor ---
       - name: Install LLVM 18
         run: |
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -

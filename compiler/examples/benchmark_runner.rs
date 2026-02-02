@@ -109,10 +109,13 @@ enum Target {
     RayzorPrecompiledTiered, // .rzb pre-bundled MIR + tiered warmup + LLVM
     #[cfg(feature = "llvm-backend")]
     RayzorLLVM,
-    HaxeInterp,   // haxe --interp
-    HaxeHashLink, // haxe -hl → hl
-    HaxeCpp,      // haxe -cpp → compiled binary
-    HaxeJvm,      // haxe -java → JVM bytecode
+    HaxeInterp,    // haxe --interp
+    HaxeHashLink,  // haxe -hl → hl
+    HaxeHashLinkC, // haxe -hl → hlc (compile to C → gcc native)
+    HaxeCpp,       // haxe -cpp → compiled binary
+    HaxeJvm,       // haxe -java → JVM bytecode
+    #[cfg(feature = "llvm-backend")]
+    RayzorAOT, // AOT compile via LLVM → native executable
 }
 
 impl Target {
@@ -127,8 +130,11 @@ impl Target {
             Target::RayzorLLVM => "rayzor-llvm",
             Target::HaxeInterp => "haxe-interp",
             Target::HaxeHashLink => "haxe-hashlink",
+            Target::HaxeHashLinkC => "haxe-hashlink-c",
             Target::HaxeCpp => "haxe-cpp",
             Target::HaxeJvm => "haxe-jvm",
+            #[cfg(feature = "llvm-backend")]
+            Target::RayzorAOT => "rayzor-aot",
         }
     }
 
@@ -143,15 +149,22 @@ impl Target {
             Target::RayzorLLVM => "LLVM JIT (-O3, maximum optimization)",
             Target::HaxeInterp => "Haxe --interp (eval interpreter)",
             Target::HaxeHashLink => "Haxe HashLink JIT",
+            Target::HaxeHashLinkC => "Haxe HashLink/C (native via gcc)",
             Target::HaxeCpp => "Haxe C++ (hxcpp)",
             Target::HaxeJvm => "Haxe JVM (java bytecode)",
+            #[cfg(feature = "llvm-backend")]
+            Target::RayzorAOT => "Rayzor AOT (LLVM native executable)",
         }
     }
 
     fn is_haxe(&self) -> bool {
         matches!(
             self,
-            Target::HaxeInterp | Target::HaxeHashLink | Target::HaxeCpp | Target::HaxeJvm
+            Target::HaxeInterp
+                | Target::HaxeHashLink
+                | Target::HaxeHashLinkC
+                | Target::HaxeCpp
+                | Target::HaxeJvm
         )
     }
 }
@@ -433,7 +446,7 @@ struct TieredBenchmarkState {
 
 /// Heavy benchmarks that should skip interpreter and start at Baseline (Cranelift)
 fn is_heavy_benchmark(name: &str) -> bool {
-    matches!(name, "mandelbrot" | "mandelbrot_simple" | "nbody")
+    matches!(name, "mandelbrot" | "nbody")
 }
 
 fn setup_tiered_benchmark(
@@ -763,6 +776,78 @@ fn run_haxe_benchmark(bench_name: &str, target: Target) -> Result<(Duration, Dur
             Ok((compile_time, exec_time))
         }
 
+        Target::HaxeHashLinkC => {
+            // Step 1: Compile to .hl bytecode
+            let hl_path = tmp_dir.join(format!("{}.hl", bench_name));
+            let compile_start = Instant::now();
+            let output = Command::new("haxe")
+                .arg("--main")
+                .arg(main_class)
+                .arg("-cp")
+                .arg(&haxe_dir)
+                .arg("-hl")
+                .arg(&hl_path)
+                .output()
+                .map_err(|e| format!("Failed to compile to HL: {}", e))?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("haxe -hl compile failed: {}", stderr));
+            }
+
+            // Step 2: Compile HL bytecode to C with hlc, then gcc
+            let c_out_dir = tmp_dir.join("hlc_out");
+            std::fs::create_dir_all(&c_out_dir).ok();
+
+            let hlc_output = Command::new("hl")
+                .arg("--hlc")
+                .arg(&c_out_dir)
+                .arg(&hl_path)
+                .output()
+                .map_err(|e| format!("Failed to run hlc: {}", e))?;
+
+            if !hlc_output.status.success() {
+                let stderr = String::from_utf8_lossy(&hlc_output.stderr);
+                return Err(format!("hlc compilation failed: {}", stderr));
+            }
+
+            // Step 3: Compile the generated C code with gcc
+            let binary = tmp_dir.join("hlc_binary");
+            let gcc_output = Command::new("gcc")
+                .arg("-O2")
+                .arg("-o")
+                .arg(&binary)
+                .arg(c_out_dir.join("main.c"))
+                .arg("-I")
+                .arg(&c_out_dir)
+                .arg("-lhl")
+                .arg("-lm")
+                .output()
+                .map_err(|e| format!("Failed to gcc compile: {}", e))?;
+
+            if !gcc_output.status.success() {
+                let stderr = String::from_utf8_lossy(&gcc_output.stderr);
+                return Err(format!("gcc compilation failed: {}", stderr));
+            }
+
+            let compile_time = compile_start.elapsed();
+
+            // Step 4: Run the native binary
+            let exec_start = Instant::now();
+            let output = Command::new(&binary)
+                .env("LD_LIBRARY_PATH", "/usr/local/lib")
+                .output()
+                .map_err(|e| format!("Failed to run hlc binary: {}", e))?;
+            let exec_time = exec_start.elapsed();
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("hlc binary execution failed: {}", stderr));
+            }
+
+            Ok((compile_time, exec_time))
+        }
+
         Target::HaxeCpp => {
             // Step 1: Compile to C++
             let cpp_dir = tmp_dir.join("cpp");
@@ -975,7 +1060,11 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
         }
 
         // Haxe CLI targets: run via external haxe command
-        Target::HaxeInterp | Target::HaxeHashLink | Target::HaxeCpp | Target::HaxeJvm => {
+        Target::HaxeInterp
+        | Target::HaxeHashLink
+        | Target::HaxeHashLinkC
+        | Target::HaxeCpp
+        | Target::HaxeJvm => {
             // No warmup for Haxe targets — matches Haxe benchmark methodology
             for _ in 0..BENCH_RUNS {
                 match run_haxe_benchmark(&bench.name, target) {
@@ -985,6 +1074,56 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
                     }
                     Err(e) => return Err(e),
                 }
+            }
+        }
+
+        // AOT: compile to native binary via LLVM, then run
+        #[cfg(feature = "llvm-backend")]
+        Target::RayzorAOT => {
+            use compiler::codegen::aot_compiler::AotCompiler;
+            use compiler::ir::optimization::OptimizationLevel as MirOpt;
+
+            let tmp = std::env::temp_dir().join(format!("rayzor_aot_{}", bench.name));
+            std::fs::create_dir_all(&tmp).ok();
+            let binary_path = tmp.join("bench_aot");
+
+            // Write source to a temp file for the AOT compiler
+            let src_path = tmp.join(format!("{}.hx", bench.name));
+            std::fs::write(&src_path, &bench.source).map_err(|e| format!("write source: {}", e))?;
+
+            // Compile once (AOT)
+            let compile_start = Instant::now();
+            let compiler = AotCompiler {
+                opt_level: MirOpt::O2,
+                strip: true,
+                verbose: false,
+                ..Default::default()
+            };
+            compiler
+                .compile(&[src_path.to_string_lossy().to_string()], &binary_path)
+                .map_err(|e| format!("AOT compile: {}", e))?;
+            let compile_time = compile_start.elapsed();
+
+            // Warmup runs
+            for _ in 0..WARMUP_RUNS {
+                let _ = Command::new(&binary_path).output();
+            }
+
+            // Benchmark runs
+            for _ in 0..BENCH_RUNS {
+                let exec_start = Instant::now();
+                let output = Command::new(&binary_path)
+                    .output()
+                    .map_err(|e| format!("AOT exec: {}", e))?;
+                let exec_time = exec_start.elapsed();
+
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return Err(format!("AOT execution failed: {}", stderr));
+                }
+
+                compile_times.push(compile_time);
+                exec_times.push(exec_time);
             }
         }
 
@@ -1403,11 +1542,15 @@ fn main() {
     #[cfg(feature = "llvm-backend")]
     all_targets_list.push(Target::RayzorLLVM);
 
+    #[cfg(feature = "llvm-backend")]
+    all_targets_list.push(Target::RayzorAOT);
+
     // Add Haxe targets if haxe CLI is available
     if haxe_available() {
         all_targets_list.push(Target::HaxeInterp);
         if hashlink_available() {
             all_targets_list.push(Target::HaxeHashLink);
+            all_targets_list.push(Target::HaxeHashLinkC);
         }
         all_targets_list.push(Target::HaxeCpp);
         if java_available() {
