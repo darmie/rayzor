@@ -113,23 +113,33 @@ impl PassManager {
         manager
     }
 
-    /// Run all passes on a module
+    /// Run all passes on a module.
+    /// Only re-iterates when a non-cleanup pass modifies the module.
     pub fn run(&mut self, module: &mut IrModule) -> OptimizationResult {
         let mut total_result = OptimizationResult::unchanged();
-        let max_pipeline_iterations = 10;
+        let max_pipeline_iterations = 5;
 
         for _pipeline_iter in 0..max_pipeline_iterations {
-            let mut changed = false;
+            let mut transformative_change = false;
 
             for pass in &mut self.passes {
                 let result = pass.run_on_module(module);
                 if result.modified {
-                    changed = true;
+                    // Only re-iterate if a transformative pass (not just cleanup) changed things
+                    let is_cleanup = matches!(
+                        pass.name(),
+                        "dead-code-elimination"
+                            | "unreachable-block-elimination"
+                            | "copy-propagation"
+                    );
+                    if !is_cleanup {
+                        transformative_change = true;
+                    }
                 }
                 total_result = total_result.combine(result);
             }
 
-            if !changed {
+            if !transformative_change {
                 break;
             }
         }
@@ -1556,7 +1566,7 @@ impl PassManager {
             }
             OptimizationLevel::O2 => {
                 // Standard optimizations
-                // NOTE: InliningPass causes hangs on stdlib-using programs — only enabled at O3
+                manager.add_pass(super::inlining::InliningPass::new());
                 // manager.add_pass(GlobalLoadCachingPass::new()); // TODO: fix hang on global-using programs
                 manager.add_pass(DeadCodeEliminationPass::new());
                 manager.add_pass(ConstantFoldingPass::new());
