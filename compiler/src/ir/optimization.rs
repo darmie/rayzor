@@ -5,8 +5,8 @@
 //! and in different orders based on optimization level.
 
 use super::{
-    BinaryOp, CompareOp, IrBasicBlock, IrBlockId, IrFunction, IrFunctionId, IrId, IrInstruction,
-    IrModule, IrTerminator, IrType, IrValue,
+    BinaryOp, CompareOp, IrBasicBlock, IrBlockId, IrFunction, IrFunctionId, IrGlobalId, IrId,
+    IrInstruction, IrModule, IrTerminator, IrType, IrValue,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -1160,6 +1160,124 @@ impl OptimizationPass for CSEPass {
     }
 }
 
+/// Global Load Caching pass
+///
+/// Within each function, if the same global is loaded multiple times and never
+/// stored to, replace all loads after the first with the cached value.
+/// This eliminates expensive runtime HashMap lookups (rayzor_global_load) in
+/// hot loops that repeatedly access static class fields.
+pub struct GlobalLoadCachingPass;
+
+impl GlobalLoadCachingPass {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl OptimizationPass for GlobalLoadCachingPass {
+    fn name(&self) -> &'static str {
+        "global_load_cache"
+    }
+
+    fn run_on_module(&mut self, module: &mut IrModule) -> OptimizationResult {
+        use super::loop_analysis::DominatorTree;
+
+        let mut result = OptimizationResult::unchanged();
+
+        for function in module.functions.values_mut() {
+            // Find all globals that are stored to in this function
+            let mut stored_globals: HashSet<IrGlobalId> = HashSet::new();
+            for block in function.cfg.blocks.values() {
+                for inst in &block.instructions {
+                    if let IrInstruction::StoreGlobal { global_id, .. } = inst {
+                        stored_globals.insert(*global_id);
+                    }
+                }
+            }
+
+            // Collect all LoadGlobal instructions with their locations
+            // For globals never stored to, we can deduplicate across blocks
+            // using the dominator tree for safety.
+            let domtree = DominatorTree::compute(function);
+
+            // Map: global_id -> Vec<(block_id, dest_id)> for read-only globals
+            let mut global_loads: HashMap<IrGlobalId, Vec<(IrBlockId, IrId)>> = HashMap::new();
+            for (&block_id, block) in &function.cfg.blocks {
+                for inst in &block.instructions {
+                    if let IrInstruction::LoadGlobal {
+                        dest, global_id, ..
+                    } = inst
+                    {
+                        if !stored_globals.contains(global_id) {
+                            global_loads
+                                .entry(*global_id)
+                                .or_default()
+                                .push((block_id, *dest));
+                        }
+                    }
+                }
+            }
+
+            let mut all_replacements: HashMap<IrId, IrId> = HashMap::new();
+
+            for (_global_id, loads) in &global_loads {
+                if loads.len() <= 1 {
+                    continue;
+                }
+                // For each pair, if the first load's block dominates the second's,
+                // replace the second with the first
+                for i in 0..loads.len() {
+                    let (block_a, dest_a) = loads[i];
+                    if all_replacements.contains_key(&dest_a) {
+                        continue; // Already replaced
+                    }
+                    for j in (i + 1)..loads.len() {
+                        let (block_b, dest_b) = loads[j];
+                        if all_replacements.contains_key(&dest_b) {
+                            continue;
+                        }
+                        if domtree.dominates(block_a, block_b) {
+                            all_replacements.insert(dest_b, dest_a);
+                        } else if domtree.dominates(block_b, block_a) {
+                            all_replacements.insert(dest_a, dest_b);
+                            break; // dest_a is now replaced, stop inner loop
+                        }
+                    }
+                }
+            }
+
+            if all_replacements.is_empty() {
+                continue;
+            }
+
+            // Apply replacements
+            let dead_dests: HashSet<IrId> = all_replacements.keys().copied().collect();
+
+            for block in function.cfg.blocks.values_mut() {
+                for inst in &mut block.instructions {
+                    inst.replace_uses(&all_replacements);
+                }
+                replace_terminator_uses(&mut block.terminator, &all_replacements);
+                for phi in &mut block.phi_nodes {
+                    for (_, val) in &mut phi.incoming {
+                        if let Some(&replacement) = all_replacements.get(val) {
+                            *val = replacement;
+                        }
+                    }
+                }
+                block
+                    .instructions
+                    .retain(|inst| inst.dest().map_or(true, |d| !dead_dests.contains(&d)));
+            }
+
+            result.modified = true;
+            result.instructions_eliminated += all_replacements.len();
+        }
+
+        result
+    }
+}
+
 /// Global Value Numbering (GVN) pass
 ///
 /// More powerful than local CSE, uses dominator tree to find redundancies across blocks.
@@ -1426,6 +1544,7 @@ impl PassManager {
             }
             OptimizationLevel::O1 => {
                 // Fast, low-overhead optimizations
+                // manager.add_pass(GlobalLoadCachingPass::new()); // TODO: fix hang on global-using programs
                 manager.add_pass(DeadCodeEliminationPass::new());
                 manager.add_pass(ConstantFoldingPass::new());
                 manager.add_pass(CopyPropagationPass::new());
@@ -1433,6 +1552,7 @@ impl PassManager {
             }
             OptimizationLevel::O2 => {
                 // Standard optimizations
+                // manager.add_pass(GlobalLoadCachingPass::new()); // TODO: fix hang on global-using programs
                 manager.add_pass(DeadCodeEliminationPass::new());
                 manager.add_pass(ConstantFoldingPass::new());
                 manager.add_pass(CopyPropagationPass::new());
@@ -1446,6 +1566,7 @@ impl PassManager {
                 // Aggressive optimizations
                 // Inlining first to expose more optimization opportunities
                 manager.add_pass(super::inlining::InliningPass::new());
+                // manager.add_pass(GlobalLoadCachingPass::new()); // TODO: fix hang on global-using programs
                 manager.add_pass(DeadCodeEliminationPass::new());
                 manager.add_pass(ConstantFoldingPass::new());
                 manager.add_pass(CopyPropagationPass::new());

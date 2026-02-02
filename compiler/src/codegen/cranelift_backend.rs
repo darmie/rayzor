@@ -1907,8 +1907,9 @@ impl CraneliftBackend {
                         arg_values.push(cl_value);
                     }
 
-                    // Check if this is a math function we can replace with a native instruction
-                    let math_result = match extern_func.name.as_str() {
+                    // Check if this is a function we can replace with inline instructions
+                    let intrinsic_result = match extern_func.name.as_str() {
+                        // Math intrinsics: replace with native Cranelift instructions
                         "haxe_math_sqrt" | "haxe_math_abs" | "haxe_math_floor"
                         | "haxe_math_ceil" | "haxe_math_round"
                             if arg_values.len() == 1 =>
@@ -1928,10 +1929,47 @@ impl CraneliftBackend {
                             );
                             Some(result)
                         }
+                        // Array length: load len field at offset 8 from array pointer
+                        // HaxeArray layout: { ptr: *mut u8 (0), len: usize (8), cap: usize (16), elem_size: usize (24) }
+                        "haxe_array_length" if arg_values.len() == 1 => {
+                            let arr_ptr = arg_values[0];
+                            let len = builder.ins().load(
+                                types::I64,
+                                MemFlags::trusted(),
+                                arr_ptr,
+                                8i32, // offset of len field
+                            );
+                            debug!("Array intrinsic: haxe_array_length → inline load");
+                            Some(len)
+                        }
+                        // Array get_ptr: compute ptr + index * elem_size
+                        // Returns pointer to element at given index
+                        "haxe_array_get_ptr" if arg_values.len() == 2 => {
+                            let arr_ptr = arg_values[0];
+                            let index = arg_values[1];
+                            // Load base data pointer (offset 0)
+                            let data_ptr =
+                                builder
+                                    .ins()
+                                    .load(types::I64, MemFlags::trusted(), arr_ptr, 0i32);
+                            // Load elem_size (offset 24)
+                            let elem_size =
+                                builder
+                                    .ins()
+                                    .load(types::I64, MemFlags::trusted(), arr_ptr, 24i32);
+                            // Compute offset = index * elem_size
+                            let byte_offset = builder.ins().imul(index, elem_size);
+                            // Compute element pointer = data_ptr + offset
+                            let elem_ptr = builder.ins().iadd(data_ptr, byte_offset);
+                            debug!(
+                                "Array intrinsic: haxe_array_get_ptr → inline pointer arithmetic"
+                            );
+                            Some(elem_ptr)
+                        }
                         _ => None,
                     };
 
-                    if let Some(result) = math_result {
+                    if let Some(result) = intrinsic_result {
                         if let Some(dest_reg) = dest {
                             value_map.insert(*dest_reg, result);
                         }
