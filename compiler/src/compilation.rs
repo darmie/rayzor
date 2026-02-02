@@ -3517,9 +3517,9 @@ impl CompilationUnit {
         Ok(())
     }
 
-    /// Print compilation errors with formatted diagnostics to stderr
-    /// Uses the diagnostics crate's ErrorFormatter for consistent formatting
-    fn print_compilation_errors(&self, errors: &[CompilationError]) {
+    /// Print compilation errors with formatted diagnostics to stderr.
+    /// Uses the diagnostics crate's ErrorFormatter for consistent formatting.
+    pub fn print_compilation_errors(&self, errors: &[CompilationError]) {
         use diagnostics::{ErrorFormatter, SourceMap};
 
         // Build source map with all parsed files

@@ -20,7 +20,7 @@
 //! ```
 
 use clap::{Parser, Subcommand, ValueEnum};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 
 #[derive(Parser)]
@@ -36,8 +36,8 @@ struct Cli {
 enum Commands {
     /// Run a Haxe file with JIT compilation
     Run {
-        /// Path to the Haxe source file
-        file: PathBuf,
+        /// Path to the Haxe source file (reads from rayzor.toml if omitted)
+        file: Option<PathBuf>,
 
         /// Enable verbose output
         #[arg(short, long)]
@@ -138,10 +138,10 @@ enum Commands {
         release: bool,
     },
 
-    /// Build from HXML file (Haxe-compatible)
+    /// Build from HXML file or rayzor.toml
     Build {
-        /// Path to HXML build file
-        file: PathBuf,
+        /// Path to HXML build file (auto-detects rayzor.toml if omitted)
+        file: Option<PathBuf>,
 
         /// Enable verbose output
         #[arg(short, long)]
@@ -171,6 +171,129 @@ enum Commands {
     Cache {
         #[command(subcommand)]
         action: CacheAction,
+    },
+
+    /// Create a .rzb bundle from source files
+    Bundle {
+        /// Source files to compile
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+
+        /// Output .rzb path
+        #[arg(short, long)]
+        output: PathBuf,
+
+        /// Optimization level (0-3)
+        #[arg(short = 'O', long, default_value = "2")]
+        opt_level: u8,
+
+        /// Tree-shake unreachable code (for AOT/size-optimized bundles)
+        #[arg(long)]
+        strip: bool,
+
+        /// Disable zstd compression
+        #[arg(long)]
+        no_compress: bool,
+
+        /// Enable BLADE incremental cache
+        #[arg(long)]
+        cache: bool,
+
+        /// Custom BLADE cache directory
+        #[arg(long)]
+        cache_dir: Option<PathBuf>,
+
+        /// Enable verbose output
+        #[arg(short, long)]
+        verbose: bool,
+    },
+
+    /// Compile Haxe to a native executable via LLVM (AOT)
+    Aot {
+        /// Source files to compile
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+
+        /// Output path
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Target triple for cross-compilation
+        #[arg(long)]
+        target: Option<String>,
+
+        /// Output format: exe, obj, llvm-ir, llvm-bc, asm
+        #[arg(long, default_value = "exe")]
+        emit: String,
+
+        /// Optimization level (0-3)
+        #[arg(short = 'O', long, default_value = "2")]
+        opt_level: u8,
+
+        /// Tree-shake unreachable code
+        #[arg(long, default_value = "true")]
+        strip: bool,
+
+        /// Strip debug symbols from binary
+        #[arg(long)]
+        strip_symbols: bool,
+
+        /// Path to librayzor_runtime.a
+        #[arg(long)]
+        runtime_dir: Option<PathBuf>,
+
+        /// Override linker path
+        #[arg(long)]
+        linker: Option<String>,
+
+        /// Sysroot for cross-compilation
+        #[arg(long)]
+        sysroot: Option<PathBuf>,
+
+        /// Enable BLADE incremental cache
+        #[arg(long)]
+        cache: bool,
+
+        /// Custom BLADE cache directory
+        #[arg(long)]
+        cache_dir: Option<PathBuf>,
+
+        /// Enable verbose output
+        #[arg(short, long)]
+        verbose: bool,
+    },
+
+    /// Initialize a new Rayzor project or workspace
+    Init {
+        /// Project or workspace name (also used as directory name)
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Create a multi-project workspace instead of a single project
+        #[arg(long)]
+        workspace: bool,
+    },
+
+    /// Extract stdlib symbols to .bsym format (pre-BLADE)
+    Preblade {
+        /// Source files (if empty, uses stdlib)
+        files: Vec<PathBuf>,
+
+        /// Output directory for .bsym files
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+
+        /// List types without generating files
+        #[arg(short, long)]
+        list: bool,
+
+        /// Custom BLADE cache directory
+        #[arg(long)]
+        cache_dir: Option<PathBuf>,
+
+        /// Enable verbose output
+        #[arg(short, long)]
+        verbose: bool,
     },
 }
 
@@ -294,6 +417,62 @@ fn main() {
             CacheAction::Stats { cache_dir } => cache_stats(cache_dir),
             CacheAction::Clear { cache_dir } => cache_clear(cache_dir),
         },
+        Commands::Bundle {
+            files,
+            output,
+            opt_level,
+            strip,
+            no_compress,
+            cache,
+            cache_dir,
+            verbose,
+        } => cmd_bundle(
+            files,
+            output,
+            opt_level,
+            strip,
+            no_compress,
+            cache,
+            cache_dir,
+            verbose,
+        ),
+        Commands::Aot {
+            files,
+            output,
+            target,
+            emit,
+            opt_level,
+            strip,
+            strip_symbols,
+            runtime_dir,
+            linker,
+            sysroot,
+            cache,
+            cache_dir,
+            verbose,
+        } => cmd_aot(
+            files,
+            output,
+            target,
+            emit,
+            opt_level,
+            strip,
+            strip_symbols,
+            runtime_dir,
+            linker,
+            sysroot,
+            cache,
+            cache_dir,
+            verbose,
+        ),
+        Commands::Init { name, workspace } => cmd_init(name, workspace),
+        Commands::Preblade {
+            files,
+            out,
+            list,
+            cache_dir,
+            verbose,
+        } => cmd_preblade(files, out, list, cache_dir, verbose),
     };
 
     if let Err(e) = result {
@@ -323,11 +502,11 @@ fn compile_haxe_to_mir(source: &str, filename: &str) -> Result<compiler::ir::IrM
     // Add the source file to the compilation unit
     unit.add_file(source, filename)?;
 
-    // Compile the unit to TAST (this compiles all files including stdlib)
-    unit.lower_to_tast().map_err(|errors| {
-        let messages: Vec<_> = errors.iter().map(|e| format!("{:?}", e)).collect();
-        format!("TAST lowering errors: {}", messages.join(", "))
-    })?;
+    // Type-check pass — errors reported via diagnostics formatter
+    if let Err(errors) = unit.lower_to_tast() {
+        unit.print_compilation_errors(&errors);
+        return Err(format!("Check failed with {} error(s)", errors.len()));
+    }
 
     // Get all MIR modules (including stdlib)
     let mir_modules = unit.get_mir_modules();
@@ -344,7 +523,7 @@ fn compile_haxe_to_mir(source: &str, filename: &str) -> Result<compiler::ir::IrM
 
 #[allow(clippy::too_many_arguments)]
 fn run_file(
-    file: PathBuf,
+    file_arg: Option<PathBuf>,
     verbose: bool,
     stats: bool,
     _tier: u8,
@@ -356,6 +535,12 @@ fn run_file(
 ) -> Result<(), String> {
     use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig};
     use compiler::compilation::{CompilationConfig, CompilationUnit};
+
+    // Resolve file: from arg or rayzor.toml
+    let file = match file_arg {
+        Some(f) => f,
+        None => resolve_entry_from_manifest()?,
+    };
 
     let profile = if release { "release" } else { "debug" };
     println!(
@@ -375,12 +560,6 @@ fn run_file(
     // Read source file
     if !file.exists() {
         return Err(format!("File not found: {}", file.display()));
-    }
-
-    if verbose {
-        println!("\n{}", "=".repeat(60));
-        println!("Compilation Pipeline [{}]", profile);
-        println!("{}", "=".repeat(60));
     }
 
     // Create compilation unit with cache configuration
@@ -408,8 +587,7 @@ fn run_file(
 
     let total_functions = mir_module.functions.len();
     if verbose {
-        println!("  ✓ MIR created");
-        println!("    Functions: {}", total_functions);
+        println!("  parse    {} ({} decls)", file.display(), total_functions);
     }
 
     if total_functions == 0 {
@@ -417,63 +595,38 @@ fn run_file(
     }
 
     // Set up tiered JIT backend using the selected preset
-    if verbose {
-        println!("\nSetting up Tiered JIT [preset: {:?}]...", preset);
-    }
     let mut config = TieredConfig::from_preset(preset.to_tier_preset());
     config.verbosity = if verbose { 2 } else { 0 };
     config.start_interpreted = false; // Start with JIT for immediate execution
 
     let mut backend = TieredBackend::new(config)?;
-    if verbose {
-        println!("  ✓ Tiered backend ready");
-    }
 
     // Compile module with tiered JIT
-    if verbose {
-        println!("\nCompiling MIR → Native (Tier 0)...");
-    }
     backend.compile_module(mir_module)?;
 
     if verbose {
-        println!("  ✓ Compiled successfully");
+        let backend_stats = backend.get_statistics();
+        let compiled = backend_stats.baseline_functions
+            + backend_stats.standard_functions
+            + backend_stats.optimized_functions
+            + backend_stats.llvm_functions;
+        println!(
+            "  jit      {} functions compiled (preset: {:?})",
+            compiled, preset
+        );
     }
-
-    // Show completion
-    println!("\n{}", "=".repeat(60));
-    println!("Compilation Complete");
-    println!("{}", "=".repeat(60));
-
-    println!("\n(Function execution requires main() lookup - coming soon)");
 
     // Show stats if requested
     if stats {
-        println!("\n{}", "=".repeat(60));
-        println!("Statistics");
-        println!("{}", "=".repeat(60));
-
         let backend_stats = backend.get_statistics();
-        println!("\nTier Distribution:");
-        println!(
-            "  Tier 0 (Baseline):  {} functions",
-            backend_stats.baseline_functions
-        );
-        println!(
-            "  Tier 1 (Standard):  {} functions",
-            backend_stats.standard_functions
-        );
-        println!(
-            "  Tier 2 (Optimized): {} functions",
-            backend_stats.optimized_functions
-        );
-        println!(
-            "  Tier 3 (Maximum):   {} functions",
-            backend_stats.llvm_functions
-        );
+        println!("  tier 0   {} functions", backend_stats.baseline_functions);
+        println!("  tier 1   {} functions", backend_stats.standard_functions);
+        println!("  tier 2   {} functions", backend_stats.optimized_functions);
+        println!("  tier 3   {} functions", backend_stats.llvm_functions);
     }
 
     backend.shutdown();
-    println!("\n✓ Complete!");
+    println!("✓ Complete");
     Ok(())
 }
 
@@ -559,7 +712,111 @@ fn check_file(file: PathBuf, show_types: bool, format: OutputFormat) -> Result<(
 }
 
 fn build_hxml(
-    file: PathBuf,
+    file_arg: Option<PathBuf>,
+    verbose: bool,
+    output_override: Option<PathBuf>,
+    dry_run: bool,
+) -> Result<(), String> {
+    // Auto-detect: if file is .hxml use HXML path, otherwise try rayzor.toml
+    if let Some(ref file) = file_arg {
+        if file.extension().map(|e| e == "hxml").unwrap_or(false) {
+            return build_from_hxml(file, verbose, output_override, dry_run);
+        }
+    }
+
+    // Try rayzor.toml
+    let cwd = std::env::current_dir().map_err(|e| format!("Failed to get cwd: {}", e))?;
+    if let Some(root) = compiler::workspace::find_project_root(&cwd) {
+        return build_from_manifest(&root, verbose, output_override, dry_run);
+    }
+
+    // Fallback: if a file was provided, try it as HXML
+    if let Some(file) = file_arg {
+        return build_from_hxml(&file, verbose, output_override, dry_run);
+    }
+
+    Err("No rayzor.toml or .hxml build file found.\nRun `rayzor init` to create a project, or specify a .hxml file.".to_string())
+}
+
+fn build_from_manifest(
+    root: &Path,
+    verbose: bool,
+    output_override: Option<PathBuf>,
+    _dry_run: bool,
+) -> Result<(), String> {
+    use compiler::workspace::{self, RayzorManifest};
+
+    let manifest = workspace::load_manifest(root)?;
+
+    match manifest {
+        RayzorManifest::SingleProject(pm) => {
+            // Check for HXML delegation
+            if let Some(hxml_path) = &pm.hxml {
+                let hxml_file = root.join(hxml_path);
+                return build_from_hxml(&hxml_file, verbose, output_override, _dry_run);
+            }
+
+            let project = workspace::Project {
+                root: root.to_path_buf(),
+                manifest: pm,
+            };
+
+            let entry = project
+                .entry_path()
+                .ok_or("No entry point in rayzor.toml. Set [project] entry = \"src/Main.hx\"")?;
+
+            println!(
+                "📦 Building {} ...",
+                project.manifest.name.as_deref().unwrap_or("project")
+            );
+
+            if !entry.exists() {
+                return Err(format!("Entry file not found: {}", entry.display()));
+            }
+
+            if verbose {
+                println!("  entry    {}", entry.display());
+                if let Some(out) = project.output_path() {
+                    println!("  output   {}", out.display());
+                }
+                for cp in project.resolved_class_paths() {
+                    println!("  classpath {}", cp.display());
+                }
+            }
+
+            let output = output_override.or_else(|| project.output_path());
+
+            // Compile via the standard pipeline
+            let source = std::fs::read_to_string(&entry)
+                .map_err(|e| format!("Failed to read {}: {}", entry.display(), e))?;
+            let mir_module = compile_haxe_to_mir(&source, entry.to_str().unwrap_or("unknown"))?;
+
+            println!("  Compiled {} functions", mir_module.functions.len());
+
+            if let Some(out) = output {
+                println!(
+                    "  Output: {} (binary serialization coming soon)",
+                    out.display()
+                );
+            }
+
+            println!("✓ Build complete");
+            Ok(())
+        }
+        RayzorManifest::Workspace(wm) => {
+            println!("📦 Building workspace ({} members)...", wm.members.len());
+            for member in &wm.members {
+                let member_dir = root.join(member);
+                println!("\n  Building member: {}", member);
+                build_from_manifest(&member_dir, verbose, None, _dry_run)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn build_from_hxml(
+    file: &Path,
     verbose: bool,
     output_override: Option<PathBuf>,
     dry_run: bool,
@@ -569,7 +826,7 @@ fn build_hxml(
     println!("📦 Building from HXML: {}", file.display());
 
     // Parse HXML file
-    let config = HxmlConfig::from_file(&file)?;
+    let config = HxmlConfig::from_file(&file.to_path_buf())?;
 
     if verbose {
         println!("\n{}", config.summary());
@@ -661,10 +918,6 @@ fn compile_file(
         target
     );
 
-    if let Some(ref out) = output {
-        println!("  Output: {}", out.display());
-    }
-
     // Read source file
     if !file.exists() {
         return Err(format!("File not found: {}", file.display()));
@@ -673,18 +926,15 @@ fn compile_file(
     let source =
         std::fs::read_to_string(&file).map_err(|e| format!("Failed to read file: {}", e))?;
 
-    println!("\n{}", "=".repeat(60));
-    println!("Compilation Pipeline [{}]", profile);
-    println!("{}", "=".repeat(60));
-
     // Step 1: Parse
-    println!("\nStep 1: Parsing Haxe source...");
     let ast = parse_haxe_file(file.to_str().unwrap_or("unknown"), &source, false)
         .map_err(|e| format!("Parse error: {}", e))?;
 
-    println!("  ✓ AST created");
-    println!("    Declarations: {}", ast.declarations.len());
-    println!("    Imports: {}", ast.imports.len());
+    println!(
+        "  parse    {} decls, {} imports",
+        ast.declarations.len(),
+        ast.imports.len()
+    );
 
     if show_ir {
         println!("\n--- AST ---");
@@ -692,13 +942,13 @@ fn compile_file(
     }
 
     if matches!(stage, CompileStage::Ast) {
-        println!("\n✓ Stopped at AST stage");
         if let Some(output_path) = output {
             let ast_json = format!("{:#?}", ast);
             std::fs::write(&output_path, ast_json)
                 .map_err(|e| format!("Failed to write output: {}", e))?;
-            println!("  Output written to: {}", output_path.display());
+            println!("  write    {}", output_path.display());
         }
+        println!("✓ Stopped at AST stage");
         return Ok(());
     }
 
@@ -721,13 +971,12 @@ fn compile_file(
     let unit = CompilationUnit::new(config);
 
     // For stages beyond AST, compile using our helper with caching support
-    println!("\nCompiling through full pipeline...");
     let mir_module = if cache {
         if let Some(cached) = unit.try_load_cached(&file) {
-            println!("  ✓ Loaded from cache");
+            println!("  cache    hit (loaded from BLADE cache)");
             cached
         } else {
-            println!("  Cache miss, compiling...");
+            println!("  cache    miss, compiling...");
             let module = compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"))?;
             unit.save_to_cache(&file, &module)?;
             module
@@ -736,11 +985,14 @@ fn compile_file(
         compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"))?
     };
 
-    println!("  ✓ MIR created");
-    println!("    Functions: {}", mir_module.functions.len());
+    println!("  mir      {} functions", mir_module.functions.len());
 
     for func in mir_module.functions.values() {
-        println!("      - {} ({} blocks)", func.name, func.cfg.blocks.len());
+        println!(
+            "           - {} ({} blocks)",
+            func.name,
+            func.cfg.blocks.len()
+        );
     }
 
     if show_ir {
@@ -752,37 +1004,37 @@ fn compile_file(
         | matches!(stage, CompileStage::Tast)
         | matches!(stage, CompileStage::Hir)
     {
-        println!("\n✓ Stopped at {:?} stage (showing MIR)", stage);
         if let Some(output_path) = output {
             let mir_json = format!("{:#?}", mir_module);
             std::fs::write(&output_path, mir_json)
                 .map_err(|e| format!("Failed to write output: {}", e))?;
-            println!("  Output written to: {}", output_path.display());
+            println!("  write    {}", output_path.display());
         }
+        println!("✓ Stopped at {:?} stage", stage);
         return Ok(());
     }
 
     // Step 2: Compile to native
-    println!("\nCompiling MIR → Native...");
     use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig};
 
-    // Use Script preset for AOT compilation (no background optimization needed)
     let mut config = TieredConfig::from_preset(compiler::codegen::TierPreset::Script);
     config.enable_background_optimization = false;
-    config.start_interpreted = false; // Start with JIT for direct compilation
+    config.start_interpreted = false;
 
     let mut backend = TieredBackend::new(config)?;
     backend.compile_module(mir_module)?;
 
-    println!("  ✓ Native code generated");
+    println!("  native   code generated");
 
     if let Some(output_path) = output {
-        println!("\n(Binary serialization not yet implemented)");
-        println!("  Would write to: {}", output_path.display());
+        println!(
+            "  output   {} (binary serialization coming soon)",
+            output_path.display()
+        );
     }
 
     backend.shutdown();
-    println!("\n✓ Compilation complete!");
+    println!("✓ Compilation complete");
     Ok(())
 }
 
@@ -881,4 +1133,237 @@ fn cache_clear(cache_dir: Option<PathBuf>) -> Result<(), String> {
     println!("✓ Cache cleared successfully");
 
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_bundle(
+    files: Vec<PathBuf>,
+    output: PathBuf,
+    opt_level: u8,
+    strip: bool,
+    no_compress: bool,
+    cache: bool,
+    cache_dir: Option<PathBuf>,
+    verbose: bool,
+) -> Result<(), String> {
+    use compiler::ir::optimization::OptimizationLevel;
+    use compiler::tools::preblade::{create_bundle, BundleConfig};
+
+    let opt = match opt_level {
+        0 => Some(OptimizationLevel::O0),
+        1 => Some(OptimizationLevel::O1),
+        3 => Some(OptimizationLevel::O3),
+        _ => Some(OptimizationLevel::O2),
+    };
+
+    let source_files: Vec<String> = files
+        .iter()
+        .map(|f| f.to_string_lossy().to_string())
+        .collect();
+
+    let config = BundleConfig {
+        output: output.clone(),
+        source_files,
+        verbose,
+        opt_level: opt,
+        strip,
+        compress: !no_compress,
+        enable_cache: cache,
+        cache_dir,
+    };
+
+    match create_bundle(&config) {
+        Ok(module_count) => {
+            println!();
+            println!("Bundle created: {}", output.display());
+            println!("  Modules: {}", module_count);
+            Ok(())
+        }
+        Err(e) => Err(format!("Bundle creation failed: {}", e)),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_aot(
+    files: Vec<PathBuf>,
+    output: Option<PathBuf>,
+    target: Option<String>,
+    emit: String,
+    opt_level: u8,
+    strip: bool,
+    strip_symbols: bool,
+    runtime_dir: Option<PathBuf>,
+    linker: Option<String>,
+    sysroot: Option<PathBuf>,
+    _cache: bool,
+    _cache_dir: Option<PathBuf>,
+    verbose: bool,
+) -> Result<(), String> {
+    #[cfg(not(feature = "llvm-backend"))]
+    {
+        let _ = (
+            &files,
+            &output,
+            &target,
+            &emit,
+            opt_level,
+            strip,
+            strip_symbols,
+            &runtime_dir,
+            &linker,
+            &sysroot,
+            verbose,
+        );
+        Err(
+            "AOT compilation requires the LLVM backend. Recompile with --features llvm-backend"
+                .to_string(),
+        )
+    }
+
+    #[cfg(feature = "llvm-backend")]
+    {
+        use compiler::codegen::aot_compiler::OutputFormat;
+        use compiler::ir::optimization::OptimizationLevel;
+        use compiler::tools::aot_build::{run_aot, AotConfig};
+
+        let output_format = match emit.as_str() {
+            "exe" => OutputFormat::Executable,
+            "obj" => OutputFormat::ObjectFile,
+            "llvm-ir" => OutputFormat::LlvmIr,
+            "llvm-bc" => OutputFormat::LlvmBitcode,
+            "asm" => OutputFormat::Assembly,
+            other => {
+                return Err(format!(
+                    "Unknown emit format: {}. Use: exe, obj, llvm-ir, llvm-bc, asm",
+                    other
+                ))
+            }
+        };
+
+        let opt = match opt_level {
+            0 => OptimizationLevel::O0,
+            1 => OptimizationLevel::O1,
+            3 => OptimizationLevel::O3,
+            _ => OptimizationLevel::O2,
+        };
+
+        let source_files: Vec<String> = files
+            .iter()
+            .map(|f| f.to_string_lossy().to_string())
+            .collect();
+
+        let config = AotConfig {
+            source_files,
+            output,
+            target_triple: target,
+            output_format,
+            opt_level: opt,
+            strip,
+            strip_symbols,
+            verbose,
+            linker,
+            runtime_dir,
+            sysroot,
+            enable_cache: _cache,
+            cache_dir: _cache_dir,
+        };
+
+        run_aot(config)
+    }
+}
+
+fn cmd_preblade(
+    _files: Vec<PathBuf>,
+    out: Option<PathBuf>,
+    list: bool,
+    cache_dir: Option<PathBuf>,
+    verbose: bool,
+) -> Result<(), String> {
+    use compiler::tools::preblade::{extract_stdlib_symbols, PrebladeConfig};
+
+    let out_path = out.unwrap_or_else(|| PathBuf::from(".rayzor/blade/stdlib"));
+
+    if !list {
+        std::fs::create_dir_all(&out_path)
+            .map_err(|e| format!("Error creating output directory: {}", e))?;
+    }
+
+    println!("Pre-BLADE: Extracting stdlib symbols");
+    println!("  Output: {}", out_path.display());
+    println!();
+
+    let config = PrebladeConfig {
+        out_path,
+        list_only: list,
+        verbose,
+        cache_dir,
+    };
+
+    match extract_stdlib_symbols(&config) {
+        Ok((classes, enums, aliases)) => {
+            println!();
+            println!("Pre-BLADE complete:");
+            println!("  Classes: {}", classes);
+            println!("  Enums:   {}", enums);
+            println!("  Aliases: {}", aliases);
+            Ok(())
+        }
+        Err(e) => Err(format!("Pre-BLADE failed: {}", e)),
+    }
+}
+
+fn cmd_init(name: Option<String>, workspace: bool) -> Result<(), String> {
+    let project_name = name.unwrap_or_else(|| {
+        std::env::current_dir()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .unwrap_or_else(|| "my-project".to_string())
+    });
+
+    let dir = PathBuf::from(&project_name);
+
+    if dir.join("rayzor.toml").exists() {
+        return Err(format!("rayzor.toml already exists in {}", dir.display()));
+    }
+
+    if workspace {
+        compiler::workspace::init::init_workspace(&project_name, &dir)?;
+        println!(
+            "Initialized workspace '{}' at {}",
+            project_name,
+            dir.display()
+        );
+        println!("  Created: rayzor.toml, .rayzor/cache/, .gitignore");
+        println!();
+        println!("Add member projects:");
+        println!("  cd {} && rayzor init --name my-lib", project_name);
+        println!("  Then add \"my-lib\" to [workspace].members in rayzor.toml");
+    } else {
+        compiler::workspace::init::init_project(&project_name, &dir)?;
+        println!(
+            "Initialized project '{}' at {}",
+            project_name,
+            dir.display()
+        );
+        println!("  Created: rayzor.toml, src/Main.hx, .rayzor/cache/, .gitignore");
+        println!();
+        println!("Get started:");
+        println!("  cd {} && rayzor run", project_name);
+    }
+
+    Ok(())
+}
+
+/// Resolve entry point from rayzor.toml in current or parent directories.
+fn resolve_entry_from_manifest() -> Result<PathBuf, String> {
+    let cwd = std::env::current_dir().map_err(|e| format!("Failed to get cwd: {}", e))?;
+
+    let root = compiler::workspace::find_project_root(&cwd)
+        .ok_or("No source file specified and no rayzor.toml found.\nRun `rayzor init` to create a project, or specify a .hx file.")?;
+
+    let project = compiler::workspace::load_project(&root)?;
+
+    project.entry_path().ok_or_else(|| {
+        "No entry point in rayzor.toml. Set [project] entry = \"src/Main.hx\"".to_string()
+    })
 }

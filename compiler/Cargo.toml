@@ -23,6 +23,7 @@ tracing = '0.1.44'
 rayon = "1.10"  # Parallel iteration for background JIT compilation
 chrono = "0.4"  # Date/time for benchmark results
 zstd = "0.13"  # Bundle compression
+toml = "0.8"   # Workspace manifest parsing
 
 # Cranelift JIT compilation - fork with ARM64 PLT fixes + MAP_JIT for 100% stability
 cranelift = { git = "https://github.com/darmie/wasmtime", branch = "fix-plt-aarch64", package = "cranelift", features = ["jit", "module", "native"] }

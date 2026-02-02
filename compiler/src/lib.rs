@@ -106,6 +106,8 @@ pub mod pipeline;
 pub mod semantic_graph;
 pub mod stdlib; // MIR-based standard library
 pub mod tast;
+pub mod tools;
+pub mod workspace;
 
 // Re-export plugin system from separate crate (avoids cyclic dependency)
 pub use rayzor_plugin as plugin;

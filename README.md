@@ -294,6 +294,145 @@ rayzor compile main.hx --stage native
 
 ---
 
+## CLI Reference
+
+### Project Management
+
+```bash
+# Initialize a new project
+rayzor init --name my-app
+
+# Initialize a workspace (multi-project)
+rayzor init --name my-workspace --workspace
+
+# Build from rayzor.toml (auto-detected)
+cd my-app && rayzor build
+
+# Build from .hxml (backwards compatible)
+rayzor build build.hxml
+
+# Run using entry point from rayzor.toml
+cd my-app && rayzor run
+```
+
+### `rayzor init`
+
+Scaffolds a new project or workspace.
+
+```bash
+rayzor init [--name <NAME>] [--workspace]
+```
+
+- **Without `--workspace`**: Creates `rayzor.toml`, `src/Main.hx`, `.rayzor/cache/`, `.gitignore`
+- **With `--workspace`**: Creates a workspace `rayzor.toml` with empty `members` list
+
+### `rayzor run`
+
+Runs a Haxe source file with tiered JIT compilation.
+
+```bash
+rayzor run [FILE] [--preset <PRESET>] [--cache] [--cache-dir <DIR>]
+```
+
+If `FILE` is omitted, reads the entry point from `rayzor.toml` in the current directory.
+
+### `rayzor build`
+
+Compiles a project from `.hxml` or `rayzor.toml`.
+
+```bash
+rayzor build [FILE] [--cache] [--cache-dir <DIR>]
+```
+
+Auto-detection order:
+
+1. If `FILE` ends with `.hxml` → parse as HXML build file
+2. If `FILE` is omitted and `rayzor.toml` exists → build from manifest
+3. If manifest has `hxml = "build.hxml"` → delegate to HXML parser
+
+### `rayzor bundle`
+
+Creates a RayzorBundle (`.rzb`) single-file executable.
+
+```bash
+rayzor bundle <FILES...> [--output <PATH>] [--opt-level <0|1|2|3>] [--strip] [--no-compress] [--cache] [--cache-dir <DIR>] [--verbose]
+```
+
+- `--strip`: Tree-shake unreachable code
+- `--no-compress`: Disable zstd compression
+- `--cache`: Enable BLADE incremental cache
+
+### `rayzor aot`
+
+Ahead-of-time compilation via LLVM (requires `llvm-backend` feature).
+
+```bash
+rayzor aot <FILES...> [--output <PATH>] [--target <TRIPLE>] [--emit <FORMAT>] [--opt-level <0|1|2|3>] [--strip] [--strip-symbols] [--verbose]
+```
+
+- `--emit`: `exe` (default), `obj`, `llvm-ir`, `llvm-bc`, `asm`
+- `--target`: Target triple for cross-compilation (default: host)
+- `--strip-symbols`: Strip debug symbols from binary
+
+### `rayzor preblade`
+
+Extracts stdlib symbols and generates precompiled BLADE caches.
+
+```bash
+rayzor preblade [FILES...] [--out <DIR>] [--list] [--cache-dir <DIR>] [--verbose]
+```
+
+### Other Commands
+
+```bash
+rayzor check <FILE>                  # Type-check without compiling
+rayzor compile <FILE> --stage native # Compile to native code
+rayzor jit <FILE>                    # Run with Cranelift JIT
+rayzor cache stats                   # View BLADE cache statistics
+rayzor cache clear                   # Clear BLADE cache
+rayzor info                          # Show compiler info
+```
+
+### Project Manifest (`rayzor.toml`)
+
+#### Single Project
+
+```toml
+[project]
+name = "my-app"
+version = "0.1.0"
+entry = "src/Main.hx"
+
+[build]
+class-paths = ["src"]
+opt-level = 2
+preset = "application"
+output = "build/my-app"
+
+[cache]
+enabled = true
+```
+
+#### Workspace
+
+```toml
+[workspace]
+members = ["game", "engine", "tools/level-editor"]
+
+[workspace.cache]
+dir = ".rayzor/cache"
+```
+
+#### HXML Delegation
+
+```toml
+[project]
+name = "legacy-app"
+hxml = "build.hxml"
+```
+
+---
+
 ## Performance Targets
 
 ### Compilation Speed

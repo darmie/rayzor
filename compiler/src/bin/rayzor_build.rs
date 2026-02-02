@@ -1,21 +1,28 @@
-//! rayzor-build: AOT compiler for Haxe → native executables
+//! rayzor-build: AOT compiler for Haxe -> native executables
+//!
+//! This is a thin wrapper around `compiler::tools::aot_build`.
+//! Prefer using `rayzor aot` instead.
 //!
 //! Usage:
 //!   rayzor-build [OPTIONS] <SOURCE_FILES...>
-//!
-//! Examples:
-//!   rayzor-build -o hello hello.hx
-//!   rayzor-build -O3 --target x86_64-unknown-linux-gnu -o hello hello.hx
-//!   rayzor-build --emit llvm-ir -o hello.ll hello.hx
 
-use compiler::codegen::aot_compiler::{AotCompiler, OutputFormat};
+use compiler::codegen::aot_compiler::OutputFormat;
 use compiler::ir::optimization::OptimizationLevel;
+use compiler::tools::aot_build::{self, AotConfig};
 use std::path::PathBuf;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    let mut compiler = AotCompiler::default();
+    let mut target_triple: Option<String> = None;
+    let mut output_format = OutputFormat::Executable;
+    let mut opt_level = OptimizationLevel::O2;
+    let mut strip = true; // tree-shake by default for AOT
+    let mut strip_symbols = false;
+    let mut verbose = false;
+    let mut linker: Option<String> = None;
+    let mut runtime_dir: Option<PathBuf> = None;
+    let mut sysroot: Option<PathBuf> = None;
     let mut output_path: Option<PathBuf> = None;
     let mut source_files: Vec<String> = Vec::new();
 
@@ -31,13 +38,13 @@ fn main() {
             "--target" => {
                 i += 1;
                 if i < args.len() {
-                    compiler.target_triple = Some(args[i].clone());
+                    target_triple = Some(args[i].clone());
                 }
             }
             "--emit" => {
                 i += 1;
                 if i < args.len() {
-                    compiler.output_format = match args[i].as_str() {
+                    output_format = match args[i].as_str() {
                         "exe" => OutputFormat::Executable,
                         "obj" => OutputFormat::ObjectFile,
                         "llvm-ir" => OutputFormat::LlvmIr,
@@ -56,36 +63,36 @@ fn main() {
             "--optimize" | "-O" => {
                 i += 1;
                 if i < args.len() {
-                    compiler.opt_level = parse_opt_level(&args[i]);
+                    opt_level = aot_build::parse_opt_level(&args[i]);
                 } else {
-                    compiler.opt_level = OptimizationLevel::O2;
+                    opt_level = OptimizationLevel::O2;
                 }
             }
-            "-O0" => compiler.opt_level = OptimizationLevel::O0,
-            "-O1" => compiler.opt_level = OptimizationLevel::O1,
-            "-O2" => compiler.opt_level = OptimizationLevel::O2,
-            "-O3" => compiler.opt_level = OptimizationLevel::O3,
-            "--no-strip" => compiler.strip = false,
-            "--strip" => compiler.strip_symbols = true,
+            "-O0" => opt_level = OptimizationLevel::O0,
+            "-O1" => opt_level = OptimizationLevel::O1,
+            "-O2" => opt_level = OptimizationLevel::O2,
+            "-O3" => opt_level = OptimizationLevel::O3,
+            "--no-strip" => strip = false,
+            "--strip" => strip_symbols = true,
             "--runtime-dir" => {
                 i += 1;
                 if i < args.len() {
-                    compiler.runtime_dir = Some(PathBuf::from(&args[i]));
+                    runtime_dir = Some(PathBuf::from(&args[i]));
                 }
             }
             "--linker" => {
                 i += 1;
                 if i < args.len() {
-                    compiler.linker = Some(args[i].clone());
+                    linker = Some(args[i].clone());
                 }
             }
             "--sysroot" => {
                 i += 1;
                 if i < args.len() {
-                    compiler.sysroot = Some(PathBuf::from(&args[i]));
+                    sysroot = Some(PathBuf::from(&args[i]));
                 }
             }
-            "--verbose" | "-v" => compiler.verbose = true,
+            "--verbose" | "-v" => verbose = true,
             "--help" | "-h" => {
                 print_usage();
                 return;
@@ -106,80 +113,32 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Default output path
-    let output = output_path.unwrap_or_else(|| {
-        let base = PathBuf::from(&source_files[0])
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        match compiler.output_format {
-            OutputFormat::Executable => {
-                if cfg!(target_os = "windows")
-                    || compiler
-                        .target_triple
-                        .as_deref()
-                        .is_some_and(|t| t.contains("windows"))
-                {
-                    PathBuf::from(format!("{}.exe", base))
-                } else {
-                    PathBuf::from(&base)
-                }
-            }
-            OutputFormat::ObjectFile => PathBuf::from(format!("{}.o", base)),
-            OutputFormat::LlvmIr => PathBuf::from(format!("{}.ll", base)),
-            OutputFormat::LlvmBitcode => PathBuf::from(format!("{}.bc", base)),
-            OutputFormat::Assembly => PathBuf::from(format!("{}.s", base)),
-        }
-    });
+    let config = AotConfig {
+        source_files,
+        output: output_path,
+        target_triple,
+        output_format,
+        opt_level,
+        strip,
+        strip_symbols,
+        verbose,
+        linker,
+        runtime_dir,
+        sysroot,
+        enable_cache: false,
+        cache_dir: None,
+    };
 
-    println!("Rayzor AOT Compiler");
-    println!("  Sources: {}", source_files.join(", "));
-    println!(
-        "  Output:  {} ({:?})",
-        output.display(),
-        compiler.output_format
-    );
-    println!(
-        "  Target:  {}",
-        compiler.target_triple.as_deref().unwrap_or("host")
-    );
-    println!("  Opt:     {:?}", compiler.opt_level);
-    println!();
-
-    match compiler.compile(&source_files, &output) {
-        Ok(result) => {
-            println!();
-            println!("Build succeeded:");
-            println!(
-                "  Output: {} ({} bytes)",
-                result.path.display(),
-                result.code_size
-            );
-            println!("  Target: {}", result.target_triple);
-        }
-        Err(e) => {
-            eprintln!("Build failed: {}", e);
-            std::process::exit(1);
-        }
-    }
-}
-
-fn parse_opt_level(s: &str) -> OptimizationLevel {
-    match s {
-        "0" => OptimizationLevel::O0,
-        "1" => OptimizationLevel::O1,
-        "2" => OptimizationLevel::O2,
-        "3" => OptimizationLevel::O3,
-        _ => {
-            eprintln!("Warning: Unknown optimization level '{}', using O2", s);
-            OptimizationLevel::O2
-        }
+    if let Err(e) = aot_build::run_aot(config) {
+        eprintln!("{}", e);
+        std::process::exit(1);
     }
 }
 
 fn print_usage() {
     println!("rayzor-build: Compile Haxe to native executables");
+    println!();
+    println!("NOTE: Prefer using `rayzor aot` instead.");
     println!();
     println!("USAGE:");
     println!("    rayzor-build [OPTIONS] <SOURCE_FILES...>");
@@ -198,10 +157,4 @@ fn print_usage() {
     println!("    --sysroot <PATH>          Sysroot for cross-compilation");
     println!("    -v, --verbose             Verbose output");
     println!("    -h, --help                Show this help message");
-    println!();
-    println!("EXAMPLES:");
-    println!("    rayzor-build -o hello hello.hx");
-    println!("    rayzor-build -O3 -o hello hello.hx");
-    println!("    rayzor-build --target x86_64-unknown-linux-gnu -o hello hello.hx");
-    println!("    rayzor-build --emit llvm-ir -o hello.ll hello.hx");
 }
