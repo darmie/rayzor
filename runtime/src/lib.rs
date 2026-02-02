@@ -331,34 +331,51 @@ pub fn init_rtti() {
 // Global Variable Storage
 // ============================================================================
 // Thread-local storage for global variables used by JIT-compiled code.
-// Global IDs are i64 values that map to pointer values (stored as u64).
+// Global IDs are small sequential u32 values, so we use a flat Vec for O(1) lookup
+// instead of HashMap (avoids SipHash overhead on every access).
+
+/// Initial capacity for the global store (grows as needed)
+const GLOBAL_STORE_INITIAL_CAP: usize = 64;
 
 thread_local! {
-    static GLOBAL_STORE: RefCell<HashMap<i64, u64>> = RefCell::new(HashMap::new());
+    static GLOBAL_STORE: RefCell<Vec<u64>> = RefCell::new(vec![0; GLOBAL_STORE_INITIAL_CAP]);
 }
 
 /// Store a value to a global variable
 ///
 /// # Arguments
-/// * `global_id` - The global variable ID
+/// * `global_id` - The global variable ID (small sequential integer)
 /// * `value` - The value to store (as a raw pointer cast to i64)
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_global_store(global_id: i64, value: i64) {
     GLOBAL_STORE.with(|store| {
-        store.borrow_mut().insert(global_id, value as u64);
+        let mut s = store.borrow_mut();
+        let idx = global_id as usize;
+        if idx >= s.len() {
+            s.resize(idx + 1, 0);
+        }
+        s[idx] = value as u64;
     });
 }
 
 /// Load a value from a global variable
 ///
 /// # Arguments
-/// * `global_id` - The global variable ID
+/// * `global_id` - The global variable ID (small sequential integer)
 ///
 /// # Returns
 /// The stored value, or 0 if not found
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_global_load(global_id: i64) -> i64 {
-    GLOBAL_STORE.with(|store| store.borrow().get(&global_id).copied().unwrap_or(0) as i64)
+    GLOBAL_STORE.with(|store| {
+        let s = store.borrow();
+        let idx = global_id as usize;
+        if idx < s.len() {
+            s[idx] as i64
+        } else {
+            0
+        }
+    })
 }
 
 #[cfg(test)]

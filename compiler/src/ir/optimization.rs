@@ -903,7 +903,7 @@ impl OptimizationPass for LICMPass {
 
                     for &block_id in &loop_data.blocks {
                         if block_id == loop_data.header {
-                            continue; // Don't hoist from header initially
+                            continue; // Don't hoist from header
                         }
 
                         if let Some(block) = function.cfg.get_block(block_id) {
@@ -1092,6 +1092,9 @@ impl CSEPass {
             } => Some(format!("cmp:{:?}:{}:{}", op, left.as_u32(), right.as_u32())),
             IrInstruction::Cast { src, to_ty, .. } => {
                 Some(format!("cast:{}:{:?}", src.as_u32(), to_ty))
+            }
+            IrInstruction::LoadGlobal { global_id, .. } => {
+                Some(format!("loadglobal:{}", global_id.0))
             }
             // Loads are not CSE-safe without alias analysis
             // Calls have side effects
