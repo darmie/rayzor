@@ -169,6 +169,10 @@ pub struct LLVMJitBackend<'ctx> {
     /// AOT mode: when true, struct→ptr coercion for extern calls uses
     /// alloca+store (C ABI), and per-function verification prints errors.
     aot_mode: bool,
+
+    /// IrIds that were allocated via alloca (stack). Free instructions targeting
+    /// these are no-ops. All other Free instructions call libc free().
+    alloca_ids: std::collections::HashSet<IrId>,
 }
 
 #[cfg(feature = "llvm-backend")]
@@ -228,6 +232,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             sret_function_ids: std::collections::HashSet::new(),
             current_sret_ptr: None,
             aot_mode: false,
+            alloca_ids: std::collections::HashSet::new(),
         })
     }
 
@@ -1358,6 +1363,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         self.value_map.clear();
         self.block_map.clear();
         self.phi_map.clear();
+        self.alloca_ids.clear();
         self.current_sret_ptr = None;
 
         // Check if this function uses sret (struct return)
@@ -1802,6 +1808,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 // dynamic count. The MIR Free instructions become no-ops. This eliminates
                 // malloc/free overhead in hot loops (89% of mandelbrot time was in allocator).
                 if count.is_none() {
+                    self.alloca_ids.insert(*dest);
                     let alloca = self
                         .builder
                         .build_alloca(alloc_ty, &format!("stack_{}", dest.as_u32()))
@@ -2074,9 +2081,43 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             }
 
             IrInstruction::Free { ptr } => {
-                // Alloc uses alloca (stack), so Free is a no-op.
-                // Stack memory is automatically reclaimed on function return.
-                let _ = ptr;
+                // If the pointer came from alloca (stack), Free is a no-op.
+                // Otherwise, call libc free() for heap-allocated memory.
+                if !self.alloca_ids.contains(ptr) {
+                    if let Ok(ptr_val) = self.get_value(*ptr) {
+                        // Get or declare free function
+                        let free_fn = match self.module.get_function("free") {
+                            Some(f) => f,
+                            None => {
+                                let free_fn_type = self.context.void_type().fn_type(
+                                    &[self.context.ptr_type(Default::default()).into()],
+                                    false,
+                                );
+                                self.module.add_function("free", free_fn_type, None)
+                            }
+                        };
+
+                        // Cast to pointer if needed and call free(ptr)
+                        let ptr_as_ptr = if ptr_val.is_pointer_value() {
+                            ptr_val.into_pointer_value()
+                        } else {
+                            // int-to-ptr cast for non-pointer values
+                            self.builder
+                                .build_int_to_ptr(
+                                    ptr_val.into_int_value(),
+                                    self.context.ptr_type(Default::default()),
+                                    &format!("free_cast_{}", ptr.as_u32()),
+                                )
+                                .map_err(|e| format!("Failed to cast for free: {}", e))?
+                        };
+
+                        let _ = self.builder.build_call(
+                            free_fn,
+                            &[ptr_as_ptr.into()],
+                            &format!("free_{}", ptr.as_u32()),
+                        );
+                    }
+                }
             }
 
             IrInstruction::MemCopy { dest, src, size } => {

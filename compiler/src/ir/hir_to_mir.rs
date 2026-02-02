@@ -2446,15 +2446,11 @@ impl<'a> HirToMirContext<'a> {
                 //
                 // The type_needs_drop check ensures we only track Class instances,
                 // not primitives, strings, or Dynamic values from runtime functions.
-                if let Some(result_id) = result {
-                    let is_heap_expr = matches!(
-                        &expr.kind,
-                        HirExprKind::New { .. } | HirExprKind::Call { .. }
-                    );
-                    if is_heap_expr && self.get_drop_behavior(expr.ty) == DropBehavior::AutoDrop {
-                        self.temp_heap_values.push(result_id);
-                    }
-                }
+                // NOTE: We do NOT track the top-level expression result as a temp.
+                // Functions like Array.push() may store their argument, and freeing
+                // the result would create dangling pointers. Only chained method call
+                // receivers are safe to free (tracked at the field-access lowering site).
+                let _ = result;
 
                 // Free all temporaries
                 self.drop_temps();
@@ -4801,17 +4797,27 @@ impl<'a> HirToMirContext<'a> {
                             self.temp_heap_values.push(obj_reg);
                         }
 
-                        // Lower the arguments, tracking heap intermediates
+                        // Lower the arguments — track heap intermediates only for user-defined callees
+                        let callee_is_user_defined = self
+                            .builder
+                            .module
+                            .functions
+                            .get(&func_id)
+                            .map(|f| f.kind == crate::ir::functions::FunctionKind::UserDefined)
+                            .unwrap_or(false);
+
                         let mut method_arg_regs = vec![obj_reg]; // 'this' as first arg
                         for arg in args.iter() {
                             if let Some(reg) = self.lower_expression(arg) {
-                                let is_heap_intermediate = matches!(
-                                    &arg.kind,
-                                    HirExprKind::New { .. } | HirExprKind::Call { .. }
-                                ) && self.get_drop_behavior(arg.ty)
-                                    == DropBehavior::AutoDrop;
-                                if is_heap_intermediate {
-                                    self.temp_heap_values.push(reg);
+                                if callee_is_user_defined {
+                                    let is_heap_intermediate = matches!(
+                                        &arg.kind,
+                                        HirExprKind::New { .. } | HirExprKind::Call { .. }
+                                    ) && self.get_drop_behavior(arg.ty)
+                                        == DropBehavior::AutoDrop;
+                                    if is_heap_intermediate {
+                                        self.temp_heap_values.push(reg);
+                                    }
                                 }
                                 method_arg_regs.push(reg);
                             }
@@ -7910,13 +7916,21 @@ impl<'a> HirToMirContext<'a> {
 
                         // Handle method calls where the object is passed as first argument
                         if *is_method {
-                            // For method calls, args already includes the object as first arg
-                            // Track non-receiver args that are heap-allocated intermediates.
-                            // Skip arg[0] (receiver) — it may be a borrowed `this` reference.
+                            // For method calls, args already includes the object as first arg.
+                            // Track non-receiver args as temps ONLY if the callee is user-defined.
+                            // Stdlib/runtime methods (e.g., Array.push) may store arguments.
+                            let callee_is_user_defined = self
+                                .builder
+                                .module
+                                .functions
+                                .get(&func_id)
+                                .map(|f| f.kind == crate::ir::functions::FunctionKind::UserDefined)
+                                .unwrap_or(false);
+
                             let mut arg_regs = Vec::new();
                             for (i, arg) in args.iter().enumerate() {
                                 if let Some(reg) = self.lower_expression(arg) {
-                                    if i > 0 {
+                                    if i > 0 && callee_is_user_defined {
                                         let is_heap_intermediate = matches!(
                                             &arg.kind,
                                             HirExprKind::New { .. } | HirExprKind::Call { .. }
@@ -7988,24 +8002,32 @@ impl<'a> HirToMirContext<'a> {
                             return result;
                         } else {
                             // Direct function call (static method or free function)
-                            // Track heap-allocated intermediates passed as arguments
-                            // e.g., complexAdd(complexSquare(val), offset) — complexSquare result
-                            // is a heap alloc that must be freed after complexAdd returns
-                            //
-                            // We track both `new` expressions AND call expressions that return
-                            // a user-defined class (AutoDrop). This is safe for static calls
-                            // because static functions returning a class type always return
-                            // a freshly allocated object (via `new` internally).
+                            // Track heap-allocated intermediates passed as arguments,
+                            // but ONLY if the callee is a user-defined function.
+                            // Stdlib/runtime functions (MirWrapper, ExternC) may store
+                            // arguments (e.g., Array.push), so freeing would cause
+                            // dangling pointers.
+                            let callee_is_user_defined = self
+                                .builder
+                                .module
+                                .functions
+                                .get(&func_id)
+                                .map(|f| f.kind == crate::ir::functions::FunctionKind::UserDefined)
+                                .unwrap_or(false);
+
                             let mut arg_regs = Vec::new();
                             for arg in args.iter() {
                                 if let Some(reg) = self.lower_expression(arg) {
-                                    let is_heap_intermediate = matches!(
-                                        &arg.kind,
-                                        HirExprKind::New { .. } | HirExprKind::Call { .. }
-                                    ) && self.get_drop_behavior(arg.ty)
-                                        == DropBehavior::AutoDrop;
-                                    if is_heap_intermediate {
-                                        self.temp_heap_values.push(reg);
+                                    if callee_is_user_defined {
+                                        let is_heap_intermediate = matches!(
+                                            &arg.kind,
+                                            HirExprKind::New { .. } | HirExprKind::Call { .. }
+                                        ) && self
+                                            .get_drop_behavior(arg.ty)
+                                            == DropBehavior::AutoDrop;
+                                        if is_heap_intermediate {
+                                            self.temp_heap_values.push(reg);
+                                        }
                                     }
                                     arg_regs.push(reg);
                                 }
