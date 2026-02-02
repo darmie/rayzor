@@ -35,15 +35,13 @@ class NBody {
     public static function main() {
         initBodies();
 
-        // Run simulation
-        var n = 500000;
-        trace(energy());
-
-        for (i in 0...n) {
-            advance(0.01);
+        // Run simulation: 20 x 500,000 = 10,000,000 iterations
+        // Matches official Haxe benchmark at https://benchs.haxe.org/nbody/
+        for (j in 0...20) {
+            for (i in 0...500000) {
+                advance(0.01);
+            }
         }
-
-        trace(energy());
     }
 
     static function initBodies() {

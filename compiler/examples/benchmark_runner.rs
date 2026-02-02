@@ -59,6 +59,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -108,6 +109,10 @@ enum Target {
     RayzorPrecompiledTiered, // .rzb pre-bundled MIR + tiered warmup + LLVM
     #[cfg(feature = "llvm-backend")]
     RayzorLLVM,
+    HaxeInterp,   // haxe --interp
+    HaxeHashLink, // haxe -hl → hl
+    HaxeCpp,      // haxe -cpp → compiled binary
+    HaxeJvm,      // haxe -java → JVM bytecode
 }
 
 impl Target {
@@ -120,6 +125,10 @@ impl Target {
             Target::RayzorPrecompiledTiered => "rayzor-precompiled-tiered",
             #[cfg(feature = "llvm-backend")]
             Target::RayzorLLVM => "rayzor-llvm",
+            Target::HaxeInterp => "haxe-interp",
+            Target::HaxeHashLink => "haxe-hashlink",
+            Target::HaxeCpp => "haxe-cpp",
+            Target::HaxeJvm => "haxe-jvm",
         }
     }
 
@@ -132,7 +141,18 @@ impl Target {
             Target::RayzorPrecompiledTiered => "Pre-bundled MIR + tiered + LLVM",
             #[cfg(feature = "llvm-backend")]
             Target::RayzorLLVM => "LLVM JIT (-O3, maximum optimization)",
+            Target::HaxeInterp => "Haxe --interp (eval interpreter)",
+            Target::HaxeHashLink => "Haxe HashLink JIT",
+            Target::HaxeCpp => "Haxe C++ (hxcpp)",
+            Target::HaxeJvm => "Haxe JVM (java bytecode)",
         }
+    }
+
+    fn is_haxe(&self) -> bool {
+        matches!(
+            self,
+            Target::HaxeInterp | Target::HaxeHashLink | Target::HaxeCpp | Target::HaxeJvm
+        )
     }
 }
 
@@ -559,12 +579,16 @@ fn setup_llvm_benchmark<'ctx>(
         .map_err(|e| format!("parse: {}", e))?;
     unit.lower_to_tast().map_err(|e| format!("tast: {:?}", e))?;
 
-    let mir_modules = unit.get_mir_modules();
+    let mut mir_modules = unit.get_mir_modules();
 
-    // NOTE: We don't apply MIR optimization here because:
-    // 1. Some MIR optimization passes have bugs that break IR validity
-    // 2. LLVM applies its own aggressive O3 optimizations during finalize()
-    // 3. The MIR is already correct from the frontend; LLVM will optimize it further
+    // Apply MIR optimizations (O2) before LLVM compilation.
+    // MIR inlining + constant folding + DCE feed better IR to LLVM,
+    // enabling LLVM O3 to produce tighter code (same as Cranelift path).
+    let mut pass_manager = PassManager::for_level(OptimizationLevel::O2);
+    for module in &mut mir_modules {
+        let module_mut = std::sync::Arc::make_mut(module);
+        let _ = pass_manager.run(module_mut);
+    }
 
     // Acquire LLVM lock for thread safety during compilation
     let _llvm_guard = compiler::codegen::llvm_lock();
@@ -622,6 +646,199 @@ fn run_benchmark_llvm(
     let mut state = setup_llvm_benchmark(bench, symbols, &context)?;
     let exec_time = run_llvm_iteration(&mut state)?;
     Ok((state.compile_time, exec_time))
+}
+
+/// Map benchmark name to the Haxe-native source file and main class
+fn get_haxe_source(bench_name: &str) -> Option<(&'static str, &'static str)> {
+    match bench_name {
+        "nbody" => Some(("BMNBodyCode.hx", "BMNBodyCode")),
+        "mandelbrot" => Some(("BMMandelbrotCode.hx", "BMMandelbrotCode")),
+        _ => None,
+    }
+}
+
+/// Get the path to the haxe/ benchmark sources directory
+fn get_haxe_bench_dir() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/haxe")
+}
+
+/// Check if `haxe` CLI is available on the system
+fn haxe_available() -> bool {
+    Command::new("haxe")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Check if `hl` (HashLink) is available on the system
+fn hashlink_available() -> bool {
+    Command::new("hl")
+        .arg("--version")
+        .output()
+        .map(|_| true) // hl --version may exit non-zero but still means it's installed
+        .unwrap_or(false)
+}
+
+fn java_available() -> bool {
+    Command::new("java")
+        .arg("-version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Run a Haxe target benchmark via CLI. Returns (compile_time, exec_time).
+/// For --interp, compile_time is 0 (interpreted). For C++/HL, compile is the haxe compile step.
+fn run_haxe_benchmark(bench_name: &str, target: Target) -> Result<(Duration, Duration), String> {
+    let (source_file, main_class) = get_haxe_source(bench_name)
+        .ok_or_else(|| format!("No Haxe source for benchmark '{}'", bench_name))?;
+
+    let haxe_dir = get_haxe_bench_dir();
+    let source_path = haxe_dir.join(source_file);
+    if !source_path.exists() {
+        return Err(format!("Haxe source not found: {}", source_path.display()));
+    }
+
+    // Create a temp directory for compilation output
+    let tmp_dir = std::env::temp_dir().join(format!("rayzor_haxe_bench_{}", bench_name));
+    let _ = fs::create_dir_all(&tmp_dir);
+
+    match target {
+        Target::HaxeInterp => {
+            // haxe --interp: compile + execute in one step
+            let start = Instant::now();
+            let output = Command::new("haxe")
+                .arg("--main")
+                .arg(main_class)
+                .arg("-cp")
+                .arg(&haxe_dir)
+                .arg("--interp")
+                .output()
+                .map_err(|e| format!("Failed to run haxe: {}", e))?;
+            let elapsed = start.elapsed();
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("haxe --interp failed: {}", stderr));
+            }
+
+            // All time is execution for interp (no separate compile step)
+            Ok((Duration::ZERO, elapsed))
+        }
+
+        Target::HaxeHashLink => {
+            // Step 1: Compile to .hl bytecode
+            let hl_path = tmp_dir.join(format!("{}.hl", bench_name));
+            let compile_start = Instant::now();
+            let output = Command::new("haxe")
+                .arg("--main")
+                .arg(main_class)
+                .arg("-cp")
+                .arg(&haxe_dir)
+                .arg("-hl")
+                .arg(&hl_path)
+                .output()
+                .map_err(|e| format!("Failed to compile to HL: {}", e))?;
+            let compile_time = compile_start.elapsed();
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("haxe -hl compile failed: {}", stderr));
+            }
+
+            // Step 2: Run with hl
+            let exec_start = Instant::now();
+            let output = Command::new("hl")
+                .arg(&hl_path)
+                .output()
+                .map_err(|e| format!("Failed to run hl: {}", e))?;
+            let exec_time = exec_start.elapsed();
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("hl execution failed: {}", stderr));
+            }
+
+            Ok((compile_time, exec_time))
+        }
+
+        Target::HaxeCpp => {
+            // Step 1: Compile to C++
+            let cpp_dir = tmp_dir.join("cpp");
+            let compile_start = Instant::now();
+            let output = Command::new("haxe")
+                .arg("--main")
+                .arg(main_class)
+                .arg("-cp")
+                .arg(&haxe_dir)
+                .arg("-cpp")
+                .arg(&cpp_dir)
+                .output()
+                .map_err(|e| format!("Failed to compile to C++: {}", e))?;
+            let compile_time = compile_start.elapsed();
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("haxe -cpp compile failed: {}", stderr));
+            }
+
+            // Step 2: Run the compiled binary
+            let binary = cpp_dir.join(main_class);
+            let exec_start = Instant::now();
+            let output = Command::new(&binary)
+                .output()
+                .map_err(|e| format!("Failed to run C++ binary: {}", e))?;
+            let exec_time = exec_start.elapsed();
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("C++ execution failed: {}", stderr));
+            }
+
+            Ok((compile_time, exec_time))
+        }
+
+        Target::HaxeJvm => {
+            // Step 1: Compile to Java bytecode
+            let java_dir = tmp_dir.join("java");
+            let compile_start = Instant::now();
+            let output = Command::new("haxe")
+                .arg("--main")
+                .arg(main_class)
+                .arg("-cp")
+                .arg(&haxe_dir)
+                .arg("--jvm")
+                .arg(java_dir.join(format!("{}.jar", main_class)))
+                .output()
+                .map_err(|e| format!("Failed to compile to JVM: {}", e))?;
+            let compile_time = compile_start.elapsed();
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("haxe --jvm compile failed: {}", stderr));
+            }
+
+            // Step 2: Run with java
+            let jar_path = java_dir.join(format!("{}.jar", main_class));
+            let exec_start = Instant::now();
+            let output = Command::new("java")
+                .arg("-jar")
+                .arg(&jar_path)
+                .output()
+                .map_err(|e| format!("Failed to run JVM: {}", e))?;
+            let exec_time = exec_start.elapsed();
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("JVM execution failed: {}", stderr));
+            }
+
+            Ok((compile_time, exec_time))
+        }
+
+        _ => Err(format!("{} is not a Haxe target", target.name())),
+    }
 }
 
 fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, String> {
@@ -750,6 +967,20 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
                 match run_precompiled_tiered_iteration(&mut state) {
                     Ok(exec) => {
                         compile_times.push(load_time); // Load time = "compile time"
+                        exec_times.push(exec);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+
+        // Haxe CLI targets: run via external haxe command
+        Target::HaxeInterp | Target::HaxeHashLink | Target::HaxeCpp | Target::HaxeJvm => {
+            // No warmup for Haxe targets — matches Haxe benchmark methodology
+            for _ in 0..BENCH_RUNS {
+                match run_haxe_benchmark(&bench.name, target) {
+                    Ok((compile, exec)) => {
+                        compile_times.push(compile);
                         exec_times.push(exec);
                     }
                     Err(e) => return Err(e),
@@ -1166,9 +1397,26 @@ fn main() {
         Target::RayzorCranelift,
         Target::RayzorInterpreter,
         Target::RayzorTiered,
+        Target::RayzorPrecompiled,
+        Target::RayzorPrecompiledTiered,
     ];
     #[cfg(feature = "llvm-backend")]
     all_targets_list.push(Target::RayzorLLVM);
+
+    // Add Haxe targets if haxe CLI is available
+    if haxe_available() {
+        all_targets_list.push(Target::HaxeInterp);
+        if hashlink_available() {
+            all_targets_list.push(Target::HaxeHashLink);
+        }
+        all_targets_list.push(Target::HaxeCpp);
+        if java_available() {
+            all_targets_list.push(Target::HaxeJvm);
+        }
+        println!("Haxe CLI detected — including Haxe targets");
+    } else {
+        println!("Haxe CLI not found — skipping Haxe targets (install haxe to enable)");
+    }
 
     // Filter by --target flag if provided
     let all_targets: Vec<Target> = if let Some(ref target_name) = specific_target {
@@ -1233,21 +1481,27 @@ fn main() {
         let is_heavy = is_heavy_benchmark(bench_name);
         let has_precompiled = has_precompiled_bundle(bench_name);
 
+        let has_haxe_source = get_haxe_source(bench_name).is_some();
+
         let mut targets: Vec<Target> = if specific_target.is_some() {
             // When --target is specified, use exactly the requested targets
             all_targets.clone()
         } else {
-            // Default: filter heavy benchmarks and add precompiled targets
+            // Default: filter heavy benchmarks, filter Haxe/precompiled without sources/bundles
             let mut t: Vec<Target> = all_targets
                 .iter()
                 .filter(|t| !is_heavy || !matches!(t, Target::RayzorInterpreter))
+                .filter(|t| !t.is_haxe() || has_haxe_source)
+                .filter(|t| {
+                    !matches!(
+                        t,
+                        Target::RayzorPrecompiled | Target::RayzorPrecompiledTiered
+                    ) || has_precompiled
+                })
                 .copied()
                 .collect();
 
-            // Add precompiled targets if .rzb bundle exists
             if has_precompiled {
-                t.push(Target::RayzorPrecompiled);
-                t.push(Target::RayzorPrecompiledTiered);
                 println!("  (Precompiled .rzb bundle found - testing AOT and AOT+tiered)\n");
             }
 
@@ -1259,25 +1513,8 @@ fn main() {
             t
         };
 
-        // When --target specifies precompiled targets, add them if not already present
+        // When --target is specified, filter to only that target
         if let Some(ref tn) = specific_target {
-            if tn == "rayzor-precompiled"
-                && has_precompiled
-                && !targets
-                    .iter()
-                    .any(|t| matches!(t, Target::RayzorPrecompiled))
-            {
-                targets.push(Target::RayzorPrecompiled);
-            }
-            if tn == "rayzor-precompiled-tiered"
-                && has_precompiled
-                && !targets
-                    .iter()
-                    .any(|t| matches!(t, Target::RayzorPrecompiledTiered))
-            {
-                targets.push(Target::RayzorPrecompiledTiered);
-            }
-            // Re-filter to only the requested target
             targets.retain(|t| t.name() == tn.as_str());
             if targets.is_empty() {
                 eprintln!(
@@ -1288,108 +1525,13 @@ fn main() {
             }
         }
 
-        // IMPORTANT: Run LLVM FIRST before spawning background threads!
-        // LLVM's optimization passes hang when JIT code (Cranelift) executes concurrently.
-        // This is a known limitation - LLVM finalize() must complete before other JIT runs.
+        // Run all targets sequentially to avoid CPU contention between benchmarks.
+        // This ensures each target gets full CPU resources for accurate measurement.
         let mut results = Vec::new();
 
-        #[cfg(feature = "llvm-backend")]
-        let llvm_target = targets
-            .iter()
-            .find(|t| matches!(t, Target::RayzorLLVM))
-            .cloned();
-        #[cfg(not(feature = "llvm-backend"))]
-        let llvm_target: Option<Target> = None;
-
-        // Run LLVM on main thread FIRST (before spawning other threads)
-        #[cfg(feature = "llvm-backend")]
-        if let Some(llvm) = llvm_target {
-            println!("\n  Running LLVM first (must complete before other JIT)...\n");
-            let result = run_benchmark(&bench, llvm);
-            match result {
-                Ok(bench_result) => {
-                    println!("  [DONE] {} ({})", llvm.name(), llvm.description());
-                    println!(
-                        "         Compile: {:.2}ms, Execute: {:.2}ms, Total: {:.2}ms\n",
-                        bench_result.compile_time_ms,
-                        bench_result.runtime_ms,
-                        bench_result.total_time_ms
-                    );
-                    results.push(bench_result);
-                }
-                Err(e) => {
-                    eprintln!("  [FAIL] {}: {}\n", llvm.name(), e);
-                }
-            }
-        }
-
-        // Run tiered NEXT (before other parallel targets) to ensure consistent timing
-        // Tiered mode uses interpreter for startup, then promotes to Cranelift JIT
-        let tiered_target = targets
-            .iter()
-            .find(|t| matches!(t, Target::RayzorTiered))
-            .cloned();
-        if let Some(tiered) = tiered_target {
-            println!("  Running tiered (interpreter -> Cranelift)...\n");
-            let result = run_benchmark(&bench, tiered);
-            match result {
-                Ok(bench_result) => {
-                    println!("  [DONE] {} ({})", tiered.name(), tiered.description());
-                    println!(
-                        "         Compile: {:.2}ms, Execute: {:.2}ms, Total: {:.2}ms\n",
-                        bench_result.compile_time_ms,
-                        bench_result.runtime_ms,
-                        bench_result.total_time_ms
-                    );
-                    results.push(bench_result);
-                }
-                Err(e) => {
-                    eprintln!("  [FAIL] {}: {}\n", tiered.name(), e);
-                }
-            }
-        }
-
-        // NOW run remaining targets in parallel (Cranelift, Interpreter)
-        let (tx, rx) = mpsc::channel::<(Target, Result<BenchmarkResult, String>)>();
-        let mut handles = Vec::new();
-
-        let parallel_targets: Vec<Target> = targets
-            .iter()
-            .filter(|t| {
-                #[cfg(feature = "llvm-backend")]
-                if matches!(t, Target::RayzorLLVM) {
-                    return false;
-                }
-                !matches!(t, Target::RayzorTiered)
-            })
-            .copied()
-            .collect();
-
-        if !parallel_targets.is_empty() {
-            println!(
-                "  Running {} other targets in parallel...\n",
-                parallel_targets.len()
-            );
-        }
-
-        for target in parallel_targets {
-            let tx = tx.clone();
-            let bench_source = bench.source.clone();
-            let bench_name_clone = bench.name.clone();
-
-            let handle = thread::spawn(move || {
-                let bench = Benchmark {
-                    name: bench_name_clone,
-                    source: bench_source,
-                };
-                let result = run_benchmark(&bench, target);
-                let _ = tx.send((target, result));
-            });
-            handles.push(handle);
-        }
-        drop(tx); // Close sender so receiver knows when all threads are done
-
-        while let Ok((target, result)) = rx.recv() {
+        for target in &targets {
+            println!("  Running {} ...", target.name());
+            let result = run_benchmark(&bench, *target);
             match result {
                 Ok(bench_result) => {
                     println!("  [DONE] {} ({})", target.name(), target.description());
@@ -1405,11 +1547,6 @@ fn main() {
                     eprintln!("  [FAIL] {}: {}\n", target.name(), e);
                 }
             }
-        }
-
-        // Wait for all threads to complete
-        for handle in handles {
-            let _ = handle.join();
         }
 
         // Sort results by target name for consistent ordering

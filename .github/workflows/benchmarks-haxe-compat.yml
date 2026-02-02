@@ -1,0 +1,76 @@
+name: Haxe-Compatible Benchmarks
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: Rayzor vs Haxe Benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Install Haxe 4 + HashLink ---
+      - name: Install Haxe 4.3.6
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: 4.3.6
+
+      - name: Install HashLink
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpng-dev libturbojpeg-dev libvorbis-dev libopenal-dev libsdl2-dev libmbedtls-dev libuv1-dev
+          git clone https://github.com/HaxeFoundation/hashlink.git /tmp/hashlink
+          cd /tmp/hashlink
+          make
+          sudo make install
+          sudo ldconfig
+
+      - name: Install hxcpp
+        run: |
+          haxelib setup ~/haxelib
+          haxelib install hxcpp --always
+
+      - name: Verify Haxe installation
+        run: |
+          haxe --version
+          hl --version || true
+          echo "hxcpp installed: $(haxelib path hxcpp 2>/dev/null | head -1)"
+
+      # --- Install LLVM 18 for Rayzor ---
+      - name: Install LLVM 18
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+          sudo add-apt-repository -y "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-18 main"
+          sudo apt-get update
+          sudo apt-get install -y llvm-18 llvm-18-dev libpolly-18-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # --- Run benchmarks (Rayzor + Haxe targets auto-detected) ---
+      - name: Run nbody benchmark
+        run: cargo run --release --package compiler --features all-backends,tcc-linker --example benchmark_runner -- nbody --json
+
+      - name: Run mandelbrot benchmark
+        run: cargo run --release --package compiler --features all-backends,tcc-linker --example benchmark_runner -- mandelbrot --json
+
+      # --- Collect results ---
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: haxe-compat-benchmark-results
+          path: |
+            compiler/benchmarks/results/
+            compiler/benchmarks/charts/
+          retention-days: 90

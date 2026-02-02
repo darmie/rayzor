@@ -21,7 +21,7 @@
     <div class="summary">
         <h3>Summary</h3>
         <ul>
-            <li><strong>nbody</strong>: 4 targets measured</li>
+            <li><strong>nbody</strong>: 6 targets measured</li>
             <li><strong>mandelbrot</strong>: 1 targets measured</li>
             <li><strong>arithmetic</strong>: 1 targets measured</li>
             <li><strong>mandelbrot_tiny</strong>: 1 targets measured</li>
@@ -29,6 +29,20 @@
             <li><strong>mandelbrot_class_small</strong>: 1 targets measured</li>
             <li><strong>mandelbrot_simple</strong>: 1 targets measured</li>
         </ul>
+    </div>
+    <div class="summary">
+        <h3>Methodology</h3>
+        <p>Each benchmark is run <strong>15 warmup iterations</strong> followed by <strong>10 measured iterations</strong>.
+        Compile time and execution time are measured separately. Results show the <strong>mean</strong> of measured iterations.</p>
+        <ul>
+            <li><strong>rayzor-cranelift</strong> &mdash; Source &rarr; MIR (O2) &rarr; Cranelift JIT. Compile includes parsing, type-checking, MIR lowering, optimization, and JIT compilation.</li>
+            <li><strong>rayzor-llvm</strong> &mdash; Source &rarr; MIR (O2) &rarr; LLVM MCJIT. Same frontend pipeline, LLVM backend for peak throughput.</li>
+            <li><strong>rayzor-tiered</strong> &mdash; Source &rarr; interpreter &rarr; Cranelift JIT. Uses the <em>Benchmark</em> tier preset: interpreter thresholds (2/3/5), immediate bailout, synchronous optimization. Compile includes parsing + module loading; execution includes interpreter startup and JIT tier-up.</li>
+            <li><strong>rayzor-precompiled</strong> &mdash; Pre-bundled .rzb (MIR already O2-optimized) &rarr; Cranelift JIT. Compile is bundle load + JIT only (no parsing/lowering).</li>
+            <li><strong>rayzor-precompiled-tiered</strong> &mdash; Pre-bundled .rzb &rarr; tiered execution with LLVM upgrade after warmup.</li>
+        </ul>
+        <p>All targets share the same runtime (<code>librayzor_runtime</code>) and execute the same Haxe source code.
+        MIR optimization level O2 includes: dead code elimination, constant folding, copy propagation, function inlining, LICM, and CSE.</p>
     </div>
 
     <h2>nbody</h2>
@@ -39,16 +53,16 @@
         new Chart(document.getElementById('chart_0'), {
             type: 'bar',
             data: {
-                labels: ['rayzor-cranelift', 'rayzor-precompiled', 'rayzor-precompiled-tiered', 'rayzor-tiered'],
+                labels: ['haxe-interp', 'rayzor-cranelift', 'rayzor-llvm', 'rayzor-precompiled', 'rayzor-precompiled-tiered', 'rayzor-tiered'],
                 datasets: [
                     {
                         label: 'Compile (ms)',
-                        data: [209.97, 3.14, 1.44, 186.56],
+                        data: [0.00, 202.57, 223.66, 26.98, 2.07, 174.45],
                         backgroundColor: 'rgba(54, 162, 235, 0.8)'
                     },
                     {
                         label: 'Execute (ms)',
-                        data: [63.89, 84.86, 84.14, 63.94],
+                        data: [30992.76, 1261.01, 1597.65, 1249.85, 1249.83, 1254.99],
                         backgroundColor: 'rgba(255, 99, 132, 0.8)'
                     }
                 ]

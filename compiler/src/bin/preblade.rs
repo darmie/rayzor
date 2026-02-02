@@ -45,7 +45,7 @@ fn main() {
     let mut list_only = false;
     let mut verbose = false;
     let mut opt_level: Option<OptimizationLevel> = None;
-    let mut strip = true; // Tree-shake by default
+    let mut strip = false; // No tree-shake by default (JIT backends need full function visibility)
     let mut compress = true; // Compress by default
 
     let mut i = 1;
@@ -172,7 +172,7 @@ fn print_usage() {
     println!("  --bundle, -b <FILE>   Create a .rzb bundle from source files");
     println!("  --optimize, -O <N>    Apply MIR optimizations (0-3, default: 2)");
     println!("  -O0, -O1, -O2, -O3   Shorthand for --optimize N");
-    println!("  --no-strip            Disable dead-code stripping (on by default)");
+    println!("  --strip               Enable dead-code stripping (for AOT/size-optimized bundles)");
     println!("  --no-compress         Disable zstd compression (on by default)");
     println!("  --list, -l            List types without generating files");
     println!("  --verbose, -v         Show detailed output");
@@ -253,19 +253,6 @@ fn create_bundle(
     // Convert Arc<IrModule> to IrModule for the bundle
     let mut modules: Vec<_> = mir_modules.iter().map(|m| (**m).clone()).collect();
 
-    // Apply MIR optimizations if requested
-    if let Some(level) = opt_level {
-        if level != OptimizationLevel::O0 {
-            if verbose {
-                println!("  Applying MIR optimizations ({:?})...", level);
-            }
-            let mut pass_manager = PassManager::for_level(level);
-            for module in &mut modules {
-                let _ = pass_manager.run(module);
-            }
-        }
-    }
-
     let module_count = modules.len();
 
     // Find entry module and function
@@ -295,7 +282,8 @@ fn create_bundle(
         println!("  Entry: {}::{}", entry_module, entry_function);
     }
 
-    // Tree-shake unused functions, externs, and globals
+    // Tree-shake BEFORE optimization: removes truly unreachable functions first,
+    // so that inlining and other passes don't cause false positives later.
     if strip {
         if verbose {
             println!("  Tree-shaking...");
@@ -313,6 +301,19 @@ fn create_bundle(
                 "    Kept: {} functions, {} externs",
                 stats.functions_kept, stats.extern_functions_kept
             );
+        }
+    }
+
+    // Apply MIR optimizations after tree-shaking
+    if let Some(level) = opt_level {
+        if level != OptimizationLevel::O0 {
+            if verbose {
+                println!("  Applying MIR optimizations ({:?})...", level);
+            }
+            let mut pass_manager = PassManager::for_level(level);
+            for module in &mut modules {
+                let _ = pass_manager.run(module);
+            }
         }
     }
 
