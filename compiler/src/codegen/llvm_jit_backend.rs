@@ -3192,7 +3192,8 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                             .context
                             .i64_type()
                             .fn_type(&[self.context.i64_type().into()], false);
-                        let f = self.module
+                        let f = self
+                            .module
                             .add_function("rayzor_global_load", fn_type, None);
                         // Add attributes to help LLVM optimization
                         f.add_attribute(
@@ -3205,7 +3206,9 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                         f.add_attribute(
                             inkwell::attributes::AttributeLoc::Function,
                             self.context.create_enum_attribute(
-                                inkwell::attributes::Attribute::get_named_enum_kind_id("willreturn"),
+                                inkwell::attributes::Attribute::get_named_enum_kind_id(
+                                    "willreturn",
+                                ),
                                 0,
                             ),
                         );
@@ -4471,21 +4474,19 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
                         if first_field_is_ptr {
                             // String-like struct {ptr, i64} — pass pointer to struct
-                            let alloca =
-                                self.builder.build_alloca(struct_ty, &cast_name).map_err(
-                                    |e| format!("Failed to alloca for struct->ptr: {}", e),
-                                )?;
-                            self.builder.build_store(alloca, struct_val).map_err(|e| {
-                                format!("Failed to store struct for ptr: {}", e)
-                            })?;
+                            let alloca = self
+                                .builder
+                                .build_alloca(struct_ty, &cast_name)
+                                .map_err(|e| format!("Failed to alloca for struct->ptr: {}", e))?;
+                            self.builder
+                                .build_store(alloca, struct_val)
+                                .map_err(|e| format!("Failed to store struct for ptr: {}", e))?;
                             alloca.into()
                         } else {
                             // Object wrapper {i64, ptr} — extract the pointer field
                             self.builder
                                 .build_extract_value(struct_val, 1, &cast_name)
-                                .map_err(|e| {
-                                    format!("Failed to extract ptr from struct: {}", e)
-                                })?
+                                .map_err(|e| format!("Failed to extract ptr from struct: {}", e))?
                                 .into()
                         }
                     } else if val.is_struct_value() && expected_ty.is_int_type() {

@@ -83,7 +83,11 @@ impl OptimizationPass for ScalarReplacementPass {
     }
 }
 
-fn run_sra_on_function(function: &mut IrFunction, malloc_ids: &HashSet<IrFunctionId>, free_ids: &HashSet<IrFunctionId>) -> OptimizationResult {
+fn run_sra_on_function(
+    function: &mut IrFunction,
+    malloc_ids: &HashSet<IrFunctionId>,
+    free_ids: &HashSet<IrFunctionId>,
+) -> OptimizationResult {
     let mut result = OptimizationResult::unchanged();
 
     let constants = build_constant_map(&function.cfg);
@@ -94,7 +98,10 @@ fn run_sra_on_function(function: &mut IrFunction, malloc_ids: &HashSet<IrFunctio
         if eliminated > 0 {
             result.modified = true;
             result.instructions_eliminated += eliminated;
-            *result.stats.entry("allocs_replaced".to_string()).or_insert(0) += 1;
+            *result
+                .stats
+                .entry("allocs_replaced".to_string())
+                .or_insert(0) += 1;
         }
     }
 
@@ -102,9 +109,7 @@ fn run_sra_on_function(function: &mut IrFunction, malloc_ids: &HashSet<IrFunctio
 }
 
 /// Build a map of IrId → constant value from all Const instructions.
-fn build_constant_map(
-    cfg: &super::blocks::IrControlFlowGraph,
-) -> HashMap<IrId, i64> {
+fn build_constant_map(cfg: &super::blocks::IrControlFlowGraph) -> HashMap<IrId, i64> {
     let mut constants = HashMap::new();
     for block in cfg.blocks.values() {
         for inst in &block.instructions {
@@ -138,10 +143,16 @@ fn find_candidates_in_function(
         for (idx, inst) in block.instructions.iter().enumerate() {
             let alloc_dest = match inst {
                 // Stack alloc
-                IrInstruction::Alloc { dest, count: None, .. } => *dest,
+                IrInstruction::Alloc {
+                    dest, count: None, ..
+                } => *dest,
                 // Heap alloc via malloc
-                IrInstruction::CallDirect { dest: Some(dest), func_id, args, .. }
-                    if malloc_ids.contains(func_id) && args.len() == 1 => *dest,
+                IrInstruction::CallDirect {
+                    dest: Some(dest),
+                    func_id,
+                    args,
+                    ..
+                } if malloc_ids.contains(func_id) && args.len() == 1 => *dest,
                 _ => continue,
             };
 
@@ -334,21 +345,24 @@ fn try_build_candidate_function_wide(
 }
 
 /// Resolve GEP indices to a single field index.
-fn resolve_gep_field_index(
-    indices: &[IrId],
-    constants: &HashMap<IrId, i64>,
-) -> Option<usize> {
+fn resolve_gep_field_index(indices: &[IrId], constants: &HashMap<IrId, i64>) -> Option<usize> {
     match indices.len() {
         1 => {
             let idx = constants.get(&indices[0])?;
-            if *idx < 0 { return None; }
+            if *idx < 0 {
+                return None;
+            }
             Some(*idx as usize)
         }
         2 => {
             let base = constants.get(&indices[0])?;
-            if *base != 0 { return None; }
+            if *base != 0 {
+                return None;
+            }
             let field = constants.get(&indices[1])?;
-            if *field < 0 { return None; }
+            if *field < 0 {
+                return None;
+            }
             Some(*field as usize)
         }
         _ => None,
@@ -362,31 +376,29 @@ fn uses_any_tracked(inst: &IrInstruction, tracked: &HashSet<IrId>) -> bool {
             tracked.contains(func_ptr) || args.iter().any(|a| tracked.contains(a))
         }
         IrInstruction::Return { value: Some(v) } => tracked.contains(v),
-        IrInstruction::MemCopy { dest, src, .. } => {
-            tracked.contains(dest) || tracked.contains(src)
-        }
+        IrInstruction::MemCopy { dest, src, .. } => tracked.contains(dest) || tracked.contains(src),
         IrInstruction::StoreGlobal { value, .. } => tracked.contains(value),
-        IrInstruction::MakeClosure { captured_values, .. } => {
-            captured_values.iter().any(|v| tracked.contains(v))
-        }
+        IrInstruction::MakeClosure {
+            captured_values, ..
+        } => captured_values.iter().any(|v| tracked.contains(v)),
         IrInstruction::Throw { exception } => tracked.contains(exception),
         IrInstruction::BinOp { left, right, .. } => {
             tracked.contains(left) || tracked.contains(right)
         }
-        IrInstruction::Select { condition, true_val, false_val, .. } => {
+        IrInstruction::Select {
+            condition,
+            true_val,
+            false_val,
+            ..
+        } => {
             tracked.contains(condition) || tracked.contains(true_val) || tracked.contains(false_val)
         }
-        IrInstruction::Phi { incoming, .. } => {
-            incoming.iter().any(|(v, _)| tracked.contains(v))
-        }
+        IrInstruction::Phi { incoming, .. } => incoming.iter().any(|(v, _)| tracked.contains(v)),
         _ => false,
     }
 }
 
-fn terminator_uses_tracked(
-    terminator: &super::IrTerminator,
-    tracked: &HashSet<IrId>,
-) -> bool {
+fn terminator_uses_tracked(terminator: &super::IrTerminator, tracked: &HashSet<IrId>) -> bool {
     match terminator {
         super::IrTerminator::Return { value: Some(v) } => tracked.contains(v),
         super::IrTerminator::CondBranch { condition, .. } => tracked.contains(condition),
@@ -404,10 +416,7 @@ fn terminator_uses_tracked(
 ///
 /// This works for the post-inlining pattern where stores happen before loads
 /// in a linear block sequence (alloc block → constructor block → use block).
-fn apply_sra(
-    function: &mut IrFunction,
-    candidate: &SraCandidate,
-) -> usize {
+fn apply_sra(function: &mut IrFunction, candidate: &SraCandidate) -> usize {
     // Allocate initial Undef registers for each field
     let mut field_regs: Vec<IrId> = Vec::with_capacity(candidate.num_fields);
     for _ in 0..candidate.num_fields {
@@ -475,9 +484,7 @@ fn apply_sra(
                 }
 
                 // Replace Load via GEP → Copy from current field register
-                IrInstruction::Load { dest, ptr, .. }
-                    if candidate.gep_map.contains_key(ptr) =>
-                {
+                IrInstruction::Load { dest, ptr, .. } if candidate.gep_map.contains_key(ptr) => {
                     let field_idx = candidate.gep_map[ptr];
                     if field_idx < candidate.num_fields {
                         replacements.insert(
