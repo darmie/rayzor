@@ -192,6 +192,11 @@ impl InliningCostModel {
             return false;
         }
 
+        // Can't inline if entry block doesn't exist (extern/declaration)
+        if !callee.cfg.blocks.contains_key(&callee.cfg.entry_block) {
+            return false;
+        }
+
         // Count instructions and blocks
         let mut inst_count = 0;
         for block in callee.cfg.blocks.values() {
@@ -231,14 +236,14 @@ impl InliningPass {
     pub fn new() -> Self {
         Self {
             cost_model: InliningCostModel::default(),
-            max_iterations: 3,
+            max_iterations: 5,
         }
     }
 
     pub fn with_cost_model(cost_model: InliningCostModel) -> Self {
         Self {
             cost_model,
-            max_iterations: 3,
+            max_iterations: 5,
         }
     }
 
@@ -565,21 +570,42 @@ impl OptimizationPass for InliningPass {
                 }
             }
 
-            // Inline one call at a time to avoid invalidating indices
-            if let Some(candidate) = candidates.into_iter().next() {
-                match Self::inline_call_site(module, &candidate, &mut next_reg_id) {
-                    Ok(()) => {
-                        result.modified = true;
-                        *result
-                            .stats
-                            .entry("functions_inlined".to_string())
-                            .or_insert(0) += 1;
+            // Inline multiple call sites per iteration. Group by caller,
+            // then within each caller pick one site per block (back-to-front).
+            let mut sites_by_caller: HashMap<IrFunctionId, Vec<CallSite>> = HashMap::new();
+            for candidate in candidates {
+                sites_by_caller
+                    .entry(candidate.caller)
+                    .or_default()
+                    .push(candidate);
+            }
+            for sites in sites_by_caller.values_mut() {
+                sites.sort_by(|a, b| b.instruction_index.cmp(&a.instruction_index));
+            }
+
+            let mut any_inlined = false;
+            for (_caller_id, sites) in &sites_by_caller {
+                let mut inlined_blocks: HashSet<IrBlockId> = HashSet::new();
+                for candidate in sites {
+                    if inlined_blocks.contains(&candidate.block) {
+                        continue;
                     }
-                    Err(e) => {
-                        // Log error but continue
-                        tracing::warn!("Failed to inline call: {}", e);
+                    match Self::inline_call_site(module, candidate, &mut next_reg_id) {
+                        Ok(()) => {
+                            result.modified = true;
+                            any_inlined = true;
+                            inlined_blocks.insert(candidate.block);
+                            *result
+                                .stats
+                                .entry("functions_inlined".to_string())
+                                .or_insert(0) += 1;
+                        }
+                        Err(_) => {}
                     }
                 }
+            }
+            if !any_inlined {
+                break;
             }
         }
 

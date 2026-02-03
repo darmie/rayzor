@@ -106,7 +106,9 @@ fn declare_array_externs(builder: &mut MirBuilder) {
 
 /// Build: fn array_push(arr: Any, value: Any) -> void
 /// Appends an element to the array
+/// Note: Any is represented as i64 in LLVM, matching pointer-sized values
 fn build_array_push(builder: &mut MirBuilder) {
+    let ptr_void = IrType::Ptr(Box::new(IrType::Void));
     let func_id = builder
         .begin_function("array_push")
         .param("arr", IrType::Any)
@@ -123,12 +125,16 @@ fn build_array_push(builder: &mut MirBuilder) {
     let arr = builder.get_param(0);
     let value = builder.get_param(1);
 
+    // Cast arr from Any (i64) to ptr for extern call
+    let arr_ptr = builder.cast(arr, IrType::Any, ptr_void);
+
     // Call runtime function haxe_array_push_i64(arr: *HaxeArray, val: i64)
+    // value is already i64 (Any), which matches haxe_array_push_i64's signature
     let extern_func = builder
         .get_function_by_name("haxe_array_push_i64")
         .expect("haxe_array_push_i64 extern not found");
 
-    builder.call(extern_func, vec![arr, value]);
+    builder.call(extern_func, vec![arr_ptr, value]);
 
     builder.ret(None);
 }
@@ -136,6 +142,7 @@ fn build_array_push(builder: &mut MirBuilder) {
 /// Build: fn array_pop(arr: Any) -> Any
 /// Removes and returns the last element from the array
 fn build_array_pop(builder: &mut MirBuilder) {
+    let ptr_void = IrType::Ptr(Box::new(IrType::Void));
     let func_id = builder
         .begin_function("array_pop")
         .param("arr", IrType::Any)
@@ -150,13 +157,18 @@ fn build_array_pop(builder: &mut MirBuilder) {
 
     let arr = builder.get_param(0);
 
+    // Cast arr from Any (i64) to ptr for extern call
+    let arr_ptr = builder.cast(arr, IrType::Any, ptr_void.clone());
+
     // Call runtime function haxe_array_pop_ptr(arr: *HaxeArray) -> *mut u8
     let extern_func = builder
         .get_function_by_name("haxe_array_pop_ptr")
         .expect("haxe_array_pop_ptr extern not found");
 
-    if let Some(result) = builder.call(extern_func, vec![arr]) {
-        builder.ret(Some(result));
+    if let Some(result) = builder.call(extern_func, vec![arr_ptr]) {
+        // Cast result from ptr to Any (i64)
+        let result_i64 = builder.cast(result, ptr_void, IrType::Any);
+        builder.ret(Some(result_i64));
     } else {
         let null_val = builder.const_value(crate::ir::IrValue::Null);
         builder.ret(Some(null_val));
@@ -166,6 +178,7 @@ fn build_array_pop(builder: &mut MirBuilder) {
 /// Build: fn array_length(arr: Any) -> i64
 /// Returns the length of the array (usize as i64)
 fn build_array_length(builder: &mut MirBuilder) {
+    let ptr_void = IrType::Ptr(Box::new(IrType::Void));
     let func_id = builder
         .begin_function("array_length")
         .param("arr", IrType::Any)
@@ -180,12 +193,15 @@ fn build_array_length(builder: &mut MirBuilder) {
 
     let arr = builder.get_param(0);
 
+    // Cast arr from Any (i64) to ptr for extern call
+    let arr_ptr = builder.cast(arr, IrType::Any, ptr_void);
+
     // Call runtime function haxe_array_length(arr: *HaxeArray) -> i64 (usize)
     let extern_func = builder
         .get_function_by_name("haxe_array_length")
         .expect("haxe_array_length extern not found");
 
-    if let Some(len_i64) = builder.call(extern_func, vec![arr]) {
+    if let Some(len_i64) = builder.call(extern_func, vec![arr_ptr]) {
         // Return i64 directly - no cast needed
         builder.ret(Some(len_i64));
     } else {

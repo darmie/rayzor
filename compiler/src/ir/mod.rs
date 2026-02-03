@@ -29,6 +29,7 @@ pub mod modules;
 pub mod monomorphize; // Monomorphization pass for generics
 pub mod optimizable; // Generic optimization trait for different IR levels
 pub mod optimization;
+pub mod scalar_replacement; // Scalar Replacement of Aggregates (SRA)
 pub mod tree_shake; // Dead-code elimination for .rzb bundles
 pub mod types;
 pub mod validation;

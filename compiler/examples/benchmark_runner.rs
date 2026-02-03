@@ -1094,7 +1094,7 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
             // Compile once (AOT)
             let compile_start = Instant::now();
             let compiler = AotCompiler {
-                opt_level: MirOpt::O2,
+                opt_level: MirOpt::O3,
                 strip: true,
                 verbose: false,
                 ..Default::default()

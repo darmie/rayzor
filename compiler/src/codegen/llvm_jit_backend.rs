@@ -1068,13 +1068,10 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             }
 
             IrType::Any => {
-                // Any type is {i64 type_id, i8* value_ptr}
-                let type_id = self.context.i64_type();
-                let value_ptr = self.context.ptr_type(AddressSpace::default());
-                Ok(self
-                    .context
-                    .struct_type(&[type_id.into(), value_ptr.into()], false)
-                    .into())
+                // Any type is an opaque pointer in LLVM
+                // This avoids costly ptrtoint/inttoptr conversions that break LLVM optimizations.
+                // Pointers pass through directly; integers use inttoptr when needed.
+                Ok(self.context.ptr_type(AddressSpace::default()).into())
             }
 
             IrType::TypeVar(_) => {
@@ -1135,8 +1132,10 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         // Mangle the name to be LLVM-safe (replace :: with _)
         let func_name = Self::mangle_function_name(&function.name);
 
-        // If this function is ExternC (C ABI, no env param), treat it as extern
-        if function.kind == crate::ir::functions::FunctionKind::ExternC {
+        // If this function is ExternC or uses C calling convention (no env param), treat it as extern
+        let is_c_abi = function.kind == crate::ir::functions::FunctionKind::ExternC
+            || function.signature.calling_convention == crate::ir::CallingConvention::C;
+        if is_c_abi {
             self.extern_function_ids.insert(func_id);
 
             // Translate parameter types (NO env param for extern C functions)
@@ -1368,6 +1367,8 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
         // Check if this function uses sret (struct return)
         let uses_sret = self.sret_function_ids.contains(&func_id);
+        // Check if this function uses C calling convention (no hidden env param)
+        let is_c_abi = self.extern_function_ids.contains(&func_id);
 
         // Map function parameters to LLVM values using their actual IrIds
         // Note: we filter out void parameters but need to handle IrIds correctly
@@ -1387,10 +1388,11 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 .map(|p| (p.reg.as_u32(), &p.ty))
                 .collect();
             tracing::debug!(
-                "Function '{}': parameters {:?}, uses_sret: {}",
+                "Function '{}': parameters {:?}, uses_sret: {}, is_c_abi: {}",
                 function.name,
                 param_ids,
-                uses_sret
+                uses_sret,
+                is_c_abi
             );
         }
 
@@ -1404,19 +1406,26 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         }
 
         // Calculate the offset for IR parameters based on hidden params:
-        // - If uses_sret: param 0 = sret ptr, param 1 = env, params 2+ = IR params
-        // - Otherwise: param 0 = env, params 1+ = IR params
-        let param_offset = if uses_sret { 2 } else { 1 };
+        // - C ABI (is_c_abi): no hidden params, param_offset = 0
+        // - Haxe with sret: param 0 = sret ptr, param 1 = env, params 2+ = IR params
+        // - Haxe no sret: param 0 = env, params 1+ = IR params
+        let param_offset = if is_c_abi {
+            0 // C ABI: no hidden parameters
+        } else if uses_sret {
+            2 // Haxe with sret: sret + env
+        } else {
+            1 // Haxe: just env
+        };
 
         // Then map non-void parameters to their LLVM values
         for (i, llvm_param) in llvm_func.get_param_iter().enumerate() {
-            if uses_sret && i == 0 {
-                // Capture the sret pointer for use in Return terminator
+            if !is_c_abi && uses_sret && i == 0 {
+                // Capture the sret pointer for use in Return terminator (Haxe ABI only)
                 self.current_sret_ptr = Some(llvm_param.into_pointer_value());
                 continue;
             }
-            if i == (if uses_sret { 1 } else { 0 }) {
-                // Skip the hidden env parameter
+            if !is_c_abi && i == (if uses_sret { 1 } else { 0 }) {
+                // Skip the hidden env parameter (Haxe ABI only)
                 continue;
             }
             let ir_param_idx = i - param_offset;
@@ -1451,9 +1460,56 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         // We create a "true entry" block that just branches to the first MIR block.
         // This ensures loops back to block 0 don't violate LLVM's entry block rule.
 
-        // Get blocks sorted by ID to ensure correct processing order
-        let mut sorted_blocks: Vec<_> = function.cfg.blocks.iter().collect();
-        sorted_blocks.sort_by_key(|(id, _)| id.as_u32());
+        // Get blocks in reverse post-order (RPO) to ensure definitions are
+        // visited before uses. This is critical after inlining creates blocks
+        // with higher IDs in the middle of control flow.
+        let sorted_blocks = {
+            let mut rpo = Vec::new();
+            let mut visited = std::collections::HashSet::new();
+            let mut stack = vec![(function.cfg.entry_block, false)];
+            while let Some((block_id, processed)) = stack.pop() {
+                if processed {
+                    if let Some(block) = function.cfg.blocks.get(&block_id) {
+                        rpo.push((block_id, block));
+                    }
+                    continue;
+                }
+                if !visited.insert(block_id) {
+                    continue;
+                }
+                stack.push((block_id, true));
+                // Push successors in reverse order so they're processed in forward order
+                let successors: Vec<IrBlockId> =
+                    match function.cfg.blocks.get(&block_id).map(|b| &b.terminator) {
+                        Some(IrTerminator::Branch { target }) => vec![*target],
+                        Some(IrTerminator::CondBranch {
+                            true_target,
+                            false_target,
+                            ..
+                        }) => vec![*true_target, *false_target],
+                        Some(IrTerminator::Switch { cases, default, .. }) => {
+                            let mut targets: Vec<IrBlockId> =
+                                cases.iter().map(|(_, t)| *t).collect();
+                            targets.push(*default);
+                            targets
+                        }
+                        _ => vec![],
+                    };
+                for succ in successors.into_iter().rev() {
+                    if !visited.contains(&succ) {
+                        stack.push((succ, false));
+                    }
+                }
+            }
+            rpo.reverse();
+            // Add any unreachable blocks not visited by RPO
+            for (block_id, block) in &function.cfg.blocks {
+                if !visited.contains(block_id) {
+                    rpo.push((*block_id, block));
+                }
+            }
+            rpo
+        };
 
         // Create the LLVM entry block (will branch to first MIR block)
         let entry_block = self.context.append_basic_block(llvm_func, "entry");
@@ -1809,9 +1865,22 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 // malloc/free overhead in hot loops (89% of mandelbrot time was in allocator).
                 if count.is_none() {
                     self.alloca_ids.insert(*dest);
+
+                    // WORKAROUND: For Ptr types that might represent HaxeArray or other
+                    // runtime structs, allocate extra space (128 bytes = 8 * 16 elements).
+                    // This matches Cranelift's behavior for Ptr/Any types.
+                    // HaxeArray is 32 bytes: { ptr, len, cap, elem_size }
+                    let final_alloc_ty: BasicTypeEnum = match ty {
+                        IrType::Ptr(_) | IrType::Any | IrType::Ref(_) => {
+                            // Allocate 128 bytes as an i8 array (matches Cranelift's 8*16)
+                            self.context.i8_type().array_type(128).into()
+                        }
+                        _ => alloc_ty,
+                    };
+
                     let alloca = self
                         .builder
-                        .build_alloca(alloc_ty, &format!("stack_{}", dest.as_u32()))
+                        .build_alloca(final_alloc_ty, &format!("stack_{}", dest.as_u32()))
                         .map_err(|e| format!("Failed to build alloca: {}", e))?;
                     self.value_map.insert(*dest, alloca.into());
                 } else {
@@ -3114,6 +3183,8 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 ty,
             } => {
                 // Call rayzor_global_load(global_id) -> i64
+                // Mark as nounwind+willreturn+memory(read,inaccessiblemem:readwrite)
+                // to allow LLVM to hoist out of loops
                 let load_fn = match self.module.get_function("rayzor_global_load") {
                     Some(f) => f,
                     None => {
@@ -3121,8 +3192,34 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                             .context
                             .i64_type()
                             .fn_type(&[self.context.i64_type().into()], false);
-                        self.module
-                            .add_function("rayzor_global_load", fn_type, None)
+                        let f = self.module
+                            .add_function("rayzor_global_load", fn_type, None);
+                        // Add attributes to help LLVM optimization
+                        f.add_attribute(
+                            inkwell::attributes::AttributeLoc::Function,
+                            self.context.create_enum_attribute(
+                                inkwell::attributes::Attribute::get_named_enum_kind_id("nounwind"),
+                                0,
+                            ),
+                        );
+                        f.add_attribute(
+                            inkwell::attributes::AttributeLoc::Function,
+                            self.context.create_enum_attribute(
+                                inkwell::attributes::Attribute::get_named_enum_kind_id("willreturn"),
+                                0,
+                            ),
+                        );
+                        // Use memory(read) attribute - LLVM 16+ style
+                        // Bit 0-1: default memory (0=none, 1=read, 2=write, 3=readwrite)
+                        // This says the function only reads memory (doesn't write)
+                        f.add_attribute(
+                            inkwell::attributes::AttributeLoc::Function,
+                            self.context.create_enum_attribute(
+                                inkwell::attributes::Attribute::get_named_enum_kind_id("memory"),
+                                1, // read-only
+                            ),
+                        );
+                        f
                     }
                 };
 
@@ -4362,41 +4459,33 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     // Handle struct -> ptr coercion (e.g., {i64, ptr} -> ptr)
                     if val.is_struct_value() && expected_ty.is_pointer_type() {
                         let struct_val = val.into_struct_value();
-                        if self.aot_mode && self.extern_function_ids.contains(&func_id) {
-                            // AOT: for extern calls, check the struct type to decide:
-                            // - {ptr, i64} = string struct → alloca+store (pass by reference)
-                            // - {i64, ptr} = object wrapper → extract ptr field (index 1)
-                            let struct_ty = struct_val.get_type();
-                            let first_field_is_ptr = struct_ty.count_fields() >= 2
-                                && struct_ty
-                                    .get_field_type_at_index(0)
-                                    .map(|t| t.is_pointer_type())
-                                    .unwrap_or(false);
+                        // Check the struct type to decide how to coerce:
+                        // - {ptr, i64} = string struct → alloca+store (pass by reference)
+                        // - {i64, ptr} = object wrapper → extract ptr field (index 1)
+                        let struct_ty = struct_val.get_type();
+                        let first_field_is_ptr = struct_ty.count_fields() >= 2
+                            && struct_ty
+                                .get_field_type_at_index(0)
+                                .map(|t| t.is_pointer_type())
+                                .unwrap_or(false);
 
-                            if first_field_is_ptr {
-                                // String-like struct {ptr, i64} — pass pointer to struct
-                                let alloca =
-                                    self.builder.build_alloca(struct_ty, &cast_name).map_err(
-                                        |e| format!("Failed to alloca for struct->ptr: {}", e),
-                                    )?;
-                                self.builder.build_store(alloca, struct_val).map_err(|e| {
-                                    format!("Failed to store struct for ptr: {}", e)
-                                })?;
-                                alloca.into()
-                            } else {
-                                // Object wrapper {i64, ptr} — extract the pointer field
-                                self.builder
-                                    .build_extract_value(struct_val, 1, &cast_name)
-                                    .map_err(|e| {
-                                        format!("Failed to extract ptr from struct: {}", e)
-                                    })?
-                                    .into()
-                            }
+                        if first_field_is_ptr {
+                            // String-like struct {ptr, i64} — pass pointer to struct
+                            let alloca =
+                                self.builder.build_alloca(struct_ty, &cast_name).map_err(
+                                    |e| format!("Failed to alloca for struct->ptr: {}", e),
+                                )?;
+                            self.builder.build_store(alloca, struct_val).map_err(|e| {
+                                format!("Failed to store struct for ptr: {}", e)
+                            })?;
+                            alloca.into()
                         } else {
-                            // JIT: extract pointer from struct (index 1 for {len, ptr})
+                            // Object wrapper {i64, ptr} — extract the pointer field
                             self.builder
                                 .build_extract_value(struct_val, 1, &cast_name)
-                                .map_err(|e| format!("Failed to extract ptr from struct: {}", e))?
+                                .map_err(|e| {
+                                    format!("Failed to extract ptr from struct: {}", e)
+                                })?
                                 .into()
                         }
                     } else if val.is_struct_value() && expected_ty.is_int_type() {
@@ -4498,6 +4587,22 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                             // Same width - use as-is
                             val.into()
                         }
+                    } else if val.is_pointer_value() && expected_ty.is_int_type() {
+                        // Ptr to int - convert pointer to integer
+                        let ptr_val = val.into_pointer_value();
+                        let target_int_ty = expected_ty.into_int_type();
+                        self.builder
+                            .build_ptr_to_int(ptr_val, target_int_ty, &cast_name)
+                            .map_err(|e| format!("Failed to convert ptr to int: {}", e))?
+                            .into()
+                    } else if val.is_int_value() && expected_ty.is_pointer_type() {
+                        // Int to ptr - convert integer to pointer
+                        let int_val = val.into_int_value();
+                        let target_ptr_ty = expected_ty.into_pointer_type();
+                        self.builder
+                            .build_int_to_ptr(int_val, target_ptr_ty, &cast_name)
+                            .map_err(|e| format!("Failed to convert int to ptr: {}", e))?
+                            .into()
                     } else {
                         // Use as-is
                         val.into()
@@ -4735,6 +4840,74 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     .build_extract_value(struct_val, 1, &name)
                     .map_err(|e| format!("Failed to extract ptr from struct cast: {}", e))?;
                 return Ok(extracted);
+            }
+        }
+
+        // Any type to integer - Any is now ptr, so we need ptrtoint
+        if matches!(from_ty, IrType::Any) && to_ty.is_integer() {
+            let target_int_ty = target_llvm_ty.into_int_type();
+            if src.is_pointer_value() {
+                // Any (ptr) to integer - use ptrtoint
+                let result = self
+                    .builder
+                    .build_ptr_to_int(src.into_pointer_value(), target_int_ty, &name)
+                    .map_err(|e| format!("Failed to build ptr to int from Any: {}", e))?;
+                return Ok(result.into());
+            } else if src.is_int_value() {
+                // Already int (shouldn't happen if Any is ptr, but handle it)
+                let src_int = src.into_int_value();
+                if src_int.get_type() == target_int_ty {
+                    return Ok(src);
+                }
+                let result = self
+                    .builder
+                    .build_int_z_extend_or_bit_cast(src_int, target_int_ty, &name)
+                    .map_err(|e| format!("Failed to cast int from Any: {}", e))?;
+                return Ok(result.into());
+            }
+        }
+
+        // Any type to pointer - Any is already ptr, just cast
+        if matches!(from_ty, IrType::Any) && to_ty.is_pointer() {
+            let target_ptr_ty = target_llvm_ty.into_pointer_type();
+            if src.is_pointer_value() {
+                // Already a pointer - just cast (no conversion needed with opaque ptrs)
+                let result = self
+                    .builder
+                    .build_pointer_cast(src.into_pointer_value(), target_ptr_ty, &name)
+                    .map_err(|e| format!("Failed to cast ptr from Any: {}", e))?;
+                return Ok(result.into());
+            } else if src.is_int_value() {
+                // Int to ptr (shouldn't happen if Any is ptr, but handle it)
+                let result = self
+                    .builder
+                    .build_int_to_ptr(src.into_int_value(), target_ptr_ty, &name)
+                    .map_err(|e| format!("Failed to build int to ptr from Any: {}", e))?;
+                return Ok(result.into());
+            }
+        }
+
+        // Pointer to Any - Any is ptr, just cast (no conversion needed)
+        if from_ty.is_pointer() && matches!(to_ty, IrType::Any) {
+            let target_ptr_ty = self.context.ptr_type(AddressSpace::default());
+            if src.is_pointer_value() {
+                let result = self
+                    .builder
+                    .build_pointer_cast(src.into_pointer_value(), target_ptr_ty, &name)
+                    .map_err(|e| format!("Failed to cast ptr to Any: {}", e))?;
+                return Ok(result.into());
+            }
+        }
+
+        // Integer to Any - Any is ptr, use inttoptr
+        if from_ty.is_integer() && matches!(to_ty, IrType::Any) {
+            let target_ptr_ty = self.context.ptr_type(AddressSpace::default());
+            if src.is_int_value() {
+                let result = self
+                    .builder
+                    .build_int_to_ptr(src.into_int_value(), target_ptr_ty, &name)
+                    .map_err(|e| format!("Failed to build int to ptr for Any: {}", e))?;
+                return Ok(result.into());
             }
         }
 

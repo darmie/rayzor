@@ -116,12 +116,7 @@ impl AotCompiler {
         let mut modules: Vec<_> = mir_modules.iter().map(|m| (**m).clone()).collect();
 
         // --- Phase 2: MIR optimizations ---
-        // Cap MIR passes at O2 (O3 MIR passes can be very slow on large functions).
-        // LLVM handles aggressive optimization at O3 much more effectively.
-        let mir_opt = match self.opt_level {
-            OptimizationLevel::O3 => OptimizationLevel::O2,
-            other => other,
-        };
+        let mir_opt = self.opt_level;
         if mir_opt != OptimizationLevel::O0 {
             if self.verbose {
                 println!("  Applying MIR optimizations ({:?})...", mir_opt);

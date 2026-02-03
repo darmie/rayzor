@@ -8707,10 +8707,11 @@ impl<'a> HirToMirContext<'a> {
                 // When a method returns `new Foo()`, the object must outlive the callee's stack frame
                 let _class_mir_type = self.convert_type(*class_type);
 
-                // Use a reasonable default object size (64 bytes = 8 fields of 8 bytes each)
-                // This covers most small-to-medium Haxe classes
-                // TODO: Calculate actual size from class field layout
-                let obj_size: u64 = 64;
+                // Calculate object size from constructor parameter count.
+                // Each field is at most 8 bytes (f64/i64/ptr). Add 8 bytes
+                // overhead for object header. Minimum 16 bytes.
+                let field_count = args.len() as u64; // constructor args = instance fields
+                let obj_size: u64 = ((field_count + 1) * 8).max(16);
 
                 // Use heap allocation (malloc) for class instances
                 let obj_ptr = self.build_heap_alloc(obj_size)?;

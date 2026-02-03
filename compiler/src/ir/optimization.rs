@@ -1569,6 +1569,7 @@ impl PassManager {
                 manager.add_pass(super::inlining::InliningPass::new());
                 // manager.add_pass(GlobalLoadCachingPass::new()); // TODO: fix hang on global-using programs
                 manager.add_pass(DeadCodeEliminationPass::new());
+                manager.add_pass(super::scalar_replacement::ScalarReplacementPass::new());
                 manager.add_pass(ConstantFoldingPass::new());
                 manager.add_pass(CopyPropagationPass::new());
                 manager.add_pass(CSEPass::new());
@@ -1583,6 +1584,7 @@ impl PassManager {
                 manager.add_pass(super::inlining::InliningPass::new());
                 // manager.add_pass(GlobalLoadCachingPass::new()); // TODO: fix hang on global-using programs
                 manager.add_pass(DeadCodeEliminationPass::new());
+                manager.add_pass(super::scalar_replacement::ScalarReplacementPass::new());
                 manager.add_pass(ConstantFoldingPass::new());
                 manager.add_pass(CopyPropagationPass::new());
                 manager.add_pass(GVNPass::new());
