@@ -90,17 +90,10 @@ impl OptimizationPass for ScalarReplacementPass {
         }
 
         for function in module.functions.values_mut() {
-            // TODO: Phi-aware SRA disabled due to type mismatch bug
-            // The scalar phi creation needs to handle type inference properly
-            // when field_types is not populated from loads.
-            // let r = run_phi_sra_on_function(function, &malloc_ids, &free_ids);
-            // if r.modified {
-            //     result.modified = true;
-            //     result.instructions_eliminated += r.instructions_eliminated;
-            //     for (k, v) in &r.stats {
-            //         *result.stats.entry(k.clone()).or_insert(0) += v;
-            //     }
-            // }
+            // NOTE: Phi-aware SRA is disabled due to remaining bugs with
+            // back-edge handling. The inner loop allocations in mandelbrot
+            // flow through phi nodes and can't be SRA'd with the simple approach.
+            // TODO: Fix phi-aware SRA to handle loop-carried allocations properly.
 
             // Run regular SRA for non-phi allocations
             let r = run_sra_on_function(function, &malloc_ids, &free_ids);
@@ -258,6 +251,9 @@ fn try_build_phi_candidate(
     constants: &HashMap<IrId, i64>,
     free_ids: &HashSet<IrFunctionId>,
 ) -> Option<PhiSraCandidate> {
+    // Build value type map for tracking types from Store instructions
+    let value_types = build_value_type_map(cfg);
+
     // Track all pointers derived from each malloc and the phi
     let mut all_tracked: HashSet<IrId> = HashSet::new();
     let mut malloc_tracked: HashMap<IrId, HashSet<IrId>> = HashMap::new();
@@ -405,6 +401,15 @@ fn try_build_phi_candidate(
                             return None; // Storing tracked pointer - escapes
                         }
 
+                        // Track field type from the stored value (for phi_tracked GEPs)
+                        if phi_tracked.contains(ptr) {
+                            if let Some(&field_idx) = phi_gep_map.get(ptr) {
+                                if let Some(ty) = value_types.get(value) {
+                                    field_types.entry(field_idx).or_insert_with(|| ty.clone());
+                                }
+                            }
+                        }
+
                         // Find which malloc this store belongs to
                         for (malloc_id, tracked) in &malloc_tracked {
                             if tracked.contains(ptr) {
@@ -422,7 +427,7 @@ fn try_build_phi_candidate(
                 }
 
                 IrInstruction::Load { ptr, ty, .. } => {
-                    // Track field types from loads on the phi
+                    // Track field types from loads on the phi (takes precedence over Store)
                     if phi_tracked.contains(ptr) {
                         if let Some(&field_idx) = phi_gep_map.get(ptr) {
                             field_types.insert(field_idx, ty.clone());
@@ -484,6 +489,13 @@ fn try_build_phi_candidate(
     }
 
     let num_fields = phi_gep_map.values().max().copied().unwrap_or(0) + 1;
+
+    // Safety check: reject candidates where any field lacks a known type
+    for field_idx in 0..num_fields {
+        if !field_types.contains_key(&field_idx) {
+            return None;
+        }
+    }
 
     // Verify each malloc has stores for all fields that are loaded from the phi
     for (_malloc_id, stores) in &malloc_field_stores {
