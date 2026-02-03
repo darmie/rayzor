@@ -100,19 +100,15 @@ impl OptimizationPass for ScalarReplacementPass {
                 }
             }
 
-            // NOTE: Phi-aware SRA is disabled. The transformation has SSA validity
-            // issues: incoming values for scalar phis must dominate the edge source
-            // blocks, but stores to malloc fields may happen in different blocks.
-            // TODO: Fix by using dominator analysis to verify value placement.
-            //
-            // let r = run_phi_sra_on_function(function, &malloc_ids, &free_ids);
-            // if r.modified {
-            //     result.modified = true;
-            //     result.instructions_eliminated += r.instructions_eliminated;
-            //     for (k, v) in &r.stats {
-            //         *result.stats.entry(k.clone()).or_insert(0) += v;
-            //     }
-            // }
+            // Run phi-aware SRA for loop-carried allocations
+            let r = run_phi_sra_on_function(function, &malloc_ids, &free_ids);
+            if r.modified {
+                result.modified = true;
+                result.instructions_eliminated += r.instructions_eliminated;
+                for (k, v) in &r.stats {
+                    *result.stats.entry(k.clone()).or_insert(0) += v;
+                }
+            }
         }
 
         result
@@ -320,6 +316,8 @@ fn try_build_phi_candidate(
     // Build GEP maps for each tracked set
     let mut malloc_gep_maps: HashMap<IrId, HashMap<IrId, usize>> = HashMap::new();
     let mut phi_gep_map: HashMap<IrId, usize> = HashMap::new();
+    // Track GEP element types to detect type conflicts at the same field index
+    let mut gep_element_types: HashMap<usize, IrType> = HashMap::new();
 
     for malloc_id in malloc_tracked.keys() {
         malloc_gep_maps.insert(*malloc_id, HashMap::new());
@@ -355,7 +353,7 @@ fn try_build_phi_candidate(
         for block in cfg.blocks.values() {
             for inst in &block.instructions {
                 if let IrInstruction::GetElementPtr {
-                    dest, ptr, indices, ..
+                    dest, ptr, indices, ty,
                 } = inst
                 {
                     if all_tracked.contains(dest) {
@@ -366,6 +364,17 @@ fn try_build_phi_candidate(
                         Some(idx) => idx,
                         None => return None, // Non-constant GEP
                     };
+
+                    // Check for type conflict: same index with different element types
+                    // This happens when vtable (i32) and user field (f64) share index 0
+                    if let Some(existing_ty) = gep_element_types.get(&field_idx) {
+                        if existing_ty != ty {
+                            // Type conflict at this field index - reject candidate
+                            return None;
+                        }
+                    } else {
+                        gep_element_types.insert(field_idx, ty.clone());
+                    }
 
                     // Check if this GEP is from any phi-tracked pointer
                     if phi_tracked.contains(ptr) {
@@ -843,6 +852,8 @@ fn try_build_candidate_function_wide(
     tracked.insert(alloc_dest);
 
     let mut gep_map: HashMap<IrId, usize> = HashMap::new();
+    // Track GEP element types to detect type conflicts at the same field index
+    let mut gep_element_types: HashMap<usize, IrType> = HashMap::new();
 
     // Iterate until fixpoint — find all GEPs, copies, casts derived from alloc
     let mut changed = true;
@@ -852,9 +863,19 @@ fn try_build_candidate_function_wide(
             for inst in &block.instructions {
                 match inst {
                     IrInstruction::GetElementPtr {
-                        dest, ptr, indices, ..
+                        dest, ptr, indices, ty,
                     } if tracked.contains(ptr) && !tracked.contains(dest) => {
                         if let Some(field_idx) = resolve_gep_field_index(indices, constants) {
+                            // Check for type conflict: same index with different element types
+                            // This happens when vtable (i32) and user field (f64) share index 0
+                            if let Some(existing_ty) = gep_element_types.get(&field_idx) {
+                                if existing_ty != ty {
+                                    // Type conflict at this field index - reject candidate
+                                    return None;
+                                }
+                            } else {
+                                gep_element_types.insert(field_idx, ty.clone());
+                            }
                             tracked.insert(*dest);
                             gep_map.insert(*dest, field_idx);
                             changed = true;

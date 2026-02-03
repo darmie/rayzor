@@ -8716,21 +8716,8 @@ impl<'a> HirToMirContext<'a> {
                 // Use heap allocation (malloc) for class instances
                 let obj_ptr = self.build_heap_alloc(obj_size)?;
 
-                // TEMPORARY WORKAROUND: Zero-initialize all fields
-                // TODO: Remove this once constructor field initialization is fixed
-                // The issue is that assignments in constructor bodies are lowered as
-                // Expression statements instead of Assignment statements, so fields
-                // don't get initialized properly. For now, just zero the memory.
-                if let Some(zero) = self.builder.build_const(IrValue::I32(0)) {
-                    if let Some(index_const) = self.builder.build_const(IrValue::I32(0)) {
-                        if let Some(field_ptr) =
-                            self.builder
-                                .build_gep(obj_ptr, vec![index_const], IrType::I32)
-                        {
-                            self.builder.build_store(field_ptr, zero);
-                        }
-                    }
-                }
+                // Note: Field initialization is handled by the constructor call below.
+                // The constructor stores user fields starting at index 0.
 
                 // debug!("Class type constructor - allocated object");
                 // debug!("Available constructors: {:?}", self.constructor_map.keys().collect::<Vec<_>>());
