@@ -1264,6 +1264,29 @@ impl OptimizationPass for GlobalLoadCachingPass {
                 continue;
             }
 
+            // Compute transitive closure of replacement map.
+            // If we have L1→L2 and L2→L3, we need L1→L3 (since L2 will be deleted).
+            // Iterate until no more changes to resolve all chains.
+            let mut changed = true;
+            let mut iterations = 0;
+            const MAX_ITERATIONS: usize = 100; // Safety limit
+            while changed && iterations < MAX_ITERATIONS {
+                changed = false;
+                iterations += 1;
+                let keys: Vec<IrId> = all_replacements.keys().copied().collect();
+                for key in keys {
+                    if let Some(&value) = all_replacements.get(&key) {
+                        // If the value is also being replaced, follow the chain
+                        if let Some(&transitive_value) = all_replacements.get(&value) {
+                            if transitive_value != value {
+                                all_replacements.insert(key, transitive_value);
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+
             // Apply replacements
             let dead_dests: HashSet<IrId> = all_replacements.keys().copied().collect();
 
@@ -1558,7 +1581,7 @@ impl PassManager {
             }
             OptimizationLevel::O1 => {
                 // Fast, low-overhead optimizations
-                // manager.add_pass(GlobalLoadCachingPass::new()); // TODO: fix hang on global-using programs
+                manager.add_pass(GlobalLoadCachingPass::new());
                 manager.add_pass(DeadCodeEliminationPass::new());
                 manager.add_pass(ConstantFoldingPass::new());
                 manager.add_pass(CopyPropagationPass::new());
@@ -1567,7 +1590,7 @@ impl PassManager {
             OptimizationLevel::O2 => {
                 // Standard optimizations
                 manager.add_pass(super::inlining::InliningPass::new());
-                // manager.add_pass(GlobalLoadCachingPass::new()); // TODO: fix hang on global-using programs
+                manager.add_pass(GlobalLoadCachingPass::new());
                 manager.add_pass(DeadCodeEliminationPass::new());
                 manager.add_pass(super::scalar_replacement::ScalarReplacementPass::new());
                 manager.add_pass(ConstantFoldingPass::new());
@@ -1582,7 +1605,7 @@ impl PassManager {
                 // Aggressive optimizations
                 // Inlining first to expose more optimization opportunities
                 manager.add_pass(super::inlining::InliningPass::new());
-                // manager.add_pass(GlobalLoadCachingPass::new()); // TODO: fix hang on global-using programs
+                manager.add_pass(GlobalLoadCachingPass::new());
                 manager.add_pass(DeadCodeEliminationPass::new());
                 manager.add_pass(super::scalar_replacement::ScalarReplacementPass::new());
                 manager.add_pass(ConstantFoldingPass::new());
