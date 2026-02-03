@@ -31,14 +31,15 @@ use inkwell::{
     },
     types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum},
     values::{
-        BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, PhiValue, PointerValue,
+        BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, PhiValue,
+        PointerValue,
     },
     AddressSpace, FloatPredicate, IntPredicate, OptimizationLevel,
 };
 
 use crate::ir::{
-    BinaryOp, CompareOp, IrBasicBlock, IrBlockId, IrFunction, IrFunctionId, IrId, IrInstruction,
-    IrModule, IrPhiNode, IrTerminator, IrType, IrValue, UnaryOp, VectorMinMaxKind,
+    BinaryOp, CompareOp, IrBasicBlock, IrBlockId, IrFunction, IrFunctionId, IrGlobalId, IrId,
+    IrInstruction, IrModule, IrPhiNode, IrTerminator, IrType, IrValue, UnaryOp, VectorMinMaxKind,
     VectorUnaryOpKind,
 };
 use std::collections::HashMap;
@@ -173,6 +174,10 @@ pub struct LLVMJitBackend<'ctx> {
     /// IrIds that were allocated via alloca (stack). Free instructions targeting
     /// these are no-ops. All other Free instructions call libc free().
     alloca_ids: std::collections::HashSet<IrId>,
+
+    /// LLVM global variables for Haxe static fields (inline access, no FFI)
+    /// Vec indexed by IrGlobalId.0 for O(1) lookup (no hashing overhead)
+    global_vars: Vec<Option<GlobalValue<'ctx>>>,
 }
 
 #[cfg(feature = "llvm-backend")]
@@ -233,6 +238,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             current_sret_ptr: None,
             aot_mode: false,
             alloca_ids: std::collections::HashSet::new(),
+            global_vars: Vec::new(),
         })
     }
 
@@ -450,6 +456,12 @@ impl<'ctx> LLVMJitBackend<'ctx> {
     /// Call this for ALL modules first before calling compile_module_bodies.
     /// This ensures all function references can be resolved across modules.
     pub fn declare_module(&mut self, module: &IrModule) -> Result<(), String> {
+        // Pre-allocate global_vars Vec for O(1) access without bounds checking
+        let max_global_id = module.next_global_id as usize;
+        if max_global_id > self.global_vars.len() {
+            self.global_vars.resize(max_global_id, None);
+        }
+
         // IMPORTANT: Declare extern functions FIRST so they get the original names
         // for linking with runtime symbols. Regular functions will get unique names
         // if there's a conflict.
@@ -739,6 +751,33 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
             _ => Ok(None),
         }
+    }
+
+    /// Get or create an LLVM global variable for inline global access.
+    /// This eliminates FFI calls to rayzor_global_load/store.
+    fn get_or_create_global(&mut self, global_id: IrGlobalId) -> GlobalValue<'ctx> {
+        let idx = global_id.0 as usize;
+
+        // Ensure Vec is large enough
+        if idx >= self.global_vars.len() {
+            self.global_vars.resize(idx + 1, None);
+        }
+
+        // Return existing global if present
+        if let Some(global) = self.global_vars[idx] {
+            return global;
+        }
+
+        // Create a new LLVM global variable (i64 to hold any value type)
+        let global_name = format!("__rayzor_global_{}", global_id.0);
+        let i64_type = self.context.i64_type();
+
+        let global = self.module.add_global(i64_type, None, &global_name);
+        global.set_initializer(&i64_type.const_zero());
+        global.set_linkage(inkwell::module::Linkage::Internal);
+
+        self.global_vars[idx] = Some(global);
+        global
     }
 
     /// Compile function bodies for a module (call declare_module for ALL modules first)
@@ -3320,68 +3359,25 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 self.value_map.insert(*dest, result);
             }
 
-            // Global variable access
+            // Global variable access - inline load from LLVM global (no FFI)
             IrInstruction::LoadGlobal {
                 dest,
                 global_id,
                 ty,
             } => {
-                // Call rayzor_global_load(global_id) -> i64
-                // Mark as nounwind+willreturn+memory(read,inaccessiblemem:readwrite)
-                // to allow LLVM to hoist out of loops
-                let load_fn = match self.module.get_function("rayzor_global_load") {
-                    Some(f) => f,
-                    None => {
-                        let fn_type = self
-                            .context
-                            .i64_type()
-                            .fn_type(&[self.context.i64_type().into()], false);
-                        let f = self
-                            .module
-                            .add_function("rayzor_global_load", fn_type, None);
-                        // Add attributes to help LLVM optimization
-                        f.add_attribute(
-                            inkwell::attributes::AttributeLoc::Function,
-                            self.context.create_enum_attribute(
-                                inkwell::attributes::Attribute::get_named_enum_kind_id("nounwind"),
-                                0,
-                            ),
-                        );
-                        f.add_attribute(
-                            inkwell::attributes::AttributeLoc::Function,
-                            self.context.create_enum_attribute(
-                                inkwell::attributes::Attribute::get_named_enum_kind_id(
-                                    "willreturn",
-                                ),
-                                0,
-                            ),
-                        );
-                        // Use memory(read) attribute - LLVM 16+ style
-                        // Bit 0-1: default memory (0=none, 1=read, 2=write, 3=readwrite)
-                        // This says the function only reads memory (doesn't write)
-                        f.add_attribute(
-                            inkwell::attributes::AttributeLoc::Function,
-                            self.context.create_enum_attribute(
-                                inkwell::attributes::Attribute::get_named_enum_kind_id("memory"),
-                                1, // read-only
-                            ),
-                        );
-                        f
-                    }
-                };
+                // Get or create LLVM global variable for this global_id
+                let global = self.get_or_create_global(*global_id);
+                let global_ptr = global.as_pointer_value();
 
-                let id_val = self.context.i64_type().const_int(global_id.0 as u64, false);
+                // Load the i64 value directly from the global
                 let result = self
                     .builder
-                    .build_call(
-                        load_fn,
-                        &[id_val.into()],
-                        &format!("global_load_{}", dest.as_u32()),
+                    .build_load(
+                        self.context.i64_type(),
+                        global_ptr,
+                        &format!("global_{}", global_id.0),
                     )
-                    .map_err(|e| format!("Failed to build global_load call: {}", e))?
-                    .try_as_basic_value()
-                    .left()
-                    .ok_or("rayzor_global_load did not return a value")?;
+                    .map_err(|e| format!("Failed to load global: {}", e))?;
 
                 // Cast the i64 result to the expected type if needed
                 let llvm_ty = self.translate_type(ty)?;
@@ -3408,28 +3404,16 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 self.value_map.insert(*dest, final_val);
             }
 
+            // Global variable store - inline store to LLVM global (no FFI)
             IrInstruction::StoreGlobal { global_id, value } => {
-                // Call rayzor_global_store(global_id, value)
-                let store_fn = match self.module.get_function("rayzor_global_store") {
-                    Some(f) => f,
-                    None => {
-                        let fn_type = self.context.void_type().fn_type(
-                            &[
-                                self.context.i64_type().into(),
-                                self.context.i64_type().into(),
-                            ],
-                            false,
-                        );
-                        self.module
-                            .add_function("rayzor_global_store", fn_type, None)
-                    }
-                };
+                // Get or create LLVM global variable for this global_id
+                let global = self.get_or_create_global(*global_id);
+                let global_ptr = global.as_pointer_value();
 
-                let id_val = self.context.i64_type().const_int(global_id.0 as u64, false);
                 let raw_val = self.get_value(*value)?;
 
                 // Convert value to i64 for storage
-                let val_i64 = if raw_val.is_pointer_value() {
+                let val_i64: inkwell::values::IntValue = if raw_val.is_pointer_value() {
                     self.builder
                         .build_ptr_to_int(
                             raw_val.into_pointer_value(),
@@ -3437,7 +3421,6 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                             "global_store_ptrtoint",
                         )
                         .map_err(|e| format!("Failed to cast ptr for global store: {}", e))?
-                        .into()
                 } else if raw_val.is_float_value() {
                     self.builder
                         .build_bit_cast(
@@ -3446,13 +3429,29 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                             "global_store_float",
                         )
                         .map_err(|e| format!("Failed to cast float for global store: {}", e))?
+                        .into_int_value()
+                } else if raw_val.is_int_value() {
+                    // May need to extend smaller ints to i64
+                    let int_val = raw_val.into_int_value();
+                    if int_val.get_type().get_bit_width() < 64 {
+                        self.builder
+                            .build_int_z_extend(
+                                int_val,
+                                self.context.i64_type(),
+                                "global_store_zext",
+                            )
+                            .map_err(|e| format!("Failed to extend int for global store: {}", e))?
+                    } else {
+                        int_val
+                    }
                 } else {
-                    raw_val
+                    return Err(format!("Cannot store {:?} to global", raw_val));
                 };
 
+                // Store directly to the LLVM global
                 self.builder
-                    .build_call(store_fn, &[id_val.into(), val_i64.into()], "global_store")
-                    .map_err(|e| format!("Failed to build global_store call: {}", e))?;
+                    .build_store(global_ptr, val_i64)
+                    .map_err(|e| format!("Failed to store to global: {}", e))?;
             }
 
             // Panic
