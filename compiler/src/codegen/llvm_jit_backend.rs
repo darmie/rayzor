@@ -1299,6 +1299,13 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 return Ok(llvm_func);
             }
 
+            // Replace array operations with inline implementations
+            // (e.g. haxe_array_length → inline load from offset 8)
+            if let Some(llvm_func) = self.try_create_array_intrinsic(&func_name, &fn_type)? {
+                self.function_map.insert(func_id, llvm_func);
+                return Ok(llvm_func);
+            }
+
             // Check if already declared
             if let Some(existing_func) = self.module.get_function(&func_name) {
                 let existing_params = existing_func.get_type().get_param_types();

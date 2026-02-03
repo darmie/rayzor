@@ -1641,7 +1641,9 @@ impl PassManager {
             OptimizationLevel::O2 => {
                 // Standard optimizations
                 manager.add_pass(super::inlining::InliningPass::new());
-                // manager.add_pass(GlobalLoadCachingPass::new()); // BUG: causes invalid IR
+                // GlobalLoadCachingPass: only helps when same global loaded multiple times
+                // within a function. Disabled for now as most globals are loaded once per function.
+                // manager.add_pass(GlobalLoadCachingPass::new());
                 manager.add_pass(DeadCodeEliminationPass::new());
                 manager.add_pass(super::scalar_replacement::ScalarReplacementPass::new());
                 manager.add_pass(ConstantFoldingPass::new());
