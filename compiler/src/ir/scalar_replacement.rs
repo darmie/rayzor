@@ -90,11 +90,6 @@ impl OptimizationPass for ScalarReplacementPass {
         }
 
         for function in module.functions.values_mut() {
-            // NOTE: Phi-aware SRA is disabled due to remaining bugs with
-            // back-edge handling. The inner loop allocations in mandelbrot
-            // flow through phi nodes and can't be SRA'd with the simple approach.
-            // TODO: Fix phi-aware SRA to handle loop-carried allocations properly.
-
             // Run regular SRA for non-phi allocations
             let r = run_sra_on_function(function, &malloc_ids, &free_ids);
             if r.modified {
@@ -104,6 +99,20 @@ impl OptimizationPass for ScalarReplacementPass {
                     *result.stats.entry(k.clone()).or_insert(0) += v;
                 }
             }
+
+            // NOTE: Phi-aware SRA is disabled. The transformation has SSA validity
+            // issues: incoming values for scalar phis must dominate the edge source
+            // blocks, but stores to malloc fields may happen in different blocks.
+            // TODO: Fix by using dominator analysis to verify value placement.
+            //
+            // let r = run_phi_sra_on_function(function, &malloc_ids, &free_ids);
+            // if r.modified {
+            //     result.modified = true;
+            //     result.instructions_eliminated += r.instructions_eliminated;
+            //     for (k, v) in &r.stats {
+            //         *result.stats.entry(k.clone()).or_insert(0) += v;
+            //     }
+            // }
         }
 
         result
@@ -162,6 +171,35 @@ fn run_phi_sra_on_function(
     result
 }
 
+/// Trace a value back through Copy chains to find the original source.
+/// Returns the original IrId (which may be the same as input if not a copy).
+fn trace_copy_chain(id: IrId, cfg: &super::blocks::IrControlFlowGraph) -> IrId {
+    let mut current = id;
+    let mut visited = HashSet::new();
+
+    while visited.insert(current) {
+        let mut found_copy = false;
+        for block in cfg.blocks.values() {
+            for inst in &block.instructions {
+                if let IrInstruction::Copy { dest, src } = inst {
+                    if *dest == current {
+                        current = *src;
+                        found_copy = true;
+                        break;
+                    }
+                }
+            }
+            if found_copy {
+                break;
+            }
+        }
+        if !found_copy {
+            break;
+        }
+    }
+    current
+}
+
 /// Find phi nodes that merge allocations and can be flattened.
 fn find_phi_sra_candidates(
     cfg: &super::blocks::IrControlFlowGraph,
@@ -193,31 +231,38 @@ fn find_phi_sra_candidates(
         }
     }
 
-    // Find phi nodes where all incoming values are malloc results
+    // Find phi nodes where all incoming values are malloc results (or copies thereof)
     for (&phi_block, block) in &cfg.blocks {
         for phi in &block.phi_nodes {
+            // Only consider pointer-typed phis
+            if !matches!(&phi.ty, IrType::Ptr(_)) {
+                continue;
+            }
+
             // Check if all incoming values are either mallocs or the phi itself (back edge)
             let mut all_mallocs = true;
             let mut has_back_edge = false;
             let mut incoming_mallocs: Vec<(IrBlockId, IrId)> = Vec::new();
-            let mut rejection_reason = "";
 
             for (src_block, value) in &phi.incoming {
                 if *value == phi.dest {
                     // Back edge - phi references itself
                     has_back_edge = true;
-                } else if malloc_locations.contains_key(value) {
-                    incoming_mallocs.push((*src_block, *value));
                 } else {
-                    all_mallocs = false;
-                    rejection_reason = "incoming value is not malloc";
-                    break;
+                    // Trace through Copy chain to find original malloc
+                    let original = trace_copy_chain(*value, cfg);
+                    if malloc_locations.contains_key(&original) {
+                        // Store the ORIGINAL malloc ID, not the copy
+                        incoming_mallocs.push((*src_block, original));
+                    } else {
+                        all_mallocs = false;
+                        break;
+                    }
                 }
             }
 
             // Need at least one malloc and all non-back-edge values must be mallocs
             if !all_mallocs || incoming_mallocs.is_empty() {
-                let _ = (rejection_reason, has_back_edge); // Suppress unused warnings
                 continue;
             }
 
@@ -236,6 +281,8 @@ fn find_phi_sra_candidates(
             }
         }
     }
+
+    let _ = _debug_fn_name; // Suppress unused warning
 
     candidates
 }
@@ -535,18 +582,34 @@ fn try_build_phi_candidate(
 fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usize {
     let mut eliminated = 0;
 
-    // Allocate scalar phi registers for each field
-    let mut field_phi_regs: Vec<IrId> = Vec::with_capacity(candidate.num_fields);
-    for _ in 0..candidate.num_fields {
+    // Only create scalar phis for fields that are actually accessed through phi GEPs
+    // This avoids issues with vtable/header fields that might have different types
+    let accessed_fields: HashSet<usize> = candidate.phi_gep_map.values().copied().collect();
+
+    // Allocate scalar phi registers for each accessed field
+    let mut field_phi_regs: HashMap<usize, IrId> = HashMap::new();
+    for &field_idx in &accessed_fields {
         let id = IrId::new(function.next_reg_id);
         function.next_reg_id += 1;
-        field_phi_regs.push(id);
+        field_phi_regs.insert(field_idx, id);
     }
 
     // Create scalar phi nodes in the phi block
     let phi_block = function.cfg.blocks.get_mut(&candidate.phi_block).unwrap();
 
-    for (field_idx, &field_reg) in field_phi_regs.iter().enumerate() {
+    // Get back-edge info before mutating
+    let back_edge_info: Option<IrBlockId> = phi_block
+        .phi_nodes
+        .iter()
+        .find(|p| p.dest == candidate.phi_dest)
+        .and_then(|p| {
+            p.incoming
+                .iter()
+                .find(|(_, v)| *v == candidate.phi_dest)
+                .map(|(block, _)| *block)
+        });
+
+    for (&field_idx, &field_reg) in &field_phi_regs {
         let ty = candidate
             .field_types
             .get(&field_idx)
@@ -554,7 +617,6 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
             .unwrap_or(IrType::F64);
 
         // Build incoming values for the scalar phi
-        // IrPhiNode.incoming is Vec<(IrBlockId, IrId)> - block first, then value
         let mut incoming: Vec<(IrBlockId, IrId)> = Vec::new();
         for (src_block, _malloc_id, stores) in &candidate.incoming_allocs {
             if let Some(&value) = stores.get(&field_idx) {
@@ -563,15 +625,8 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
         }
 
         // Handle back edge - use the scalar phi itself
-        for (src_block, value) in phi_block.phi_nodes.iter()
-            .find(|p| p.dest == candidate.phi_dest)
-            .map(|p| &p.incoming)
-            .unwrap_or(&vec![])
-        {
-            if *value == candidate.phi_dest {
-                // Back edge
-                incoming.push((*src_block, field_reg));
-            }
+        if let Some(back_edge_block) = back_edge_info {
+            incoming.push((back_edge_block, field_reg));
         }
 
         let scalar_phi = IrPhiNode {
@@ -588,21 +643,18 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
     // Track field loads to replace
     let mut load_replacements: HashMap<IrId, IrId> = HashMap::new();
     for (&gep_dest, &field_idx) in &candidate.phi_gep_map {
-        if field_idx < field_phi_regs.len() {
-            load_replacements.insert(gep_dest, field_phi_regs[field_idx]);
+        if let Some(&scalar_reg) = field_phi_regs.get(&field_idx) {
+            load_replacements.insert(gep_dest, scalar_reg);
         }
     }
 
-    // DON'T mark allocations or frees for removal here.
-    // After we replace loads with scalar copies, the allocations/GEPs/frees
-    // will become dead and DCE will clean them up.
-    let to_remove: HashMap<IrBlockId, HashSet<usize>> = HashMap::new();
-
-    // Process each block to replace loads and remove stores/GEPs
+    // Process each block to replace loads from phi GEPs with copies from scalar phis
+    // We DON'T remove allocations, stores, GEPs, frees, or the pointer phi here.
+    // DCE will clean them up if they become dead after load replacement.
+    // This is safer and avoids leaving dangling references.
     let block_order: Vec<IrBlockId> = function.cfg.blocks.keys().copied().collect();
 
     for block_id in block_order {
-        let block_removes = to_remove.get(&block_id).cloned();
         let block = match function.cfg.blocks.get_mut(&block_id) {
             Some(b) => b,
             None => continue,
@@ -611,15 +663,7 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
         let old_instructions = std::mem::take(&mut block.instructions);
         let mut new_instructions = Vec::with_capacity(old_instructions.len());
 
-        for (idx, inst) in old_instructions.into_iter().enumerate() {
-            // Skip removed instructions
-            if let Some(ref removes) = block_removes {
-                if removes.contains(&idx) {
-                    eliminated += 1;
-                    continue;
-                }
-            }
-
+        for inst in old_instructions.into_iter() {
             match &inst {
                 // Replace loads from phi GEPs with Copy from scalar phi
                 IrInstruction::Load { dest, ptr, .. } => {
@@ -632,10 +676,6 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
                         continue;
                     }
                 }
-
-                // Don't remove stores or GEPs here - let DCE clean them up
-                // after all loads are replaced. This avoids breaking references.
-
                 _ => {}
             }
 
