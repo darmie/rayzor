@@ -649,7 +649,12 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 // Load length from offset 8
                 let len_ptr = unsafe {
                     builder
-                        .build_gep(i64_type, arr_ptr, &[i64_type.const_int(1, false)], "len_ptr")
+                        .build_gep(
+                            i64_type,
+                            arr_ptr,
+                            &[i64_type.const_int(1, false)],
+                            "len_ptr",
+                        )
                         .map_err(|e| format!("GEP failed: {}", e))?
                 };
                 let len = builder
