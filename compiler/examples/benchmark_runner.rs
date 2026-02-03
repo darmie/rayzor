@@ -693,6 +693,21 @@ fn hashlink_available() -> bool {
         .unwrap_or(false)
 }
 
+/// Check if HashLink/C compilation is available (requires gcc and hl --hlc support)
+fn hashlink_c_available() -> bool {
+    // HashLink/C requires gcc
+    if !Command::new("gcc")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    // Also requires hl with hlc support - some builds may not have it
+    hashlink_available()
+}
+
 fn java_available() -> bool {
     Command::new("java")
         .arg("-version")
@@ -808,7 +823,29 @@ fn run_haxe_benchmark(bench_name: &str, target: Target) -> Result<(Duration, Dur
 
             if !hlc_output.status.success() {
                 let stderr = String::from_utf8_lossy(&hlc_output.stderr);
-                return Err(format!("hlc compilation failed: {}", stderr));
+                let stdout = String::from_utf8_lossy(&hlc_output.stdout);
+                return Err(format!(
+                    "hlc compilation failed:\nstderr: {}\nstdout: {}",
+                    stderr, stdout
+                ));
+            }
+
+            // Verify that main.c was created
+            let main_c = c_out_dir.join("main.c");
+            if !main_c.exists() {
+                // List what files were actually created for debugging
+                let files: Vec<_> = std::fs::read_dir(&c_out_dir)
+                    .map(|rd| {
+                        rd.filter_map(|e| e.ok())
+                            .map(|e| e.file_name().to_string_lossy().to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                return Err(format!(
+                    "hlc did not create main.c. Files in {}: {:?}",
+                    c_out_dir.display(),
+                    files
+                ));
             }
 
             // Step 3: Compile the generated C code with gcc
@@ -1550,7 +1587,10 @@ fn main() {
         all_targets_list.push(Target::HaxeInterp);
         if hashlink_available() {
             all_targets_list.push(Target::HaxeHashLink);
-            all_targets_list.push(Target::HaxeHashLinkC);
+            // HashLink/C requires gcc and proper hl --hlc support
+            if hashlink_c_available() {
+                all_targets_list.push(Target::HaxeHashLinkC);
+            }
         }
         all_targets_list.push(Target::HaxeCpp);
         if java_available() {

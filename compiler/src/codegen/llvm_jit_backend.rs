@@ -492,13 +492,13 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
         let func_name = Self::mangle_function_name(&extern_fn.name);
 
-        // AOT mode: replace known math runtime functions with LLVM intrinsic wrappers
-        // so LLVM can inline them (e.g. fsqrt instruction instead of function call)
-        if self.aot_mode {
-            if let Some(llvm_func) = self.try_create_math_intrinsic(&func_name, &fn_type)? {
-                self.function_map.insert(func_id, llvm_func);
-                return Ok(llvm_func);
-            }
+        // Replace known math runtime functions with LLVM intrinsic wrappers
+        // so LLVM can inline them (e.g. fsqrt instruction instead of function call).
+        // This is critical for performance in math-heavy code like nbody/mandelbrot.
+        // Enabled for both JIT and AOT modes.
+        if let Some(llvm_func) = self.try_create_math_intrinsic(&func_name, &fn_type)? {
+            self.function_map.insert(func_id, llvm_func);
+            return Ok(llvm_func);
         }
 
         // Check if already declared with MATCHING signature
@@ -531,8 +531,9 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         Ok(llvm_func)
     }
 
-    /// In AOT mode, replace known math runtime functions with inline LLVM intrinsic
-    /// wrappers. Returns Some(func) if replaced, None if not a known math function.
+    /// Replace known math runtime functions with inline LLVM intrinsic wrappers.
+    /// Returns Some(func) if replaced, None if not a known math function.
+    /// Used for both JIT and AOT modes to convert function calls to native instructions.
     fn try_create_math_intrinsic(
         &self,
         func_name: &str,

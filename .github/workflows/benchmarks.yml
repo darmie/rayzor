@@ -46,11 +46,16 @@ jobs:
           haxelib setup ~/haxelib
           haxelib install hxcpp --always
 
+      - name: Install hxjava
+        run: |
+          haxelib install hxjava
+
       - name: Verify Haxe installation
         run: |
           haxe --version
           hl --version || true
           echo "hxcpp installed: $(haxelib path hxcpp 2>/dev/null | head -1)"
+          echo "hxjava installed: $(haxelib path hxjava 2>/dev/null | head -1)"
 
       # --- Install LLVM 18 for Rayzor ---
       - name: Install LLVM 18
@@ -63,6 +68,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Build rayzor-runtime static library
+        run: cargo build --release -p rayzor-runtime
 
       - name: Run nbody benchmark
         run: cargo run --release --package compiler --features all-backends,tcc-linker --example benchmark_runner -- nbody --json
