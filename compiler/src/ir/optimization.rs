@@ -595,6 +595,7 @@ pub(super) trait InstructionExt {
     fn dest(&self) -> Option<IrId>;
     fn has_side_effects(&self) -> bool;
     fn replace_uses(&mut self, replacements: &HashMap<IrId, IrId>);
+    fn collect_uses(&self, set: &mut HashSet<IrId>);
 }
 
 impl InstructionExt for IrInstruction {
@@ -723,6 +724,28 @@ impl InstructionExt for IrInstruction {
             // Handle any other instructions by doing nothing (they may have no register uses)
             _ => {}
         }
+    }
+
+    fn collect_uses(&self, set: &mut HashSet<IrId>) {
+        for id in self.uses() {
+            set.insert(id);
+        }
+    }
+}
+
+/// Helper to collect uses from a terminator
+fn collect_terminator_uses(terminator: &IrTerminator, set: &mut HashSet<IrId>) {
+    match terminator {
+        IrTerminator::Return { value: Some(v) } => {
+            set.insert(*v);
+        }
+        IrTerminator::CondBranch { condition, .. } => {
+            set.insert(*condition);
+        }
+        IrTerminator::Switch { value, .. } => {
+            set.insert(*value);
+        }
+        _ => {}
     }
 }
 
@@ -1210,8 +1233,6 @@ impl OptimizationPass for GlobalLoadCachingPass {
             }
 
             // Collect all LoadGlobal instructions with their locations
-            // For globals never stored to, we can deduplicate across blocks
-            // using the dominator tree for safety.
             let domtree = DominatorTree::compute(function);
 
             // Map: global_id -> Vec<(block_id, dest_id)> for read-only globals
@@ -1232,14 +1253,31 @@ impl OptimizationPass for GlobalLoadCachingPass {
                 }
             }
 
+            // Build a map of where each IrId is used (block_id -> set of used IrIds)
+            let mut uses_in_block: HashMap<IrBlockId, HashSet<IrId>> = HashMap::new();
+            for (&block_id, block) in &function.cfg.blocks {
+                let mut used = HashSet::new();
+                for inst in &block.instructions {
+                    inst.collect_uses(&mut used);
+                }
+                collect_terminator_uses(&block.terminator, &mut used);
+                for phi in &block.phi_nodes {
+                    for (_, val) in &phi.incoming {
+                        used.insert(*val);
+                    }
+                }
+                uses_in_block.insert(block_id, used);
+            }
+
             let mut all_replacements: HashMap<IrId, IrId> = HashMap::new();
 
             for (_global_id, loads) in &global_loads {
                 if loads.len() <= 1 {
                     continue;
                 }
-                // For each pair, if the first load's block dominates the second's,
-                // replace the second with the first
+                // For each pair, if the first load's block dominates the second's
+                // AND dominates all blocks where the second's value is used,
+                // then it's safe to replace.
                 for i in 0..loads.len() {
                     let (block_a, dest_a) = loads[i];
                     if all_replacements.contains_key(&dest_a) {
@@ -1250,11 +1288,26 @@ impl OptimizationPass for GlobalLoadCachingPass {
                         if all_replacements.contains_key(&dest_b) {
                             continue;
                         }
+                        // Check if block_a dominates block_b
                         if domtree.dominates(block_a, block_b) {
-                            all_replacements.insert(dest_b, dest_a);
+                            // Verify block_a dominates ALL blocks where dest_b is used
+                            let safe = uses_in_block.iter().all(|(use_block, used_ids)| {
+                                !used_ids.contains(&dest_b)
+                                    || domtree.dominates(block_a, *use_block)
+                            });
+                            if safe {
+                                all_replacements.insert(dest_b, dest_a);
+                            }
                         } else if domtree.dominates(block_b, block_a) {
-                            all_replacements.insert(dest_a, dest_b);
-                            break; // dest_a is now replaced, stop inner loop
+                            // Verify block_b dominates ALL blocks where dest_a is used
+                            let safe = uses_in_block.iter().all(|(use_block, used_ids)| {
+                                !used_ids.contains(&dest_a)
+                                    || domtree.dominates(block_b, *use_block)
+                            });
+                            if safe {
+                                all_replacements.insert(dest_a, dest_b);
+                                break; // dest_a is now replaced, stop inner loop
+                            }
                         }
                     }
                 }
@@ -1266,17 +1319,15 @@ impl OptimizationPass for GlobalLoadCachingPass {
 
             // Compute transitive closure of replacement map.
             // If we have L1→L2 and L2→L3, we need L1→L3 (since L2 will be deleted).
-            // Iterate until no more changes to resolve all chains.
             let mut changed = true;
             let mut iterations = 0;
-            const MAX_ITERATIONS: usize = 100; // Safety limit
+            const MAX_ITERATIONS: usize = 100;
             while changed && iterations < MAX_ITERATIONS {
                 changed = false;
                 iterations += 1;
                 let keys: Vec<IrId> = all_replacements.keys().copied().collect();
                 for key in keys {
                     if let Some(&value) = all_replacements.get(&key) {
-                        // If the value is also being replaced, follow the chain
                         if let Some(&transitive_value) = all_replacements.get(&value) {
                             if transitive_value != value {
                                 all_replacements.insert(key, transitive_value);
@@ -1581,7 +1632,7 @@ impl PassManager {
             }
             OptimizationLevel::O1 => {
                 // Fast, low-overhead optimizations
-                manager.add_pass(GlobalLoadCachingPass::new());
+                // manager.add_pass(GlobalLoadCachingPass::new()); // BUG: causes invalid IR
                 manager.add_pass(DeadCodeEliminationPass::new());
                 manager.add_pass(ConstantFoldingPass::new());
                 manager.add_pass(CopyPropagationPass::new());
@@ -1590,7 +1641,7 @@ impl PassManager {
             OptimizationLevel::O2 => {
                 // Standard optimizations
                 manager.add_pass(super::inlining::InliningPass::new());
-                manager.add_pass(GlobalLoadCachingPass::new());
+                // manager.add_pass(GlobalLoadCachingPass::new()); // BUG: causes invalid IR
                 manager.add_pass(DeadCodeEliminationPass::new());
                 manager.add_pass(super::scalar_replacement::ScalarReplacementPass::new());
                 manager.add_pass(ConstantFoldingPass::new());
@@ -1605,7 +1656,7 @@ impl PassManager {
                 // Aggressive optimizations
                 // Inlining first to expose more optimization opportunities
                 manager.add_pass(super::inlining::InliningPass::new());
-                manager.add_pass(GlobalLoadCachingPass::new());
+                // manager.add_pass(GlobalLoadCachingPass::new()); // BUG: causes invalid IR
                 manager.add_pass(DeadCodeEliminationPass::new());
                 manager.add_pass(super::scalar_replacement::ScalarReplacementPass::new());
                 manager.add_pass(ConstantFoldingPass::new());
