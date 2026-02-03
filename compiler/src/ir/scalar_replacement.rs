@@ -10,7 +10,7 @@
 //! alloc, stores, loads, and free may be in different basic blocks.
 
 use super::optimization::{OptimizationPass, OptimizationResult};
-use super::{IrBlockId, IrFunction, IrFunctionId, IrId, IrInstruction, IrModule, IrType, IrValue};
+use super::{IrBlockId, IrFunction, IrFunctionId, IrId, IrInstruction, IrModule, IrPhiNode, IrType, IrValue};
 use std::collections::{HashMap, HashSet};
 
 pub struct ScalarReplacementPass;
@@ -42,6 +42,27 @@ struct SraCandidate {
     copy_locations: Vec<(IrBlockId, usize)>,
 }
 
+/// A phi node that merges multiple allocations and can be flattened to scalar phis.
+struct PhiSraCandidate {
+    /// The phi node's destination (the merged pointer)
+    phi_dest: IrId,
+    /// Block containing the phi
+    phi_block: IrBlockId,
+    /// For each incoming edge: (source_block, alloc_id, field_stores)
+    /// field_stores maps field_index -> IrId of the value stored to that field
+    incoming_allocs: Vec<(IrBlockId, IrId, HashMap<usize, IrId>)>,
+    /// Number of fields
+    num_fields: usize,
+    /// Field types (from loads)
+    field_types: HashMap<usize, IrType>,
+    /// GEP map for the phi dest: maps GEP result -> field index
+    phi_gep_map: HashMap<IrId, usize>,
+    /// All allocation locations to remove
+    alloc_locations: Vec<(IrBlockId, usize)>,
+    /// All free locations to remove
+    free_locations: Vec<(IrBlockId, usize)>,
+}
+
 impl OptimizationPass for ScalarReplacementPass {
     fn name(&self) -> &'static str {
         "scalar_replacement"
@@ -69,6 +90,19 @@ impl OptimizationPass for ScalarReplacementPass {
         }
 
         for function in module.functions.values_mut() {
+            // TODO: Phi-aware SRA disabled due to type mismatch bug
+            // The scalar phi creation needs to handle type inference properly
+            // when field_types is not populated from loads.
+            // let r = run_phi_sra_on_function(function, &malloc_ids, &free_ids);
+            // if r.modified {
+            //     result.modified = true;
+            //     result.instructions_eliminated += r.instructions_eliminated;
+            //     for (k, v) in &r.stats {
+            //         *result.stats.entry(k.clone()).or_insert(0) += v;
+            //     }
+            // }
+
+            // Run regular SRA for non-phi allocations
             let r = run_sra_on_function(function, &malloc_ids, &free_ids);
             if r.modified {
                 result.modified = true;
@@ -106,6 +140,500 @@ fn run_sra_on_function(
     }
 
     result
+}
+
+/// Phi-aware SRA: handles loop-carried allocations where multiple allocations
+/// flow into a phi node. Replaces pointer phis with scalar phis for each field.
+fn run_phi_sra_on_function(
+    function: &mut IrFunction,
+    malloc_ids: &HashSet<IrFunctionId>,
+    free_ids: &HashSet<IrFunctionId>,
+) -> OptimizationResult {
+    let mut result = OptimizationResult::unchanged();
+
+    let constants = build_constant_map(&function.cfg);
+    let candidates = find_phi_sra_candidates(&function.cfg, &constants, malloc_ids, free_ids, None);
+
+    for candidate in candidates {
+        let eliminated = apply_phi_sra(function, &candidate);
+        if eliminated > 0 {
+            result.modified = true;
+            result.instructions_eliminated += eliminated;
+            *result
+                .stats
+                .entry("phi_allocs_replaced".to_string())
+                .or_insert(0) += 1;
+        }
+    }
+
+    result
+}
+
+/// Find phi nodes that merge allocations and can be flattened.
+fn find_phi_sra_candidates(
+    cfg: &super::blocks::IrControlFlowGraph,
+    constants: &HashMap<IrId, i64>,
+    malloc_ids: &HashSet<IrFunctionId>,
+    free_ids: &HashSet<IrFunctionId>,
+    _debug_fn_name: Option<&String>,
+) -> Vec<PhiSraCandidate> {
+    let mut candidates = Vec::new();
+
+    // Build map of IrId -> (block_id, inst_idx) for all malloc calls
+    let mut malloc_locations: HashMap<IrId, (IrBlockId, usize)> = HashMap::new();
+    for (&block_id, block) in &cfg.blocks {
+        for (idx, inst) in block.instructions.iter().enumerate() {
+            if let IrInstruction::CallDirect {
+                dest: Some(dest),
+                func_id,
+                args,
+                ..
+            } = inst
+            {
+                if malloc_ids.contains(func_id) && args.len() == 1 {
+                    malloc_locations.insert(*dest, (block_id, idx));
+                }
+            }
+            if let IrInstruction::Alloc { dest, count: None, .. } = inst {
+                malloc_locations.insert(*dest, (block_id, idx));
+            }
+        }
+    }
+
+    // Find phi nodes where all incoming values are malloc results
+    for (&phi_block, block) in &cfg.blocks {
+        for phi in &block.phi_nodes {
+            // Check if all incoming values are either mallocs or the phi itself (back edge)
+            let mut all_mallocs = true;
+            let mut has_back_edge = false;
+            let mut incoming_mallocs: Vec<(IrBlockId, IrId)> = Vec::new();
+            let mut rejection_reason = "";
+
+            for (src_block, value) in &phi.incoming {
+                if *value == phi.dest {
+                    // Back edge - phi references itself
+                    has_back_edge = true;
+                } else if malloc_locations.contains_key(value) {
+                    incoming_mallocs.push((*src_block, *value));
+                } else {
+                    all_mallocs = false;
+                    rejection_reason = "incoming value is not malloc";
+                    break;
+                }
+            }
+
+            // Need at least one malloc and all non-back-edge values must be mallocs
+            if !all_mallocs || incoming_mallocs.is_empty() {
+                let _ = (rejection_reason, has_back_edge); // Suppress unused warnings
+                continue;
+            }
+
+            // Try to build a candidate
+            if let Some(candidate) = try_build_phi_candidate(
+                phi,
+                phi_block,
+                &incoming_mallocs,
+                has_back_edge,
+                &malloc_locations,
+                cfg,
+                constants,
+                free_ids,
+            ) {
+                candidates.push(candidate);
+            }
+        }
+    }
+
+    candidates
+}
+
+/// Try to build a phi SRA candidate by analyzing field accesses.
+fn try_build_phi_candidate(
+    phi: &IrPhiNode,
+    phi_block: IrBlockId,
+    incoming_mallocs: &[(IrBlockId, IrId)],
+    _has_back_edge: bool,
+    malloc_locations: &HashMap<IrId, (IrBlockId, usize)>,
+    cfg: &super::blocks::IrControlFlowGraph,
+    constants: &HashMap<IrId, i64>,
+    free_ids: &HashSet<IrFunctionId>,
+) -> Option<PhiSraCandidate> {
+    // Track all pointers derived from each malloc and the phi
+    let mut all_tracked: HashSet<IrId> = HashSet::new();
+    let mut malloc_tracked: HashMap<IrId, HashSet<IrId>> = HashMap::new();
+    let mut phi_tracked: HashSet<IrId> = HashSet::new();
+
+    // Initialize tracking
+    phi_tracked.insert(phi.dest);
+    all_tracked.insert(phi.dest);
+
+    for (_, malloc_id) in incoming_mallocs {
+        let mut tracked = HashSet::new();
+        tracked.insert(*malloc_id);
+        all_tracked.insert(*malloc_id);
+        malloc_tracked.insert(*malloc_id, tracked);
+    }
+
+    // Build GEP maps for each tracked set
+    let mut malloc_gep_maps: HashMap<IrId, HashMap<IrId, usize>> = HashMap::new();
+    let mut phi_gep_map: HashMap<IrId, usize> = HashMap::new();
+
+    for malloc_id in malloc_tracked.keys() {
+        malloc_gep_maps.insert(*malloc_id, HashMap::new());
+    }
+
+    // First: Track through related phi nodes
+    // When a tracked value flows into another phi, add that phi's dest to phi_tracked.
+    // This handles complex control flow from while-loop short-circuit evaluation.
+    let mut phi_changed = true;
+    while phi_changed {
+        phi_changed = false;
+        for block in cfg.blocks.values() {
+            for other_phi in &block.phi_nodes {
+                if phi_tracked.contains(&other_phi.dest) {
+                    continue; // Already tracking this phi
+                }
+                // Check if any incoming value is tracked
+                let has_tracked_incoming = other_phi.incoming.iter().any(|(_, v)| all_tracked.contains(v));
+                if has_tracked_incoming {
+                    // This phi merges a tracked allocation - add it to phi_tracked
+                    phi_tracked.insert(other_phi.dest);
+                    all_tracked.insert(other_phi.dest);
+                    phi_changed = true;
+                }
+            }
+        }
+    }
+
+    // Iterate to fixpoint - find all GEPs derived from mallocs and phi
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for block in cfg.blocks.values() {
+            for inst in &block.instructions {
+                if let IrInstruction::GetElementPtr {
+                    dest, ptr, indices, ..
+                } = inst
+                {
+                    if all_tracked.contains(dest) {
+                        continue;
+                    }
+
+                    let field_idx = match resolve_gep_field_index(indices, constants) {
+                        Some(idx) => idx,
+                        None => return None, // Non-constant GEP
+                    };
+
+                    // Check if this GEP is from any phi-tracked pointer
+                    if phi_tracked.contains(ptr) {
+                        phi_tracked.insert(*dest);
+                        phi_gep_map.insert(*dest, field_idx);
+                        all_tracked.insert(*dest);
+                        changed = true;
+                    }
+
+                    // Check if this GEP is from one of the mallocs
+                    for (malloc_id, tracked) in &mut malloc_tracked {
+                        if tracked.contains(ptr) && !tracked.contains(dest) {
+                            tracked.insert(*dest);
+                            malloc_gep_maps.get_mut(malloc_id).unwrap().insert(*dest, field_idx);
+                            all_tracked.insert(*dest);
+                            changed = true;
+                        }
+                    }
+                }
+
+                // Track copies/casts
+                if let IrInstruction::Copy { dest, src } = inst {
+                    if all_tracked.contains(dest) {
+                        continue;
+                    }
+                    if phi_tracked.contains(src) {
+                        phi_tracked.insert(*dest);
+                        if let Some(&idx) = phi_gep_map.get(src) {
+                            phi_gep_map.insert(*dest, idx);
+                        }
+                        all_tracked.insert(*dest);
+                        changed = true;
+                    }
+                    for (malloc_id, tracked) in &mut malloc_tracked {
+                        if tracked.contains(src) && !tracked.contains(dest) {
+                            tracked.insert(*dest);
+                            if let Some(&idx) = malloc_gep_maps.get(malloc_id).unwrap().get(src) {
+                                malloc_gep_maps.get_mut(malloc_id).unwrap().insert(*dest, idx);
+                            }
+                            all_tracked.insert(*dest);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Check escape conditions and collect field stores/loads
+    let mut field_types: HashMap<usize, IrType> = HashMap::new();
+    let mut malloc_field_stores: HashMap<IrId, HashMap<usize, IrId>> = HashMap::new();
+    let mut free_locations: Vec<(IrBlockId, usize)> = Vec::new();
+
+    for malloc_id in malloc_tracked.keys() {
+        malloc_field_stores.insert(*malloc_id, HashMap::new());
+    }
+
+    for (&block_id, block) in &cfg.blocks {
+        // Check phi nodes for escapes (other than the one we're analyzing)
+        for other_phi in &block.phi_nodes {
+            if other_phi.dest == phi.dest {
+                continue; // Skip the phi we're analyzing
+            }
+            for (_, v) in &other_phi.incoming {
+                if all_tracked.contains(v) {
+                    // This phi merges a tracked allocation - part of our tracking set.
+                    // We allow this because while-loop short-circuit evaluation
+                    // creates multiple related phi nodes for the same allocation.
+                    let _ = v; // Silence warning
+                }
+            }
+        }
+
+        for (inst_idx, inst) in block.instructions.iter().enumerate() {
+            match inst {
+                IrInstruction::Store { ptr, value } => {
+                    // Check if storing to a tracked GEP
+                    if all_tracked.contains(ptr) {
+                        if all_tracked.contains(value) {
+                            return None; // Storing tracked pointer - escapes
+                        }
+
+                        // Find which malloc this store belongs to
+                        for (malloc_id, tracked) in &malloc_tracked {
+                            if tracked.contains(ptr) {
+                                if let Some(&field_idx) = malloc_gep_maps.get(malloc_id).unwrap().get(ptr) {
+                                    malloc_field_stores
+                                        .get_mut(malloc_id)
+                                        .unwrap()
+                                        .insert(field_idx, *value);
+                                }
+                            }
+                        }
+                    } else if all_tracked.contains(value) {
+                        return None; // Escapes via store
+                    }
+                }
+
+                IrInstruction::Load { ptr, ty, .. } => {
+                    // Track field types from loads on the phi
+                    if phi_tracked.contains(ptr) {
+                        if let Some(&field_idx) = phi_gep_map.get(ptr) {
+                            field_types.insert(field_idx, ty.clone());
+                        }
+                    }
+                }
+
+                IrInstruction::Free { ptr } => {
+                    if all_tracked.contains(ptr) {
+                        free_locations.push((block_id, inst_idx));
+                    }
+                }
+
+                IrInstruction::CallDirect { func_id, args, .. }
+                    if free_ids.contains(func_id)
+                        && args.len() == 1
+                        && all_tracked.contains(&args[0]) =>
+                {
+                    free_locations.push((block_id, inst_idx));
+                }
+
+                IrInstruction::CallDirect { args, dest, func_id, .. } => {
+                    // Skip if this is a malloc we're tracking
+                    if let Some(d) = dest {
+                        if malloc_locations.contains_key(d) {
+                            continue;
+                        }
+                    }
+                    // Skip if this is a free call (already handled above)
+                    if free_ids.contains(func_id) && args.len() == 1 && all_tracked.contains(&args[0]) {
+                        continue;
+                    }
+                    // Check for escapes - pointer passed to non-inlined function
+                    if args.iter().any(|a| all_tracked.contains(a)) {
+                        return None;
+                    }
+                }
+
+                IrInstruction::Return { value: Some(v) } if all_tracked.contains(v) => {
+                    return None;
+                }
+
+                _ => {}
+            }
+        }
+
+        // Check terminator
+        match &block.terminator {
+            super::IrTerminator::Return { value: Some(v) } if all_tracked.contains(v) => {
+                return None;
+            }
+            _ => {}
+        }
+    }
+
+    // Verify all mallocs have the same number of fields stored
+    if phi_gep_map.is_empty() {
+        return None; // No field GEPs found from phi
+    }
+
+    let num_fields = phi_gep_map.values().max().copied().unwrap_or(0) + 1;
+
+    // Verify each malloc has stores for all fields that are loaded from the phi
+    for (_malloc_id, stores) in &malloc_field_stores {
+        for field_idx in phi_gep_map.values() {
+            if !stores.contains_key(field_idx) {
+                return None; // Missing field store
+            }
+        }
+    }
+
+    // Build incoming_allocs
+    let mut incoming_allocs: Vec<(IrBlockId, IrId, HashMap<usize, IrId>)> = Vec::new();
+    for (src_block, malloc_id) in incoming_mallocs {
+        let stores = malloc_field_stores.get(malloc_id).unwrap().clone();
+        incoming_allocs.push((*src_block, *malloc_id, stores));
+    }
+
+    // Collect alloc locations
+    let alloc_locations: Vec<(IrBlockId, usize)> = incoming_mallocs
+        .iter()
+        .filter_map(|(_, malloc_id)| malloc_locations.get(malloc_id).copied())
+        .collect();
+
+    Some(PhiSraCandidate {
+        phi_dest: phi.dest,
+        phi_block,
+        incoming_allocs,
+        num_fields,
+        field_types,
+        phi_gep_map,
+        alloc_locations,
+        free_locations,
+    })
+}
+
+/// Apply phi-aware SRA transformation.
+fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usize {
+    let mut eliminated = 0;
+
+    // Allocate scalar phi registers for each field
+    let mut field_phi_regs: Vec<IrId> = Vec::with_capacity(candidate.num_fields);
+    for _ in 0..candidate.num_fields {
+        let id = IrId::new(function.next_reg_id);
+        function.next_reg_id += 1;
+        field_phi_regs.push(id);
+    }
+
+    // Create scalar phi nodes in the phi block
+    let phi_block = function.cfg.blocks.get_mut(&candidate.phi_block).unwrap();
+
+    for (field_idx, &field_reg) in field_phi_regs.iter().enumerate() {
+        let ty = candidate
+            .field_types
+            .get(&field_idx)
+            .cloned()
+            .unwrap_or(IrType::F64);
+
+        // Build incoming values for the scalar phi
+        // IrPhiNode.incoming is Vec<(IrBlockId, IrId)> - block first, then value
+        let mut incoming: Vec<(IrBlockId, IrId)> = Vec::new();
+        for (src_block, _malloc_id, stores) in &candidate.incoming_allocs {
+            if let Some(&value) = stores.get(&field_idx) {
+                incoming.push((*src_block, value));
+            }
+        }
+
+        // Handle back edge - use the scalar phi itself
+        for (src_block, value) in phi_block.phi_nodes.iter()
+            .find(|p| p.dest == candidate.phi_dest)
+            .map(|p| &p.incoming)
+            .unwrap_or(&vec![])
+        {
+            if *value == candidate.phi_dest {
+                // Back edge
+                incoming.push((*src_block, field_reg));
+            }
+        }
+
+        let scalar_phi = IrPhiNode {
+            dest: field_reg,
+            incoming,
+            ty,
+        };
+        phi_block.phi_nodes.push(scalar_phi);
+    }
+
+    // DON'T remove the original pointer phi here - GEPs still reference it.
+    // DCE will clean it up once all uses are replaced.
+
+    // Track field loads to replace
+    let mut load_replacements: HashMap<IrId, IrId> = HashMap::new();
+    for (&gep_dest, &field_idx) in &candidate.phi_gep_map {
+        if field_idx < field_phi_regs.len() {
+            load_replacements.insert(gep_dest, field_phi_regs[field_idx]);
+        }
+    }
+
+    // DON'T mark allocations or frees for removal here.
+    // After we replace loads with scalar copies, the allocations/GEPs/frees
+    // will become dead and DCE will clean them up.
+    let to_remove: HashMap<IrBlockId, HashSet<usize>> = HashMap::new();
+
+    // Process each block to replace loads and remove stores/GEPs
+    let block_order: Vec<IrBlockId> = function.cfg.blocks.keys().copied().collect();
+
+    for block_id in block_order {
+        let block_removes = to_remove.get(&block_id).cloned();
+        let block = match function.cfg.blocks.get_mut(&block_id) {
+            Some(b) => b,
+            None => continue,
+        };
+
+        let old_instructions = std::mem::take(&mut block.instructions);
+        let mut new_instructions = Vec::with_capacity(old_instructions.len());
+
+        for (idx, inst) in old_instructions.into_iter().enumerate() {
+            // Skip removed instructions
+            if let Some(ref removes) = block_removes {
+                if removes.contains(&idx) {
+                    eliminated += 1;
+                    continue;
+                }
+            }
+
+            match &inst {
+                // Replace loads from phi GEPs with Copy from scalar phi
+                IrInstruction::Load { dest, ptr, .. } => {
+                    if let Some(&scalar_reg) = load_replacements.get(ptr) {
+                        new_instructions.push(IrInstruction::Copy {
+                            dest: *dest,
+                            src: scalar_reg,
+                        });
+                        eliminated += 1;
+                        continue;
+                    }
+                }
+
+                // Don't remove stores or GEPs here - let DCE clean them up
+                // after all loads are replaced. This avoids breaking references.
+
+                _ => {}
+            }
+
+            new_instructions.push(inst);
+        }
+
+        block.instructions = new_instructions;
+    }
+
+    eliminated
 }
 
 /// Build a map of IrId → constant value from all Const instructions.
@@ -171,6 +699,82 @@ fn find_candidates_in_function(
     candidates
 }
 
+/// Build a map of IrId -> IrType from instruction definitions.
+fn build_value_type_map(cfg: &super::blocks::IrControlFlowGraph) -> HashMap<IrId, IrType> {
+    let mut types = HashMap::new();
+
+    for block in cfg.blocks.values() {
+        // Types from phi nodes
+        for phi in &block.phi_nodes {
+            types.insert(phi.dest, phi.ty.clone());
+        }
+
+        // Types from instructions
+        for inst in &block.instructions {
+            match inst {
+                IrInstruction::Const { dest, value } => {
+                    let ty = match value {
+                        IrValue::Bool(_) => IrType::Bool,
+                        IrValue::I8(_) => IrType::I8,
+                        IrValue::I16(_) => IrType::I16,
+                        IrValue::I32(_) => IrType::I32,
+                        IrValue::I64(_) => IrType::I64,
+                        IrValue::U8(_) => IrType::U8,
+                        IrValue::U16(_) => IrType::U16,
+                        IrValue::U32(_) => IrType::U32,
+                        IrValue::U64(_) => IrType::U64,
+                        IrValue::F32(_) => IrType::F32,
+                        IrValue::F64(_) => IrType::F64,
+                        IrValue::Null | IrValue::Void | IrValue::Undef => IrType::Ptr(Box::new(IrType::Void)),
+                        IrValue::String(_) => IrType::Ptr(Box::new(IrType::I8)),
+                        // Complex types - skip type tracking for these
+                        IrValue::Array(_) | IrValue::Struct(_) | IrValue::Function(_) | IrValue::Closure { .. } => continue,
+                    };
+                    types.insert(*dest, ty);
+                }
+                IrInstruction::Load { dest, ty, .. } => {
+                    types.insert(*dest, ty.clone());
+                }
+                IrInstruction::Undef { dest, ty } => {
+                    types.insert(*dest, ty.clone());
+                }
+                IrInstruction::Cast { dest, to_ty, .. } => {
+                    types.insert(*dest, to_ty.clone());
+                }
+                IrInstruction::BinOp { dest, left, .. } => {
+                    // Binary ops preserve type from left operand
+                    if let Some(ty) = types.get(left) {
+                        types.insert(*dest, ty.clone());
+                    }
+                }
+                IrInstruction::Cmp { dest, .. } => {
+                    // Comparisons produce bool
+                    types.insert(*dest, IrType::Bool);
+                }
+                IrInstruction::Copy { dest, src } => {
+                    if let Some(ty) = types.get(src) {
+                        types.insert(*dest, ty.clone());
+                    }
+                }
+                IrInstruction::Select { dest, true_val, .. } => {
+                    if let Some(ty) = types.get(true_val) {
+                        types.insert(*dest, ty.clone());
+                    }
+                }
+                IrInstruction::Alloc { dest, ty, .. } => {
+                    types.insert(*dest, IrType::Ptr(Box::new(ty.clone())));
+                }
+                IrInstruction::GetElementPtr { dest, ty, .. } => {
+                    types.insert(*dest, IrType::Ptr(Box::new(ty.clone())));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    types
+}
+
 /// Try to build an SRA candidate by scanning ALL blocks for uses.
 fn try_build_candidate_function_wide(
     alloc_dest: IrId,
@@ -179,6 +783,9 @@ fn try_build_candidate_function_wide(
     constants: &HashMap<IrId, i64>,
     free_ids: &HashSet<IrFunctionId>,
 ) -> Option<SraCandidate> {
+    // Build value type map for tracking types from Store instructions
+    let value_types = build_value_type_map(cfg);
+
     // Phase 1: Build tracked pointer set across ALL blocks
     let mut tracked = HashSet::new();
     tracked.insert(alloc_dest);
@@ -248,6 +855,7 @@ fn try_build_candidate_function_wide(
                 return None;
             }
         }
+        let _ = block_id; // suppress unused warning
 
         for (inst_idx, inst) in block.instructions.iter().enumerate() {
             match inst {
@@ -257,6 +865,12 @@ fn try_build_candidate_function_wide(
                         if tracked.contains(value) {
                             return None; // Tracked pointer used as stored value — escapes
                         }
+                        // Track field type from the stored value
+                        if let Some(&field_idx) = gep_map.get(ptr) {
+                            if let Some(ty) = value_types.get(value) {
+                                field_types.entry(field_idx).or_insert_with(|| ty.clone());
+                            }
+                        }
                     } else if tracked.contains(value) {
                         return None; // Pointer escapes via store
                     }
@@ -265,6 +879,7 @@ fn try_build_candidate_function_wide(
                 IrInstruction::Load { ptr, ty, .. } => {
                     if tracked.contains(ptr) {
                         if let Some(&field_idx) = gep_map.get(ptr) {
+                            // Load type takes precedence over Store type
                             field_types.insert(field_idx, ty.clone());
                         }
                     }
@@ -330,6 +945,15 @@ fn try_build_candidate_function_wide(
     }
 
     let num_fields = gep_map.values().copied().max().unwrap_or(0) + 1;
+
+    // Safety check: reject candidates where any accessed field lacks a known type.
+    // This prevents type mismatches when creating Undef instructions.
+    for field_idx in 0..num_fields {
+        if !field_types.contains_key(&field_idx) {
+            // Field is accessed but we couldn't determine its type
+            return None;
+        }
+    }
 
     Some(SraCandidate {
         alloc_dest,
