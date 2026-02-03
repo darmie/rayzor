@@ -295,6 +295,28 @@ enum Commands {
         #[arg(short, long)]
         verbose: bool,
     },
+
+    /// Dump MIR (Mid-level IR) in LLVM-like textual format for debugging
+    Dump {
+        /// Path to the Haxe source file
+        file: PathBuf,
+
+        /// Output to file instead of stdout
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Optimization level (0-3, default: 2)
+        #[arg(short = 'O', long, default_value = "2")]
+        opt_level: u8,
+
+        /// Show only specific function (by name)
+        #[arg(long)]
+        function: Option<String>,
+
+        /// Show only CFG (control flow graph) without instructions
+        #[arg(long)]
+        cfg_only: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -473,6 +495,13 @@ fn main() {
             cache_dir,
             verbose,
         } => cmd_preblade(files, out, list, cache_dir, verbose),
+        Commands::Dump {
+            file,
+            output,
+            opt_level,
+            function,
+            cfg_only,
+        } => cmd_dump(file, output, opt_level, function, cfg_only),
     };
 
     if let Err(e) = result {
@@ -1349,6 +1378,122 @@ fn cmd_init(name: Option<String>, workspace: bool) -> Result<(), String> {
         println!();
         println!("Get started:");
         println!("  cd {} && rayzor run", project_name);
+    }
+
+    Ok(())
+}
+
+fn cmd_dump(
+    file: PathBuf,
+    output: Option<PathBuf>,
+    opt_level: u8,
+    function_filter: Option<String>,
+    cfg_only: bool,
+) -> Result<(), String> {
+    use compiler::compilation::{CompilationConfig, CompilationUnit};
+    use compiler::ir::dump;
+    use compiler::ir::optimization::{OptimizationLevel, PassManager};
+
+    println!("🔍 Dumping MIR for {} (O{})...", file.display(), opt_level);
+
+    if !file.exists() {
+        return Err(format!("File not found: {}", file.display()));
+    }
+
+    let source =
+        std::fs::read_to_string(&file).map_err(|e| format!("Failed to read file: {}", e))?;
+
+    // Create compilation unit
+    let config = CompilationConfig {
+        load_stdlib: true,
+        ..Default::default()
+    };
+
+    let mut unit = CompilationUnit::new(config);
+
+    // Load stdlib
+    unit.load_stdlib()
+        .map_err(|e| format!("Failed to load stdlib: {}", e))?;
+
+    // Add the source file
+    unit.add_file(&source, file.to_str().unwrap_or("unknown"))?;
+
+    // Type-check
+    if let Err(errors) = unit.lower_to_tast() {
+        unit.print_compilation_errors(&errors);
+        return Err(format!("Compilation failed with {} error(s)", errors.len()));
+    }
+
+    // Get MIR modules
+    let mir_modules = unit.get_mir_modules();
+
+    if mir_modules.is_empty() {
+        return Err("No MIR modules generated".to_string());
+    }
+
+    // Get the user module (last one, after stdlib) and clone for optimization
+    let mut module = (**mir_modules.last().unwrap()).clone();
+
+    // Apply optimization if requested
+    let opt = match opt_level {
+        0 => OptimizationLevel::O0,
+        1 => OptimizationLevel::O1,
+        3 => OptimizationLevel::O3,
+        _ => OptimizationLevel::O2,
+    };
+
+    if opt != OptimizationLevel::O0 {
+        let mut pass_manager = PassManager::for_level(opt);
+        let _ = pass_manager.run(&mut module);
+    }
+
+    // Generate MIR dump
+    let mir_text = if cfg_only {
+        // Dump only CFG structure
+        let mut output_str = String::new();
+        output_str.push_str(&format!("; Module: {}\n", module.name));
+        output_str.push_str(&format!("; Functions: {}\n\n", module.functions.len()));
+
+        for func in module.functions.values() {
+            if let Some(ref filter) = function_filter {
+                if !func.name.contains(filter) {
+                    continue;
+                }
+            }
+            output_str.push_str(&dump::dump_cfg(&func.cfg));
+            output_str.push('\n');
+        }
+        output_str
+    } else if let Some(ref filter) = function_filter {
+        // Dump specific function
+        let mut found = false;
+        let mut output_str = String::new();
+
+        for func in module.functions.values() {
+            if func.name.contains(filter) {
+                output_str.push_str(&dump::dump_function(func));
+                output_str.push('\n');
+                found = true;
+            }
+        }
+
+        if !found {
+            return Err(format!("Function '{}' not found in module", filter));
+        }
+        output_str
+    } else {
+        // Dump entire module
+        dump::dump_module(&module)
+    };
+
+    // Output
+    if let Some(output_path) = output {
+        std::fs::write(&output_path, &mir_text)
+            .map_err(|e| format!("Failed to write output: {}", e))?;
+        println!("✓ MIR dumped to {}", output_path.display());
+    } else {
+        println!();
+        println!("{}", mir_text);
     }
 
     Ok(())
