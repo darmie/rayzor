@@ -501,6 +501,13 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             return Ok(llvm_func);
         }
 
+        // Replace array operations with inline implementations
+        // HaxeArray layout: { ptr, len, cap, elem_size } - all 8 bytes each
+        if let Some(llvm_func) = self.try_create_array_intrinsic(&func_name, &fn_type)? {
+            self.function_map.insert(func_id, llvm_func);
+            return Ok(llvm_func);
+        }
+
         // Check if already declared with MATCHING signature
         if let Some(existing_func) = self.module.get_function(&func_name) {
             let existing_params = existing_func.get_type().get_param_types();
@@ -603,6 +610,130 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             .map_err(|e| format!("Failed to build return: {}", e))?;
 
         Ok(Some(wrapper))
+    }
+
+    /// Create inline array intrinsics for common array operations.
+    /// HaxeArray layout: { ptr: *mut u8 (0), len: usize (8), cap: usize (16), elem_size: usize (24) }
+    fn try_create_array_intrinsic(
+        &self,
+        func_name: &str,
+        fn_type: &inkwell::types::FunctionType<'ctx>,
+    ) -> Result<Option<FunctionValue<'ctx>>, String> {
+        let i64_type = self.context.i64_type();
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+
+        match func_name {
+            // haxe_array_length(arr_ptr) -> i64
+            // Returns the length field at offset 8
+            "haxe_array_length" => {
+                let wrapper = self.module.add_function(
+                    func_name,
+                    *fn_type,
+                    Some(inkwell::module::Linkage::Internal),
+                );
+                wrapper.add_attribute(
+                    inkwell::attributes::AttributeLoc::Function,
+                    self.context.create_enum_attribute(
+                        inkwell::attributes::Attribute::get_named_enum_kind_id("alwaysinline"),
+                        0,
+                    ),
+                );
+
+                let bb = self.context.append_basic_block(wrapper, "entry");
+                let builder = self.context.create_builder();
+                builder.position_at_end(bb);
+
+                let arr_ptr = wrapper.get_first_param().ok_or("Missing arr_ptr param")?;
+                let arr_ptr = arr_ptr.into_pointer_value();
+
+                // Load length from offset 8
+                let len_ptr = unsafe {
+                    builder
+                        .build_gep(i64_type, arr_ptr, &[i64_type.const_int(1, false)], "len_ptr")
+                        .map_err(|e| format!("GEP failed: {}", e))?
+                };
+                let len = builder
+                    .build_load(i64_type, len_ptr, "len")
+                    .map_err(|e| format!("Load failed: {}", e))?;
+
+                builder
+                    .build_return(Some(&len))
+                    .map_err(|e| format!("Return failed: {}", e))?;
+
+                Ok(Some(wrapper))
+            }
+
+            // haxe_array_get_ptr(arr_ptr, index) -> ptr
+            // Returns pointer to element: data_ptr + index * elem_size
+            "haxe_array_get_ptr" => {
+                let wrapper = self.module.add_function(
+                    func_name,
+                    *fn_type,
+                    Some(inkwell::module::Linkage::Internal),
+                );
+                wrapper.add_attribute(
+                    inkwell::attributes::AttributeLoc::Function,
+                    self.context.create_enum_attribute(
+                        inkwell::attributes::Attribute::get_named_enum_kind_id("alwaysinline"),
+                        0,
+                    ),
+                );
+
+                let bb = self.context.append_basic_block(wrapper, "entry");
+                let builder = self.context.create_builder();
+                builder.position_at_end(bb);
+
+                let params: Vec<_> = wrapper.get_params();
+                if params.len() < 2 {
+                    return Err("haxe_array_get_ptr requires 2 params".to_string());
+                }
+                let arr_ptr = params[0].into_pointer_value();
+                let index = params[1].into_int_value();
+
+                // Load data_ptr from offset 0
+                let data_ptr = builder
+                    .build_load(ptr_type, arr_ptr, "data_ptr")
+                    .map_err(|e| format!("Load data_ptr failed: {}", e))?
+                    .into_pointer_value();
+
+                // Load elem_size from offset 24 (3 * 8 bytes)
+                let elem_size_ptr = unsafe {
+                    builder
+                        .build_gep(
+                            i64_type,
+                            arr_ptr,
+                            &[i64_type.const_int(3, false)],
+                            "elem_size_ptr",
+                        )
+                        .map_err(|e| format!("GEP elem_size failed: {}", e))?
+                };
+                let elem_size = builder
+                    .build_load(i64_type, elem_size_ptr, "elem_size")
+                    .map_err(|e| format!("Load elem_size failed: {}", e))?
+                    .into_int_value();
+
+                // Compute byte_offset = index * elem_size
+                let byte_offset = builder
+                    .build_int_mul(index, elem_size, "byte_offset")
+                    .map_err(|e| format!("Mul failed: {}", e))?;
+
+                // Compute element pointer = data_ptr + byte_offset
+                let i8_type = self.context.i8_type();
+                let elem_ptr = unsafe {
+                    builder
+                        .build_gep(i8_type, data_ptr, &[byte_offset], "elem_ptr")
+                        .map_err(|e| format!("GEP elem_ptr failed: {}", e))?
+                };
+
+                builder
+                    .build_return(Some(&elem_ptr))
+                    .map_err(|e| format!("Return failed: {}", e))?;
+
+                Ok(Some(wrapper))
+            }
+
+            _ => Ok(None),
+        }
     }
 
     /// Compile function bodies for a module (call declare_module for ALL modules first)
