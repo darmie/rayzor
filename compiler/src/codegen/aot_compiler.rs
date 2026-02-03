@@ -301,6 +301,15 @@ impl AotCompiler {
         // Runtime library (static)
         cmd.arg(&runtime_path);
 
+        // Optimization level for linker (matches LLVM codegen optimization)
+        let opt_flag = match self.opt_level {
+            OptimizationLevel::O0 => "-O0",
+            OptimizationLevel::O1 => "-O1",
+            OptimizationLevel::O2 => "-O2",
+            OptimizationLevel::O3 => "-O3",
+        };
+        cmd.arg(opt_flag);
+
         // Cross-compilation target
         if let Some(ref triple) = self.target_triple {
             cmd.arg(format!("--target={}", triple));
