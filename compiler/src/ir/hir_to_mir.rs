@@ -3622,7 +3622,7 @@ impl<'a> HirToMirContext<'a> {
             qualified_name: None,
             signature: signature.clone(),
             cfg: crate::ir::blocks::IrControlFlowGraph {
-                blocks: std::collections::HashMap::new(), // Empty blocks = extern
+                blocks: std::collections::BTreeMap::new(), // Empty blocks = extern
                 entry_block: IrBlockId(0),
                 next_block_id: 0,
             },

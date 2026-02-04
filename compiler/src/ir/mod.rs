@@ -55,7 +55,7 @@ use std::fmt;
 pub const IR_VERSION: u32 = 1;
 
 /// Unique identifier for IR entities
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct IrId(u32);
 
 impl IrId {

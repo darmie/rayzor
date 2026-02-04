@@ -13,7 +13,7 @@
 </head>
 <body>
     <h1>Rayzor Benchmark Results</h1>
-    <p style="text-align: center">Generated: 2026-02-02</p>
+    <p style="text-align: center">Generated: 2026-02-04</p>
     <div class="summary">
         <h3>System</h3>
         <p><strong>OS:</strong> macos | <strong>Arch:</strong> aarch64 | <strong>CPU cores:</strong> 10 | <strong>RAM:</strong> 16.0 GB | <strong>Host:</strong> Damilares-MBP.lan</p>
@@ -21,13 +21,7 @@
     <div class="summary">
         <h3>Summary</h3>
         <ul>
-            <li><strong>nbody</strong>: 6 targets measured</li>
-            <li><strong>mandelbrot</strong>: 5 targets measured</li>
-            <li><strong>arithmetic</strong>: 1 targets measured</li>
-            <li><strong>mandelbrot_tiny</strong>: 1 targets measured</li>
-            <li><strong>chained_alloc_test</strong>: 1 targets measured</li>
-            <li><strong>mandelbrot_class_small</strong>: 1 targets measured</li>
-            <li><strong>mandelbrot_simple</strong>: 1 targets measured</li>
+            <li><strong>mandelbrot</strong>: 1 targets measured</li>
         </ul>
     </div>
     <div class="summary">
@@ -45,7 +39,7 @@
         MIR optimization level O2 includes: dead code elimination, constant folding, copy propagation, function inlining, LICM, and CSE.</p>
     </div>
 
-    <h2>nbody</h2>
+    <h2>mandelbrot</h2>
     <div class="chart-container">
         <canvas id="chart_0"></canvas>
     </div>
@@ -53,51 +47,16 @@
         new Chart(document.getElementById('chart_0'), {
             type: 'bar',
             data: {
-                labels: ['haxe-interp', 'rayzor-cranelift', 'rayzor-llvm', 'rayzor-precompiled', 'rayzor-precompiled-tiered', 'rayzor-tiered'],
+                labels: ['rayzor-aot'],
                 datasets: [
                     {
                         label: 'Compile (ms)',
-                        data: [0.00, 208.89, 229.63, 1.87, 0.34, 247.94],
+                        data: [368.79],
                         backgroundColor: 'rgba(54, 162, 235, 0.8)'
                     },
                     {
                         label: 'Execute (ms)',
-                        data: [30505.71, 1309.15, 1600.77, 1652.43, 1757.20, 1783.55],
-                        backgroundColor: 'rgba(255, 99, 132, 0.8)'
-                    }
-                ]
-            },
-            options: {
-                responsive: true,
-                scales: {
-                    x: { stacked: true },
-                    y: { stacked: true, title: { display: true, text: 'Time (ms)' } }
-                },
-                plugins: {
-                    title: { display: true, text: 'nbody' }
-                }
-            }
-        });
-    </script>
-
-    <h2>mandelbrot</h2>
-    <div class="chart-container">
-        <canvas id="chart_1"></canvas>
-    </div>
-    <script>
-        new Chart(document.getElementById('chart_1'), {
-            type: 'bar',
-            data: {
-                labels: ['haxe-interp', 'rayzor-cranelift', 'rayzor-precompiled', 'rayzor-precompiled-tiered', 'rayzor-tiered'],
-                datasets: [
-                    {
-                        label: 'Compile (ms)',
-                        data: [0.00, 133.53, 2.84, 0.28, 108.53],
-                        backgroundColor: 'rgba(54, 162, 235, 0.8)'
-                    },
-                    {
-                        label: 'Execute (ms)',
-                        data: [43054.64, 6041.65, 5903.67, 5972.40, 5831.63],
+                        data: [1966.27],
                         backgroundColor: 'rgba(255, 99, 132, 0.8)'
                     }
                 ]
@@ -110,181 +69,6 @@
                 },
                 plugins: {
                     title: { display: true, text: 'mandelbrot' }
-                }
-            }
-        });
-    </script>
-
-    <h2>arithmetic</h2>
-    <div class="chart-container">
-        <canvas id="chart_2"></canvas>
-    </div>
-    <script>
-        new Chart(document.getElementById('chart_2'), {
-            type: 'bar',
-            data: {
-                labels: ['rayzor-cranelift'],
-                datasets: [
-                    {
-                        label: 'Compile (ms)',
-                        data: [94.52],
-                        backgroundColor: 'rgba(54, 162, 235, 0.8)'
-                    },
-                    {
-                        label: 'Execute (ms)',
-                        data: [179.42],
-                        backgroundColor: 'rgba(255, 99, 132, 0.8)'
-                    }
-                ]
-            },
-            options: {
-                responsive: true,
-                scales: {
-                    x: { stacked: true },
-                    y: { stacked: true, title: { display: true, text: 'Time (ms)' } }
-                },
-                plugins: {
-                    title: { display: true, text: 'arithmetic' }
-                }
-            }
-        });
-    </script>
-
-    <h2>mandelbrot_tiny</h2>
-    <div class="chart-container">
-        <canvas id="chart_3"></canvas>
-    </div>
-    <script>
-        new Chart(document.getElementById('chart_3'), {
-            type: 'bar',
-            data: {
-                labels: ['rayzor-cranelift'],
-                datasets: [
-                    {
-                        label: 'Compile (ms)',
-                        data: [101.65],
-                        backgroundColor: 'rgba(54, 162, 235, 0.8)'
-                    },
-                    {
-                        label: 'Execute (ms)',
-                        data: [0.02],
-                        backgroundColor: 'rgba(255, 99, 132, 0.8)'
-                    }
-                ]
-            },
-            options: {
-                responsive: true,
-                scales: {
-                    x: { stacked: true },
-                    y: { stacked: true, title: { display: true, text: 'Time (ms)' } }
-                },
-                plugins: {
-                    title: { display: true, text: 'mandelbrot_tiny' }
-                }
-            }
-        });
-    </script>
-
-    <h2>chained_alloc_test</h2>
-    <div class="chart-container">
-        <canvas id="chart_4"></canvas>
-    </div>
-    <script>
-        new Chart(document.getElementById('chart_4'), {
-            type: 'bar',
-            data: {
-                labels: ['rayzor-cranelift'],
-                datasets: [
-                    {
-                        label: 'Compile (ms)',
-                        data: [102.53],
-                        backgroundColor: 'rgba(54, 162, 235, 0.8)'
-                    },
-                    {
-                        label: 'Execute (ms)',
-                        data: [0.64],
-                        backgroundColor: 'rgba(255, 99, 132, 0.8)'
-                    }
-                ]
-            },
-            options: {
-                responsive: true,
-                scales: {
-                    x: { stacked: true },
-                    y: { stacked: true, title: { display: true, text: 'Time (ms)' } }
-                },
-                plugins: {
-                    title: { display: true, text: 'chained_alloc_test' }
-                }
-            }
-        });
-    </script>
-
-    <h2>mandelbrot_class_small</h2>
-    <div class="chart-container">
-        <canvas id="chart_5"></canvas>
-    </div>
-    <script>
-        new Chart(document.getElementById('chart_5'), {
-            type: 'bar',
-            data: {
-                labels: ['rayzor-cranelift'],
-                datasets: [
-                    {
-                        label: 'Compile (ms)',
-                        data: [128.09],
-                        backgroundColor: 'rgba(54, 162, 235, 0.8)'
-                    },
-                    {
-                        label: 'Execute (ms)',
-                        data: [2.26],
-                        backgroundColor: 'rgba(255, 99, 132, 0.8)'
-                    }
-                ]
-            },
-            options: {
-                responsive: true,
-                scales: {
-                    x: { stacked: true },
-                    y: { stacked: true, title: { display: true, text: 'Time (ms)' } }
-                },
-                plugins: {
-                    title: { display: true, text: 'mandelbrot_class_small' }
-                }
-            }
-        });
-    </script>
-
-    <h2>mandelbrot_simple</h2>
-    <div class="chart-container">
-        <canvas id="chart_6"></canvas>
-    </div>
-    <script>
-        new Chart(document.getElementById('chart_6'), {
-            type: 'bar',
-            data: {
-                labels: ['rayzor-cranelift'],
-                datasets: [
-                    {
-                        label: 'Compile (ms)',
-                        data: [104.93],
-                        backgroundColor: 'rgba(54, 162, 235, 0.8)'
-                    },
-                    {
-                        label: 'Execute (ms)',
-                        data: [129.15],
-                        backgroundColor: 'rgba(255, 99, 132, 0.8)'
-                    }
-                ]
-            },
-            options: {
-                responsive: true,
-                scales: {
-                    x: { stacked: true },
-                    y: { stacked: true, title: { display: true, text: 'Time (ms)' } }
-                },
-                plugins: {
-                    title: { display: true, text: 'mandelbrot_simple' }
                 }
             }
         });

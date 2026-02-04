@@ -6,7 +6,7 @@
 use super::{IrFunction, IrFunctionId, IrId, IrSourceLocation, IrType, IrValue, Linkage};
 use crate::tast::{SymbolId, TypeId};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// HIR module - represents a compilation unit
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,8 +17,8 @@ pub struct IrModule {
     /// Source file path
     pub source_file: String,
 
-    /// Functions defined in this module
-    pub functions: HashMap<IrFunctionId, IrFunction>,
+    /// Functions defined in this module (BTreeMap for deterministic iteration)
+    pub functions: BTreeMap<IrFunctionId, IrFunction>,
 
     /// Global variables
     pub globals: HashMap<IrGlobalId, IrGlobal>,
@@ -29,8 +29,8 @@ pub struct IrModule {
     /// String constants pool
     pub string_pool: StringPool,
 
-    /// External function declarations
-    pub extern_functions: HashMap<IrFunctionId, IrExternFunction>,
+    /// External function declarations (BTreeMap for deterministic iteration)
+    pub extern_functions: BTreeMap<IrFunctionId, IrExternFunction>,
 
     /// Module metadata
     pub metadata: ModuleMetadata,
@@ -293,11 +293,11 @@ impl IrModule {
         Self {
             name,
             source_file,
-            functions: HashMap::new(),
+            functions: BTreeMap::new(),
             globals: HashMap::new(),
             types: HashMap::new(),
             string_pool: StringPool::new(),
-            extern_functions: HashMap::new(),
+            extern_functions: BTreeMap::new(),
             metadata: ModuleMetadata::default(),
             next_function_id: 0,
             next_global_id: 0,

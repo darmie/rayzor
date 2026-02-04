@@ -52,7 +52,7 @@ pub struct IrFunction {
 }
 
 /// Unique identifier for functions
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct IrFunctionId(pub u32);
 
 impl std::fmt::Display for IrFunctionId {

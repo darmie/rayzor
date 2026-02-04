@@ -1,0 +1,38 @@
+{
+  "date": "2026-02-02",
+  "system_info": {
+    "os": "macos",
+    "arch": "aarch64",
+    "cpu_cores": 10,
+    "ram_mb": 16384,
+    "hostname": "Damilares-MBP.lan"
+  },
+  "benchmarks": [
+    {
+      "name": "mandelbrot",
+      "results": [
+        {
+          "name": "mandelbrot",
+          "target": "rayzor-cranelift",
+          "compile_time_ms": 131.920708,
+          "runtime_ms": 1971.62725,
+          "total_time_ms": 2103.547958,
+          "iterations": 10
+        }
+      ]
+    },
+    {
+      "name": "nbody",
+      "results": [
+        {
+          "name": "nbody",
+          "target": "rayzor-cranelift",
+          "compile_time_ms": 201.5045,
+          "runtime_ms": 1226.5353750000002,
+          "total_time_ms": 1428.0398750000002,
+          "iterations": 10
+        }
+      ]
+    }
+  ]
+}

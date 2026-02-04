@@ -1,0 +1,25 @@
+{
+  "date": "2026-02-04",
+  "system_info": {
+    "os": "macos",
+    "arch": "aarch64",
+    "cpu_cores": 10,
+    "ram_mb": 16384,
+    "hostname": "Damilares-MBP.lan"
+  },
+  "benchmarks": [
+    {
+      "name": "mandelbrot",
+      "results": [
+        {
+          "name": "mandelbrot",
+          "target": "rayzor-aot",
+          "compile_time_ms": 368.79200000000003,
+          "runtime_ms": 1966.2689169999999,
+          "total_time_ms": 2335.060917,
+          "iterations": 10
+        }
+      ]
+    }
+  ]
+}

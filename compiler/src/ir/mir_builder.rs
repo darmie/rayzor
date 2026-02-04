@@ -869,7 +869,7 @@ impl<'a> FunctionBuilder<'a> {
         // For extern functions, create an empty CFG without the default entry block
         let cfg = if self.is_extern {
             IrControlFlowGraph {
-                blocks: HashMap::new(),
+                blocks: std::collections::BTreeMap::new(),
                 entry_block: IrBlockId::entry(),
                 next_block_id: 0,
             }

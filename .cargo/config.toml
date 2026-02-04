@@ -1,0 +1,7 @@
+# Export symbols from executables so LLVM AOT-compiled shared libraries
+# can resolve runtime functions (haxe_math_sqrt, malloc, etc.) at load time.
+# This is only needed on Linux where dlopen'd .so files resolve symbols
+# from the host process's dynamic symbol table.
+
+[target.'cfg(target_os = "linux")']
+rustflags = ["-C", "link-args=-rdynamic"]

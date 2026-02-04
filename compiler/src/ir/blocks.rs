@@ -37,7 +37,7 @@ pub struct IrBasicBlock {
 }
 
 /// Unique identifier for basic blocks
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct IrBlockId(pub u32);
 
 impl IrBlockId {
@@ -204,7 +204,8 @@ impl IrBasicBlock {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrControlFlowGraph {
     /// All basic blocks in the function
-    pub blocks: HashMap<IrBlockId, IrBasicBlock>,
+    /// Uses BTreeMap for deterministic iteration order (sorted by block ID)
+    pub blocks: std::collections::BTreeMap<IrBlockId, IrBasicBlock>,
 
     /// Entry block ID
     pub entry_block: IrBlockId,
@@ -216,7 +217,7 @@ pub struct IrControlFlowGraph {
 impl IrControlFlowGraph {
     /// Create a new CFG with an entry block
     pub fn new() -> Self {
-        let mut blocks = HashMap::new();
+        let mut blocks = std::collections::BTreeMap::new();
         let entry_block = IrBlockId::entry();
         blocks.insert(entry_block, IrBasicBlock::new(entry_block));
 

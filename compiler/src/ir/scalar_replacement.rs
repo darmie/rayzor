@@ -106,20 +106,12 @@ impl OptimizationPass for ScalarReplacementPass {
             }
 
             // Run phi-aware SRA for loop-carried allocations
-            // NOTE: Temporarily disabled due to non-determinism in other passes (inlining, etc.)
-            // that causes intermittent failures in LLVM backend. The non-deterministic block
-            // iteration order in those passes creates different MIR structures, which then
-            // causes the phi-aware SRA to create invalid references.
-            // TODO: Fix non-determinism in inlining.rs and other passes, then re-enable.
-            // let r = run_phi_sra_on_function(function, &malloc_ids, &free_ids);
-            // if r.modified {
-            //     result.modified = true;
-            //     result.instructions_eliminated += r.instructions_eliminated;
-            //     for (k, v) in &r.stats {
-            //         *result.stats.entry(k.clone()).or_insert(0) += v;
-            //     }
-            // }
-            let _ = (&malloc_ids, &free_ids); // silence unused warnings
+            // DISABLED: The phi-aware SRA has a bug that causes invalid MIR when the input
+            // MIR has certain control flow structures. The issue manifests as missing value
+            // definitions that the LLVM backend can't compile. This needs further investigation
+            // into how the SRA handles complex loop CFGs with multiple back edges.
+            // TODO: Fix the phi-aware SRA control flow handling, then re-enable.
+            let _ = run_phi_sra_on_function; // suppress unused warning
         }
 
         result
