@@ -11,7 +11,7 @@
 
 use super::optimization::{OptimizationPass, OptimizationResult};
 use super::{IrBlockId, IrFunction, IrFunctionId, IrId, IrInstruction, IrModule, IrPhiNode, IrType, IrValue};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 pub struct ScalarReplacementPass;
 
@@ -27,15 +27,18 @@ struct SraCandidate {
     /// (block_id, instruction_index) of the Alloc
     alloc_location: (IrBlockId, usize),
     /// Maps GEP dest IrId → field index (across all blocks)
-    gep_map: HashMap<IrId, usize>,
+    /// BTreeMap for deterministic iteration order when creating scalar registers
+    gep_map: BTreeMap<IrId, usize>,
     /// All tracked pointer IrIds (alloc dest + GEP dests + copies/casts)
-    tracked: HashSet<IrId>,
+    /// BTreeSet for deterministic iteration order
+    tracked: BTreeSet<IrId>,
     /// (block_id, instruction_index) of Free instructions to remove
     free_locations: Vec<(IrBlockId, usize)>,
     /// Number of fields
     num_fields: usize,
     /// Types of loads per field index
-    field_types: HashMap<usize, IrType>,
+    /// BTreeMap for deterministic iteration order when creating scalar registers
+    field_types: BTreeMap<usize, IrType>,
     /// All GEP instruction locations to remove: (block_id, inst_idx)
     gep_locations: Vec<(IrBlockId, usize)>,
     /// All Copy/Cast locations that propagate tracked ptrs: (block_id, inst_idx)
@@ -50,13 +53,16 @@ struct PhiSraCandidate {
     phi_block: IrBlockId,
     /// For each incoming edge: (source_block, alloc_id, field_stores)
     /// field_stores maps field_index -> IrId of the value stored to that field
-    incoming_allocs: Vec<(IrBlockId, IrId, HashMap<usize, IrId>)>,
+    /// BTreeMap for deterministic iteration order
+    incoming_allocs: Vec<(IrBlockId, IrId, BTreeMap<usize, IrId>)>,
     /// Number of fields
     num_fields: usize,
     /// Field types (from loads)
-    field_types: HashMap<usize, IrType>,
+    /// BTreeMap for deterministic iteration order
+    field_types: BTreeMap<usize, IrType>,
     /// GEP map for the phi dest: maps GEP result -> field index
-    phi_gep_map: HashMap<IrId, usize>,
+    /// BTreeMap for deterministic iteration order
+    phi_gep_map: BTreeMap<IrId, usize>,
     /// All allocation locations to remove
     alloc_locations: Vec<(IrBlockId, usize)>,
     /// All free locations to remove
@@ -70,6 +76,12 @@ impl OptimizationPass for ScalarReplacementPass {
 
     fn run_on_module(&mut self, module: &mut IrModule) -> OptimizationResult {
         let mut result = OptimizationResult::unchanged();
+
+        let debug_sra = std::env::var("RAYZOR_DEBUG_SRA").is_ok();
+
+        if debug_sra {
+            eprintln!("[SRA] Running on module with {} functions", module.functions.len());
+        }
 
         // Identify malloc and free function IDs
         let mut malloc_ids = HashSet::new();
@@ -105,13 +117,11 @@ impl OptimizationPass for ScalarReplacementPass {
                 }
             }
 
-            // Run phi-aware SRA for loop-carried allocations
-            // DISABLED: The phi-aware SRA has a bug that causes invalid MIR when the input
-            // MIR has certain control flow structures. The issue manifests as missing value
-            // definitions that the LLVM backend can't compile. This needs further investigation
-            // into how the SRA handles complex loop CFGs with multiple back edges.
-            // TODO: Fix the phi-aware SRA control flow handling, then re-enable.
-            let _ = run_phi_sra_on_function; // suppress unused warning
+            // Phi-aware SRA is temporarily disabled due to codegen issues
+            // The problem: we remove GEPs from incoming mallocs but Loads from those
+            // GEPs still reference the removed values, causing "Value not found" errors.
+            // TODO: Fix by properly replacing all Loads before removing GEPs.
+            let _ = (run_phi_sra_on_function, &malloc_ids, &free_ids);
         }
 
         result
@@ -125,8 +135,19 @@ fn run_sra_on_function(
 ) -> OptimizationResult {
     let mut result = OptimizationResult::unchanged();
 
+    let debug_sra = std::env::var("RAYZOR_DEBUG_SRA").is_ok();
+
     let constants = build_constant_map(&function.cfg);
     let candidates = find_candidates_in_function(&function.cfg, &constants, malloc_ids, free_ids);
+
+    if debug_sra {
+        eprintln!("[SRA] Function '{}': found {} candidates", function.name, candidates.len());
+        for (i, c) in candidates.iter().enumerate() {
+            eprintln!("[SRA]   Candidate {}: alloc_dest={:?}, tracked={:?}", i, c.alloc_dest, c.tracked);
+        }
+        use std::io::Write;
+        let _ = std::io::stderr().flush();
+    }
 
     for candidate in &candidates {
         let eliminated = apply_sra(function, candidate);
@@ -137,6 +158,9 @@ fn run_sra_on_function(
                 .stats
                 .entry("allocs_replaced".to_string())
                 .or_insert(0) += 1;
+            if debug_sra {
+                eprintln!("[SRA]   Applied SRA to {:?}, eliminated {} instructions", candidate.alloc_dest, eliminated);
+            }
         }
     }
 
@@ -307,29 +331,31 @@ fn try_build_phi_candidate(
     let value_types = build_value_type_map(cfg);
 
     // Track all pointers derived from each malloc and the phi
-    let mut all_tracked: HashSet<IrId> = HashSet::new();
-    let mut malloc_tracked: HashMap<IrId, HashSet<IrId>> = HashMap::new();
-    let mut phi_tracked: HashSet<IrId> = HashSet::new();
+    // Use BTreeSet/BTreeMap for deterministic iteration order
+    let mut all_tracked: BTreeSet<IrId> = BTreeSet::new();
+    let mut malloc_tracked: BTreeMap<IrId, BTreeSet<IrId>> = BTreeMap::new();
+    let mut phi_tracked: BTreeSet<IrId> = BTreeSet::new();
 
     // Initialize tracking
     phi_tracked.insert(phi.dest);
     all_tracked.insert(phi.dest);
 
     for (_, malloc_id) in incoming_mallocs {
-        let mut tracked = HashSet::new();
+        let mut tracked = BTreeSet::new();
         tracked.insert(*malloc_id);
         all_tracked.insert(*malloc_id);
         malloc_tracked.insert(*malloc_id, tracked);
     }
 
     // Build GEP maps for each tracked set
-    let mut malloc_gep_maps: HashMap<IrId, HashMap<IrId, usize>> = HashMap::new();
-    let mut phi_gep_map: HashMap<IrId, usize> = HashMap::new();
+    // Use BTreeMap for deterministic iteration order
+    let mut malloc_gep_maps: BTreeMap<IrId, BTreeMap<IrId, usize>> = BTreeMap::new();
+    let mut phi_gep_map: BTreeMap<IrId, usize> = BTreeMap::new();
     // Track GEP element types to detect type conflicts at the same field index
-    let mut gep_element_types: HashMap<usize, IrType> = HashMap::new();
+    let mut gep_element_types: BTreeMap<usize, IrType> = BTreeMap::new();
 
     for malloc_id in malloc_tracked.keys() {
-        malloc_gep_maps.insert(*malloc_id, HashMap::new());
+        malloc_gep_maps.insert(*malloc_id, BTreeMap::new());
     }
 
     // First: Track through related phi nodes
@@ -441,12 +467,13 @@ fn try_build_phi_candidate(
     }
 
     // Check escape conditions and collect field stores/loads
-    let mut field_types: HashMap<usize, IrType> = HashMap::new();
-    let mut malloc_field_stores: HashMap<IrId, HashMap<usize, IrId>> = HashMap::new();
+    // Use BTreeMap for deterministic iteration order
+    let mut field_types: BTreeMap<usize, IrType> = BTreeMap::new();
+    let mut malloc_field_stores: BTreeMap<IrId, BTreeMap<usize, IrId>> = BTreeMap::new();
     let mut free_locations: Vec<(IrBlockId, usize)> = Vec::new();
 
     for malloc_id in malloc_tracked.keys() {
-        malloc_field_stores.insert(*malloc_id, HashMap::new());
+        malloc_field_stores.insert(*malloc_id, BTreeMap::new());
     }
 
     for &(block_id, block) in &sorted {
@@ -601,7 +628,7 @@ fn try_build_phi_candidate(
     }
 
     // Build incoming_allocs
-    let mut incoming_allocs: Vec<(IrBlockId, IrId, HashMap<usize, IrId>)> = Vec::new();
+    let mut incoming_allocs: Vec<(IrBlockId, IrId, BTreeMap<usize, IrId>)> = Vec::new();
     for (src_block, malloc_id) in incoming_mallocs {
         let stores = malloc_field_stores.get(malloc_id).unwrap().clone();
         incoming_allocs.push((*src_block, *malloc_id, stores));
@@ -717,13 +744,44 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
         }
     }
 
-    // Process each block to replace loads from phi GEPs with copies from scalar phis
-    // We DON'T remove allocations, stores, GEPs, frees, or the pointer phi here.
-    // DCE will clean them up if they become dead after load replacement.
-    // This is safer and avoids leaving dangling references.
+    // Build set of dead pointers: malloc results that feed into the phi
+    // These allocations are now replaced by scalar phis, so we can remove them
+    let mut dead_pointers: BTreeSet<IrId> = BTreeSet::new();
+    for (_src_block, malloc_id, _stores) in &candidate.incoming_allocs {
+        dead_pointers.insert(*malloc_id);
+    }
+
+    // Expand dead_pointers to include all GEPs, Copies, Casts derived from mallocs
     let mut block_order: Vec<IrBlockId> = function.cfg.blocks.keys().copied().collect();
     block_order.sort_by_key(|id| id.0);
 
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &block_id in &block_order {
+            if let Some(block) = function.cfg.blocks.get(&block_id) {
+                for inst in &block.instructions {
+                    match inst {
+                        IrInstruction::GetElementPtr { dest, ptr, .. } => {
+                            if dead_pointers.contains(ptr) && !dead_pointers.contains(dest) {
+                                dead_pointers.insert(*dest);
+                                changed = true;
+                            }
+                        }
+                        IrInstruction::Copy { dest, src } | IrInstruction::Cast { dest, src, .. } => {
+                            if dead_pointers.contains(src) && !dead_pointers.contains(dest) {
+                                dead_pointers.insert(*dest);
+                                changed = true;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    // Process each block: replace loads, remove dead stores/GEPs/mallocs/frees
     for block_id in block_order {
         let block = match function.cfg.blocks.get_mut(&block_id) {
             Some(b) => b,
@@ -746,6 +804,48 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
                         continue;
                     }
                 }
+                // Remove stores to dead pointers (these are now dead)
+                IrInstruction::Store { ptr, .. } => {
+                    if dead_pointers.contains(ptr) {
+                        eliminated += 1;
+                        continue;
+                    }
+                }
+                // Remove GEPs from dead pointers
+                IrInstruction::GetElementPtr { ptr, .. } => {
+                    if dead_pointers.contains(ptr) {
+                        eliminated += 1;
+                        continue;
+                    }
+                }
+                // Remove malloc calls that produce dead pointers
+                IrInstruction::CallDirect { dest: Some(dest), .. } => {
+                    if dead_pointers.contains(dest) {
+                        eliminated += 1;
+                        continue;
+                    }
+                }
+                // Remove Alloc instructions that produce dead pointers
+                IrInstruction::Alloc { dest, .. } => {
+                    if dead_pointers.contains(dest) {
+                        eliminated += 1;
+                        continue;
+                    }
+                }
+                // Remove frees of dead pointers
+                IrInstruction::Free { ptr } => {
+                    if dead_pointers.contains(ptr) {
+                        eliminated += 1;
+                        continue;
+                    }
+                }
+                // Remove copies/casts of dead pointers
+                IrInstruction::Copy { dest, src } | IrInstruction::Cast { dest, src, .. } => {
+                    if dead_pointers.contains(src) || dead_pointers.contains(dest) {
+                        eliminated += 1;
+                        continue;
+                    }
+                }
                 _ => {}
             }
 
@@ -753,6 +853,12 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
         }
 
         block.instructions = new_instructions;
+    }
+
+    // Also remove the original pointer phi if all its uses are now dead
+    if let Some(block) = function.cfg.blocks.get_mut(&candidate.phi_block) {
+        block.phi_nodes.retain(|phi| phi.dest != candidate.phi_dest);
+        eliminated += 1;
     }
 
     eliminated
@@ -912,12 +1018,13 @@ fn try_build_candidate_function_wide(
     let value_types = build_value_type_map(cfg);
 
     // Phase 1: Build tracked pointer set across ALL blocks
-    let mut tracked = HashSet::new();
+    // Use BTreeSet/BTreeMap for deterministic iteration order
+    let mut tracked = BTreeSet::new();
     tracked.insert(alloc_dest);
 
-    let mut gep_map: HashMap<IrId, usize> = HashMap::new();
+    let mut gep_map: BTreeMap<IrId, usize> = BTreeMap::new();
     // Track GEP element types to detect type conflicts at the same field index
-    let mut gep_element_types: HashMap<usize, IrType> = HashMap::new();
+    let mut gep_element_types: BTreeMap<usize, IrType> = BTreeMap::new();
 
     // Iterate until fixpoint — find all GEPs, copies, casts derived from alloc
     let sorted = sorted_blocks(cfg);
@@ -975,7 +1082,8 @@ fn try_build_candidate_function_wide(
 
     // Phase 2: Check escape conditions across ALL blocks
     let mut free_locations = Vec::new();
-    let mut field_types: HashMap<usize, IrType> = HashMap::new();
+    // Use BTreeMap for deterministic iteration order when creating scalar registers
+    let mut field_types: BTreeMap<usize, IrType> = BTreeMap::new();
     let mut gep_locations = Vec::new();
     let mut copy_locations = Vec::new();
 
@@ -1131,7 +1239,7 @@ fn resolve_gep_field_index(indices: &[IrId], constants: &HashMap<IrId, i64>) -> 
     }
 }
 
-fn uses_any_tracked(inst: &IrInstruction, tracked: &HashSet<IrId>) -> bool {
+fn uses_any_tracked(inst: &IrInstruction, tracked: &BTreeSet<IrId>) -> bool {
     match inst {
         IrInstruction::CallDirect { args, .. } => args.iter().any(|a| tracked.contains(a)),
         IrInstruction::CallIndirect { args, func_ptr, .. } => {
@@ -1160,7 +1268,7 @@ fn uses_any_tracked(inst: &IrInstruction, tracked: &HashSet<IrId>) -> bool {
     }
 }
 
-fn terminator_uses_tracked(terminator: &super::IrTerminator, tracked: &HashSet<IrId>) -> bool {
+fn terminator_uses_tracked(terminator: &super::IrTerminator, tracked: &BTreeSet<IrId>) -> bool {
     match terminator {
         super::IrTerminator::Return { value: Some(v) } => tracked.contains(v),
         super::IrTerminator::CondBranch { condition, .. } => tracked.contains(condition),

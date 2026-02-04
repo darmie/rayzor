@@ -26,7 +26,7 @@ use crate::tast::{
 };
 use log::{debug, trace, warn};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 /// Layout information for a single field in a @:cstruct class
@@ -60,31 +60,31 @@ pub struct HirToMirContext<'a> {
     builder: IrBuilder,
 
     /// Mapping from HIR symbols to MIR registers (for variables/parameters)
-    symbol_map: HashMap<SymbolId, IrId>,
+    symbol_map: BTreeMap<SymbolId, IrId>,
 
     /// Resolved IR types for pattern-bound variables (overrides convert_type for TypeParameter types)
-    symbol_ir_types: HashMap<SymbolId, IrType>,
+    symbol_ir_types: BTreeMap<SymbolId, IrType>,
 
     /// Concrete TypeIds for pattern-bound variables (for toString dispatch on generic fields)
-    symbol_type_ids: HashMap<SymbolId, TypeId>,
+    symbol_type_ids: BTreeMap<SymbolId, TypeId>,
 
     /// Mapping from HIR function symbols to MIR function IDs
-    function_map: HashMap<SymbolId, crate::ir::IrFunctionId>,
+    function_map: BTreeMap<SymbolId, crate::ir::IrFunctionId>,
 
     /// Mapping from global variable symbols to MIR global IDs
     /// Used for static class fields and module-level variables
-    global_symbol_map: HashMap<SymbolId, IrGlobalId>,
+    global_symbol_map: BTreeMap<SymbolId, IrGlobalId>,
 
     /// External function map from previously compiled modules (e.g., stdlib)
     /// These are functions defined in other modules that can be called from this module
-    external_function_map: HashMap<SymbolId, crate::ir::IrFunctionId>,
+    external_function_map: BTreeMap<SymbolId, crate::ir::IrFunctionId>,
 
     /// Name-based external function map for cross-file lookups
     /// This is used when SymbolIds don't match (e.g., "StringTools.startsWith" -> IrFunctionId)
-    external_function_name_map: HashMap<String, crate::ir::IrFunctionId>,
+    external_function_name_map: BTreeMap<String, crate::ir::IrFunctionId>,
 
     /// Mapping from HIR blocks to MIR blocks
-    block_map: HashMap<usize, IrBlockId>,
+    block_map: BTreeMap<usize, IrBlockId>,
 
     /// Loop context for break/continue
     loop_stack: Vec<LoopContext>,
@@ -113,28 +113,28 @@ pub struct HirToMirContext<'a> {
 
     /// Track closure registers and their environment pointers
     /// Maps: closure_function_pointer_register -> environment_pointer_register
-    closure_environments: HashMap<IrId, IrId>,
+    closure_environments: BTreeMap<IrId, IrId>,
 
     /// Mapping from field SymbolId to (class_type_id, field_index)
     /// This allows us to find the index of a field within its class
-    field_index_map: HashMap<SymbolId, (TypeId, u32)>,
+    field_index_map: BTreeMap<SymbolId, (TypeId, u32)>,
 
     /// Mapping from (typedef_type_id, field_name) to field_index for anonymous struct fields
     /// This allows field access on typedef'd anonymous structs like FileStat
     /// where field symbols may be created at access sites rather than typedef declaration
-    typedef_field_map: HashMap<(TypeId, InternedString), u32>,
+    typedef_field_map: BTreeMap<(TypeId, InternedString), u32>,
 
     /// Mapping from field SymbolId to PropertyAccessInfo (for properties with custom getters/setters)
     /// This allows us to route property access through the appropriate getter/setter methods
-    property_access_map: HashMap<SymbolId, crate::tast::PropertyAccessInfo>,
+    property_access_map: BTreeMap<SymbolId, crate::tast::PropertyAccessInfo>,
 
     /// Mapping from class TypeId to constructor IrFunctionId
     /// This allows new expressions to find the constructor by class type
-    constructor_map: HashMap<TypeId, IrFunctionId>,
+    constructor_map: BTreeMap<TypeId, IrFunctionId>,
 
     /// Mapping from qualified class name to constructor IrFunctionId
     /// This is a fallback when TypeIds don't match (e.g., across separately compiled files)
-    constructor_name_map: HashMap<String, IrFunctionId>,
+    constructor_name_map: BTreeMap<String, IrFunctionId>,
 
     /// Reference to HIR type declarations for inheritance lookup
     /// Needed to access parent class fields during field inheritance
@@ -155,11 +155,11 @@ pub struct HirToMirContext<'a> {
     /// Mapping from variable SymbolIds to their monomorphized stdlib class names
     /// Used to track Vec<Int> -> VecI32, Vec<Float> -> VecF64, etc.
     /// This is needed because extern generic classes don't have proper TypeIds in the type table
-    monomorphized_var_types: HashMap<SymbolId, String>,
+    monomorphized_var_types: BTreeMap<SymbolId, String>,
 
     /// Enums that need RTTI registration
     /// Maps enum SymbolId -> (runtime_type_id, enum_name, variant_names)
-    enums_for_registration: HashMap<SymbolId, (u32, String, Vec<String>)>,
+    enums_for_registration: BTreeMap<SymbolId, (u32, String, Vec<String>)>,
 
     /// Counter for generating unique wrapper function names
     next_wrapper_id: u32,
@@ -167,7 +167,7 @@ pub struct HirToMirContext<'a> {
     // === Drop Tracking (Rust-style implicit drop semantics) ===
     /// Maps variable SymbolId to the IrId holding its current heap-allocated value
     /// When a variable is reassigned, we free its old value before assigning the new one
-    owned_heap_values: HashMap<SymbolId, IrId>,
+    owned_heap_values: BTreeMap<SymbolId, IrId>,
 
     /// Stack of scopes, each containing the variables that own heap allocations in that scope
     /// When a scope exits, we emit Free for all owned values in that scope
@@ -188,11 +188,11 @@ pub struct HirToMirContext<'a> {
 
     /// Symbols that have been reassigned in the current scope
     /// These should be skipped at scope exit (they're freed at reassignment time)
-    reassigned_in_scope: HashSet<SymbolId>,
+    reassigned_in_scope: BTreeSet<SymbolId>,
 
     /// Precomputed C-compatible layouts for @:cstruct classes
     /// Maps class TypeId to its CStructLayout
-    cstruct_layouts: HashMap<TypeId, CStructLayout>,
+    cstruct_layouts: BTreeMap<TypeId, CStructLayout>,
 
     /// Lazily-initialized TCC runtime function IDs for __c__ inline code
     tcc_func_ids: Option<TccFuncIds>,
@@ -224,16 +224,16 @@ struct TccFuncIds {
 #[derive(Debug, Default)]
 struct SsaOptimizationHints {
     /// Functions that are inline candidates (small, simple control flow)
-    inline_candidates: std::collections::HashSet<SymbolId>,
+    inline_candidates: BTreeSet<SymbolId>,
 
     /// Functions with straight-line code (no branches, optimize aggressively)
-    straight_line_functions: std::collections::HashSet<SymbolId>,
+    straight_line_functions: BTreeSet<SymbolId>,
 
     /// Functions with complex control flow (many phi nodes, careful optimization)
-    complex_control_flow_functions: std::collections::HashSet<SymbolId>,
+    complex_control_flow_functions: BTreeSet<SymbolId>,
 
     /// Functions with common subexpressions (CSE opportunities)
-    cse_opportunities: std::collections::HashSet<SymbolId>,
+    cse_opportunities: BTreeSet<SymbolId>,
 }
 
 #[derive(Debug)]
@@ -243,7 +243,7 @@ struct LoopContext {
     label: Option<SymbolId>,
     /// Maps symbol IDs to their exit block phi registers
     /// When breaking, we need to add incoming edges to these phi nodes
-    exit_phi_nodes: HashMap<SymbolId, IrId>,
+    exit_phi_nodes: BTreeMap<SymbolId, IrId>,
 }
 
 #[derive(Debug)]
@@ -268,14 +268,14 @@ struct LambdaContext {
 struct SavedLoweringState {
     current_function: Option<IrFunctionId>,
     current_block: Option<IrBlockId>,
-    symbol_map: HashMap<SymbolId, IrId>,
+    symbol_map: BTreeMap<SymbolId, IrId>,
     current_env_layout: Option<EnvironmentLayout>,
     // Drop tracking state - must be saved/restored to prevent lambda bodies
     // from inheriting (and freeing) the parent function's owned values
-    owned_heap_values: HashMap<SymbolId, IrId>,
+    owned_heap_values: BTreeMap<SymbolId, IrId>,
     drop_scope_stack: Vec<Vec<(SymbolId, IrId)>>,
     temp_heap_values: Vec<IrId>,
-    reassigned_in_scope: HashSet<SymbolId>,
+    reassigned_in_scope: BTreeSet<SymbolId>,
     current_drop_points: Option<DropPoints>,
     current_stmt_index: usize,
 }
@@ -293,14 +293,14 @@ impl<'a> HirToMirContext<'a> {
     ) -> Self {
         let mut ctx = Self {
             builder: IrBuilder::new(module_name.clone(), source_file),
-            symbol_map: HashMap::new(),
-            symbol_ir_types: HashMap::new(),
-            symbol_type_ids: HashMap::new(),
-            function_map: HashMap::new(),
-            global_symbol_map: HashMap::new(),
-            external_function_map: HashMap::new(),
-            external_function_name_map: HashMap::new(),
-            block_map: HashMap::new(),
+            symbol_map: BTreeMap::new(),
+            symbol_ir_types: BTreeMap::new(),
+            symbol_type_ids: BTreeMap::new(),
+            function_map: BTreeMap::new(),
+            global_symbol_map: BTreeMap::new(),
+            external_function_map: BTreeMap::new(),
+            external_function_name_map: BTreeMap::new(),
+            block_map: BTreeMap::new(),
             loop_stack: Vec::new(),
             current_module: Some(module_name),
             errors: Vec::new(),
@@ -309,28 +309,28 @@ impl<'a> HirToMirContext<'a> {
             dynamic_globals: Vec::new(),
             string_interner,
             type_table,
-            closure_environments: HashMap::new(),
-            field_index_map: HashMap::new(),
-            typedef_field_map: HashMap::new(),
-            property_access_map: HashMap::new(),
-            constructor_map: HashMap::new(),
-            constructor_name_map: HashMap::new(),
+            closure_environments: BTreeMap::new(),
+            field_index_map: BTreeMap::new(),
+            typedef_field_map: BTreeMap::new(),
+            property_access_map: BTreeMap::new(),
+            constructor_map: BTreeMap::new(),
+            constructor_name_map: BTreeMap::new(),
             current_hir_types: hir_types,
             stdlib_mapping,
             symbol_table,
             current_env_layout: None,
             current_this_type: None,
-            monomorphized_var_types: HashMap::new(),
-            enums_for_registration: HashMap::new(),
+            monomorphized_var_types: BTreeMap::new(),
+            enums_for_registration: BTreeMap::new(),
             next_wrapper_id: 0,
             // Drop tracking initialization
-            owned_heap_values: HashMap::new(),
+            owned_heap_values: BTreeMap::new(),
             drop_scope_stack: Vec::new(),
             temp_heap_values: Vec::new(),
             current_drop_points: None,
             current_stmt_index: 0,
-            reassigned_in_scope: HashSet::new(),
-            cstruct_layouts: HashMap::new(),
+            reassigned_in_scope: BTreeSet::new(),
+            cstruct_layouts: BTreeMap::new(),
             tcc_func_ids: None,
             current_function_symbol: None,
         };
@@ -3704,7 +3704,7 @@ impl<'a> HirToMirContext<'a> {
     }
 
     /// Get collected enum RTTI data for registration
-    pub fn get_enums_for_registration(&self) -> &HashMap<SymbolId, (u32, String, Vec<String>)> {
+    pub fn get_enums_for_registration(&self) -> &BTreeMap<SymbolId, (u32, String, Vec<String>)> {
         &self.enums_for_registration
     }
 
@@ -9263,7 +9263,7 @@ impl<'a> HirToMirContext<'a> {
             };
 
             // Save values after then branch
-            let mut then_values: HashMap<SymbolId, IrId> = HashMap::new();
+            let mut then_values: BTreeMap<SymbolId, IrId> = BTreeMap::new();
             if then_end_block.is_some() {
                 // Only collect values for variables that existed BEFORE the if/else
                 // Variables defined within the then branch should not be added
@@ -9275,7 +9275,7 @@ impl<'a> HirToMirContext<'a> {
             }
 
             // Lower else branch if present
-            let mut else_values: HashMap<SymbolId, IrId> = HashMap::new();
+            let mut else_values: BTreeMap<SymbolId, IrId> = BTreeMap::new();
             let else_end_block = if let Some(else_branch) = else_branch {
                 self.builder.switch_to_block(else_block);
                 self.lower_block(else_branch);
@@ -9449,7 +9449,7 @@ impl<'a> HirToMirContext<'a> {
             .collect();
 
         // Save initial values of loop variables before jumping to condition
-        let mut loop_var_initial_values: HashMap<SymbolId, (IrId, IrType)> = HashMap::new();
+        let mut loop_var_initial_values: BTreeMap<SymbolId, (IrId, IrType)> = BTreeMap::new();
         for symbol_id in &modified_vars {
             if let Some(&reg) = self.symbol_map.get(symbol_id) {
                 // Get the type from the locals table
@@ -9468,7 +9468,7 @@ impl<'a> HirToMirContext<'a> {
         self.builder.switch_to_block(cond_block);
 
         // Create phi nodes for all loop variables
-        let mut phi_nodes: HashMap<SymbolId, IrId> = HashMap::new();
+        let mut phi_nodes: BTreeMap<SymbolId, IrId> = BTreeMap::new();
         // debug!("Creating phi nodes for {} variables", loop_var_initial_values.len());
         for (symbol_id, (initial_reg, var_type)) in &loop_var_initial_values {
             // debug!("Creating phi for symbol {:?}, initial reg {:?}", symbol_id, initial_reg);
@@ -9516,7 +9516,7 @@ impl<'a> HirToMirContext<'a> {
             continue_block: cond_block,
             break_block: exit_block,
             label: label.cloned(),
-            exit_phi_nodes: HashMap::new(), // Will be populated after condition eval
+            exit_phi_nodes: BTreeMap::new(), // Will be populated after condition eval
         });
 
         // Evaluate condition - this may create additional blocks for short-circuit operators!
@@ -9539,7 +9539,7 @@ impl<'a> HirToMirContext<'a> {
         let cond_end_block = self.builder.current_block().unwrap_or(cond_block);
 
         // Now create exit block phi nodes with the correct predecessor block
-        let mut exit_phi_nodes: HashMap<SymbolId, IrId> = HashMap::new();
+        let mut exit_phi_nodes: BTreeMap<SymbolId, IrId> = BTreeMap::new();
         for (symbol_id, loop_phi_reg) in &phi_nodes {
             if let Some((_, var_type)) = loop_var_initial_values.get(symbol_id) {
                 // Allocate a new register for the exit block parameter
@@ -12784,7 +12784,7 @@ impl<'a> HirToMirContext<'a> {
             .collect();
 
         // Save initial values of loop variables before jumping to body
-        let mut loop_var_initial_values: HashMap<SymbolId, (IrId, IrType)> = HashMap::new();
+        let mut loop_var_initial_values: BTreeMap<SymbolId, (IrId, IrType)> = BTreeMap::new();
         for symbol_id in &modified_vars {
             if let Some(&reg) = self.symbol_map.get(symbol_id) {
                 // Get the type from the locals table
@@ -12803,7 +12803,7 @@ impl<'a> HirToMirContext<'a> {
         self.builder.switch_to_block(body_block);
 
         // Create phi nodes for all loop variables at the start of body block
-        let mut phi_nodes: HashMap<SymbolId, IrId> = HashMap::new();
+        let mut phi_nodes: BTreeMap<SymbolId, IrId> = BTreeMap::new();
         for (symbol_id, (initial_reg, var_type)) in &loop_var_initial_values {
             if let Some(phi_reg) = self.builder.build_phi(body_block, var_type.clone()) {
                 // Add incoming value from entry block (first iteration)
@@ -12844,7 +12844,7 @@ impl<'a> HirToMirContext<'a> {
             continue_block: cond_block,
             break_block: exit_block,
             label: label.cloned(),
-            exit_phi_nodes: HashMap::new(),
+            exit_phi_nodes: BTreeMap::new(),
         });
 
         // Lower the body statements
@@ -12874,7 +12874,7 @@ impl<'a> HirToMirContext<'a> {
         let cond_end_block = self.builder.current_block().unwrap_or(cond_block);
 
         // Now create exit block phi nodes with the correct predecessor block
-        let mut exit_phi_nodes: HashMap<SymbolId, IrId> = HashMap::new();
+        let mut exit_phi_nodes: BTreeMap<SymbolId, IrId> = BTreeMap::new();
         for (symbol_id, _phi_reg) in &phi_nodes {
             if let Some((_, var_type)) = loop_var_initial_values.get(symbol_id) {
                 // Get the current value of the variable after the loop body
@@ -13063,7 +13063,7 @@ impl<'a> HirToMirContext<'a> {
             continue_block: loop_cond_block,
             break_block: loop_exit_block,
             label: label.cloned(),
-            exit_phi_nodes: HashMap::new(),
+            exit_phi_nodes: BTreeMap::new(),
         });
 
         // Step 5: Build condition block - check if index < length
@@ -15470,7 +15470,7 @@ pub fn lower_hir_to_mir(
         string_interner,
         type_table,
         symbol_table,
-        HashMap::new(),
+        BTreeMap::new(),
     )
 }
 
@@ -15483,7 +15483,7 @@ pub fn lower_hir_to_mir_with_externals(
     string_interner: &StringInterner,
     type_table: &Rc<RefCell<TypeTable>>,
     symbol_table: &SymbolTable,
-    external_functions: HashMap<SymbolId, IrFunctionId>,
+    external_functions: BTreeMap<SymbolId, IrFunctionId>,
 ) -> Result<IrModule, Vec<LoweringError>> {
     let mut context = HirToMirContext::new(
         hir_module.name.clone(),
@@ -15507,7 +15507,7 @@ pub struct MirLoweringResult {
     pub module: IrModule,
     /// Mapping from HIR function symbols to MIR function IDs
     /// This can be used to build the external_functions map for other modules
-    pub function_map: HashMap<SymbolId, IrFunctionId>,
+    pub function_map: BTreeMap<SymbolId, IrFunctionId>,
 }
 
 /// Lower HIR to MIR and return both the module and function mappings
@@ -15519,8 +15519,8 @@ pub fn lower_hir_to_mir_with_function_map(
     string_interner: &StringInterner,
     type_table: &Rc<RefCell<TypeTable>>,
     symbol_table: &SymbolTable,
-    external_functions: HashMap<SymbolId, IrFunctionId>,
-    external_functions_by_name: HashMap<String, IrFunctionId>,
+    external_functions: BTreeMap<SymbolId, IrFunctionId>,
+    external_functions_by_name: BTreeMap<String, IrFunctionId>,
     stdlib_mapping: StdlibMapping,
 ) -> Result<MirLoweringResult, Vec<LoweringError>> {
     let mut context = HirToMirContext::new(

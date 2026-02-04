@@ -8,7 +8,7 @@ use super::{
     BinaryOp, CompareOp, IrBasicBlock, IrBlockId, IrFunction, IrFunctionId, IrGlobalId, IrId,
     IrInstruction, IrModule, IrTerminator, IrType, IrValue,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// Optimization pass trait
 pub trait OptimizationPass {
@@ -403,7 +403,8 @@ impl OptimizationPass for CopyPropagationPass {
         let mut result = OptimizationResult::unchanged();
 
         for function in module.functions.values_mut() {
-            let mut copies: HashMap<IrId, IrId> = HashMap::new();
+            // Use BTreeMap for deterministic iteration order
+            let mut copies: BTreeMap<IrId, IrId> = BTreeMap::new();
 
             // Find copy instructions
             for block in function.cfg.blocks.values() {
@@ -563,7 +564,7 @@ fn terminator_uses(term: &IrTerminator) -> Vec<IrId> {
 }
 
 /// Replace register uses in a terminator
-fn replace_terminator_uses(term: &mut IrTerminator, replacements: &HashMap<IrId, IrId>) {
+fn replace_terminator_uses(term: &mut IrTerminator, replacements: &BTreeMap<IrId, IrId>) {
     match term {
         IrTerminator::CondBranch { condition, .. } => {
             if let Some(&new_reg) = replacements.get(condition) {
@@ -594,7 +595,7 @@ pub(super) trait InstructionExt {
     fn uses(&self) -> Vec<IrId>;
     fn dest(&self) -> Option<IrId>;
     fn has_side_effects(&self) -> bool;
-    fn replace_uses(&mut self, replacements: &HashMap<IrId, IrId>);
+    fn replace_uses(&mut self, replacements: &BTreeMap<IrId, IrId>);
     fn collect_uses(&self, set: &mut HashSet<IrId>);
 }
 
@@ -614,7 +615,7 @@ impl InstructionExt for IrInstruction {
         IrInstruction::has_side_effects(self)
     }
 
-    fn replace_uses(&mut self, replacements: &HashMap<IrId, IrId>) {
+    fn replace_uses(&mut self, replacements: &BTreeMap<IrId, IrId>) {
         // Replace uses in all instruction operands
         let replace = |id: &mut IrId| {
             if let Some(&new_id) = replacements.get(id) {
@@ -1163,7 +1164,8 @@ impl OptimizationPass for CSEPass {
             // Local CSE within each block
             for block in function.cfg.blocks.values_mut() {
                 let mut available: HashMap<String, IrId> = HashMap::new();
-                let mut replacements: HashMap<IrId, IrId> = HashMap::new();
+                // Use BTreeMap for deterministic iteration order
+                let mut replacements: BTreeMap<IrId, IrId> = BTreeMap::new();
 
                 for inst in &block.instructions {
                     if let Some(key) = Self::instruction_key(inst) {
@@ -1269,7 +1271,8 @@ impl OptimizationPass for GlobalLoadCachingPass {
                 uses_in_block.insert(block_id, used);
             }
 
-            let mut all_replacements: HashMap<IrId, IrId> = HashMap::new();
+            // Use BTreeMap for deterministic iteration order
+            let mut all_replacements: BTreeMap<IrId, IrId> = BTreeMap::new();
 
             for (_global_id, loads) in &global_loads {
                 if loads.len() <= 1 {
@@ -1392,8 +1395,8 @@ impl OptimizationPass for GVNPass {
 
             // Value number table: expression -> canonical register
             let mut value_numbers: HashMap<String, IrId> = HashMap::new();
-            // Registers to replace
-            let mut replacements: HashMap<IrId, IrId> = HashMap::new();
+            // Registers to replace (use BTreeMap for deterministic iteration order)
+            let mut replacements: BTreeMap<IrId, IrId> = BTreeMap::new();
 
             // Process blocks in dominator tree order (preorder DFS)
             let mut worklist = vec![function.entry_block()];
@@ -1457,7 +1460,7 @@ impl GVNPass {
     /// Create expression key with replacements applied to operands.
     fn make_key_with_replacements(
         inst: &IrInstruction,
-        replacements: &HashMap<IrId, IrId>,
+        replacements: &BTreeMap<IrId, IrId>,
     ) -> Option<String> {
         let resolve = |id: IrId| -> IrId { *replacements.get(&id).unwrap_or(&id) };
 
@@ -1641,13 +1644,12 @@ impl PassManager {
             OptimizationLevel::O2 => {
                 // Standard optimizations
                 manager.add_pass(super::inlining::InliningPass::new());
-                // GlobalLoadCachingPass: only helps when same global loaded multiple times
-                // within a function. Disabled for now as most globals are loaded once per function.
-                // manager.add_pass(GlobalLoadCachingPass::new());
                 manager.add_pass(DeadCodeEliminationPass::new());
+                // SRA enabled - regular SRA doesn't modify phi nodes, phi-aware SRA remains disabled
                 manager.add_pass(super::scalar_replacement::ScalarReplacementPass::new());
                 manager.add_pass(ConstantFoldingPass::new());
                 manager.add_pass(CopyPropagationPass::new());
+                // CSE and LICM may contribute to non-determinism, keeping them for now
                 manager.add_pass(CSEPass::new());
                 manager.add_pass(LICMPass::new());
                 manager.add_pass(ControlFlowSimplificationPass::new());

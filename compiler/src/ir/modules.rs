@@ -49,7 +49,7 @@ pub struct IrModule {
 }
 
 /// Global variable identifier
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct IrGlobalId(pub u32);
 
 impl std::fmt::Display for IrGlobalId {
@@ -59,7 +59,7 @@ impl std::fmt::Display for IrGlobalId {
 }
 
 /// Type definition identifier
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct IrTypeDefId(pub u32);
 
 impl std::fmt::Display for IrTypeDefId {

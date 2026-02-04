@@ -26,7 +26,7 @@ use crate::tast::{
 use log::{debug, info, trace, warn};
 use parser::{parse_haxe_file, parse_haxe_file_with_debug, HaxeFile};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -81,12 +81,12 @@ pub struct CompilationUnit {
 
     /// Mapping from HIR function symbols to MIR function IDs for stdlib functions
     /// This allows user code to call pure Haxe stdlib functions (like StringTools)
-    stdlib_function_map: HashMap<crate::tast::SymbolId, crate::ir::IrFunctionId>,
+    stdlib_function_map: BTreeMap<crate::tast::SymbolId, crate::ir::IrFunctionId>,
 
     /// Name-based mapping from qualified function names to MIR function IDs
     /// This is used for cross-file lookups where SymbolIds differ between compilation units
     /// e.g., "StringTools.startsWith" -> IrFunctionId(N)
-    stdlib_function_name_map: HashMap<String, crate::ir::IrFunctionId>,
+    stdlib_function_name_map: BTreeMap<String, crate::ir::IrFunctionId>,
 
     /// Compiler plugin registry (builtin + HDLL plugins)
     compiler_plugin_registry: CompilerPluginRegistry,
@@ -397,8 +397,8 @@ impl CompilationUnit {
             pipeline,
             mir_modules: Vec::new(),
             loaded_stdlib_typed_files: Vec::new(),
-            stdlib_function_map: HashMap::new(),
-            stdlib_function_name_map: HashMap::new(),
+            stdlib_function_map: BTreeMap::new(),
+            stdlib_function_name_map: BTreeMap::new(),
             compiler_plugin_registry: CompilerPluginRegistry::new(),
             hdll_symbols: Vec::new(),
             loaded_hdlls: HashSet::new(),

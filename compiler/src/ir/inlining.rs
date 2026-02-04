@@ -11,7 +11,7 @@ use super::{
     IrBasicBlock, IrBlockId, IrFunction, IrFunctionId, IrId, IrInstruction, IrModule, IrPhiNode,
     IrTerminator, IrType,
 };
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 /// A call site in the program.
 #[derive(Debug, Clone)]
@@ -37,20 +37,20 @@ pub struct CallSite {
 pub struct CallGraph {
     /// All call sites in the module
     pub call_sites: Vec<CallSite>,
-    /// Map from callee to call sites calling it
-    pub callers: HashMap<IrFunctionId, Vec<usize>>,
-    /// Map from caller to call sites it contains
-    pub callees: HashMap<IrFunctionId, Vec<usize>>,
+    /// Map from callee to call sites calling it (BTreeMap for deterministic iteration)
+    pub callers: BTreeMap<IrFunctionId, Vec<usize>>,
+    /// Map from caller to call sites it contains (BTreeMap for deterministic iteration)
+    pub callees: BTreeMap<IrFunctionId, Vec<usize>>,
     /// Functions that are recursive (call themselves directly or indirectly)
-    pub recursive_functions: HashSet<IrFunctionId>,
+    pub recursive_functions: BTreeSet<IrFunctionId>,
 }
 
 impl CallGraph {
     /// Build call graph from a module.
     pub fn build(module: &IrModule) -> Self {
         let mut call_sites = Vec::new();
-        let mut callers: HashMap<IrFunctionId, Vec<usize>> = HashMap::new();
-        let mut callees: HashMap<IrFunctionId, Vec<usize>> = HashMap::new();
+        let mut callers: BTreeMap<IrFunctionId, Vec<usize>> = BTreeMap::new();
+        let mut callees: BTreeMap<IrFunctionId, Vec<usize>> = BTreeMap::new();
 
         for (&func_id, function) in &module.functions {
             // Compute loop info for this function to get call site loop depths
@@ -89,7 +89,7 @@ impl CallGraph {
         }
 
         // Find recursive functions using SCC (simplified: just check direct recursion for now)
-        let mut recursive_functions = HashSet::new();
+        let mut recursive_functions = BTreeSet::new();
         for site in &call_sites {
             if site.caller == site.callee {
                 recursive_functions.insert(site.caller);
@@ -98,7 +98,7 @@ impl CallGraph {
 
         // Also check for indirect recursion via reachability
         for &func_id in module.functions.keys() {
-            if Self::can_reach(&callees, &call_sites, func_id, func_id, &mut HashSet::new()) {
+            if Self::can_reach(&callees, &call_sites, func_id, func_id, &mut BTreeSet::new()) {
                 recursive_functions.insert(func_id);
             }
         }
@@ -113,11 +113,11 @@ impl CallGraph {
 
     /// Check if `from` can reach `target` via calls.
     fn can_reach(
-        callees: &HashMap<IrFunctionId, Vec<usize>>,
+        callees: &BTreeMap<IrFunctionId, Vec<usize>>,
         call_sites: &[CallSite],
         from: IrFunctionId,
         target: IrFunctionId,
-        visited: &mut HashSet<IrFunctionId>,
+        visited: &mut BTreeSet<IrFunctionId>,
     ) -> bool {
         if !visited.insert(from) {
             return false;
@@ -267,7 +267,8 @@ impl InliningPass {
             .ok_or_else(|| format!("Caller function {:?} not found", call_site.caller))?;
 
         // Create register mapping: callee registers -> new registers in caller
-        let mut reg_map: HashMap<IrId, IrId> = HashMap::new();
+        // Use BTreeMap for deterministic iteration order
+        let mut reg_map: BTreeMap<IrId, IrId> = BTreeMap::new();
 
         // Map callee parameters to call arguments
         for (param, arg) in callee.signature.parameters.iter().zip(&call_site.args) {
@@ -302,7 +303,8 @@ impl InliningPass {
         }
 
         // Create block mapping: callee blocks -> new blocks in caller
-        let mut block_map: HashMap<IrBlockId, IrBlockId> = HashMap::new();
+        // Use BTreeMap for deterministic iteration order
+        let mut block_map: BTreeMap<IrBlockId, IrBlockId> = BTreeMap::new();
         for &block_id in callee.cfg.blocks.keys() {
             let new_block = caller.cfg.create_block();
             block_map.insert(block_id, new_block);
@@ -503,8 +505,8 @@ impl InliningPass {
     /// Remap an instruction's registers and block references.
     fn remap_instruction(
         inst: &IrInstruction,
-        reg_map: &HashMap<IrId, IrId>,
-        _block_map: &HashMap<IrBlockId, IrBlockId>,
+        reg_map: &BTreeMap<IrId, IrId>,
+        _block_map: &BTreeMap<IrBlockId, IrBlockId>,
     ) -> IrInstruction {
         // Clone the instruction, then remap all register uses and dests
         let mut remapped = inst.clone();
@@ -572,7 +574,8 @@ impl OptimizationPass for InliningPass {
 
             // Inline multiple call sites per iteration. Group by caller,
             // then within each caller pick one site per block (back-to-front).
-            let mut sites_by_caller: HashMap<IrFunctionId, Vec<CallSite>> = HashMap::new();
+            // Use BTreeMap for deterministic iteration order
+            let mut sites_by_caller: BTreeMap<IrFunctionId, Vec<CallSite>> = BTreeMap::new();
             for candidate in candidates {
                 sites_by_caller
                     .entry(candidate.caller)
@@ -585,7 +588,7 @@ impl OptimizationPass for InliningPass {
 
             let mut any_inlined = false;
             for (_caller_id, sites) in &sites_by_caller {
-                let mut inlined_blocks: HashSet<IrBlockId> = HashSet::new();
+                let mut inlined_blocks: BTreeSet<IrBlockId> = BTreeSet::new();
                 for candidate in sites {
                     if inlined_blocks.contains(&candidate.block) {
                         continue;
