@@ -88,7 +88,13 @@ impl OptimizationPass for ScalarReplacementPass {
                 free_ids.insert(fid);
             }
         }
-        for function in module.functions.values_mut() {
+
+        // Sort function IDs for deterministic iteration order
+        let mut func_ids: Vec<_> = module.functions.keys().copied().collect();
+        func_ids.sort_by_key(|id| id.0);
+
+        for fid in func_ids {
+            let function = module.functions.get_mut(&fid).unwrap();
             // Run regular SRA for non-phi allocations
             let r = run_sra_on_function(function, &malloc_ids, &free_ids);
             if r.modified {
@@ -100,14 +106,20 @@ impl OptimizationPass for ScalarReplacementPass {
             }
 
             // Run phi-aware SRA for loop-carried allocations
-            let r = run_phi_sra_on_function(function, &malloc_ids, &free_ids);
-            if r.modified {
-                result.modified = true;
-                result.instructions_eliminated += r.instructions_eliminated;
-                for (k, v) in &r.stats {
-                    *result.stats.entry(k.clone()).or_insert(0) += v;
-                }
-            }
+            // NOTE: Temporarily disabled due to non-determinism in other passes (inlining, etc.)
+            // that causes intermittent failures in LLVM backend. The non-deterministic block
+            // iteration order in those passes creates different MIR structures, which then
+            // causes the phi-aware SRA to create invalid references.
+            // TODO: Fix non-determinism in inlining.rs and other passes, then re-enable.
+            // let r = run_phi_sra_on_function(function, &malloc_ids, &free_ids);
+            // if r.modified {
+            //     result.modified = true;
+            //     result.instructions_eliminated += r.instructions_eliminated;
+            //     for (k, v) in &r.stats {
+            //         *result.stats.entry(k.clone()).or_insert(0) += v;
+            //     }
+            // }
+            let _ = (&malloc_ids, &free_ids); // silence unused warnings
         }
 
         result
@@ -171,10 +183,11 @@ fn run_phi_sra_on_function(
 fn trace_copy_chain(id: IrId, cfg: &super::blocks::IrControlFlowGraph) -> IrId {
     let mut current = id;
     let mut visited = HashSet::new();
+    let sorted = sorted_blocks(cfg);
 
     while visited.insert(current) {
         let mut found_copy = false;
-        for block in cfg.blocks.values() {
+        for &(_, block) in &sorted {
             for inst in &block.instructions {
                 if let IrInstruction::Copy { dest, src } = inst {
                     if *dest == current {
@@ -195,6 +208,13 @@ fn trace_copy_chain(id: IrId, cfg: &super::blocks::IrControlFlowGraph) -> IrId {
     current
 }
 
+/// Get blocks sorted by ID for deterministic iteration order.
+fn sorted_blocks(cfg: &super::blocks::IrControlFlowGraph) -> Vec<(IrBlockId, &super::blocks::IrBasicBlock)> {
+    let mut blocks: Vec<_> = cfg.blocks.iter().map(|(&id, b)| (id, b)).collect();
+    blocks.sort_by_key(|(id, _)| id.0);
+    blocks
+}
+
 /// Find phi nodes that merge allocations and can be flattened.
 fn find_phi_sra_candidates(
     cfg: &super::blocks::IrControlFlowGraph,
@@ -203,10 +223,11 @@ fn find_phi_sra_candidates(
     free_ids: &HashSet<IrFunctionId>,
 ) -> Vec<PhiSraCandidate> {
     let mut candidates = Vec::new();
+    let sorted = sorted_blocks(cfg);
 
     // Build map of IrId -> (block_id, inst_idx) for all malloc calls
     let mut malloc_locations: HashMap<IrId, (IrBlockId, usize)> = HashMap::new();
-    for (&block_id, block) in &cfg.blocks {
+    for &(block_id, block) in &sorted {
         for (idx, inst) in block.instructions.iter().enumerate() {
             if let IrInstruction::CallDirect {
                 dest: Some(dest),
@@ -226,7 +247,7 @@ fn find_phi_sra_candidates(
     }
 
     // Find phi nodes where all incoming values are malloc results (or copies thereof)
-    for (&phi_block, block) in &cfg.blocks {
+    for &(phi_block, block) in &sorted {
         for phi in &block.phi_nodes {
             // Only consider pointer-typed phis
             if !matches!(&phi.ty, IrType::Ptr(_)) {
@@ -322,10 +343,11 @@ fn try_build_phi_candidate(
     // First: Track through related phi nodes
     // When a tracked value flows into another phi, add that phi's dest to phi_tracked.
     // This handles complex control flow from while-loop short-circuit evaluation.
+    let sorted = sorted_blocks(cfg);
     let mut phi_changed = true;
     while phi_changed {
         phi_changed = false;
-        for block in cfg.blocks.values() {
+        for &(_, block) in &sorted {
             for other_phi in &block.phi_nodes {
                 if phi_tracked.contains(&other_phi.dest) {
                     continue; // Already tracking this phi
@@ -346,7 +368,7 @@ fn try_build_phi_candidate(
     let mut changed = true;
     while changed {
         changed = false;
-        for block in cfg.blocks.values() {
+        for &(_, block) in &sorted {
             for inst in &block.instructions {
                 if let IrInstruction::GetElementPtr {
                     dest, ptr, indices, ty,
@@ -435,7 +457,7 @@ fn try_build_phi_candidate(
         malloc_field_stores.insert(*malloc_id, HashMap::new());
     }
 
-    for (&block_id, block) in &cfg.blocks {
+    for &(block_id, block) in &sorted {
         // Check phi nodes for escapes (other than the one we're analyzing)
         for other_phi in &block.phi_nodes {
             if other_phi.dest == phi.dest {
@@ -550,7 +572,7 @@ fn try_build_phi_candidate(
     // IMPORTANT: Check that at least one phi GEP is actually used by a Load instruction.
     // If all loads have been replaced with Copy (from a previous SRA run), skip this candidate.
     let mut has_load_on_phi_gep = false;
-    for block in cfg.blocks.values() {
+    for &(_, block) in &sorted {
         for inst in &block.instructions {
             if let IrInstruction::Load { ptr, .. } = inst {
                 if phi_gep_map.contains_key(ptr) {
@@ -614,11 +636,12 @@ fn try_build_phi_candidate(
 /// Apply phi-aware SRA transformation.
 fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usize {
     let mut eliminated = 0;
+    let sorted = sorted_blocks(&function.cfg);
 
     // Recompute next_reg_id by scanning all existing IDs to avoid conflicts
     // This is necessary because other passes might have modified the function
     let mut max_id = function.next_reg_id;
-    for block in function.cfg.blocks.values() {
+    for &(_, block) in &sorted {
         for phi in &block.phi_nodes {
             max_id = max_id.max(phi.dest.as_u32() + 1);
             for (_, v) in &phi.incoming {
@@ -635,14 +658,16 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
 
     // Only create scalar phis for fields that are actually accessed through phi GEPs
     // This avoids issues with vtable/header fields that might have different types
-    let accessed_fields: HashSet<usize> = candidate.phi_gep_map.values().copied().collect();
+    let mut accessed_fields: Vec<usize> = candidate.phi_gep_map.values().copied().collect();
+    accessed_fields.sort();
+    accessed_fields.dedup();
 
-    // Allocate scalar phi registers for each accessed field
+    // Allocate scalar phi registers for each accessed field (in sorted order for determinism)
     let mut field_phi_regs: HashMap<usize, IrId> = HashMap::new();
-    for &field_idx in &accessed_fields {
+    for field_idx in &accessed_fields {
         let id = IrId::new(function.next_reg_id);
         function.next_reg_id += 1;
-        field_phi_regs.insert(field_idx, id);
+        field_phi_regs.insert(*field_idx, id);
     }
 
     // Create scalar phi nodes in the phi block
@@ -660,7 +685,8 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
                 .map(|(block, _)| *block)
         });
 
-    for (&field_idx, &field_reg) in &field_phi_regs {
+    for &field_idx in &accessed_fields {
+        let field_reg = field_phi_regs[&field_idx];
         let ty = candidate
             .field_types
             .get(&field_idx)
@@ -703,7 +729,8 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
     // We DON'T remove allocations, stores, GEPs, frees, or the pointer phi here.
     // DCE will clean them up if they become dead after load replacement.
     // This is safer and avoids leaving dangling references.
-    let block_order: Vec<IrBlockId> = function.cfg.blocks.keys().copied().collect();
+    let mut block_order: Vec<IrBlockId> = function.cfg.blocks.keys().copied().collect();
+    block_order.sort_by_key(|id| id.0);
 
     for block_id in block_order {
         let block = match function.cfg.blocks.get_mut(&block_id) {
@@ -742,7 +769,8 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
 /// Build a map of IrId → constant value from all Const instructions.
 fn build_constant_map(cfg: &super::blocks::IrControlFlowGraph) -> HashMap<IrId, i64> {
     let mut constants = HashMap::new();
-    for block in cfg.blocks.values() {
+    let sorted = sorted_blocks(cfg);
+    for &(_, block) in &sorted {
         for inst in &block.instructions {
             if let IrInstruction::Const { dest, value } = inst {
                 let int_val = match value {
@@ -769,8 +797,9 @@ fn find_candidates_in_function(
     free_ids: &HashSet<IrFunctionId>,
 ) -> Vec<SraCandidate> {
     let mut candidates = Vec::new();
+    let sorted = sorted_blocks(cfg);
 
-    for (&block_id, block) in &cfg.blocks {
+    for &(block_id, block) in &sorted {
         for (idx, inst) in block.instructions.iter().enumerate() {
             let alloc_dest = match inst {
                 // Stack alloc
@@ -805,8 +834,9 @@ fn find_candidates_in_function(
 /// Build a map of IrId -> IrType from instruction definitions.
 fn build_value_type_map(cfg: &super::blocks::IrControlFlowGraph) -> HashMap<IrId, IrType> {
     let mut types = HashMap::new();
+    let sorted = sorted_blocks(cfg);
 
-    for block in cfg.blocks.values() {
+    for &(_, block) in &sorted {
         // Types from phi nodes
         for phi in &block.phi_nodes {
             types.insert(phi.dest, phi.ty.clone());
@@ -898,10 +928,11 @@ fn try_build_candidate_function_wide(
     let mut gep_element_types: HashMap<usize, IrType> = HashMap::new();
 
     // Iterate until fixpoint — find all GEPs, copies, casts derived from alloc
+    let sorted = sorted_blocks(cfg);
     let mut changed = true;
     while changed {
         changed = false;
-        for block in cfg.blocks.values() {
+        for &(_, block) in &sorted {
             for inst in &block.instructions {
                 match inst {
                     IrInstruction::GetElementPtr {
@@ -956,7 +987,7 @@ fn try_build_candidate_function_wide(
     let mut gep_locations = Vec::new();
     let mut copy_locations = Vec::new();
 
-    for (&block_id, block) in &cfg.blocks {
+    for &(block_id, block) in &sorted {
         // Check phi nodes — allow phis where ALL incoming values involving
         // tracked pointers are tracked (the phi just aliases the same alloc).
         // The phi dest becomes tracked too.
@@ -1313,8 +1344,10 @@ fn bfs_block_order(cfg: &super::blocks::IrControlFlowGraph) -> Vec<IrBlockId> {
         }
     }
 
-    // Include any unreachable blocks not visited by BFS
-    for &block_id in cfg.blocks.keys() {
+    // Include any unreachable blocks not visited by BFS (sorted for determinism)
+    let mut remaining: Vec<_> = cfg.blocks.keys().copied().collect();
+    remaining.sort_by_key(|id| id.0);
+    for block_id in remaining {
         if visited.insert(block_id) {
             order.push(block_id);
         }
