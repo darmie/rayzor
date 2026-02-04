@@ -107,6 +107,21 @@ impl OptimizationPass for ScalarReplacementPass {
 
         for fid in func_ids {
             let function = module.functions.get_mut(&fid).unwrap();
+
+            // Phi-aware SRA handles loop-carried allocations where pointers flow through phi nodes.
+            // Enable with RAYZOR_PHI_SRA=1 for testing (still experimental)
+            // Run BEFORE regular SRA to avoid conflicts
+            if std::env::var("RAYZOR_PHI_SRA").is_ok() {
+                let r = run_phi_sra_on_function(function, &malloc_ids, &free_ids);
+                if r.modified {
+                    result.modified = true;
+                    result.instructions_eliminated += r.instructions_eliminated;
+                    for (k, v) in &r.stats {
+                        *result.stats.entry(k.clone()).or_insert(0) += v;
+                    }
+                }
+            }
+
             // Run regular SRA for non-phi allocations
             let r = run_sra_on_function(function, &malloc_ids, &free_ids);
             if r.modified {
@@ -116,12 +131,6 @@ impl OptimizationPass for ScalarReplacementPass {
                     *result.stats.entry(k.clone()).or_insert(0) += v;
                 }
             }
-
-            // Phi-aware SRA is temporarily disabled due to codegen issues
-            // The problem: we remove GEPs from incoming mallocs but Loads from those
-            // GEPs still reference the removed values, causing "Value not found" errors.
-            // TODO: Fix by properly replacing all Loads before removing GEPs.
-            let _ = (run_phi_sra_on_function, &malloc_ids, &free_ids);
         }
 
         result
@@ -175,9 +184,17 @@ fn run_phi_sra_on_function(
     free_ids: &HashSet<IrFunctionId>,
 ) -> OptimizationResult {
     let mut result = OptimizationResult::unchanged();
+    let debug_sra = std::env::var("RAYZOR_DEBUG_SRA").is_ok();
 
     let constants = build_constant_map(&function.cfg);
     let candidates = find_phi_sra_candidates(&function.cfg, &constants, malloc_ids, free_ids);
+
+    if debug_sra && !candidates.is_empty() {
+        eprintln!("[PHI-SRA] Function '{}': found {} phi-sra candidates", function.name, candidates.len());
+        for (i, c) in candidates.iter().enumerate() {
+            eprintln!("[PHI-SRA]   Candidate {}: phi_dest={:?}, num_fields={}", i, c.phi_dest, c.num_fields);
+        }
+    }
 
     for candidate in candidates {
         let eliminated = apply_phi_sra(function, &candidate);
@@ -188,6 +205,9 @@ fn run_phi_sra_on_function(
                 .stats
                 .entry("phi_allocs_replaced".to_string())
                 .or_insert(0) += 1;
+            if debug_sra {
+                eprintln!("[PHI-SRA]   Applied phi-SRA to {:?}, eliminated {} instructions", candidate.phi_dest, eliminated);
+            }
         }
     }
 
@@ -744,12 +764,14 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
         }
     }
 
-    // Build set of dead pointers: malloc results that feed into the phi
+    // Build set of dead pointers: malloc results that feed into the phi, plus the phi itself
     // These allocations are now replaced by scalar phis, so we can remove them
     let mut dead_pointers: BTreeSet<IrId> = BTreeSet::new();
     for (_src_block, malloc_id, _stores) in &candidate.incoming_allocs {
         dead_pointers.insert(*malloc_id);
     }
+    // Also add the phi_dest since it's being replaced by scalar phis
+    dead_pointers.insert(candidate.phi_dest);
 
     // Expand dead_pointers to include all GEPs, Copies, Casts derived from mallocs
     let mut block_order: Vec<IrBlockId> = function.cfg.blocks.keys().copied().collect();
@@ -781,9 +803,13 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
         }
     }
 
+    if std::env::var("RAYZOR_DEBUG_SRA").is_ok() {
+        eprintln!("[PHI-SRA] dead_pointers for {:?}: {:?}", candidate.phi_dest, dead_pointers);
+    }
+
     // Process each block: replace loads, remove dead stores/GEPs/mallocs/frees
-    for block_id in block_order {
-        let block = match function.cfg.blocks.get_mut(&block_id) {
+    for block_id in &block_order {
+        let block = match function.cfg.blocks.get_mut(block_id) {
             Some(b) => b,
             None => continue,
         };
@@ -855,7 +881,113 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
         block.instructions = new_instructions;
     }
 
-    // Also remove the original pointer phi if all its uses are now dead
+    // Build set of values that are being directly removed (not derived values)
+    // These are the malloc results that feed into the candidate phi
+    let mut directly_removed: BTreeSet<IrId> = BTreeSet::new();
+    for (_src_block, malloc_id, _stores) in &candidate.incoming_allocs {
+        directly_removed.insert(*malloc_id);
+    }
+    directly_removed.insert(candidate.phi_dest);
+
+    // Clean up phi nodes that reference the directly removed pointers
+    // Also track any phis that become empty so we can remove Frees of them
+    let mut removed_phis: BTreeSet<IrId> = BTreeSet::new();
+    removed_phis.insert(candidate.phi_dest); // The main phi we're replacing
+
+    for block_id in &block_order {
+        let block = match function.cfg.blocks.get_mut(block_id) {
+            Some(b) => b,
+            None => continue,
+        };
+
+        for phi in &mut block.phi_nodes {
+            // Skip the phi we're about to remove
+            if phi.dest == candidate.phi_dest {
+                continue;
+            }
+
+            // Only remove incoming edges that reference directly removed values
+            // (the malloc results and the original phi dest, NOT derived GEPs/copies)
+            let original_len = phi.incoming.len();
+            phi.incoming.retain(|(_, value)| {
+                !directly_removed.contains(value)
+            });
+
+            if phi.incoming.len() < original_len {
+                eliminated += original_len - phi.incoming.len();
+            }
+        }
+
+        // Remove phi nodes that have become empty and track them
+        let mut empty_phi_dests = Vec::new();
+        for phi in &block.phi_nodes {
+            if phi.incoming.is_empty() && phi.dest != candidate.phi_dest {
+                empty_phi_dests.push(phi.dest);
+            }
+        }
+        for dest in empty_phi_dests {
+            removed_phis.insert(dest);
+            eliminated += 1;
+        }
+        block.phi_nodes.retain(|phi| !phi.incoming.is_empty());
+    }
+
+    // Add removed phis to dead_pointers so Free instructions for them get removed
+    for phi_id in &removed_phis {
+        dead_pointers.insert(*phi_id);
+    }
+
+    // Re-expand dead_pointers to include GEPs/Copies from the removed phis
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &block_id in &block_order {
+            if let Some(block) = function.cfg.blocks.get(&block_id) {
+                for inst in &block.instructions {
+                    match inst {
+                        IrInstruction::GetElementPtr { dest, ptr, .. } => {
+                            if dead_pointers.contains(ptr) && !dead_pointers.contains(dest) {
+                                dead_pointers.insert(*dest);
+                                changed = true;
+                            }
+                        }
+                        IrInstruction::Copy { dest, src } | IrInstruction::Cast { dest, src, .. } => {
+                            if dead_pointers.contains(src) && !dead_pointers.contains(dest) {
+                                dead_pointers.insert(*dest);
+                                changed = true;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    if std::env::var("RAYZOR_DEBUG_SRA").is_ok() {
+        eprintln!("[PHI-SRA] After phi cleanup, dead_pointers for {:?}: {:?}", candidate.phi_dest, dead_pointers);
+    }
+
+    // Now re-process to remove Free instructions that reference the expanded dead_pointers
+    for block_id in &block_order {
+        let block = match function.cfg.blocks.get_mut(block_id) {
+            Some(b) => b,
+            None => continue,
+        };
+
+        let old_len = block.instructions.len();
+        block.instructions.retain(|inst| {
+            match inst {
+                IrInstruction::Free { ptr } => !dead_pointers.contains(ptr),
+                _ => true,
+            }
+        });
+        if block.instructions.len() < old_len {
+            eliminated += old_len - block.instructions.len();
+        }
+    }
+
+    // Remove the original pointer phi
     if let Some(block) = function.cfg.blocks.get_mut(&candidate.phi_block) {
         block.phi_nodes.retain(|phi| phi.dest != candidate.phi_dest);
         eliminated += 1;
