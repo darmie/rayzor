@@ -88,7 +88,6 @@ impl OptimizationPass for ScalarReplacementPass {
                 free_ids.insert(fid);
             }
         }
-
         for function in module.functions.values_mut() {
             // Run regular SRA for non-phi allocations
             let r = run_sra_on_function(function, &malloc_ids, &free_ids);
@@ -150,7 +149,7 @@ fn run_phi_sra_on_function(
     let mut result = OptimizationResult::unchanged();
 
     let constants = build_constant_map(&function.cfg);
-    let candidates = find_phi_sra_candidates(&function.cfg, &constants, malloc_ids, free_ids, None);
+    let candidates = find_phi_sra_candidates(&function.cfg, &constants, malloc_ids, free_ids, Some(&function.name));
 
     for candidate in candidates {
         let eliminated = apply_phi_sra(function, &candidate);
@@ -202,9 +201,10 @@ fn find_phi_sra_candidates(
     constants: &HashMap<IrId, i64>,
     malloc_ids: &HashSet<IrFunctionId>,
     free_ids: &HashSet<IrFunctionId>,
-    _debug_fn_name: Option<&String>,
+    debug_fn_name: Option<&String>,
 ) -> Vec<PhiSraCandidate> {
     let mut candidates = Vec::new();
+    let debug = debug_fn_name.map_or(false, |n| n == "main"); // Only debug main
 
     // Build map of IrId -> (block_id, inst_idx) for all malloc calls
     let mut malloc_locations: HashMap<IrId, (IrBlockId, usize)> = HashMap::new();
@@ -219,6 +219,9 @@ fn find_phi_sra_candidates(
             {
                 if malloc_ids.contains(func_id) && args.len() == 1 {
                     malloc_locations.insert(*dest, (block_id, idx));
+                    if debug {
+                        eprintln!("[phi-sra]   Found malloc call: {:?} = call {:?}", dest, func_id);
+                    }
                 }
             }
             if let IrInstruction::Alloc { dest, count: None, .. } = inst {
@@ -227,12 +230,17 @@ fn find_phi_sra_candidates(
         }
     }
 
+
     // Find phi nodes where all incoming values are malloc results (or copies thereof)
     for (&phi_block, block) in &cfg.blocks {
         for phi in &block.phi_nodes {
             // Only consider pointer-typed phis
             if !matches!(&phi.ty, IrType::Ptr(_)) {
                 continue;
+            }
+
+            if debug {
+                eprintln!("[phi-sra] Checking phi {:?} in block {:?}: {:?}", phi.dest, phi_block, phi.ty);
             }
 
             // Check if all incoming values are either mallocs or the phi itself (back edge)
@@ -244,14 +252,23 @@ fn find_phi_sra_candidates(
                 if *value == phi.dest {
                     // Back edge - phi references itself
                     has_back_edge = true;
+                    if debug {
+                        eprintln!("[phi-sra]   Edge from {:?}: back-edge", src_block);
+                    }
                 } else {
                     // Trace through Copy chain to find original malloc
                     let original = trace_copy_chain(*value, cfg);
                     if malloc_locations.contains_key(&original) {
                         // Store the ORIGINAL malloc ID, not the copy
                         incoming_mallocs.push((*src_block, original));
+                        if debug {
+                            eprintln!("[phi-sra]   Edge from {:?}: {:?} -> malloc {:?}", src_block, value, original);
+                        }
                     } else {
                         all_mallocs = false;
+                        if debug {
+                            eprintln!("[phi-sra]   Edge from {:?}: {:?} -> {:?} NOT A MALLOC", src_block, value, original);
+                        }
                         break;
                     }
                 }
@@ -259,7 +276,14 @@ fn find_phi_sra_candidates(
 
             // Need at least one malloc and all non-back-edge values must be mallocs
             if !all_mallocs || incoming_mallocs.is_empty() {
+                if debug {
+                    eprintln!("[phi-sra]   REJECTED: all_mallocs={}, incoming_mallocs.len={}", all_mallocs, incoming_mallocs.len());
+                }
                 continue;
+            }
+
+            if debug {
+                eprintln!("[phi-sra]   Trying to build candidate with {} mallocs, has_back_edge={}", incoming_mallocs.len(), has_back_edge);
             }
 
             // Try to build a candidate
@@ -272,13 +296,17 @@ fn find_phi_sra_candidates(
                 cfg,
                 constants,
                 free_ids,
+                debug,
             ) {
+                if debug {
+                    eprintln!("[phi-sra]   SUCCESS: built candidate for {:?}", phi.dest);
+                }
                 candidates.push(candidate);
+            } else if debug {
+                eprintln!("[phi-sra]   FAILED: try_build_phi_candidate returned None");
             }
         }
     }
-
-    let _ = _debug_fn_name; // Suppress unused warning
 
     candidates
 }
@@ -293,6 +321,7 @@ fn try_build_phi_candidate(
     cfg: &super::blocks::IrControlFlowGraph,
     constants: &HashMap<IrId, i64>,
     free_ids: &HashSet<IrFunctionId>,
+    debug: bool,
 ) -> Option<PhiSraCandidate> {
     // Build value type map for tracking types from Store instructions
     let value_types = build_value_type_map(cfg);
@@ -360,31 +389,42 @@ fn try_build_phi_candidate(
                         continue;
                     }
 
+                    // First check if this GEP is from a tracked pointer
+                    let is_from_phi = phi_tracked.contains(ptr);
+                    let is_from_malloc = malloc_tracked.values().any(|tracked| tracked.contains(ptr));
+
+                    // Only process GEPs from tracked pointers
+                    if !is_from_phi && !is_from_malloc {
+                        continue;
+                    }
+
                     let field_idx = match resolve_gep_field_index(indices, constants) {
                         Some(idx) => idx,
-                        None => return None, // Non-constant GEP
+                        None => {
+                            if debug { eprintln!("[phi-sra]     REJECT: non-constant GEP indices for tracked ptr {:?}", ptr); }
+                            return None;
+                        }
                     };
 
                     // Check for type conflict: same index with different element types
                     // This happens when vtable (i32) and user field (f64) share index 0
                     if let Some(existing_ty) = gep_element_types.get(&field_idx) {
                         if existing_ty != ty {
-                            // Type conflict at this field index - reject candidate
+                            if debug { eprintln!("[phi-sra]     REJECT: type conflict at field {} ({:?} vs {:?}) for ptr {:?}", field_idx, existing_ty, ty, ptr); }
                             return None;
                         }
                     } else {
                         gep_element_types.insert(field_idx, ty.clone());
                     }
 
-                    // Check if this GEP is from any phi-tracked pointer
-                    if phi_tracked.contains(ptr) {
+                    // Add to tracking
+                    if is_from_phi {
                         phi_tracked.insert(*dest);
                         phi_gep_map.insert(*dest, field_idx);
                         all_tracked.insert(*dest);
                         changed = true;
                     }
 
-                    // Check if this GEP is from one of the mallocs
                     for (malloc_id, tracked) in &mut malloc_tracked {
                         if tracked.contains(ptr) && !tracked.contains(dest) {
                             tracked.insert(*dest);
@@ -454,6 +494,7 @@ fn try_build_phi_candidate(
                     // Check if storing to a tracked GEP
                     if all_tracked.contains(ptr) {
                         if all_tracked.contains(value) {
+                            if debug { eprintln!("[phi-sra]     REJECT: storing tracked pointer {:?}", value); }
                             return None; // Storing tracked pointer - escapes
                         }
 
@@ -478,6 +519,7 @@ fn try_build_phi_candidate(
                             }
                         }
                     } else if all_tracked.contains(value) {
+                        if debug { eprintln!("[phi-sra]     REJECT: tracked pointer escapes via store"); }
                         return None; // Escapes via store
                     }
                 }
@@ -518,6 +560,7 @@ fn try_build_phi_candidate(
                     }
                     // Check for escapes - pointer passed to non-inlined function
                     if args.iter().any(|a| all_tracked.contains(a)) {
+                        if debug { eprintln!("[phi-sra]     REJECT: tracked pointer passed to function call"); }
                         return None;
                     }
                 }
@@ -541,7 +584,34 @@ fn try_build_phi_candidate(
 
     // Verify all mallocs have the same number of fields stored
     if phi_gep_map.is_empty() {
+        if debug { eprintln!("[phi-sra]     REJECT: no field GEPs found from phi (phi_gep_map empty)"); }
         return None; // No field GEPs found from phi
+    }
+
+    // IMPORTANT: Check that at least one phi GEP is actually used by a Load instruction.
+    // If all loads have been replaced with Copy (from a previous SRA run), skip this candidate.
+    let mut has_load_on_phi_gep = false;
+    for block in cfg.blocks.values() {
+        for inst in &block.instructions {
+            if let IrInstruction::Load { ptr, .. } = inst {
+                if phi_gep_map.contains_key(ptr) {
+                    has_load_on_phi_gep = true;
+                    break;
+                }
+            }
+        }
+        if has_load_on_phi_gep {
+            break;
+        }
+    }
+
+    if !has_load_on_phi_gep {
+        if debug { eprintln!("[phi-sra]     REJECT: no Load instructions on phi GEPs (already processed?)"); }
+        return None;
+    }
+
+    if debug {
+        eprintln!("[phi-sra]     phi_gep_map has {} entries: {:?}", phi_gep_map.len(), phi_gep_map);
     }
 
     let num_fields = phi_gep_map.values().max().copied().unwrap_or(0) + 1;
@@ -549,14 +619,16 @@ fn try_build_phi_candidate(
     // Safety check: reject candidates where any field lacks a known type
     for field_idx in 0..num_fields {
         if !field_types.contains_key(&field_idx) {
+            if debug { eprintln!("[phi-sra]     REJECT: field {} lacks type (field_types: {:?})", field_idx, field_types); }
             return None;
         }
     }
 
     // Verify each malloc has stores for all fields that are loaded from the phi
-    for (_malloc_id, stores) in &malloc_field_stores {
+    for (malloc_id, stores) in &malloc_field_stores {
         for field_idx in phi_gep_map.values() {
             if !stores.contains_key(field_idx) {
+                if debug { eprintln!("[phi-sra]     REJECT: malloc {:?} missing store for field {} (has: {:?})", malloc_id, field_idx, stores.keys()); }
                 return None; // Missing field store
             }
         }
@@ -590,6 +662,24 @@ fn try_build_phi_candidate(
 /// Apply phi-aware SRA transformation.
 fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usize {
     let mut eliminated = 0;
+
+    // Recompute next_reg_id by scanning all existing IDs to avoid conflicts
+    // This is necessary because other passes might have modified the function
+    let mut max_id = function.next_reg_id;
+    for block in function.cfg.blocks.values() {
+        for phi in &block.phi_nodes {
+            max_id = max_id.max(phi.dest.as_u32() + 1);
+            for (_, v) in &phi.incoming {
+                max_id = max_id.max(v.as_u32() + 1);
+            }
+        }
+        for inst in &block.instructions {
+            if let Some(dest) = inst.dest() {
+                max_id = max_id.max(dest.as_u32() + 1);
+            }
+        }
+    }
+    function.next_reg_id = max_id;
 
     // Only create scalar phis for fields that are actually accessed through phi GEPs
     // This avoids issues with vtable/header fields that might have different types
