@@ -1571,11 +1571,16 @@ fn main() {
         available
     };
 
+    // Order targets so Cranelift-only targets run first, before LLVM-related
+    // targets. This prevents LLVM compilation from corrupting shared heap state
+    // that affects subsequent Cranelift targets.
     let mut all_targets_list = vec![
+        // Cranelift-only targets first
         Target::RayzorCranelift,
-        Target::RayzorInterpreter,
-        Target::RayzorTiered,
         Target::RayzorPrecompiled,
+        Target::RayzorInterpreter,
+        // LLVM-related targets last (tiered upgrades to LLVM)
+        Target::RayzorTiered,
         Target::RayzorPrecompiledTiered,
     ];
     #[cfg(feature = "llvm-backend")]
