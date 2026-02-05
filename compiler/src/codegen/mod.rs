@@ -16,6 +16,8 @@ pub mod profiling;
 pub mod tiered_backend;
 
 // TinyCC-based in-process linker for LLVM AOT object files
+// NOTE: TCC linker has stability issues with phi-SRA generated code on Linux.
+// The system linker (default) is recommended for production use.
 #[cfg(feature = "tcc-linker")]
 pub mod tcc_linker;
 
