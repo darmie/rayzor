@@ -114,9 +114,9 @@ impl OptimizationPass for ScalarReplacementPass {
             let function = module.functions.get_mut(&fid).unwrap();
 
             // Phi-aware SRA handles loop-carried allocations where pointers flow through phi nodes.
-            // Enable with RAYZOR_PHI_SRA=1 for testing (still experimental)
+            // Enabled by default since stability fixes. Disable with RAYZOR_NO_PHI_SRA=1 if needed.
             // Run BEFORE regular SRA to avoid conflicts
-            if std::env::var("RAYZOR_PHI_SRA").is_ok() {
+            if std::env::var("RAYZOR_NO_PHI_SRA").is_err() {
                 let r = run_phi_sra_on_function(function, &malloc_ids, &free_ids);
                 if r.modified {
                     result.modified = true;
