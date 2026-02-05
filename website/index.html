@@ -760,9 +760,10 @@ rayzor bundle main.hx <span class="code-flag">--output</span> app.rzb</pre>
     const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
     camera.position.z = 3;
 
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Cap at 1x to reduce GPU load on high-DPI displays (M1 Macs render 4x fewer pixels)
+    renderer.setPixelRatio(1);
     renderer.setClearColor(0x000000);
 
     const nebulaGeo = new THREE.PlaneGeometry(14, 14);
@@ -829,24 +830,32 @@ rayzor bundle main.hx <span class="code-flag">--output</span> app.rzb</pre>
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setPixelRatio(1);
       nebulaMat.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
-      starMat.uniforms.uPixelRatio.value = Math.min(window.devicePixelRatio, 2);
+      starMat.uniforms.uPixelRatio.value = 1;
     });
 
     const clock = new THREE.Clock();
+    let lastFrame = 0;
+    const targetFPS = 30; // Limit to 30fps for power efficiency
+    const frameInterval = 1 / targetFPS;
+
     function animate() {
       requestAnimationFrame(animate);
       const t = clock.getElapsedTime();
-      
+
+      // Frame limiting - skip render if too soon
+      if (t - lastFrame < frameInterval) return;
+      lastFrame = t;
+
       nebulaMat.uniforms.uTime.value = t;
-      nebulaMat.uniforms.uMouseX.value += (mouse.x - nebulaMat.uniforms.uMouseX.value) * 0.006;
-      nebulaMat.uniforms.uMouseY.value += (mouse.y - nebulaMat.uniforms.uMouseY.value) * 0.006;
-      
-      camera.position.x += (mouse.x * 0.05 - camera.position.x) * 0.006;
-      camera.position.y += (mouse.y * 0.03 - camera.position.y) * 0.006;
+      nebulaMat.uniforms.uMouseX.value += (mouse.x - nebulaMat.uniforms.uMouseX.value) * 0.012;
+      nebulaMat.uniforms.uMouseY.value += (mouse.y - nebulaMat.uniforms.uMouseY.value) * 0.012;
+
+      camera.position.x += (mouse.x * 0.05 - camera.position.x) * 0.012;
+      camera.position.y += (mouse.y * 0.03 - camera.position.y) * 0.012;
       camera.lookAt(0, 0, -2);
-      
+
       renderer.render(scene, camera);
     }
     animate();
