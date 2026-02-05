@@ -1975,9 +1975,11 @@ impl TieredBackend {
                 // Generate architecture-specific trampoline
                 #[cfg(target_arch = "x86_64")]
                 {
-                    // movabs rax, <addr>; jmp rax
-                    asm.push_str(&format!("  movabs $0x{:x}, %rax\n", addr));
-                    asm.push_str("  jmpq *%rax\n");
+                    // Use Intel syntax for clarity - movabs loads 64-bit immediate, then indirect jump
+                    // The .quad stores the absolute address, which we load and jump to.
+                    // This avoids any ambiguity with AT&T indirect addressing syntax.
+                    asm.push_str(&format!("  movabsq $0x{:x}, %rax\n", addr));
+                    asm.push_str("  jmp *%rax\n");
                 }
                 #[cfg(target_arch = "aarch64")]
                 {
