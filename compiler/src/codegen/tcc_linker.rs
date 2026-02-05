@@ -5,7 +5,7 @@
 //! a system C compiler at runtime and reduces temp file I/O.
 
 use std::collections::HashMap;
-use std::ffi::{CStr, CString};
+use std::ffi::{c_char, CStr, CString};
 use std::path::Path;
 use std::ptr;
 
@@ -19,22 +19,22 @@ extern "C" {
     fn tcc_new() -> *mut TCCState;
     fn tcc_delete(s: *mut TCCState);
     fn tcc_set_output_type(s: *mut TCCState, output_type: i32) -> i32;
-    fn tcc_set_options(s: *mut TCCState, str: *const i8) -> i32;
-    fn tcc_add_file(s: *mut TCCState, filename: *const i8) -> i32;
-    fn tcc_add_symbol(s: *mut TCCState, name: *const i8, val: *const std::ffi::c_void) -> i32;
+    fn tcc_set_options(s: *mut TCCState, str: *const c_char) -> i32;
+    fn tcc_add_file(s: *mut TCCState, filename: *const c_char) -> i32;
+    fn tcc_add_symbol(s: *mut TCCState, name: *const c_char, val: *const std::ffi::c_void) -> i32;
     fn tcc_relocate(s: *mut TCCState) -> i32;
-    fn tcc_get_symbol(s: *mut TCCState, name: *const i8) -> *mut std::ffi::c_void;
+    fn tcc_get_symbol(s: *mut TCCState, name: *const c_char) -> *mut std::ffi::c_void;
     fn tcc_set_error_func(
         s: *mut TCCState,
         error_opaque: *mut std::ffi::c_void,
-        error_func: Option<unsafe extern "C" fn(*mut std::ffi::c_void, *const i8)>,
+        error_func: Option<unsafe extern "C" fn(*mut std::ffi::c_void, *const c_char)>,
     );
 }
 
 const TCC_OUTPUT_MEMORY: i32 = 1;
 
 /// Error callback that collects TCC error messages
-unsafe extern "C" fn tcc_error_callback(opaque: *mut std::ffi::c_void, msg: *const i8) {
+unsafe extern "C" fn tcc_error_callback(opaque: *mut std::ffi::c_void, msg: *const c_char) {
     let errors = &mut *(opaque as *mut Vec<String>);
     if let Ok(s) = CStr::from_ptr(msg).to_str() {
         errors.push(s.to_string());

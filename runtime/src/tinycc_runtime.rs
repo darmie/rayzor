@@ -7,7 +7,7 @@
 //! compiler and runtime link into the same binary, these extern declarations
 //! resolve at link time.
 
-use std::ffi::CString;
+use std::ffi::{c_char, CString};
 use std::ptr;
 
 use crate::haxe_string::HaxeString;
@@ -22,19 +22,19 @@ type TCCState = std::ffi::c_void;
 extern "C" {
     fn tcc_new() -> *mut TCCState;
     fn tcc_delete(s: *mut TCCState);
-    fn tcc_set_lib_path(s: *mut TCCState, path: *const i8);
+    fn tcc_set_lib_path(s: *mut TCCState, path: *const c_char);
     fn tcc_set_output_type(s: *mut TCCState, output_type: i32) -> i32;
-    fn tcc_set_options(s: *mut TCCState, str: *const i8) -> i32;
-    fn tcc_compile_string(s: *mut TCCState, buf: *const i8) -> i32;
-    fn tcc_add_sysinclude_path(s: *mut TCCState, pathname: *const i8) -> i32;
-    fn tcc_add_include_path(s: *mut TCCState, pathname: *const i8) -> i32;
-    fn tcc_add_symbol(s: *mut TCCState, name: *const i8, val: *const std::ffi::c_void) -> i32;
-    fn tcc_add_file(s: *mut TCCState, filename: *const i8) -> i32;
+    fn tcc_set_options(s: *mut TCCState, str: *const c_char) -> i32;
+    fn tcc_compile_string(s: *mut TCCState, buf: *const c_char) -> i32;
+    fn tcc_add_sysinclude_path(s: *mut TCCState, pathname: *const c_char) -> i32;
+    fn tcc_add_include_path(s: *mut TCCState, pathname: *const c_char) -> i32;
+    fn tcc_add_symbol(s: *mut TCCState, name: *const c_char, val: *const std::ffi::c_void) -> i32;
+    fn tcc_add_file(s: *mut TCCState, filename: *const c_char) -> i32;
     fn tcc_relocate(s: *mut TCCState) -> i32;
-    fn tcc_get_symbol(s: *mut TCCState, name: *const i8) -> *mut std::ffi::c_void;
+    fn tcc_get_symbol(s: *mut TCCState, name: *const c_char) -> *mut std::ffi::c_void;
 
     // dlopen for loading frameworks and shared libraries at runtime
-    fn dlopen(filename: *const i8, flags: i32) -> *mut std::ffi::c_void;
+    fn dlopen(filename: *const c_char, flags: i32) -> *mut std::ffi::c_void;
 }
 
 const RTLD_LAZY: i32 = 0x1;
