@@ -67,9 +67,10 @@ static LLVM_GLOBAL_COMPILED: std::sync::atomic::AtomicBool =
 /// When multiple backends exist in the same process, only ONE can do LLVM compilation.
 /// This global map stores the compiled pointers so other backends can reuse them.
 /// Key is function name (stable across backends), value is function pointer.
+/// Uses Mutex<Option<>> instead of OnceLock to allow reset for benchmarking.
 #[cfg(feature = "llvm-backend")]
-static LLVM_GLOBAL_POINTERS: std::sync::OnceLock<HashMap<String, usize>> =
-    std::sync::OnceLock::new();
+static LLVM_GLOBAL_POINTERS: std::sync::Mutex<Option<HashMap<String, usize>>> =
+    std::sync::Mutex::new(None);
 
 /// Check if LLVM compilation has already been done globally
 #[cfg(feature = "llvm-backend")]
@@ -80,14 +81,27 @@ pub fn is_llvm_compiled_globally() -> bool {
 /// Mark LLVM compilation as done globally and store the function pointers
 #[cfg(feature = "llvm-backend")]
 pub fn mark_llvm_compiled_globally_with_pointers(pointers: HashMap<String, usize>) {
-    let _ = LLVM_GLOBAL_POINTERS.set(pointers);
+    *LLVM_GLOBAL_POINTERS.lock().unwrap() = Some(pointers);
     LLVM_GLOBAL_COMPILED.store(true, std::sync::atomic::Ordering::Release);
 }
 
 /// Get the globally stored LLVM function pointers (if available)
+/// Returns a clone to avoid holding the lock
 #[cfg(feature = "llvm-backend")]
-pub fn get_global_llvm_pointers() -> Option<&'static HashMap<String, usize>> {
-    LLVM_GLOBAL_POINTERS.get()
+pub fn get_global_llvm_pointers() -> Option<HashMap<String, usize>> {
+    LLVM_GLOBAL_POINTERS.lock().unwrap().clone()
+}
+
+/// Reset LLVM global state for benchmarking
+///
+/// This allows each benchmark target to do its own fresh LLVM compilation
+/// instead of reusing pointers from a previous target's compilation.
+/// IMPORTANT: Only use this for benchmarking - in production, reusing
+/// compiled code is more efficient.
+#[cfg(feature = "llvm-backend")]
+pub fn reset_llvm_global_state() {
+    LLVM_GLOBAL_COMPILED.store(false, std::sync::atomic::Ordering::Release);
+    *LLVM_GLOBAL_POINTERS.lock().unwrap() = None;
 }
 
 /// Mark LLVM compilation as done globally (legacy, without pointers)

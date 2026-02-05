@@ -52,6 +52,8 @@ use compiler::ir::{load_bundle, IrFunctionId, IrModule, RayzorBundle};
 #[cfg(feature = "llvm-backend")]
 use compiler::codegen::init_llvm_once;
 #[cfg(feature = "llvm-backend")]
+use compiler::codegen::reset_llvm_global_state;
+#[cfg(feature = "llvm-backend")]
 use compiler::codegen::LLVMJitBackend;
 #[cfg(feature = "llvm-backend")]
 use inkwell::context::Context;
@@ -1714,6 +1716,13 @@ fn main() {
 
         for target in &targets {
             println!("  Running {} ...", target.name());
+
+            // Reset LLVM global state before each target to ensure fresh compilation.
+            // This prevents targets from reusing stale pointers from previous compilations
+            // (e.g., precompiled-tiered reusing non-SRA pointers from rayzor-llvm).
+            #[cfg(feature = "llvm-backend")]
+            reset_llvm_global_state();
+
             let result = run_benchmark(&bench, *target);
             match result {
                 Ok(bench_result) => {

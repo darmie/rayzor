@@ -98,7 +98,13 @@ impl CallGraph {
 
         // Also check for indirect recursion via reachability
         for &func_id in module.functions.keys() {
-            if Self::can_reach(&callees, &call_sites, func_id, func_id, &mut BTreeSet::new()) {
+            if Self::can_reach(
+                &callees,
+                &call_sites,
+                func_id,
+                func_id,
+                &mut BTreeSet::new(),
+            ) {
                 recursive_functions.insert(func_id);
             }
         }

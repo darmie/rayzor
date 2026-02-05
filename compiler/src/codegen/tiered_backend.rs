@@ -1664,7 +1664,7 @@ impl TieredBackend {
         // Check GLOBAL flag - if already compiled, reuse global pointers
         if super::llvm_jit_backend::is_llvm_compiled_globally() {
             if let Some(global_ptrs) = super::llvm_jit_backend::get_global_llvm_pointers() {
-                return self.map_global_pointers_to_ids(global_ptrs);
+                return self.map_global_pointers_to_ids(&global_ptrs);
             }
             return Err("LLVM compilation already done but pointers not available.".to_string());
         }
@@ -1674,7 +1674,7 @@ impl TieredBackend {
         // Double-check after lock
         if super::llvm_jit_backend::is_llvm_compiled_globally() {
             if let Some(global_ptrs) = super::llvm_jit_backend::get_global_llvm_pointers() {
-                return self.map_global_pointers_to_ids(global_ptrs);
+                return self.map_global_pointers_to_ids(&global_ptrs);
             }
             return Err("LLVM compilation already done (race).".to_string());
         }
@@ -1762,7 +1762,7 @@ impl TieredBackend {
         if super::llvm_jit_backend::is_llvm_compiled_globally() {
             // Another backend already compiled - reuse their pointers
             if let Some(global_ptrs) = super::llvm_jit_backend::get_global_llvm_pointers() {
-                return self.map_global_pointers_to_ids(global_ptrs);
+                return self.map_global_pointers_to_ids(&global_ptrs);
             }
             return Err("LLVM compilation already done but pointers not available.".to_string());
         }

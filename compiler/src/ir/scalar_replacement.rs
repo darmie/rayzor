@@ -10,7 +10,9 @@
 //! alloc, stores, loads, and free may be in different basic blocks.
 
 use super::optimization::{OptimizationPass, OptimizationResult};
-use super::{IrBlockId, IrFunction, IrFunctionId, IrId, IrInstruction, IrModule, IrPhiNode, IrType, IrValue};
+use super::{
+    IrBlockId, IrFunction, IrFunctionId, IrId, IrInstruction, IrModule, IrPhiNode, IrType, IrValue,
+};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 pub struct ScalarReplacementPass;
@@ -80,7 +82,10 @@ impl OptimizationPass for ScalarReplacementPass {
         let debug_sra = std::env::var("RAYZOR_DEBUG_SRA").is_ok();
 
         if debug_sra {
-            eprintln!("[SRA] Running on module with {} functions", module.functions.len());
+            eprintln!(
+                "[SRA] Running on module with {} functions",
+                module.functions.len()
+            );
         }
 
         // Identify malloc and free function IDs
@@ -150,9 +155,16 @@ fn run_sra_on_function(
     let candidates = find_candidates_in_function(&function.cfg, &constants, malloc_ids, free_ids);
 
     if debug_sra {
-        eprintln!("[SRA] Function '{}': found {} candidates", function.name, candidates.len());
+        eprintln!(
+            "[SRA] Function '{}': found {} candidates",
+            function.name,
+            candidates.len()
+        );
         for (i, c) in candidates.iter().enumerate() {
-            eprintln!("[SRA]   Candidate {}: alloc_dest={:?}, tracked={:?}", i, c.alloc_dest, c.tracked);
+            eprintln!(
+                "[SRA]   Candidate {}: alloc_dest={:?}, tracked={:?}",
+                i, c.alloc_dest, c.tracked
+            );
         }
         use std::io::Write;
         let _ = std::io::stderr().flush();
@@ -168,7 +180,10 @@ fn run_sra_on_function(
                 .entry("allocs_replaced".to_string())
                 .or_insert(0) += 1;
             if debug_sra {
-                eprintln!("[SRA]   Applied SRA to {:?}, eliminated {} instructions", candidate.alloc_dest, eliminated);
+                eprintln!(
+                    "[SRA]   Applied SRA to {:?}, eliminated {} instructions",
+                    candidate.alloc_dest, eliminated
+                );
             }
         }
     }
@@ -190,9 +205,16 @@ fn run_phi_sra_on_function(
     let candidates = find_phi_sra_candidates(&function.cfg, &constants, malloc_ids, free_ids);
 
     if debug_sra && !candidates.is_empty() {
-        eprintln!("[PHI-SRA] Function '{}': found {} phi-sra candidates", function.name, candidates.len());
+        eprintln!(
+            "[PHI-SRA] Function '{}': found {} phi-sra candidates",
+            function.name,
+            candidates.len()
+        );
         for (i, c) in candidates.iter().enumerate() {
-            eprintln!("[PHI-SRA]   Candidate {}: phi_dest={:?}, num_fields={}", i, c.phi_dest, c.num_fields);
+            eprintln!(
+                "[PHI-SRA]   Candidate {}: phi_dest={:?}, num_fields={}",
+                i, c.phi_dest, c.num_fields
+            );
         }
     }
 
@@ -211,7 +233,10 @@ fn run_phi_sra_on_function(
                 .entry("phi_allocs_replaced".to_string())
                 .or_insert(0) += 1;
             if debug_sra {
-                eprintln!("[PHI-SRA]   Applied phi-SRA to {:?}, eliminated {} instructions", candidate.phi_dest, eliminated);
+                eprintln!(
+                    "[PHI-SRA]   Applied phi-SRA to {:?}, eliminated {} instructions",
+                    candidate.phi_dest, eliminated
+                );
             }
         }
     }
@@ -250,7 +275,9 @@ fn trace_copy_chain(id: IrId, cfg: &super::blocks::IrControlFlowGraph) -> IrId {
 }
 
 /// Get blocks sorted by ID for deterministic iteration order.
-fn sorted_blocks(cfg: &super::blocks::IrControlFlowGraph) -> Vec<(IrBlockId, &super::blocks::IrBasicBlock)> {
+fn sorted_blocks(
+    cfg: &super::blocks::IrControlFlowGraph,
+) -> Vec<(IrBlockId, &super::blocks::IrBasicBlock)> {
     let mut blocks: Vec<_> = cfg.blocks.iter().map(|(&id, b)| (id, b)).collect();
     blocks.sort_by_key(|(id, _)| id.0);
     blocks
@@ -281,7 +308,10 @@ fn find_phi_sra_candidates(
                     malloc_locations.insert(*dest, (block_id, idx));
                 }
             }
-            if let IrInstruction::Alloc { dest, count: None, .. } = inst {
+            if let IrInstruction::Alloc {
+                dest, count: None, ..
+            } = inst
+            {
                 malloc_locations.insert(*dest, (block_id, idx));
             }
         }
@@ -396,7 +426,10 @@ fn try_build_phi_candidate(
                     continue; // Already tracking this phi
                 }
                 // Check if any incoming value is tracked
-                let has_tracked_incoming = other_phi.incoming.iter().any(|(_, v)| all_tracked.contains(v));
+                let has_tracked_incoming = other_phi
+                    .incoming
+                    .iter()
+                    .any(|(_, v)| all_tracked.contains(v));
                 if has_tracked_incoming {
                     // This phi merges a tracked allocation - add it to phi_tracked
                     phi_tracked.insert(other_phi.dest);
@@ -414,7 +447,10 @@ fn try_build_phi_candidate(
         for &(_, block) in &sorted {
             for inst in &block.instructions {
                 if let IrInstruction::GetElementPtr {
-                    dest, ptr, indices, ty,
+                    dest,
+                    ptr,
+                    indices,
+                    ty,
                 } = inst
                 {
                     if all_tracked.contains(dest) {
@@ -423,7 +459,8 @@ fn try_build_phi_candidate(
 
                     // First check if this GEP is from a tracked pointer
                     let is_from_phi = phi_tracked.contains(ptr);
-                    let is_from_malloc = malloc_tracked.values().any(|tracked| tracked.contains(ptr));
+                    let is_from_malloc =
+                        malloc_tracked.values().any(|tracked| tracked.contains(ptr));
 
                     // Only process GEPs from tracked pointers
                     if !is_from_phi && !is_from_malloc {
@@ -456,7 +493,10 @@ fn try_build_phi_candidate(
                     for (malloc_id, tracked) in &mut malloc_tracked {
                         if tracked.contains(ptr) && !tracked.contains(dest) {
                             tracked.insert(*dest);
-                            malloc_gep_maps.get_mut(malloc_id).unwrap().insert(*dest, field_idx);
+                            malloc_gep_maps
+                                .get_mut(malloc_id)
+                                .unwrap()
+                                .insert(*dest, field_idx);
                             all_tracked.insert(*dest);
                             changed = true;
                         }
@@ -480,7 +520,10 @@ fn try_build_phi_candidate(
                         if tracked.contains(src) && !tracked.contains(dest) {
                             tracked.insert(*dest);
                             if let Some(&idx) = malloc_gep_maps.get(malloc_id).unwrap().get(src) {
-                                malloc_gep_maps.get_mut(malloc_id).unwrap().insert(*dest, idx);
+                                malloc_gep_maps
+                                    .get_mut(malloc_id)
+                                    .unwrap()
+                                    .insert(*dest, idx);
                             }
                             all_tracked.insert(*dest);
                             changed = true;
@@ -538,7 +581,9 @@ fn try_build_phi_candidate(
                         // Find which malloc this store belongs to
                         for (malloc_id, tracked) in &malloc_tracked {
                             if tracked.contains(ptr) {
-                                if let Some(&field_idx) = malloc_gep_maps.get(malloc_id).unwrap().get(ptr) {
+                                if let Some(&field_idx) =
+                                    malloc_gep_maps.get(malloc_id).unwrap().get(ptr)
+                                {
                                     malloc_field_stores
                                         .get_mut(malloc_id)
                                         .unwrap()
@@ -574,7 +619,12 @@ fn try_build_phi_candidate(
                     free_locations.push((block_id, inst_idx));
                 }
 
-                IrInstruction::CallDirect { args, dest, func_id, .. } => {
+                IrInstruction::CallDirect {
+                    args,
+                    dest,
+                    func_id,
+                    ..
+                } => {
                     // Skip if this is a malloc we're tracking
                     if let Some(d) = dest {
                         if malloc_locations.contains_key(d) {
@@ -582,7 +632,10 @@ fn try_build_phi_candidate(
                         }
                     }
                     // Skip if this is a free call (already handled above)
-                    if free_ids.contains(func_id) && args.len() == 1 && all_tracked.contains(&args[0]) {
+                    if free_ids.contains(func_id)
+                        && args.len() == 1
+                        && all_tracked.contains(&args[0])
+                    {
                         continue;
                     }
                     // Check for escapes - pointer passed to non-inlined function
@@ -794,11 +847,15 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
             if let Some(block) = function.cfg.blocks.get(&block_id) {
                 for inst in &block.instructions {
                     match inst {
-                        IrInstruction::GetElementPtr { dest, ptr, indices, .. } => {
+                        IrInstruction::GetElementPtr {
+                            dest, ptr, indices, ..
+                        } => {
                             if dead_pointers.contains(ptr) && !dead_pointers.contains(dest) {
                                 dead_pointers.insert(*dest);
                                 // Try to resolve field index for this GEP
-                                if let Some(field_idx) = resolve_gep_field_index(indices, &constants) {
+                                if let Some(field_idx) =
+                                    resolve_gep_field_index(indices, &constants)
+                                {
                                     gep_field_indices.insert(*dest, field_idx);
                                     // Add to load_replacements if we have a scalar reg for this field
                                     if let Some(&scalar_reg) = field_phi_regs.get(&field_idx) {
@@ -808,7 +865,8 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
                                 changed = true;
                             }
                         }
-                        IrInstruction::Copy { dest, src } | IrInstruction::Cast { dest, src, .. } => {
+                        IrInstruction::Copy { dest, src }
+                        | IrInstruction::Cast { dest, src, .. } => {
                             if dead_pointers.contains(src) && !dead_pointers.contains(dest) {
                                 dead_pointers.insert(*dest);
                                 // Propagate field index and load_replacement from source
@@ -829,7 +887,10 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
     }
 
     if std::env::var("RAYZOR_DEBUG_SRA").is_ok() {
-        eprintln!("[PHI-SRA] dead_pointers for {:?}: {:?}", candidate.phi_dest, dead_pointers);
+        eprintln!(
+            "[PHI-SRA] dead_pointers for {:?}: {:?}",
+            candidate.phi_dest, dead_pointers
+        );
     }
 
     // Process each block: replace loads, remove dead stores/GEPs/mallocs/frees
@@ -870,7 +931,9 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
                     }
                 }
                 // Remove malloc calls that produce dead pointers
-                IrInstruction::CallDirect { dest: Some(dest), .. } => {
+                IrInstruction::CallDirect {
+                    dest: Some(dest), ..
+                } => {
                     if dead_pointers.contains(dest) {
                         eliminated += 1;
                         continue;
@@ -934,9 +997,8 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
             // Only remove incoming edges that reference directly removed values
             // (the malloc results and the original phi dest, NOT derived GEPs/copies)
             let original_len = phi.incoming.len();
-            phi.incoming.retain(|(_, value)| {
-                !directly_removed.contains(value)
-            });
+            phi.incoming
+                .retain(|(_, value)| !directly_removed.contains(value));
 
             if phi.incoming.len() < original_len {
                 eliminated += original_len - phi.incoming.len();
@@ -971,11 +1033,15 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
             if let Some(block) = function.cfg.blocks.get(&block_id) {
                 for inst in &block.instructions {
                     match inst {
-                        IrInstruction::GetElementPtr { dest, ptr, indices, .. } => {
+                        IrInstruction::GetElementPtr {
+                            dest, ptr, indices, ..
+                        } => {
                             if dead_pointers.contains(ptr) && !dead_pointers.contains(dest) {
                                 dead_pointers.insert(*dest);
                                 // Track field index for load replacement
-                                if let Some(field_idx) = resolve_gep_field_index(indices, &constants) {
+                                if let Some(field_idx) =
+                                    resolve_gep_field_index(indices, &constants)
+                                {
                                     gep_field_indices.insert(*dest, field_idx);
                                     if let Some(&scalar_reg) = field_phi_regs.get(&field_idx) {
                                         load_replacements.insert(*dest, scalar_reg);
@@ -984,7 +1050,8 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
                                 changed = true;
                             }
                         }
-                        IrInstruction::Copy { dest, src } | IrInstruction::Cast { dest, src, .. } => {
+                        IrInstruction::Copy { dest, src }
+                        | IrInstruction::Cast { dest, src, .. } => {
                             if dead_pointers.contains(src) && !dead_pointers.contains(dest) {
                                 dead_pointers.insert(*dest);
                                 // Propagate field index from source
@@ -1005,7 +1072,10 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
     }
 
     if std::env::var("RAYZOR_DEBUG_SRA").is_ok() {
-        eprintln!("[PHI-SRA] After phi cleanup, dead_pointers for {:?}: {:?}", candidate.phi_dest, dead_pointers);
+        eprintln!(
+            "[PHI-SRA] After phi cleanup, dead_pointers for {:?}: {:?}",
+            candidate.phi_dest, dead_pointers
+        );
     }
 
     // Now re-process to remove Free instructions that reference the expanded dead_pointers
@@ -1016,11 +1086,9 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
         };
 
         let old_len = block.instructions.len();
-        block.instructions.retain(|inst| {
-            match inst {
-                IrInstruction::Free { ptr } => !dead_pointers.contains(ptr),
-                _ => true,
-            }
+        block.instructions.retain(|inst| match inst {
+            IrInstruction::Free { ptr } => !dead_pointers.contains(ptr),
+            _ => true,
         });
         if block.instructions.len() < old_len {
             eliminated += old_len - block.instructions.len();
@@ -1128,10 +1196,15 @@ fn build_value_type_map(cfg: &super::blocks::IrControlFlowGraph) -> HashMap<IrId
                         IrValue::U64(_) => IrType::U64,
                         IrValue::F32(_) => IrType::F32,
                         IrValue::F64(_) => IrType::F64,
-                        IrValue::Null | IrValue::Void | IrValue::Undef => IrType::Ptr(Box::new(IrType::Void)),
+                        IrValue::Null | IrValue::Void | IrValue::Undef => {
+                            IrType::Ptr(Box::new(IrType::Void))
+                        }
                         IrValue::String(_) => IrType::Ptr(Box::new(IrType::I8)),
                         // Complex types - skip type tracking for these
-                        IrValue::Array(_) | IrValue::Struct(_) | IrValue::Function(_) | IrValue::Closure { .. } => continue,
+                        IrValue::Array(_)
+                        | IrValue::Struct(_)
+                        | IrValue::Function(_)
+                        | IrValue::Closure { .. } => continue,
                     };
                     types.insert(*dest, ty);
                 }
@@ -1207,7 +1280,10 @@ fn try_build_candidate_function_wide(
             for inst in &block.instructions {
                 match inst {
                     IrInstruction::GetElementPtr {
-                        dest, ptr, indices, ty,
+                        dest,
+                        ptr,
+                        indices,
+                        ty,
                     } if tracked.contains(ptr) && !tracked.contains(dest) => {
                         if let Some(field_idx) = resolve_gep_field_index(indices, constants) {
                             // Check for type conflict: same index with different element types

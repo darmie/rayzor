@@ -4,8 +4,8 @@
 //! Useful for debugging optimization passes.
 
 use super::{
-    BinaryOp, CompareOp, IrBasicBlock, IrBlockId, IrControlFlowGraph, IrFunction,
-    IrId, IrInstruction, IrModule, IrPhiNode, IrTerminator, IrType, IrValue,
+    BinaryOp, CompareOp, IrBasicBlock, IrBlockId, IrControlFlowGraph, IrFunction, IrId,
+    IrInstruction, IrModule, IrPhiNode, IrTerminator, IrType, IrValue,
 };
 use std::fmt::Write;
 
@@ -86,7 +86,11 @@ pub fn dump_block(block: &IrBasicBlock) -> String {
 
     // Predecessors
     if !block.predecessors.is_empty() {
-        let preds: Vec<String> = block.predecessors.iter().map(|p| format!("{}", p)).collect();
+        let preds: Vec<String> = block
+            .predecessors
+            .iter()
+            .map(|p| format!("{}", p))
+            .collect();
         writeln!(out, "    ; preds: {}", preds.join(", ")).unwrap();
     }
 
@@ -138,10 +142,18 @@ pub fn dump_instruction(inst: &IrInstruction) -> String {
         IrInstruction::Clone { dest, src } => {
             format!("{} = clone {}", dest, src)
         }
-        IrInstruction::BorrowImmutable { dest, src, lifetime } => {
+        IrInstruction::BorrowImmutable {
+            dest,
+            src,
+            lifetime,
+        } => {
             format!("{} = borrow_imm {} (lifetime {})", dest, src, lifetime.0)
         }
-        IrInstruction::BorrowMutable { dest, src, lifetime } => {
+        IrInstruction::BorrowMutable {
+            dest,
+            src,
+            lifetime,
+        } => {
             format!("{} = borrow_mut {} (lifetime {})", dest, src, lifetime.0)
         }
         IrInstruction::EndBorrow { borrow } => {
@@ -197,8 +209,19 @@ pub fn dump_instruction(inst: &IrInstruction) -> String {
                 idx_str.join(", ")
             )
         }
-        IrInstruction::PtrAdd { dest, ptr, offset, ty } => {
-            format!("{} = ptradd {}, {} (type {})", dest, ptr, offset, dump_type(ty))
+        IrInstruction::PtrAdd {
+            dest,
+            ptr,
+            offset,
+            ty,
+        } => {
+            format!(
+                "{} = ptradd {}, {} (type {})",
+                dest,
+                ptr,
+                offset,
+                dump_type(ty)
+            )
         }
         IrInstruction::CallDirect {
             dest,
@@ -221,13 +244,29 @@ pub fn dump_instruction(inst: &IrInstruction) -> String {
         } => {
             let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
             if let Some(d) = dest {
-                format!("{} = call_indirect {}({})", d, func_ptr, args_str.join(", "))
+                format!(
+                    "{} = call_indirect {}({})",
+                    d,
+                    func_ptr,
+                    args_str.join(", ")
+                )
             } else {
                 format!("call_indirect {}({})", func_ptr, args_str.join(", "))
             }
         }
-        IrInstruction::Cast { dest, src, from_ty, to_ty } => {
-            format!("{} = cast {} {} to {}", dest, dump_type(from_ty), src, dump_type(to_ty))
+        IrInstruction::Cast {
+            dest,
+            src,
+            from_ty,
+            to_ty,
+        } => {
+            format!(
+                "{} = cast {} {} to {}",
+                dest,
+                dump_type(from_ty),
+                src,
+                dump_type(to_ty)
+            )
         }
         IrInstruction::BitCast { dest, src, ty } => {
             format!("{} = bitcast {} to {}", dest, src, dump_type(ty))
@@ -259,7 +298,11 @@ pub fn dump_instruction(inst: &IrInstruction) -> String {
         IrInstruction::MemSet { dest, value, size } => {
             format!("memset {}, {}, {}", dest, value, size)
         }
-        IrInstruction::LoadGlobal { dest, global_id, ty } => {
+        IrInstruction::LoadGlobal {
+            dest,
+            global_id,
+            ty,
+        } => {
             format!("{} = load_global {} @g{}", dest, dump_type(ty), global_id.0)
         }
         IrInstruction::StoreGlobal { global_id, value } => {
@@ -283,26 +326,59 @@ pub fn dump_instruction(inst: &IrInstruction) -> String {
                 .collect();
             format!("{} = phi {}", dest, inc.join(", "))
         }
-        IrInstruction::ExtractValue { dest, aggregate, indices } => {
+        IrInstruction::ExtractValue {
+            dest,
+            aggregate,
+            indices,
+        } => {
             let idx: Vec<String> = indices.iter().map(|i| format!("{}", i)).collect();
-            format!("{} = extract_value {}, [{}]", dest, aggregate, idx.join(", "))
+            format!(
+                "{} = extract_value {}, [{}]",
+                dest,
+                aggregate,
+                idx.join(", ")
+            )
         }
-        IrInstruction::InsertValue { dest, aggregate, value, indices } => {
+        IrInstruction::InsertValue {
+            dest,
+            aggregate,
+            value,
+            indices,
+        } => {
             let idx: Vec<String> = indices.iter().map(|i| format!("{}", i)).collect();
-            format!("{} = insert_value {}, {}, [{}]", dest, aggregate, value, idx.join(", "))
+            format!(
+                "{} = insert_value {}, {}, [{}]",
+                dest,
+                aggregate,
+                value,
+                idx.join(", ")
+            )
         }
         IrInstruction::Jump { target } => {
             format!("jump {}", target)
         }
-        IrInstruction::Branch { condition, true_target, false_target } => {
+        IrInstruction::Branch {
+            condition,
+            true_target,
+            false_target,
+        } => {
             format!("branch {}, {}, {}", condition, true_target, false_target)
         }
-        IrInstruction::Switch { value, default_target, cases } => {
+        IrInstruction::Switch {
+            value,
+            default_target,
+            cases,
+        } => {
             let cases_str: Vec<String> = cases
                 .iter()
                 .map(|(val, target)| format!("{} => {}", dump_value(val), target))
                 .collect();
-            format!("switch {} [{}] default {}", value, cases_str.join(", "), default_target)
+            format!(
+                "switch {} [{}] default {}",
+                value,
+                cases_str.join(", "),
+                default_target
+            )
         }
         IrInstruction::LandingPad { dest, ty, .. } => {
             format!("{} = landing_pad {}", dest, dump_type(ty))
@@ -394,7 +470,11 @@ pub fn dump_type(ty: &IrType) -> String {
             format!("{}<{}>", dump_type(base), args.join(", "))
         }
         IrType::Any => "any".to_string(),
-        IrType::Function { params, return_type, varargs } => {
+        IrType::Function {
+            params,
+            return_type,
+            varargs,
+        } => {
             let p: Vec<String> = params.iter().map(|t| dump_type(t)).collect();
             let va = if *varargs { ", ..." } else { "" };
             format!("fn({}{}) -> {}", p.join(", "), va, dump_type(return_type))
@@ -429,7 +509,10 @@ pub fn dump_value(value: &IrValue) -> String {
             format!("{{ {} }}", f.join(", "))
         }
         IrValue::Function(id) => format!("@fn{}", id.0),
-        IrValue::Closure { function, environment } => {
+        IrValue::Closure {
+            function,
+            environment,
+        } => {
             format!("closure(@fn{}, {})", function.0, dump_value(environment))
         }
     }
