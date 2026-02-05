@@ -13,7 +13,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages-website"
+  group: "pages"
   cancel-in-progress: false
 
 jobs:
@@ -29,10 +29,21 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
+      - name: Prepare site
+        run: |
+          mkdir -p _site
+          cp website/index.html _site/
+          # Include existing benchmark results if available
+          if [ -d "compiler/benchmarks/charts" ]; then
+            mkdir -p _site/benchmarks
+            cp -r compiler/benchmarks/charts/* _site/benchmarks/
+            cp -r compiler/benchmarks/results _site/benchmarks/results
+          fi
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: website
+          path: _site
 
       - name: Deploy to GitHub Pages
         id: deployment

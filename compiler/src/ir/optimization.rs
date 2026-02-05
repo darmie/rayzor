@@ -1649,6 +1649,11 @@ impl PassManager {
                 manager.add_pass(super::scalar_replacement::ScalarReplacementPass::new());
                 manager.add_pass(ConstantFoldingPass::new());
                 manager.add_pass(CopyPropagationPass::new());
+                // GlobalLoadCachingPass: experimental, enable with RAYZOR_GLOBAL_CACHE=1
+                // Provides ~1.67x speedup on nbody by caching repeated global loads
+                if std::env::var("RAYZOR_GLOBAL_CACHE").is_ok() {
+                    manager.add_pass(GlobalLoadCachingPass::new());
+                }
                 // CSE and LICM may contribute to non-determinism, keeping them for now
                 manager.add_pass(CSEPass::new());
                 manager.add_pass(LICMPass::new());

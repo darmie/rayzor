@@ -72,11 +72,12 @@ jobs:
       - name: Build rayzor-runtime static library
         run: cargo build --release -p rayzor-runtime
 
+      # NOTE: Using system linker instead of tcc-linker due to TCC crash with phi-SRA generated code
       - name: Run nbody benchmark
-        run: cargo run --release --package compiler --features all-backends,tcc-linker --example benchmark_runner -- nbody --json
+        run: cargo run --release --package compiler --features all-backends --example benchmark_runner -- nbody --json
 
       - name: Run mandelbrot benchmark
-        run: cargo run --release --package compiler --features all-backends,tcc-linker --example benchmark_runner -- mandelbrot --json
+        run: cargo run --release --package compiler --features all-backends --example benchmark_runner -- mandelbrot --json
 
       - name: Upload benchmark results
         if: always()
