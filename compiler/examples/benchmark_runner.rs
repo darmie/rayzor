@@ -1082,8 +1082,11 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
             // Upgrade to LLVM tier for maximum performance
             #[cfg(feature = "llvm-backend")]
             {
-                // "already done" is expected when multiple backends exist - silently ignore
-                let _ = state.backend.upgrade_to_llvm();
+                eprintln!("[DEBUG] Calling upgrade_to_llvm for precompiled-tiered...");
+                match state.backend.upgrade_to_llvm() {
+                    Ok(()) => eprintln!("[DEBUG] upgrade_to_llvm succeeded"),
+                    Err(e) => eprintln!("[DEBUG] upgrade_to_llvm failed: {}", e),
+                }
             }
 
             // Benchmark runs at highest tier

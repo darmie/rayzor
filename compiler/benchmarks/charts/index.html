@@ -13,7 +13,7 @@
 </head>
 <body>
     <h1>Rayzor Benchmark Results</h1>
-    <p style="text-align: center">Generated: 2026-02-04</p>
+    <p style="text-align: center">Generated: 2026-02-05</p>
     <div class="summary">
         <h3>System</h3>
         <p><strong>OS:</strong> macos | <strong>Arch:</strong> aarch64 | <strong>CPU cores:</strong> 10 | <strong>RAM:</strong> 16.0 GB | <strong>Host:</strong> Damilares-MBP.lan</p>
@@ -22,6 +22,7 @@
         <h3>Summary</h3>
         <ul>
             <li><strong>mandelbrot</strong>: 1 targets measured</li>
+            <li><strong>nbody</strong>: 1 targets measured</li>
         </ul>
     </div>
     <div class="summary">
@@ -47,16 +48,16 @@
         new Chart(document.getElementById('chart_0'), {
             type: 'bar',
             data: {
-                labels: ['rayzor-aot'],
+                labels: ['rayzor-precompiled-tiered'],
                 datasets: [
                     {
                         label: 'Compile (ms)',
-                        data: [368.79],
+                        data: [1.60],
                         backgroundColor: 'rgba(54, 162, 235, 0.8)'
                     },
                     {
                         label: 'Execute (ms)',
-                        data: [1966.27],
+                        data: [329.66],
                         backgroundColor: 'rgba(255, 99, 132, 0.8)'
                     }
                 ]
@@ -69,6 +70,41 @@
                 },
                 plugins: {
                     title: { display: true, text: 'mandelbrot' }
+                }
+            }
+        });
+    </script>
+
+    <h2>nbody</h2>
+    <div class="chart-container">
+        <canvas id="chart_1"></canvas>
+    </div>
+    <script>
+        new Chart(document.getElementById('chart_1'), {
+            type: 'bar',
+            data: {
+                labels: ['rayzor-tiered'],
+                datasets: [
+                    {
+                        label: 'Compile (ms)',
+                        data: [186.61],
+                        backgroundColor: 'rgba(54, 162, 235, 0.8)'
+                    },
+                    {
+                        label: 'Execute (ms)',
+                        data: [765.32],
+                        backgroundColor: 'rgba(255, 99, 132, 0.8)'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    x: { stacked: true },
+                    y: { stacked: true, title: { display: true, text: 'Time (ms)' } }
+                },
+                plugins: {
+                    title: { display: true, text: 'nbody' }
                 }
             }
         });
