@@ -1168,7 +1168,10 @@ impl TieredBackend {
         eprintln!("[DEBUG:UPGRADE] Calling compile_all_with_llvm...");
         match self.compile_all_with_llvm() {
             Ok(all_pointers) => {
-                eprintln!("[DEBUG:UPGRADE] compile_all_with_llvm returned {} pointers", all_pointers.len());
+                eprintln!(
+                    "[DEBUG:UPGRADE] compile_all_with_llvm returned {} pointers",
+                    all_pointers.len()
+                );
                 let mut fp_lock = self.function_pointers.write().unwrap();
                 let mut ft_lock = self.function_tiers.write().unwrap();
 
@@ -1827,7 +1830,10 @@ impl TieredBackend {
 
         // Get function symbols before compiling (we need the names for dlsym)
         let function_symbols = backend.get_function_symbols();
-        eprintln!("[DEBUG:AOT] Got {} function symbols", function_symbols.len());
+        eprintln!(
+            "[DEBUG:AOT] Got {} function symbols",
+            function_symbols.len()
+        );
 
         // Compile to object file (AOT, not JIT!)
         eprintln!("[DEBUG:AOT] Compiling to object file: {:?}", obj_path);
@@ -1854,7 +1860,10 @@ impl TieredBackend {
             tracing::trace!("[LLVM:AOT] Linking with system linker");
             let pointers =
                 self.link_and_load_with_system_linker(&obj_path, &dylib_path, &function_symbols)?;
-            eprintln!("[DEBUG:AOT] System linker done, got {} pointers", pointers.len());
+            eprintln!(
+                "[DEBUG:AOT] System linker done, got {} pointers",
+                pointers.len()
+            );
             let _ = std::fs::remove_file(&obj_path);
             pointers
         };
@@ -1935,7 +1944,10 @@ impl TieredBackend {
             }
         };
 
-        eprintln!("[DEBUG:LINKER] Resolving {} symbols...", function_symbols.len());
+        eprintln!(
+            "[DEBUG:LINKER] Resolving {} symbols...",
+            function_symbols.len()
+        );
         let mut all_pointers = HashMap::new();
         for (func_id, symbol_name) in function_symbols {
             let symbol_result: Result<libloading::Symbol<*const ()>, _> =
