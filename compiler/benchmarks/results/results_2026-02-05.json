@@ -14,9 +14,9 @@
         {
           "name": "mandelbrot",
           "target": "rayzor-precompiled-tiered",
-          "compile_time_ms": 1.603459,
-          "runtime_ms": 329.661125,
-          "total_time_ms": 331.26458399999996,
+          "compile_time_ms": 1.7095,
+          "runtime_ms": 602.8450829999999,
+          "total_time_ms": 604.554583,
           "iterations": 10
         }
       ]

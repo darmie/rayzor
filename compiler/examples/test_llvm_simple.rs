@@ -1,4 +1,4 @@
-#![allow(unused_imports, unused_variables, dead_code)]
+#![allow(unused_imports, unused_variables, dead_code, clippy::needless_return)]
 //! Debug LLVM JIT with arrays
 
 #[cfg(feature = "llvm-backend")]
