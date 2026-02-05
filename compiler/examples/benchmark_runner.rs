@@ -1082,17 +1082,28 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
             // Upgrade to LLVM tier for maximum performance
             #[cfg(feature = "llvm-backend")]
             {
+                use std::io::Write;
                 eprintln!("[DEBUG] Calling upgrade_to_llvm for precompiled-tiered...");
+                std::io::stderr().flush().ok();
                 match state.backend.upgrade_to_llvm() {
-                    Ok(()) => eprintln!("[DEBUG] upgrade_to_llvm succeeded"),
+                    Ok(()) => {
+                        eprintln!("[DEBUG] upgrade_to_llvm succeeded");
+                        std::io::stderr().flush().ok();
+                    }
                     Err(e) => eprintln!("[DEBUG] upgrade_to_llvm failed: {}", e),
                 }
             }
 
             // Benchmark runs at highest tier
-            eprintln!("[DEBUG] Starting BENCH_RUNS loop after LLVM upgrade...");
+            {
+                use std::io::Write;
+                eprintln!("[DEBUG] Starting BENCH_RUNS loop after LLVM upgrade...");
+                std::io::stderr().flush().ok();
+            }
             for i in 0..BENCH_RUNS {
+                use std::io::Write;
                 eprintln!("[DEBUG] About to call execute_function (run {})", i);
+                std::io::stderr().flush().ok();
                 match run_precompiled_tiered_iteration(&mut state) {
                     Ok(exec) => {
                         eprintln!("[DEBUG] execute_function completed (run {})", i);
