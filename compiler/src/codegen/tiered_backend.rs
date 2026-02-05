@@ -1801,35 +1801,24 @@ impl TieredBackend {
             .map(|(name, ptr)| (name.as_str(), *ptr as *const u8))
             .collect();
 
-        eprintln!("[DEBUG:AOT] Creating LLVM backend...");
         let mut backend = LLVMJitBackend::with_symbols(context, &symbols)?;
-        eprintln!("[DEBUG:AOT] LLVM backend created");
 
         // Two-pass compilation
         let modules_lock = self.modules.read().unwrap();
-        eprintln!("[DEBUG:AOT] Declaring {} modules...", modules_lock.len());
         for module in modules_lock.iter() {
             backend.declare_module(module)?;
         }
-        eprintln!("[DEBUG:AOT] Compiling module bodies...");
         for module in modules_lock.iter() {
             backend.compile_module_bodies(module)?;
         }
         drop(modules_lock);
-        eprintln!("[DEBUG:AOT] Module compilation done");
 
         // Get function symbols before compiling (we need the names for dlsym)
         let function_symbols = backend.get_function_symbols();
-        eprintln!(
-            "[DEBUG:AOT] Got {} function symbols",
-            function_symbols.len()
-        );
 
         // Compile to object file (AOT, not JIT!)
-        eprintln!("[DEBUG:AOT] Compiling to object file: {:?}", obj_path);
         tracing::trace!("[LLVM:AOT] Compiling to object file: {:?}", obj_path);
         backend.compile_to_object_file(&obj_path)?;
-        eprintln!("[DEBUG:AOT] Object file created");
 
         // Link and load — use TCC in-process linker if available,
         // otherwise fall back to system linker + dlopen.
@@ -1846,14 +1835,9 @@ impl TieredBackend {
 
         #[cfg(not(feature = "tcc-linker"))]
         let all_pointers = {
-            eprintln!("[DEBUG:AOT] Linking with system linker...");
             tracing::trace!("[LLVM:AOT] Linking with system linker");
             let pointers =
                 self.link_and_load_with_system_linker(&obj_path, &dylib_path, &function_symbols)?;
-            eprintln!(
-                "[DEBUG:AOT] System linker done, got {} pointers",
-                pointers.len()
-            );
             let _ = std::fs::remove_file(&obj_path);
             pointers
         };
@@ -1912,19 +1896,15 @@ impl TieredBackend {
         dylib_path: &Path,
         function_symbols: &HashMap<IrFunctionId, String>,
     ) -> Result<HashMap<IrFunctionId, usize>, String> {
-        eprintln!("[DEBUG:LINKER] Calling link_to_dylib...");
         self.link_to_dylib(obj_path, dylib_path, &self.runtime_symbols)?;
-        eprintln!("[DEBUG:LINKER] link_to_dylib done, loading dylib...");
 
         let lib = unsafe {
             #[cfg(unix)]
             {
                 use libloading::os::unix::Library as UnixLibrary;
-                eprintln!("[DEBUG:LINKER] Calling dlopen with RTLD_NOW | RTLD_GLOBAL...");
                 let unix_lib =
                     UnixLibrary::open(Some(dylib_path), libc::RTLD_NOW | libc::RTLD_GLOBAL)
                         .map_err(|e| format!("Failed to load dylib: {}", e))?;
-                eprintln!("[DEBUG:LINKER] dlopen succeeded");
                 libloading::Library::from(unix_lib)
             }
             #[cfg(not(unix))]
@@ -1934,10 +1914,6 @@ impl TieredBackend {
             }
         };
 
-        eprintln!(
-            "[DEBUG:LINKER] Resolving {} symbols...",
-            function_symbols.len()
-        );
         let mut all_pointers = HashMap::new();
         for (func_id, symbol_name) in function_symbols {
             let symbol_result: Result<libloading::Symbol<*const ()>, _> =
@@ -1949,7 +1925,6 @@ impl TieredBackend {
                 }
             }
         }
-        eprintln!("[DEBUG:LINKER] Resolved {} pointers", all_pointers.len());
 
         tracing::trace!(
             "[LLVM:AOT] Loaded {} function pointers from dylib",
