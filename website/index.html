@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rayzor Blade - High Performance Haxe Compiler</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geom:ital,wght@0,300..900;1,300..900&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { 
+      overflow-x: hidden; 
+      background: #000;
+      font-family: 'JetBrains Mono', monospace;
+      color: #fff;
+    }
+    #canvas { 
+      position: fixed; 
+      top: 0; 
+      left: 0; 
+      width: 100%; 
+      height: 100%; 
+      z-index: 0;
+    }
+    
+    .content {
+      position: relative;
+      z-index: 10;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    
+    /* Hero Section */
+    .hero {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      text-align: center;
+      padding: 2rem;
+    }
+    
+    .title {
+      font-family: 'Geom', sans-serif;
+      font-size: clamp(3rem, 12vw, 7rem);
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+      color: rgba(255, 255, 255, 0.98);
+      text-shadow: 0 0 60px rgba(180, 100, 200, 0.6), 0 0 120px rgba(150, 80, 180, 0.4);
+      animation: fadeIn 1.5s ease-out;
+    }
+    
+    .subtitle {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: clamp(0.7rem, 1.8vw, 1.1rem);
+      font-weight: 400;
+      letter-spacing: 0.04em;
+      color: rgba(200, 150, 220, 0.8);
+      margin-top: 1rem;
+      max-width: 600px;
+      animation: fadeIn 1.5s ease-out 0.3s both;
+    }
+    
+    .tagline {
+      font-size: clamp(0.65rem, 1.2vw, 0.85rem);
+      color: rgba(255, 255, 255, 0.5);
+      margin-top: 2rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      animation: fadeIn 1.5s ease-out 0.5s both;
+    }
+    
+    /* Badges */
+    .badges {
+      display: flex;
+      gap: 0.75rem;
+      margin-top: 1.5rem;
+      flex-wrap: wrap;
+      justify-content: center;
+      animation: fadeIn 1.5s ease-out 0.6s both;
+    }
+    
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.4rem 0.8rem;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 20px;
+      font-size: 0.7rem;
+      color: rgba(255, 255, 255, 0.7);
+      backdrop-filter: blur(10px);
+    }
+    
+    .badge-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+    }
+    
+    .badge-icon {
+      width: 14px;
+      height: 14px;
+      opacity: 0.8;
+    }
+    
+    .badge-icon.cranelift-logo {
+      width: 18px;
+      height: 14px;
+    }
+    
+    .badge-icon.llvm-logo {
+      width: 16px;
+      height: 16px;
+    }
+    
+    /* CTAs */
+    .ctas {
+      display: flex;
+      gap: 1rem;
+      margin-top: 2.5rem;
+      flex-wrap: wrap;
+      justify-content: center;
+      animation: fadeIn 1.5s ease-out 0.7s both;
+    }
+    
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.85rem 1.8rem;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+      font-weight: 500;
+      text-decoration: none;
+      border-radius: 8px;
+      transition: all 0.3s ease;
+      cursor: pointer;
+    }
+    
+    .btn-primary {
+      background: linear-gradient(135deg, rgba(150, 80, 180, 0.9), rgba(100, 50, 150, 0.9));
+      color: #fff;
+      border: 1px solid rgba(200, 150, 220, 0.3);
+    }
+    
+    .btn-primary:hover {
+      background: linear-gradient(135deg, rgba(170, 100, 200, 0.95), rgba(120, 70, 170, 0.95));
+      transform: translateY(-2px);
+      box-shadow: 0 10px 40px rgba(150, 80, 180, 0.4);
+    }
+    
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.05);
+      color: rgba(255, 255, 255, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: rgba(255, 255, 255, 0.3);
+      transform: translateY(-2px);
+    }
+    
+    .btn svg {
+      width: 18px;
+      height: 18px;
+    }
+    
+    /* Features Section */
+    .features {
+      padding: 6rem 2rem;
+      background: linear-gradient(180deg, transparent 0%, rgba(10, 5, 15, 0.95) 20%);
+    }
+    
+    .features-grid {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 2rem;
+    }
+    
+    .feature {
+      padding: 2rem;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 16px;
+      transition: all 0.3s ease;
+    }
+    
+    .feature:hover {
+      background: rgba(255, 255, 255, 0.05);
+      border-color: rgba(150, 80, 180, 0.3);
+      transform: translateY(-4px);
+    }
+    
+    .feature-icon {
+      font-size: 2rem;
+      margin-bottom: 1rem;
+    }
+    
+    .feature-title {
+      font-family: 'Geom', sans-serif;
+      font-size: 1.2rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+      color: rgba(255, 255, 255, 0.95);
+    }
+    
+    .feature-desc {
+      font-size: 0.85rem;
+      line-height: 1.6;
+      color: rgba(255, 255, 255, 0.6);
+    }
+    
+    .feature-stat {
+      display: inline-block;
+      margin-top: 1rem;
+      padding: 0.3rem 0.7rem;
+      background: rgba(150, 80, 180, 0.2);
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: rgba(200, 150, 220, 0.9);
+    }
+    
+    /* Code Example */
+    .code-section {
+      padding: 4rem 2rem 6rem;
+      background: rgba(10, 5, 15, 0.98);
+    }
+    
+    .code-container {
+      max-width: 700px;
+      margin: 0 auto;
+    }
+    
+    .code-header {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+    
+    .code-header h2 {
+      font-family: 'Geom', sans-serif;
+      font-size: 1.8rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+    
+    .code-header p {
+      color: rgba(255, 255, 255, 0.5);
+      font-size: 0.9rem;
+    }
+    
+    .code-block {
+      background: rgba(0, 0, 0, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    
+    .code-tabs {
+      display: flex;
+      background: rgba(255, 255, 255, 0.05);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    .code-tab {
+      padding: 0.75rem 1.25rem;
+      font-size: 0.75rem;
+      color: rgba(255, 255, 255, 0.5);
+      border-right: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    .code-tab.active {
+      color: rgba(200, 150, 220, 0.9);
+      background: rgba(150, 80, 180, 0.1);
+    }
+    
+    .code-content {
+      padding: 1.5rem;
+      font-size: 0.8rem;
+      line-height: 1.7;
+      overflow-x: auto;
+    }
+    
+    .code-content pre {
+      font-family: 'JetBrains Mono', monospace;
+      margin: 0;
+      white-space: pre;
+    }
+    
+    .code-comment { color: rgba(255, 255, 255, 0.35); }
+    .code-keyword { color: #c792ea; }
+    .code-string { color: #c3e88d; }
+    .code-flag { color: #89ddff; }
+    
+    /* Footer */
+    .footer {
+      padding: 3rem 2rem;
+      text-align: center;
+      background: rgba(5, 2, 8, 0.98);
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    
+    .footer-links {
+      display: flex;
+      gap: 2rem;
+      justify-content: center;
+      margin-bottom: 1.5rem;
+      flex-wrap: wrap;
+    }
+    
+    .footer-links a {
+      color: rgba(255, 255, 255, 0.5);
+      text-decoration: none;
+      font-size: 0.85rem;
+      transition: color 0.3s ease;
+    }
+    
+    .footer-links a:hover {
+      color: rgba(200, 150, 220, 0.9);
+    }
+    
+    .footer-copy {
+      font-size: 0.75rem;
+      color: rgba(255, 255, 255, 0.3);
+    }
+    
+    /* Animations */
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    
+    /* Scroll indicator */
+    .scroll-indicator {
+      position: absolute;
+      bottom: 2rem;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.5rem;
+      color: rgba(255, 255, 255, 0.3);
+      font-size: 0.7rem;
+      letter-spacing: 0.1em;
+      animation: fadeIn 1.5s ease-out 1s both;
+    }
+    
+    .scroll-indicator span {
+      animation: bounce 2s infinite;
+    }
+    
+    @keyframes bounce {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(5px); }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  
+  <div class="content">
+    <section class="hero">
+      <h1 class="title">Rayzor Blade</h1>
+      <p class="subtitle">High Performance Next Generation Compiler & Runtime for The Haxe Language</p>
+      <p class="tagline">Fast compilation • Native performance • Ownership-based memory</p>
+      
+      <div class="badges">
+        <span class="badge">
+          <svg class="badge-icon cranelift-logo" viewBox="0 0 100 80" fill="white">
+            <!-- Top row -->
+            <rect x="8" y="0" width="50" height="12" rx="6"/>
+            <rect x="68" y="0" width="24" height="12" rx="6"/>
+            <!-- Second row -->
+            <rect x="8" y="17" width="84" height="12" rx="6"/>
+            <!-- Middle connector -->
+            <rect x="44" y="17" width="12" height="46" rx="6"/>
+            <!-- Fourth row -->
+            <rect x="8" y="51" width="84" height="12" rx="6"/>
+            <!-- Bottom row -->
+            <circle cx="14" cy="74" r="6"/>
+            <rect x="32" y="68" width="24" height="12" rx="6"/>
+            <rect x="68" y="68" width="24" height="12" rx="6"/>
+          </svg>
+          Cranelift
+        </span>
+        <span class="badge">
+          <svg class="badge-icon llvm-logo" viewBox="0 0 128 128" fill="white">
+            <path d="M82.625 103.785c-1.48-.203-3.551-.723-5.164-1.301a22.87 22.87 0 0 1-1.992-.875c-3.031-1.496-4.984-3.203-8.324-7.281-.609-.746-1.066-1.254-1.141-1.266s-.531.18-1.027.418c-1.711.824-5.727 2.488-7.871 3.262-6.113 2.203-10.492 3.074-14.324 2.848-2.918-.172-5.246-.676-6.93-1.5-1.246-.609-2-1.258-2.605-2.242-.375-.609-.684-1.402-.582-1.5.074-.074.168-.016 1.047.668.754.59 1.383.973 1.969 1.207.91.363 2.332.688 3.906.887.883.109 3.887.109 4.637-.004 2.254-.336 6.117-1.441 8.777-2.512 1.09-.441 4.414-2.039 7.375-3.547 2.387-1.219 3.113-1.617 3.383-1.859.191-.168.191-.176.117-.457-.043-.16-.367-1.023-.727-1.922-.691-1.746-1.523-4.035-2.324-6.391-1.023-3.008-1.309-3.734-1.465-3.734-.172 0-.734.738-2.133 2.797-1.051 1.543-1.227 1.746-1.543 1.746-.324 0-.758-.184-1.355-.574-.859-.559-1.625-1.234-3.234-2.859-.973-.98-1.578-1.547-1.656-1.547-.359 0-.582.699-.625 1.945-.027.836.008 1.199.145 1.563.023.063.008.102-.039.102-.141 0-.852-.5-1.109-.777-.324-.352-.73-1.215-.91-1.934-.078-.316-.16-.609-.184-.645-.086-.141-.281-.055-.551.246-.52.574-.852 1.66-.852 2.766 0 .688-.047.73-.41.367-.508-.508-.965-1.457-1.09-2.27-.191-1.215-.27-1.309-.687-.855-.387.418-.789 1.285-.902 1.949-.051.309-.117.586-.148.617-.062.066-.402-.391-.594-.801-.5-1.074-.445-2.586.141-3.727.496-.973.57-1.148.699-1.625.32-1.18.895-1.785 2.117-2.23.293-.105.547-.129 1.645-.152 1.992-.047 3.23.109 4.012.508.363.184 1.055.898 2.371 2.453 1.402 1.66 1.738 2.012 1.898 1.988.152-.02.621-.777.914-1.48.168-.395.207-.59.25-1.246.031-.426.098-.93.152-1.117.266-.914.906-1.676 1.914-2.27l.602-.355-.027-.227a18.65 18.65 0 0 1-.066-.75c-.051-.75-.141-1.109-.309-1.242-.109-.086-.348-.133-.973-.187a19.47 19.47 0 0 1-3.414-.676c-1.93-.582-5.559-2.359-10.211-5-3.344-1.898-4.945-2.59-6.902-2.984-1.305-.266-2.648-.328-3.559-.164-.922.164-2.328.836-2.895 1.383-.359.348-.445.539-.57 1.266-.109.652-.203.813-.203.359 0-.145-.027-.445-.062-.668-.055-.363-.09-.43-.324-.645-.402-.367-1.285-.766-1.941-.879-.719-.125-2.703-.129-3.273-.008-1.656.355-4.082 2.102-5.82 4.195-.582.695-.641.793-.68 1.09-.117.902-.242 1.598-.293 1.598-.027 0-.055-.387-.055-.859 0-1 .055-.902-.809-1.461-2.102-1.355-4.074-1.59-5.789-.691-2.684 1.406-4.75 5.344-6.223 11.855-.633 2.805-.652 4.008-.09 6.465l.246 1.047c.016.043.004.078-.02.078-.105 0-.754-1.965-1.293-3.922C1.66 74.691.719 69.727.348 66.164c-.25-2.371-.285-7.445-.07-9.336.352-3.094.676-4.531 1.719-7.672 1.184-3.574 2.297-5.937 4.027-8.574 2.074-3.164 4.801-6.199 7.898-8.789a61.3 61.3 0 0 1 1.988-1.547c.723-.543 1.348-1.031 1.387-1.082s.07-.156.059-.234c-.02-.125-.07-.148-.426-.195-.422-.051-3.945-.008-4.996.063-.402.027-.605.02-.605-.023 0-.082.145-.109 1.398-.266 1.656-.203 2.512-.254 4.918-.293 3.125-.047 5.746.094 7.875.426 1.328.207 1.742.215 2.148.051.281-.113.402-.129.699-.094.387.051 3.801.895 6.238 1.551 1.813.484 2.707.688 2.836.637.219-.082.051-.543-.512-1.426-.648-1.016-1.199-1.652-2.941-3.418-.699-.711-1.25-1.312-1.223-1.34.059-.059 1.121.5 1.84.965 1.574 1.016 2.914 2.395 3.707 3.813.652 1.16.797 1.391 1.184 1.848.602.727.734 1.289.441 1.918-.145.309-.254.422-.895.906-.281.211-.371.34-.637.883-.777 1.609-2.16 6.383-3.047 10.512-.176.809-.316 1.52-.316 1.578s.113.234.258.395c.332.375.785 1.309.859 1.773.035.203.09.402.129.449s.215.113.391.152c.512.109 7.863 1.309 8.035 1.309.125 0 .195-.074.379-.398.121-.219.262-.434.309-.473s1.047-.191 2.223-.344c2.867-.371 5.738-.816 9.266-1.437 1.664-.297 1.988-.336 2.16-.277.16.059.234.055.402-.031.238-.121 3.094-2.977 4.594-4.594 1.215-1.312 1.625-1.84 2.043-2.645.625-1.211.848-2.105.805-3.273-.031-.937-.172-1.348-.609-1.785-.418-.422-.598-.461-2.082-.457-1.391.004-2.047.082-3.531.43-1.285.301-1.406.363-1.762.898-.344.527-.59.746-1.285 1.152-.812.477-1.316.883-2.473 1.977-1.277 1.211-1.875 1.715-2.227 1.867-.25.113-.266.113-.652-.008-.457-.145-.801-.336-.801-.453 0-.105.258-.344.996-.93 1.027-.816 1.875-1.746 2.336-2.57.34-.613.465-1.07.465-1.715 0-.52-.012-.574-.16-.723-.141-.141-.187-.152-.445-.117-.387.059-1.281.387-1.477.543-.215.168-.199.316.066.609.121.137.215.273.203.305s-.219.004-.457-.059c-.602-.16-1.09-.156-1.301.008-.09.07-.164.184-.164.246s.141.301.313.523.313.426.313.445c0 .086-.582-.039-1.035-.223-.715-.285-1.02-.242-1.02.141 0 .238.086.398.387.707.156.164.223.273.176.301-.09.059-.66-.113-1.34-.402-.309-.133-.754-.273-.988-.309s-.512-.113-.613-.164c-.32-.164-.711-.609-.93-1.059-.187-.387-.207-.48-.207-.977 0-.523.008-.559.168-.695.098-.086.32-.176.527-.215 1.461-.273 2.098-.543 2.723-1.145.227-.219.418-.461.445-.562s.008-.371-.039-.602c-.109-.582-.051-1.094.168-1.504.922-1.727 5.48-4.035 9.613-4.871.773-.156 1.609-.211 1.609-.105 0 .031-.227.203-.508.387-1.492.969-3.535 3.113-3.535 3.711 0 .137.035.223.102.25.219.082 2.469-.461 3.109-.754.18-.082.543-.359.84-.637.809-.762 1.371-1.105 2.328-1.414 1.219-.395 3.473-.633 3.297-.348-.02.031-.406.238-.859.453-1.352.645-2.098 1.113-2.098 1.32 0 .156.191.211 1.063.301 1.969.203 2 .203 2.891-.09.855-.277 1.469-.367 2.559-.367.816-.004 1.77.066 1.77.125 0 .051-.434.223-1.543.609-.879.309-1.023.398-1 .621.016.129.172.277.707.68a8.24 8.24 0 0 0 2.195 1.223c1.129.434 2.469 1.215 2.328 1.355-.039.043-.316.031-.832-.039a8.54 8.54 0 0 0-1.141-.086l-.375.02-.02.262c-.008.145.039.492.105.777s.141.66.164.828.055.395.074.496c.023.125.352.504 1.086 1.258.914.941 1.172 1.266 1.008 1.266-.023 0-.387-.109-.805-.246-.836-.273-.969-.293-1.078-.164-.082.102-.211.801-.32 1.762l-.078.695.344.578c.395.668.609 1.078.609 1.172 0 .117-.121.066-.547-.219-.461-.309-.539-.328-.625-.168-.082.148-1.094 3.766-1.32 4.711-.219.918-.227 1.066-.059 1.152.426.23 6.484 1.313 10.082 1.805l2.086.289c.832.113 1.098.227 1.164.504.027.109.129.258.223.332.152.125.219.133.73.102.566-.031 4.191-.594 4.961-.766.68-.152.777-.254 1.047-1.062.266-.797.379-1 .773-1.387.152-.152.281-.316.281-.363 0-.164-.93-4.187-1.305-5.645-.434-1.68-.93-3.375-1.359-4.637-.687-2.02-.871-2.332-1.805-3.102-.414-.34-.594-.68-.598-1.133-.008-.477.168-.883.578-1.336.195-.215.531-.711.754-1.117 1.188-2.141 2.359-3.422 4.195-4.578.742-.465 1.828-1.031 1.883-.977.02.02-.281.34-.668.707-.914.871-1.789 1.777-2.375 2.465-.953 1.113-1.805 2.465-1.773 2.816.027.344.211.316 3.293-.504 2.484-.66 5.074-1.301 5.664-1.402.426-.07.477-.066.762.059.383.172.797.172 1.832.012 2.117-.328 4.672-.5 7.488-.5 2.637 0 5.074.16 6.68.441.645.109.508.207-.234.16-1.207-.074-4.309-.121-4.855-.074-.395.031-.559.07-.586.137-.055.145.348.516 1.57 1.441 4.609 3.5 7.984 7.176 10.637 11.582 1.563 2.598 2.676 5.32 3.863 9.434.547 1.895.82 3.367 1.07 5.758.137 1.309.16 6.234.035 7.688-.359 4.141-.984 7.84-2.043 12.074-.684 2.734-1.691 5.914-1.703 5.375 0-.059.195-.961.438-2.008l.438-1.902-.223-1.262c-.547-3.086-1.375-6.18-2.254-8.418-1.215-3.082-3.094-5.434-4.902-6.137-.637-.246-1.184-.324-2.02-.289-.844.035-1.324.176-2.402.699-.828.402-1.418.777-1.559.992-.082.125-.113.359-.141 1-.016.465-.051.84-.078.84s-.066-.145-.09-.324c-.098-.777-.297-1.59-.449-1.852-.34-.582-2.469-2.629-3.512-3.375-.668-.477-2.113-1.195-2.664-1.32-.523-.121-2.855-.141-3.379-.031-.418.09-1.484.555-1.773.777s-.434.57-.484 1.191c-.023.285-.066.516-.098.516s-.07-.133-.094-.297c-.117-.863-.215-1.125-.535-1.477-.617-.676-1.613-1.191-2.789-1.441-.734-.156-2.539-.156-3.332 0-2.109.414-4.043 1.223-7.094 2.965-2.074 1.184-4.062 2.266-5.418 2.945-1.664.828-3.812 1.801-4.496 2.027a17.58 17.58 0 0 1-4.211.84c-.949.078-1.066.098-1.164.219-.137.168-.203.66-.207 1.5l-.004.652.594.047c1.215.09 2.051.395 2.676.965.668.613.984 1.391 1.113 2.711.078.813.223 1.27.641 2.035.289.535.461.75.609.75.105 0 .676-.625 1.988-2.18 1.375-1.625 1.832-2.094 2.262-2.297.781-.367 1.766-.504 3.586-.504 1.781 0 2.527.199 3.258.867.438.402.691.848.887 1.559.102.371.277.789.469 1.121.477.832.633 1.379.668 2.305.023.598.008.867-.07 1.18-.129.496-.348.984-.574 1.281-.16.211-.18.219-.254.113-.043-.059-.082-.187-.082-.277 0-.262-.238-.98-.477-1.437-.555-1.059-1.078-1.242-1.078-.379 0 .754-.453 1.871-1.066 2.613-.492.602-.523.57-.574-.605-.043-1.059-.355-1.93-.898-2.504-.254-.273-.574-.203-.574.125 0 .305-.199.934-.496 1.539-.227.469-.383.699-.633.938-.344.328-.902.691-.965.629-.02-.02.004-.184.051-.367.129-.508.098-1.84-.059-2.398s-.281-.762-.473-.762c-.176 0-.836.598-2.426 2.191-1.309 1.309-2.242 2.078-2.945 2.426-.633.316-.996.367-1.258.18-.102-.07-.523-.633-.937-1.242-.676-1-.797-2.543-2.195-3.02-.176-.211-.359-.187-.359.039 0 .242.281 1.891.684 4 .645 3.371.961 4.754 1.098 4.805.047.02.441-.121.879-.309 2.055-.883 3.941-1.418 6.52-1.848 1.555-.258 2.469-.324 4.449-.324 2.43 0 3.746.133 5.387.547 4.281 1.082 7.035 3.156 8.285 6.242.684 1.695.84 3.219.516 5.145-.137.832-.336 1.402-.785 2.277-1.621 3.141-5.523 5.785-9.387 6.367-.812.125-4.008.121-4.918 0zm3.641-6.66c1.176-.254 2.336-.918 3.301-1.891 1.063-1.07 1.461-1.824 1.422-2.711-.027-.598-.203-.996-.723-1.621-1.027-1.25-2.824-2.117-5.273-2.547-1.379-.242-4.699-.242-6.801 0-1.887.219-4.621 1.234-4.621 1.715 0 .16 1.129 1.641 1.922 2.523 1.047 1.164 2.047 2.035 3.293 2.867 1.305.871 3.012 1.613 4.047 1.758.641.09 2.879.027 3.434-.094z"/>
+          </svg>
+          LLVM
+        </span>
+        <span class="badge">
+          <svg class="badge-icon" viewBox="0 0 24 24" fill="white">
+            <path d="M20.93 2C20.93 2 14.28 3.45 10.5 7.23C6.72 11.01 3.27 19.93 3.27 19.93L4.07 20.73C4.07 20.73 5.7 18.69 7.93 17.07C8.5 17.5 9.17 17.82 9.93 17.93C9.93 17.93 10.12 15.9 11.5 14.53C11.5 14.53 12.07 15.11 13.07 15.46C13.27 14.63 13.75 13.55 14.93 12.36C14.93 12.36 15.64 13.07 16.64 13.36C17.14 12.19 18 10.61 19.64 9C19.64 9 20.21 9.5 21.07 9.86C21.36 9.07 21.57 8.07 22 6.5L20.93 2Z"/>
+          </svg>
+          Apache 2.0
+        </span>
+      </div>
+      
+      <div class="ctas">
+        <a href="https://github.com/darmie/rayzor" class="btn btn-primary" target="_blank">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+          View on GitHub
+        </a>
+        <a href="https://darmie.github.io/rayzor/benchmarks/" class="btn btn-secondary" target="_blank">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M3 3v18h18v-2H5V3H3zm16 2h-4v2h1.59L12 11.59l-3-3-4.71 4.7 1.42 1.42L9 11.41l3 3 5.59-5.59V10h2V5z"/></svg>
+          View Benchmarks
+        </a>
+      </div>
+      
+      <div class="scroll-indicator">
+        <span>↓</span>
+        SCROLL
+      </div>
+    </section>
+    
+    <section class="features">
+      <div class="features-grid">
+        <div class="feature">
+          <div class="feature-icon">⚡</div>
+          <h3 class="feature-title">5-Tier JIT Compilation</h3>
+          <p class="feature-desc">Adaptive optimization from MIR interpreter through Cranelift to LLVM. Hot paths automatically tier-up for maximum performance.</p>
+          <span class="feature-stat">~3ms/function → ~500ms LLVM</span>
+        </div>
+        
+        <div class="feature">
+          <div class="feature-icon">🚀</div>
+          <h3 class="feature-title">100x Faster Compilation</h3>
+          <p class="feature-desc">Cranelift JIT compiles in ~3ms per function vs 2-5 seconds for C++ targets. Instant feedback during development.</p>
+          <span class="feature-stat">~3ms vs 2-5s C++</span>
+        </div>
+        
+        <div class="feature">
+          <div class="feature-icon">🔒</div>
+          <h3 class="feature-title">Ownership-Based Memory</h3>
+          <p class="feature-desc">Rust-inspired ownership tracking with compile-time drop analysis. No garbage collection for statically-typed code.</p>
+          <span class="feature-stat">Zero GC pauses</span>
+        </div>
+        
+        <div class="feature">
+          <div class="feature-icon">📦</div>
+          <h3 class="feature-title">BLADE Incremental Cache</h3>
+          <p class="feature-desc">Per-module binary caching with source hash validation. Skip unchanged modules entirely for lightning-fast rebuilds.</p>
+          <span class="feature-stat">~30x faster rebuilds</span>
+        </div>
+        
+        <div class="feature">
+          <div class="feature-icon">🎯</div>
+          <h3 class="feature-title">Native Performance</h3>
+          <p class="feature-desc">LLVM -O3 optimization delivers 45-50x interpreter speed. Profile-guided optimization for hot code paths.</p>
+          <span class="feature-stat">45-50x interpreter</span>
+        </div>
+        
+        <div class="feature">
+          <div class="feature-icon">🏗️</div>
+          <h3 class="feature-title">Modern SSA Architecture</h3>
+          <p class="feature-desc">Full SSA-based IR with optimization passes, monomorphization, and SIMD vectorization infrastructure.</p>
+          <span class="feature-stat">31k LOC MIR</span>
+        </div>
+      </div>
+    </section>
+    
+    <section class="code-section">
+      <div class="code-container">
+        <div class="code-header">
+          <h2>Quick Start</h2>
+          <p>Get up and running in seconds</p>
+        </div>
+        
+        <div class="code-block">
+          <div class="code-tabs">
+            <span class="code-tab active">Terminal</span>
+          </div>
+          <div class="code-content">
+            <pre><span class="code-comment"># Clone and build</span>
+git clone https://github.com/darmie/rayzor.git
+cd rayzor
+cargo build <span class="code-flag">--release</span>
+
+<span class="code-comment"># Run with tiered JIT</span>
+rayzor run hello.hx <span class="code-flag">--preset</span> application
+
+<span class="code-comment"># Compile to native</span>
+rayzor compile hello.hx <span class="code-flag">--stage</span> native
+
+<span class="code-comment"># Create single-file executable</span>
+rayzor bundle main.hx <span class="code-flag">--output</span> app.rzb</pre>
+          </div>
+        </div>
+      </div>
+    </section>
+    
+    <footer class="footer">
+      <div class="footer-links">
+        <a href="https://github.com/darmie/rayzor" target="_blank">GitHub</a>
+        <a href="https://darmie.github.io/rayzor/benchmarks/" target="_blank">Benchmarks</a>
+        <a href="https://github.com/darmie/rayzor/blob/main/LICENSE" target="_blank">License</a>
+        <a href="https://github.com/darmie/rayzor/issues" target="_blank">Issues</a>
+        <a href="https://github.com/darmie/rayzor/discussions" target="_blank">Discussions</a>
+      </div>
+      <p class="footer-copy">Apache License 2.0 • Built with Rust</p>
+    </footer>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    const noiseGLSL = `
+      vec4 permute(vec4 x) { return mod(((x*34.0)+1.0)*x, 289.0); }
+      vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+
+      float snoise(vec3 v) { 
+        const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+        const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+        vec3 i = floor(v + dot(v, C.yyy));
+        vec3 x0 = v - i + dot(i, C.xxx);
+        vec3 g = step(x0.yzx, x0.xyz);
+        vec3 l = 1.0 - g;
+        vec3 i1 = min(g.xyz, l.zxy);
+        vec3 i2 = max(g.xyz, l.zxy);
+        vec3 x1 = x0 - i1 + C.xxx;
+        vec3 x2 = x0 - i2 + C.yyy;
+        vec3 x3 = x0 - D.yyy;
+        i = mod(i, 289.0);
+        vec4 p = permute(permute(permute(
+                  i.z + vec4(0.0, i1.z, i2.z, 1.0))
+                + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+                + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+        float n_ = 1.0/7.0;
+        vec3 ns = n_ * D.wyz - D.xzx;
+        vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+        vec4 x_ = floor(j * ns.z);
+        vec4 y_ = floor(j - 7.0 * x_);
+        vec4 x = x_ * ns.x + ns.yyyy;
+        vec4 y = y_ * ns.x + ns.yyyy;
+        vec4 h = 1.0 - abs(x) - abs(y);
+        vec4 b0 = vec4(x.xy, y.xy);
+        vec4 b1 = vec4(x.zw, y.zw);
+        vec4 s0 = floor(b0)*2.0 + 1.0;
+        vec4 s1 = floor(b1)*2.0 + 1.0;
+        vec4 sh = -step(h, vec4(0.0));
+        vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy;
+        vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww;
+        vec3 p0 = vec3(a0.xy, h.x);
+        vec3 p1 = vec3(a0.zw, h.y);
+        vec3 p2 = vec3(a1.xy, h.z);
+        vec3 p3 = vec3(a1.zw, h.w);
+        vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+        p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+        vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+        m = m * m;
+        return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+      }
+
+      float turbulence(vec3 p, int octaves) {
+        float value = 0.0;
+        float amplitude = 1.0;
+        float frequency = 1.0;
+        float maxValue = 0.0;
+        for(int i = 0; i < 8; i++) {
+          if(i >= octaves) break;
+          value += amplitude * abs(snoise(p * frequency));
+          maxValue += amplitude;
+          amplitude *= 0.5;
+          frequency *= 2.0;
+        }
+        return value / maxValue;
+      }
+      
+      float ridgedNoise(vec3 p, int octaves) {
+        float value = 0.0;
+        float amplitude = 1.0;
+        float frequency = 1.0;
+        float maxValue = 0.0;
+        float prev = 1.0;
+        for(int i = 0; i < 8; i++) {
+          if(i >= octaves) break;
+          float n = 1.0 - abs(snoise(p * frequency));
+          n = n * n;
+          n = n * prev;
+          prev = n;
+          value += amplitude * n;
+          maxValue += amplitude;
+          amplitude *= 0.5;
+          frequency *= 2.2;
+        }
+        return value / maxValue;
+      }
+    `;
+
+    const nebulaVS = `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `;
+
+    const nebulaFS = `
+      uniform float uTime;
+      uniform vec2 uResolution;
+      uniform float uMouseX;
+      uniform float uMouseY;
+      varying vec2 vUv;
+      
+      ${noiseGLSL}
+      
+      void main() {
+        vec2 uv = vUv;
+        vec2 p = (uv - 0.5) * 2.0;
+        float aspect = uResolution.x / uResolution.y;
+        p.x *= aspect;
+        
+        vec2 mouse = vec2(uMouseX, uMouseY) * 0.05;
+        p += mouse * 0.2;
+        
+        float time = uTime * 0.008;
+        float drift = uTime * 0.015;
+        
+        vec2 cloudP = p;
+        cloudP.y += 0.6;
+        cloudP.x += drift;
+        
+        vec3 p1 = vec3(cloudP * 0.4, time * 0.8);
+        float backCloud = ridgedNoise(p1 + vec3(0.0, 0.0, 10.0), 5);
+        backCloud = smoothstep(0.2, 0.65, backCloud);
+        
+        vec3 p2 = vec3(cloudP * 0.6, time * 0.5);
+        float midCloud = ridgedNoise(p2 + vec3(50.0, 0.0, 0.0), 6);
+        float midCloud2 = turbulence(p2 * 1.2 + vec3(100.0, 50.0, 0.0), 5);
+        midCloud = smoothstep(0.2, 0.7, midCloud * 0.7 + midCloud2 * 0.3);
+        
+        vec3 p3 = vec3(cloudP * 0.9, time * 0.6);
+        float frontCloud = turbulence(p3 + vec3(200.0, 100.0, 0.0), 5);
+        frontCloud = smoothstep(0.25, 0.75, frontCloud);
+        
+        vec2 flowOffset = vec2(
+          snoise(vec3(cloudP * 0.3, time * 0.4)) * 0.18,
+          snoise(vec3(cloudP * 0.3 + 100.0, time * 0.3)) * 0.18
+        );
+        
+        vec2 warpedP = cloudP + flowOffset;
+        vec3 shapePos = vec3(warpedP * 0.5, 0.0);
+        
+        float mainShape = ridgedNoise(shapePos + vec3(30.0, 20.0, time * 0.35), 6);
+        float shapeModifier = turbulence(shapePos * 1.5 + vec3(80.0, 40.0, 0.0), 4);
+        float shapeModifier2 = ridgedNoise(shapePos * 0.8 + vec3(120.0, 60.0, 0.0), 5);
+        mainShape = mainShape * 0.5 + shapeModifier * 0.3 + shapeModifier2 * 0.2;
+        
+        float cloudMask = smoothstep(0.18, 0.5, mainShape);
+        float bottomMask = smoothstep(0.8, -0.5, p.y);
+        cloudMask *= bottomMask;
+        
+        float darkLanes = turbulence(vec3(warpedP * 0.8, time * 0.2), 5);
+        darkLanes = smoothstep(0.3, 0.55, darkLanes);
+        
+        float density = cloudMask * (0.7 + backCloud * 0.2 + midCloud * 0.15 + frontCloud * 0.1);
+        density *= mix(0.5, 1.0, darkLanes);
+        
+        float fillCloud = turbulence(vec3(warpedP * 0.35, 20.0), 4);
+        density += smoothstep(0.3, 0.6, fillCloud) * 0.25 * cloudMask;
+        
+        density = clamp(density, 0.0, 1.0);
+        
+        float coreNoise = ridgedNoise(vec3(warpedP * 0.7, time * 0.2), 4);
+        float brightCore = smoothstep(0.4, 0.85, coreNoise * mainShape);
+        float glowRegions = smoothstep(0.45, 0.8, midCloud * mainShape);
+        
+        vec3 spaceColor = vec3(0.0);
+        vec3 deepPurple = vec3(0.15, 0.03, 0.2);
+        vec3 magenta = vec3(0.5, 0.1, 0.35);
+        vec3 hotPink = vec3(0.75, 0.2, 0.45);
+        vec3 purple = vec3(0.35, 0.1, 0.45);
+        vec3 blue = vec3(0.15, 0.25, 0.5);
+        vec3 cyan = vec3(0.2, 0.5, 0.6);
+        vec3 orange = vec3(0.85, 0.45, 0.12);
+        vec3 gold = vec3(0.95, 0.7, 0.25);
+        vec3 white = vec3(1.0, 0.95, 0.98);
+        
+        float colorVar1 = turbulence(vec3(warpedP * 0.4, 5.0), 4);
+        float colorVar2 = snoise(vec3(warpedP * 0.3, 10.0)) * 0.5 + 0.5;
+        float colorVar3 = ridgedNoise(vec3(warpedP * 0.5, 15.0), 3);
+        
+        vec3 nebulaColor = deepPurple;
+        nebulaColor = mix(nebulaColor, purple, smoothstep(0.2, 0.5, colorVar1));
+        nebulaColor = mix(nebulaColor, magenta, smoothstep(0.3, 0.6, colorVar2) * 0.8);
+        nebulaColor = mix(nebulaColor, blue, smoothstep(0.4, 0.7, colorVar3) * 0.4);
+        nebulaColor = mix(nebulaColor, cyan, smoothstep(0.5, 0.85, colorVar1 * colorVar2) * 0.3);
+        nebulaColor = mix(nebulaColor, hotPink, glowRegions * 0.6);
+        nebulaColor = mix(nebulaColor, orange, smoothstep(0.6, 0.9, brightCore) * 0.5);
+        nebulaColor = mix(nebulaColor, gold, smoothstep(0.75, 1.0, brightCore) * 0.4);
+        nebulaColor = mix(nebulaColor, white, smoothstep(0.8, 1.0, brightCore) * 0.6);
+        
+        nebulaColor *= (0.6 + density * 1.5);
+        nebulaColor += hotPink * brightCore * 0.35;
+        nebulaColor += orange * glowRegions * 0.25;
+        
+        float edgeDetect = abs(mainShape - 0.5) * 2.0;
+        edgeDetect = smoothstep(0.3, 0.7, edgeDetect) * density;
+        nebulaColor += vec3(0.5, 0.25, 0.4) * edgeDetect * 0.25;
+        
+        vec3 color = mix(spaceColor, nebulaColor, density);
+        
+        float ambient = smoothstep(0.0, 0.5, density) * 0.04;
+        color += deepPurple * ambient;
+        
+        color = color / (1.0 + color * 0.2);
+        color = pow(color, vec3(0.92));
+        
+        float luma = dot(color, vec3(0.299, 0.587, 0.114));
+        color = mix(vec3(luma), color, 1.15);
+        
+        gl_FragColor = vec4(color, 1.0);
+      }
+    `;
+
+    const starVS = `
+      uniform float uPixelRatio;
+      attribute float aScale;
+      attribute vec3 aColor;
+      varying vec3 vColor;
+      varying float vAlpha;
+      
+      void main() {
+        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        vAlpha = 0.6 + aScale * 0.4;
+        vColor = aColor;
+        float size = aScale * 65.0 * uPixelRatio;
+        gl_PointSize = size * (1.0 / -mvPosition.z);
+        gl_Position = projectionMatrix * mvPosition;
+      }
+    `;
+
+    const starFS = `
+      varying vec3 vColor;
+      varying float vAlpha;
+      
+      void main() {
+        float dist = length(gl_PointCoord - 0.5);
+        float core = 1.0 - smoothstep(0.0, 0.12, dist);
+        float glow = 1.0 - smoothstep(0.0, 0.5, dist);
+        float alpha = (core * 0.85 + glow * 0.4) * vAlpha;
+        vec3 finalColor = mix(vColor, vec3(1.0), core * 0.6);
+        if(alpha < 0.01) discard;
+        gl_FragColor = vec4(finalColor, alpha);
+      }
+    `;
+
+    const canvas = document.getElementById('canvas');
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.z = 3;
+
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setClearColor(0x000000);
+
+    const nebulaGeo = new THREE.PlaneGeometry(14, 14);
+    const nebulaMat = new THREE.ShaderMaterial({
+      vertexShader: nebulaVS,
+      fragmentShader: nebulaFS,
+      uniforms: {
+        uTime: { value: 0 },
+        uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+        uMouseX: { value: 0 },
+        uMouseY: { value: 0 }
+      }
+    });
+    const nebula = new THREE.Mesh(nebulaGeo, nebulaMat);
+    nebula.position.z = -5;
+    scene.add(nebula);
+
+    const starCount = 600;
+    const starPos = new Float32Array(starCount * 3);
+    const starScales = new Float32Array(starCount);
+    const starColors = new Float32Array(starCount * 3);
+    const palette = [0xffffff, 0xeeeeff, 0xffeef8, 0xe8eeff, 0xffffff, 0xfff8ff];
+
+    for (let i = 0; i < starCount; i++) {
+      const i3 = i * 3;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      const r = 1.0 + Math.random() * 4.5;
+      starPos[i3] = r * Math.sin(phi) * Math.cos(theta);
+      starPos[i3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+      starPos[i3 + 2] = r * Math.cos(phi) - 2.0;
+      
+      const bright = Math.random();
+      if (bright < 0.1) starScales[i] = 0.5 + Math.random() * 0.4;
+      else if (bright < 0.3) starScales[i] = 0.28 + Math.random() * 0.22;
+      else starScales[i] = 0.1 + Math.random() * 0.18;
+      
+      const c = new THREE.Color(palette[Math.floor(Math.random() * palette.length)]);
+      starColors[i3] = c.r; starColors[i3+1] = c.g; starColors[i3+2] = c.b;
+    }
+
+    const starGeo = new THREE.BufferGeometry();
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+    starGeo.setAttribute('aScale', new THREE.BufferAttribute(starScales, 1));
+    starGeo.setAttribute('aColor', new THREE.BufferAttribute(starColors, 3));
+
+    const starMat = new THREE.ShaderMaterial({
+      vertexShader: starVS,
+      fragmentShader: starFS,
+      uniforms: { uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) } },
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+    scene.add(new THREE.Points(starGeo, starMat));
+
+    const mouse = { x: 0, y: 0 };
+    window.addEventListener('mousemove', (e) => {
+      mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+    });
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      nebulaMat.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
+      starMat.uniforms.uPixelRatio.value = Math.min(window.devicePixelRatio, 2);
+    });
+
+    const clock = new THREE.Clock();
+    function animate() {
+      requestAnimationFrame(animate);
+      const t = clock.getElapsedTime();
+      
+      nebulaMat.uniforms.uTime.value = t;
+      nebulaMat.uniforms.uMouseX.value += (mouse.x - nebulaMat.uniforms.uMouseX.value) * 0.006;
+      nebulaMat.uniforms.uMouseY.value += (mouse.y - nebulaMat.uniforms.uMouseY.value) * 0.006;
+      
+      camera.position.x += (mouse.x * 0.05 - camera.position.x) * 0.006;
+      camera.position.y += (mouse.y * 0.03 - camera.position.y) * 0.006;
+      camera.lookAt(0, 0, -2);
+      
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+</html>
