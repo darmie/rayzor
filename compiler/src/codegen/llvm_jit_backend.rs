@@ -973,13 +973,13 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             }
         }
 
-        // Create execution engine
-        // Note: We use OptimizationLevel::None here because we've already optimized the module
-        // using run_passes() above. The execution engine just needs to do code generation.
-        // Using the same opt_level again would cause double optimization, which can be slower.
+        // Create execution engine with full optimization
+        // The execution engine needs the opt_level for machine code generation (instruction
+        // selection, register allocation, etc.), separate from the IR-level optimizations
+        // that run_passes() already performed.
         let engine = self
             .module
-            .create_jit_execution_engine(OptimizationLevel::None)
+            .create_jit_execution_engine(self.opt_level)
             .map_err(|e| format!("Failed to create JIT execution engine: {}", e))?;
 
         // Also add global mappings as a fallback for symbols that MCJIT
