@@ -32,7 +32,7 @@ use crate::ir::{
     IrFunctionId, IrFunctionSignature, IrId, IrInstruction, IrModule, IrTerminator, IrType,
     IrValue, UnaryOp,
 };
-use smallvec::SmallVec;
+// SmallVec disabled temporarily - reverting to Vec to debug Linux CI heap corruption
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -1211,8 +1211,7 @@ impl MirInterpreter {
 
         // Collect phi values first to avoid interference
         // NanBoxedValue is Copy, so this is very efficient
-        // SmallVec avoids heap for blocks with ≤4 phi nodes (typical)
-        let mut phi_values: SmallVec<[(IrId, NanBoxedValue); 4]> = SmallVec::new();
+        let mut phi_values: Vec<(IrId, NanBoxedValue)> = Vec::new();
 
         for phi in &block.phi_nodes {
             // Find the value from the previous block
@@ -2837,8 +2836,8 @@ impl MirInterpreter {
         args: &[InterpValue],
         signature: &IrFunctionSignature,
     ) -> Result<InterpValue, InterpError> {
-        // Convert arguments to native representation (SmallVec avoids heap for ≤8 args)
-        let native_args: SmallVec<[NativeValue; 8]> = args
+        // Convert arguments to native representation (SmallVec disabled - using Vec for stability)
+        let native_args: Vec<NativeValue> = args
             .iter()
             .zip(signature.parameters.iter())
             .map(|(arg, param)| self.interp_to_native(arg, &param.ty))
@@ -2858,8 +2857,8 @@ impl MirInterpreter {
         args: &[InterpValue],
     ) -> Result<InterpValue, InterpError> {
         // Without signature info, we infer types from arguments and assume i64 return
-        // SmallVec avoids heap allocation for ≤8 arguments (common case)
-        let native_args: SmallVec<[NativeValue; 8]> = args
+        // SmallVec disabled - using Vec for stability
+        let native_args: Vec<NativeValue> = args
             .iter()
             .map(|arg| self.interp_to_native_inferred(arg))
             .collect::<Result<_, _>>()?;
@@ -2878,8 +2877,8 @@ impl MirInterpreter {
         return_type: &IrType,
     ) -> Result<InterpValue, InterpError> {
         // Convert arguments to native representation using the explicit types
-        // SmallVec avoids heap allocation for ≤8 arguments (common case)
-        let native_args: SmallVec<[NativeValue; 8]> = args
+        // SmallVec disabled - using Vec for stability
+        let native_args: Vec<NativeValue> = args
             .iter()
             .enumerate()
             .map(|(i, arg)| {
@@ -3011,8 +3010,8 @@ impl MirInterpreter {
         args: &[NativeValue],
         return_type: &IrType,
     ) -> Result<NativeValue, InterpError> {
-        // Convert arguments to u64 for the trampoline (SmallVec avoids heap for ≤8 args)
-        let arg_values: SmallVec<[u64; 8]> = args.iter().map(|a| a.to_u64()).collect();
+        // Convert arguments to u64 for the trampoline
+        let arg_values: Vec<u64> = args.iter().map(|a| a.to_u64()).collect();
 
         // Dispatch based on arity (0-8 arguments supported)
         let result = match arg_values.len() {
