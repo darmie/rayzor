@@ -1651,8 +1651,7 @@ impl PassManager {
                 manager.add_pass(CopyPropagationPass::new());
                 // GlobalLoadCachingPass: caches repeated global loads within functions
                 // Provides ~1.67x speedup on nbody by eliminating redundant HashMap lookups
-                // DISABLED: causes heap corruption on mandelbrot (Linux CI) - needs investigation
-                // manager.add_pass(GlobalLoadCachingPass::new());
+                manager.add_pass(GlobalLoadCachingPass::new());
                 // CSE and LICM may contribute to non-determinism, keeping them for now
                 manager.add_pass(CSEPass::new());
                 manager.add_pass(LICMPass::new());
@@ -1664,8 +1663,7 @@ impl PassManager {
                 // Aggressive optimizations
                 // Inlining first to expose more optimization opportunities
                 manager.add_pass(super::inlining::InliningPass::new());
-                // DISABLED: causes heap corruption on mandelbrot (Linux CI) - needs investigation
-                // manager.add_pass(GlobalLoadCachingPass::new());
+                manager.add_pass(GlobalLoadCachingPass::new());
                 manager.add_pass(DeadCodeEliminationPass::new());
                 manager.add_pass(super::scalar_replacement::ScalarReplacementPass::new());
                 manager.add_pass(ConstantFoldingPass::new());
