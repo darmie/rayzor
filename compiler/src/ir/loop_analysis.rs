@@ -106,9 +106,14 @@ impl DominatorTree {
         }
 
         // Build children map
+        // IMPORTANT: Sort children for deterministic iteration order in GVN and other passes
         let mut children: HashMap<IrBlockId, Vec<IrBlockId>> = HashMap::new();
         for (&block, &dom) in &final_idom {
             children.entry(dom).or_default().push(block);
+        }
+        // Sort all children lists for determinism
+        for children_list in children.values_mut() {
+            children_list.sort_by_key(|id| id.0);
         }
 
         // Compute depths via BFS from entry

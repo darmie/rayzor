@@ -196,7 +196,12 @@ fn run_phi_sra_on_function(
         }
     }
 
-    for candidate in candidates {
+    // Process only ONE candidate per pass to avoid stale data issues.
+    // When we apply phi-SRA to one candidate, it modifies the function structure,
+    // which can invalidate the analysis for other candidates. By processing one
+    // at a time and letting the optimizer loop re-run this pass, we ensure each
+    // candidate is analyzed on the current function state.
+    if let Some(candidate) = candidates.into_iter().next() {
         let eliminated = apply_phi_sra(function, &candidate);
         if eliminated > 0 {
             result.modified = true;
@@ -773,7 +778,12 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
     // Also add the phi_dest since it's being replaced by scalar phis
     dead_pointers.insert(candidate.phi_dest);
 
+    // Build constant map for resolving GEP indices
+    let constants = build_constant_map(&function.cfg);
+
     // Expand dead_pointers to include all GEPs, Copies, Casts derived from mallocs
+    // Also track field indices for GEPs so we can replace their loads
+    let mut gep_field_indices: HashMap<IrId, usize> = HashMap::new();
     let mut block_order: Vec<IrBlockId> = function.cfg.blocks.keys().copied().collect();
     block_order.sort_by_key(|id| id.0);
 
@@ -784,15 +794,30 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
             if let Some(block) = function.cfg.blocks.get(&block_id) {
                 for inst in &block.instructions {
                     match inst {
-                        IrInstruction::GetElementPtr { dest, ptr, .. } => {
+                        IrInstruction::GetElementPtr { dest, ptr, indices, .. } => {
                             if dead_pointers.contains(ptr) && !dead_pointers.contains(dest) {
                                 dead_pointers.insert(*dest);
+                                // Try to resolve field index for this GEP
+                                if let Some(field_idx) = resolve_gep_field_index(indices, &constants) {
+                                    gep_field_indices.insert(*dest, field_idx);
+                                    // Add to load_replacements if we have a scalar reg for this field
+                                    if let Some(&scalar_reg) = field_phi_regs.get(&field_idx) {
+                                        load_replacements.insert(*dest, scalar_reg);
+                                    }
+                                }
                                 changed = true;
                             }
                         }
                         IrInstruction::Copy { dest, src } | IrInstruction::Cast { dest, src, .. } => {
                             if dead_pointers.contains(src) && !dead_pointers.contains(dest) {
                                 dead_pointers.insert(*dest);
+                                // Propagate field index and load_replacement from source
+                                if let Some(&field_idx) = gep_field_indices.get(src) {
+                                    gep_field_indices.insert(*dest, field_idx);
+                                    if let Some(&scalar_reg) = field_phi_regs.get(&field_idx) {
+                                        load_replacements.insert(*dest, scalar_reg);
+                                    }
+                                }
                                 changed = true;
                             }
                         }
@@ -938,6 +963,7 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
     }
 
     // Re-expand dead_pointers to include GEPs/Copies from the removed phis
+    // Also update load_replacements for new dead GEPs
     let mut changed = true;
     while changed {
         changed = false;
@@ -945,15 +971,29 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
             if let Some(block) = function.cfg.blocks.get(&block_id) {
                 for inst in &block.instructions {
                     match inst {
-                        IrInstruction::GetElementPtr { dest, ptr, .. } => {
+                        IrInstruction::GetElementPtr { dest, ptr, indices, .. } => {
                             if dead_pointers.contains(ptr) && !dead_pointers.contains(dest) {
                                 dead_pointers.insert(*dest);
+                                // Track field index for load replacement
+                                if let Some(field_idx) = resolve_gep_field_index(indices, &constants) {
+                                    gep_field_indices.insert(*dest, field_idx);
+                                    if let Some(&scalar_reg) = field_phi_regs.get(&field_idx) {
+                                        load_replacements.insert(*dest, scalar_reg);
+                                    }
+                                }
                                 changed = true;
                             }
                         }
                         IrInstruction::Copy { dest, src } | IrInstruction::Cast { dest, src, .. } => {
                             if dead_pointers.contains(src) && !dead_pointers.contains(dest) {
                                 dead_pointers.insert(*dest);
+                                // Propagate field index from source
+                                if let Some(&field_idx) = gep_field_indices.get(src) {
+                                    gep_field_indices.insert(*dest, field_idx);
+                                    if let Some(&scalar_reg) = field_phi_regs.get(&field_idx) {
+                                        load_replacements.insert(*dest, scalar_reg);
+                                    }
+                                }
                                 changed = true;
                             }
                         }
