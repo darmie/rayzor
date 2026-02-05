@@ -2164,7 +2164,10 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             }
 
             IrInstruction::GetElementPtr {
-                dest, ptr, indices, ..
+                dest,
+                ptr,
+                indices,
+                ty,
             } => {
                 // Get the pointer value - may be an actual pointer or an integer (from array element load)
                 let raw_val = self.get_value(*ptr)?;
@@ -2187,10 +2190,17 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     ));
                 };
 
-                // Convert indices to LLVM values and multiply by field size
-                // MIR GEP uses field indices (0, 1, 2, ...) but LLVM GEP with i8 type
-                // expects byte offsets. Struct fields are 8 bytes each.
-                const FIELD_SIZE: u64 = 8;
+                // Calculate element size from the pointer type.
+                // MIR GEP can use either field indices (multiplied by 8) or byte offsets
+                // (for Ptr(I8) types where index is already a byte offset).
+                // We extract the pointee type and compute its size.
+                let elem_size: u64 = match ty {
+                    crate::ir::IrType::Ptr(inner) | crate::ir::IrType::Ref(inner) => {
+                        Self::ir_type_size(inner)
+                    }
+                    _ => 8, // Default to 8-byte fields for non-pointer types
+                };
+
                 let mut index_vals = Vec::new();
                 for &id in indices {
                     let val = self.get_value(id)?;
@@ -2215,15 +2225,21 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                         }
                     };
 
-                    // Multiply field index by field size to get byte offset
-                    let byte_offset = self
-                        .builder
-                        .build_int_mul(
-                            int_val,
-                            self.context.i64_type().const_int(FIELD_SIZE, false),
-                            "field_byte_offset",
-                        )
-                        .map_err(|e| format!("Failed to multiply field index: {}", e))?;
+                    // Multiply index by element size to get byte offset
+                    // For Ptr(I8), elem_size=1 so index is used directly as byte offset
+                    // For Ptr(I64), elem_size=8 so index is multiplied by 8
+                    let byte_offset = if elem_size == 1 {
+                        // Optimization: skip multiplication for byte-addressed GEPs
+                        int_val
+                    } else {
+                        self.builder
+                            .build_int_mul(
+                                int_val,
+                                self.context.i64_type().const_int(elem_size, false),
+                                "field_byte_offset",
+                            )
+                            .map_err(|e| format!("Failed to multiply field index: {}", e))?
+                    };
 
                     index_vals.push(byte_offset);
                 }
@@ -5073,6 +5089,24 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             "Unsupported cast from {:?} to {:?}",
             from_ty, to_ty
         ))
+    }
+
+    /// Get the size in bytes of an IR type.
+    /// Used for GEP element size calculation.
+    fn ir_type_size(ty: &crate::ir::IrType) -> u64 {
+        use crate::ir::IrType;
+        match ty {
+            IrType::I8 | IrType::U8 | IrType::Bool => 1,
+            IrType::I16 | IrType::U16 => 2,
+            IrType::I32 | IrType::U32 | IrType::F32 => 4,
+            IrType::I64 | IrType::U64 | IrType::F64 => 8,
+            IrType::Ptr(_) | IrType::Ref(_) => 8, // 64-bit pointers
+            IrType::Void => 0,
+            IrType::Any => 8,    // Boxed value pointer
+            IrType::String => 8, // String is a pointer
+            IrType::Vector { element, count } => Self::ir_type_size(element) * (*count as u64),
+            _ => 8, // Default to pointer size
+        }
     }
 }
 

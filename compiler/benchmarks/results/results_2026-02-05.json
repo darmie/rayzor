@@ -13,10 +13,10 @@
       "results": [
         {
           "name": "mandelbrot",
-          "target": "rayzor-precompiled-tiered",
-          "compile_time_ms": 1.6235,
-          "runtime_ms": 318.595875,
-          "total_time_ms": 320.21937499999996,
+          "target": "rayzor-tiered",
+          "compile_time_ms": 116.16458300000001,
+          "runtime_ms": 2006.2481249999998,
+          "total_time_ms": 2122.4127080000003,
           "iterations": 10
         }
       ]
