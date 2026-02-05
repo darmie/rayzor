@@ -48,7 +48,7 @@ class ArrayTest {
         println!("Compiling array test...");
         let mut unit = CompilationUnit::new(CompilationConfig::fast());
         unit.load_stdlib().expect("stdlib");
-        unit.add_file(&source, "array_test.hx").expect("parse");
+        unit.add_file(source, "array_test.hx").expect("parse");
         unit.lower_to_tast().expect("tast");
         let mir_modules = unit.get_mir_modules();
 
