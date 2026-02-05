@@ -1640,8 +1640,7 @@ impl TieredBackend {
         // Platform-specific compilation strategy:
         // - Apple Silicon (aarch64 macOS): Use AOT dylib approach because MCJIT
         //   has issues with MAP_JIT memory protection on Apple Silicon.
-        // - Linux/other: Use MCJIT which is faster and simpler, avoids AOT dylib
-        //   issues with precompiled bundles on Linux.
+        // - Linux/other: Use MCJIT which is faster and simpler.
         #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
         {
             self.compile_all_with_llvm_aot()
@@ -1784,12 +1783,21 @@ impl TieredBackend {
         }
 
         // Create temporary paths for object file and dylib
+        // Use timestamp + process ID + random suffix to ensure uniqueness
         let temp_dir = std::env::temp_dir();
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let obj_path = temp_dir.join(format!("rayzor_llvm_{}.o", timestamp));
+        let pid = std::process::id();
+        let random_suffix: u32 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos();
+        let obj_path = temp_dir.join(format!(
+            "rayzor_llvm_{}_{}_{}.o",
+            timestamp, pid, random_suffix
+        ));
 
         #[cfg(not(feature = "tcc-linker"))]
         let dylib_path = {
@@ -1798,7 +1806,10 @@ impl TieredBackend {
             } else {
                 "so"
             };
-            temp_dir.join(format!("rayzor_llvm_{}.{}", timestamp, dylib_ext))
+            temp_dir.join(format!(
+                "rayzor_llvm_{}_{}_{}.{}",
+                timestamp, pid, random_suffix, dylib_ext
+            ))
         };
 
         // Create LLVM context and backend
@@ -1907,6 +1918,16 @@ impl TieredBackend {
     ) -> Result<HashMap<IrFunctionId, usize>, String> {
         self.link_to_dylib(obj_path, dylib_path, &self.runtime_symbols)?;
 
+        // Ensure dylib is fully visible on disk before loading.
+        // On some systems, the linker output may not be immediately visible.
+        #[cfg(unix)]
+        {
+            if let Ok(f) = std::fs::OpenOptions::new().read(true).open(dylib_path) {
+                // fsync to ensure file metadata is on disk
+                let _ = f.sync_all();
+            }
+        }
+
         let lib = unsafe {
             #[cfg(unix)]
             {
@@ -1923,6 +1944,9 @@ impl TieredBackend {
             }
         };
 
+        // Memory barrier to ensure all writes from dylib loading are visible.
+        std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+
         let mut all_pointers = HashMap::new();
         for (func_id, symbol_name) in function_symbols {
             let symbol_result: Result<libloading::Symbol<*const ()>, _> =
@@ -1933,6 +1957,31 @@ impl TieredBackend {
                     all_pointers.insert(*func_id, ptr);
                 }
             }
+        }
+
+        // On ARM64 macOS, explicitly invalidate instruction cache after loading JIT code.
+        // This is critical for Apple Silicon where I-cache and D-cache are separate.
+        // The dlopen call should handle this, but we do it again as a safety measure
+        // for any code that we'll be calling via function pointers.
+        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+        {
+            extern "C" {
+                fn sys_icache_invalidate(start: *const std::ffi::c_void, size: usize);
+            }
+            // Invalidate instruction cache for each function entry point.
+            // We use a 64KB range per function as a safe upper bound for typical
+            // compiled function sizes. This ensures the icache is coherent
+            // when we start executing the JIT-compiled code.
+            const FUNC_SIZE_ESTIMATE: usize = 64 * 1024;
+            for &ptr in all_pointers.values() {
+                if ptr != 0 {
+                    unsafe {
+                        sys_icache_invalidate(ptr as *const std::ffi::c_void, FUNC_SIZE_ESTIMATE);
+                    }
+                }
+            }
+            // Additional memory barrier after icache invalidation
+            std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
         }
 
         tracing::trace!(
