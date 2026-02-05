@@ -290,6 +290,7 @@ dependencies = [
  "rayzor-runtime",
  "serde",
  "serde_json",
+ "smallvec",
  "source_map",
  "target-lexicon 0.12.16",
  "toml",
