@@ -1090,9 +1090,12 @@ fn run_benchmark(bench: &Benchmark, target: Target) -> Result<BenchmarkResult, S
             }
 
             // Benchmark runs at highest tier
-            for _ in 0..BENCH_RUNS {
+            eprintln!("[DEBUG] Starting BENCH_RUNS loop after LLVM upgrade...");
+            for i in 0..BENCH_RUNS {
+                eprintln!("[DEBUG] About to call execute_function (run {})", i);
                 match run_precompiled_tiered_iteration(&mut state) {
                     Ok(exec) => {
+                        eprintln!("[DEBUG] execute_function completed (run {})", i);
                         compile_times.push(load_time); // Load time = "compile time"
                         exec_times.push(exec);
                     }

@@ -1093,9 +1093,14 @@ impl TieredBackend {
             // For functions with args, we'd need to marshal InterpValue -> native types
             if args.is_empty() {
                 unsafe {
+                    eprintln!(
+                        "[DEBUG:EXEC] About to call JIT function {:?} at ptr {:?}, tier {:?}",
+                        func_id, func_ptr, tier
+                    );
                     // Pass null environment pointer as required by Haxe calling convention
                     let jit_fn: extern "C" fn(i64) = std::mem::transmute(func_ptr);
                     jit_fn(0); // null environment pointer
+                    eprintln!("[DEBUG:EXEC] JIT function {:?} returned", func_id);
                 }
                 // _exec_guard drops here, calling exit_execution()
                 Ok(InterpValue::Void)
