@@ -1637,10 +1637,19 @@ impl TieredBackend {
     #[cfg(feature = "llvm-backend")]
     #[allow(dead_code)]
     fn compile_all_with_llvm(&self) -> Result<HashMap<IrFunctionId, usize>, String> {
-        // Try MCJIT first - it's faster and simpler when it works.
-        // The AOT dylib approach is available as fallback but has issues with
-        // precompiled bundles on Linux.
-        self.compile_all_with_llvm_mcjit()
+        // Platform-specific compilation strategy:
+        // - Apple Silicon (aarch64 macOS): Use AOT dylib approach because MCJIT
+        //   has issues with MAP_JIT memory protection on Apple Silicon.
+        // - Linux/other: Use MCJIT which is faster and simpler, avoids AOT dylib
+        //   issues with precompiled bundles on Linux.
+        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+        {
+            self.compile_all_with_llvm_aot()
+        }
+        #[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
+        {
+            self.compile_all_with_llvm_mcjit()
+        }
     }
 
     /// Compile with MCJIT (for x86_64 and Linux)
