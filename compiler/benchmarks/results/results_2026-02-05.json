@@ -14,9 +14,9 @@
         {
           "name": "mandelbrot",
           "target": "rayzor-precompiled-tiered",
-          "compile_time_ms": 1.7095,
-          "runtime_ms": 602.8450829999999,
-          "total_time_ms": 604.554583,
+          "compile_time_ms": 1.6235,
+          "runtime_ms": 318.595875,
+          "total_time_ms": 320.21937499999996,
           "iterations": 10
         }
       ]
@@ -26,10 +26,10 @@
       "results": [
         {
           "name": "nbody",
-          "target": "rayzor-tiered",
-          "compile_time_ms": 186.610875,
-          "runtime_ms": 765.321459,
-          "total_time_ms": 951.932334,
+          "target": "rayzor-precompiled-tiered",
+          "compile_time_ms": 1.627209,
+          "runtime_ms": 1504.005333,
+          "total_time_ms": 1505.6325419999998,
           "iterations": 10
         }
       ]
