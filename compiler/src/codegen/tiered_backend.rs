@@ -1649,13 +1649,10 @@ impl TieredBackend {
     #[cfg(feature = "llvm-backend")]
     #[allow(dead_code)]
     fn compile_all_with_llvm(&self) -> Result<HashMap<IrFunctionId, usize>, String> {
-        // Use AOT dylib approach on all platforms.
-        // MCJIT has an intermittent crash (~20-33% failure rate) in
-        // RuntimeDyldImpl::resolveRelocations where pthread_mutex_lock is
-        // called on a null/corrupt mutex during symbol resolution.
-        // The AOT approach compiles to an object file, links with the system
-        // linker, and loads via dlopen — bypassing MCJIT entirely.
-        self.compile_all_with_llvm_aot()
+        // Try MCJIT first - it's faster and simpler when it works.
+        // The AOT dylib approach is available as fallback but has issues with
+        // precompiled bundles on Linux.
+        self.compile_all_with_llvm_mcjit()
     }
 
     /// Compile with MCJIT (for x86_64 and Linux)
