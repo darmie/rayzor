@@ -63,8 +63,7 @@ impl OptimizationPass for InsertFreePass {
         let func_ids: Vec<_> = module.functions.keys().cloned().collect();
         for func_id in func_ids {
             if let Some(function) = module.functions.get_mut(&func_id) {
-                total_inserted +=
-                    insert_free_for_function(function, &malloc_ids, &free_ids);
+                total_inserted += insert_free_for_function(function, &malloc_ids, &free_ids);
             }
         }
 
@@ -130,9 +129,7 @@ fn insert_free_for_function(
         let has_free = function.cfg.blocks.values().any(|block| {
             block.instructions.iter().any(|inst| match inst {
                 IrInstruction::Free { ptr } => derived.contains(ptr) || *ptr == alloc_id,
-                IrInstruction::CallDirect {
-                    func_id, args, ..
-                } if free_ids.contains(func_id) => {
+                IrInstruction::CallDirect { func_id, args, .. } if free_ids.contains(func_id) => {
                     args.iter().any(|a| *a == alloc_id || derived.contains(a))
                 }
                 _ => false,
@@ -185,7 +182,9 @@ fn insert_free_for_function(
                         continue;
                     }
                 }
-                block.instructions.push(IrInstruction::Free { ptr: alloc_id });
+                block
+                    .instructions
+                    .push(IrInstruction::Free { ptr: alloc_id });
                 inserted += 1;
             }
         }
@@ -195,7 +194,7 @@ fn insert_free_for_function(
 }
 
 /// Build the set of all IrIds derived from an allocation pointer.
-/// Includes the alloc_id itself plus any GEP, Cast, or Copy that uses it.
+/// Includes the alloc_id itself plus any GEP, Cast, BitCast, or Copy that uses it.
 fn build_derived_set(alloc_id: IrId, function: &IrFunction) -> HashSet<IrId> {
     let mut derived = HashSet::new();
     derived.insert(alloc_id);
@@ -211,7 +210,8 @@ fn build_derived_set(alloc_id: IrId, function: &IrFunction) -> HashSet<IrId> {
                             changed = true;
                         }
                     }
-                    IrInstruction::Cast { dest, src, .. } => {
+                    IrInstruction::Cast { dest, src, .. }
+                    | IrInstruction::BitCast { dest, src, .. } => {
                         if derived.contains(src) && derived.insert(*dest) {
                             changed = true;
                         }
@@ -243,9 +243,7 @@ fn pointer_escapes(alloc_id: IrId, derived: &HashSet<IrId>, function: &IrFunctio
                         }
                     }
                 }
-                IrInstruction::CallIndirect {
-                    args, func_ptr, ..
-                } => {
+                IrInstruction::CallIndirect { args, func_ptr, .. } => {
                     if *func_ptr == alloc_id || derived.contains(func_ptr) {
                         return true;
                     }

@@ -5146,16 +5146,19 @@ impl<'a> AstLowering<'a> {
                 // If so, we need to create a FieldAccess with implicit `this` receiver.
                 // Fields inside a class body (e.g., `i = value` where `i` is a field) should
                 // become `this.i = value`, not a bare variable reference.
-                let is_instance_field = if let Some(class_symbol) = self.context.class_context_stack.last() {
-                    if let Some(fields) = self.class_fields.get(class_symbol) {
-                        // Check if symbol_id matches any non-static field
-                        fields.iter().any(|(_, field_sym, is_static)| *field_sym == symbol_id && !is_static)
+                let is_instance_field =
+                    if let Some(class_symbol) = self.context.class_context_stack.last() {
+                        if let Some(fields) = self.class_fields.get(class_symbol) {
+                            // Check if symbol_id matches any non-static field
+                            fields.iter().any(|(_, field_sym, is_static)| {
+                                *field_sym == symbol_id && !is_static
+                            })
+                        } else {
+                            false
+                        }
                     } else {
                         false
-                    }
-                } else {
-                    false
-                };
+                    };
 
                 if is_instance_field {
                     // Create implicit `this` receiver

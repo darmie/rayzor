@@ -1151,13 +1151,6 @@ impl<'a> HirToMirContext<'a> {
                     //     self.string_interner.get(class.name).unwrap_or("<unknown>")
                     // );
                     for method in &class.methods {
-                        // eprintln!(
-                        //     "DEBUG Pass1a:   - method {:?} (symbol={:?})",
-                        //     self.string_interner
-                        //         .get(method.function.name)
-                        //         .unwrap_or("<unknown>"),
-                        //     method.function.symbol_id
-                        // );
                         let this_type = if !method.is_static {
                             Some(*type_id)
                         } else {
@@ -4543,7 +4536,7 @@ impl<'a> HirToMirContext<'a> {
                         .get_symbol(*field)
                         .and_then(|s| self.string_interner.get(s.name))
                         .unwrap_or("?");
-                    eprintln!(
+                    debug!(
                         "[METHOD] field={}, func_id={:?}, object.ty={:?}",
                         field_name, maybe_func_id, object.ty
                     );
@@ -4621,7 +4614,7 @@ impl<'a> HirToMirContext<'a> {
                             }
                         };
 
-                        eprintln!(
+                        debug!(
                             "[DISPATCH] stdlib_info={:?} for field {:?}",
                             stdlib_info.as_ref().map(|(c, m, r)| (c, m, r.runtime_name)),
                             field
@@ -7855,25 +7848,51 @@ impl<'a> HirToMirContext<'a> {
                     let mut func_id_opt = self.get_function_id(symbol);
 
                     // If not found by symbol ID, try lookup by qualified name
-                    // This handles cross-module calls where symbol IDs differ between modules
+                    // This handles cross-module calls where symbol IDs differ between modules,
+                    // and also intra-module static method calls where the call site symbol
+                    // differs from the method definition symbol (e.g., Body.Sun() in nbody)
                     if func_id_opt.is_none() {
                         if let Some(sym_info) = self.symbol_table.get_symbol(*symbol) {
                             if let Some(qual_name) = sym_info.qualified_name {
                                 if let Some(qual_name_str) = self.string_interner.get(qual_name) {
-                                    // Search external_function_map by qualified name
-                                    for (ext_sym, &ext_func_id) in &self.external_function_map {
-                                        if let Some(ext_sym_info) =
-                                            self.symbol_table.get_symbol(*ext_sym)
+                                    // Search local function_map by qualified name first
+                                    for (local_sym, &local_func_id) in &self.function_map {
+                                        if let Some(local_sym_info) =
+                                            self.symbol_table.get_symbol(*local_sym)
                                         {
-                                            if let Some(ext_qual) = ext_sym_info.qualified_name {
-                                                if let Some(ext_qual_str) =
-                                                    self.string_interner.get(ext_qual)
+                                            if let Some(local_qual) = local_sym_info.qualified_name
+                                            {
+                                                if let Some(local_qual_str) =
+                                                    self.string_interner.get(local_qual)
                                                 {
-                                                    if ext_qual_str == qual_name_str {
-                                                        debug!("[CROSS-MODULE] Found function by qualified name '{}': symbol {:?} -> func_id={:?}",
-                                                            qual_name_str, ext_sym, ext_func_id);
-                                                        func_id_opt = Some(ext_func_id);
+                                                    if local_qual_str == qual_name_str {
+                                                        debug!("[QUAL-NAME LOCAL] Found function by qualified name '{}': symbol {:?} -> func_id={:?}",
+                                                            qual_name_str, local_sym, local_func_id);
+                                                        func_id_opt = Some(local_func_id);
                                                         break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // If not found locally, search external_function_map
+                                    if func_id_opt.is_none() {
+                                        for (ext_sym, &ext_func_id) in &self.external_function_map {
+                                            if let Some(ext_sym_info) =
+                                                self.symbol_table.get_symbol(*ext_sym)
+                                            {
+                                                if let Some(ext_qual) = ext_sym_info.qualified_name
+                                                {
+                                                    if let Some(ext_qual_str) =
+                                                        self.string_interner.get(ext_qual)
+                                                    {
+                                                        if ext_qual_str == qual_name_str {
+                                                            debug!("[CROSS-MODULE] Found function by qualified name '{}': symbol {:?} -> func_id={:?}",
+                                                                qual_name_str, ext_sym, ext_func_id);
+                                                            func_id_opt = Some(ext_func_id);
+                                                            break;
+                                                        }
                                                     }
                                                 }
                                             }

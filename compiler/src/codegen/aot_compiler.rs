@@ -116,7 +116,19 @@ impl AotCompiler {
         let mut modules: Vec<_> = mir_modules.iter().map(|m| (**m).clone()).collect();
 
         // --- Phase 2: MIR optimizations ---
-        let mir_opt = self.opt_level;
+        // Check if system LLVM tools are available for optimization.
+        // When they are, cap MIR at O2 because MIR O3's GVN pass changes FP
+        // operation ordering, and system LLVM (newer version) optimizes differently
+        // with the reordered ops, producing different FP results. System opt -O3
+        // handles GVN/vectorization/etc. natively anyway.
+        let has_system_tools = (self.output_format == OutputFormat::Executable
+            || self.output_format == OutputFormat::ObjectFile)
+            && llvm_aot_backend::has_system_llvm_tools();
+        let mir_opt = if has_system_tools && self.opt_level == OptimizationLevel::O3 {
+            OptimizationLevel::O2
+        } else {
+            self.opt_level
+        };
         if mir_opt != OptimizationLevel::O0 {
             if self.verbose {
                 println!("  Applying MIR optimizations ({:?})...", mir_opt);
@@ -191,52 +203,61 @@ impl AotCompiler {
 
         // --- Phase 6: AOT-specific emit via llvm_aot_backend ---
         let module = backend.get_module();
-
-        // Generate main() wrapper
-        if self.output_format == OutputFormat::Executable {
-            if self.verbose {
-                println!("  Generating main() wrapper → {}...", entry_llvm_name);
-            }
-            llvm_aot_backend::generate_main_wrapper(module, &entry_llvm_name)?;
-        }
-
         let target_triple_str = self.target_triple.as_deref();
 
-        match self.output_format {
-            OutputFormat::LlvmIr => {
-                if self.verbose {
-                    println!("  Emitting LLVM IR...");
-                }
-                llvm_aot_backend::emit_llvm_ir(module, output_path)?;
+        // For executables and object files, try system LLVM tools (opt + llc) first.
+        // System LLVM (typically v19-21) has better inlining heuristics than the
+        // bundled LLVM 18, producing ~2.7x faster code for hot-loop benchmarks.
+        let opt_flag = match self.opt_level {
+            OptimizationLevel::O0 => "-O0",
+            OptimizationLevel::O1 => "-O1",
+            OptimizationLevel::O2 => "-O2",
+            OptimizationLevel::O3 => "-O3",
+        };
+
+        if self.output_format == OutputFormat::Executable
+            || self.output_format == OutputFormat::ObjectFile
+        {
+            // Dump IR WITHOUT main wrapper — optimization should see user code only.
+            // The main wrapper will be linked separately as a tiny C file so that
+            // system opt doesn't inline the entry into the C main() (which changes
+            // the optimization context for inner functions and alters FP results).
+            //
+            // Set data layout + triple first so opt has accurate type size info.
+            llvm_aot_backend::set_module_target(module, target_triple_str)?;
+            let ir_text = module.print_to_string().to_string();
+
+            let obj_path = if self.output_format == OutputFormat::Executable {
+                output_path.with_extension("o")
+            } else {
+                output_path.to_path_buf()
+            };
+
+            if self.verbose {
+                println!("  Optimizing and emitting object file...");
             }
-            OutputFormat::LlvmBitcode => {
+
+            let rename_entry = if self.output_format == OutputFormat::Executable {
+                Some(entry_llvm_name.as_str())
+            } else {
+                None
+            };
+            let used_system = llvm_aot_backend::compile_ir_with_system_tools(
+                &ir_text,
+                &obj_path,
+                opt_flag,
+                rename_entry,
+            )?;
+
+            if !used_system {
+                // Fall back to inkwell optimization + codegen
                 if self.verbose {
-                    println!("  Emitting LLVM bitcode...");
+                    println!("  (using built-in LLVM optimization)");
                 }
-                llvm_aot_backend::emit_llvm_bitcode(module, output_path)?;
-            }
-            OutputFormat::Assembly => {
-                if self.verbose {
-                    println!("  Emitting assembly...");
-                }
-                llvm_aot_backend::emit_assembly(module, output_path, target_triple_str, llvm_opt)?;
-            }
-            OutputFormat::ObjectFile => {
-                if self.verbose {
-                    println!("  Emitting object file...");
-                }
-                llvm_aot_backend::compile_to_object_file(
-                    module,
-                    output_path,
-                    target_triple_str,
-                    RelocMode::Default,
-                    llvm_opt,
-                )?;
-            }
-            OutputFormat::Executable => {
-                let obj_path = output_path.with_extension("o");
-                if self.verbose {
-                    println!("  Emitting object file...");
+                llvm_aot_backend::optimize_module(module, target_triple_str, llvm_opt)?;
+                // Generate main() wrapper after inkwell optimization
+                if self.output_format == OutputFormat::Executable {
+                    llvm_aot_backend::generate_main_wrapper(module, &entry_llvm_name)?;
                 }
                 llvm_aot_backend::compile_to_object_file(
                     module,
@@ -245,13 +266,53 @@ impl AotCompiler {
                     RelocMode::Default,
                     llvm_opt,
                 )?;
+            }
 
+            if self.output_format == OutputFormat::Executable {
                 if self.verbose {
                     println!("  Linking...");
                 }
-                self.link_executable(&obj_path, output_path)?;
-
+                // When using system tools, link a C main() wrapper separately
+                if used_system {
+                    self.link_executable_with_entry(&obj_path, output_path, &entry_llvm_name)?;
+                } else {
+                    self.link_executable(&obj_path, output_path)?;
+                }
                 let _ = std::fs::remove_file(&obj_path);
+            }
+        } else {
+            // For IR/bitcode/asm output, use inkwell directly
+            llvm_aot_backend::optimize_module(module, target_triple_str, llvm_opt)?;
+
+            if self.output_format == OutputFormat::Executable {
+                llvm_aot_backend::generate_main_wrapper(module, &entry_llvm_name)?;
+            }
+
+            match self.output_format {
+                OutputFormat::LlvmIr => {
+                    if self.verbose {
+                        println!("  Emitting LLVM IR...");
+                    }
+                    llvm_aot_backend::emit_llvm_ir(module, output_path)?;
+                }
+                OutputFormat::LlvmBitcode => {
+                    if self.verbose {
+                        println!("  Emitting LLVM bitcode...");
+                    }
+                    llvm_aot_backend::emit_llvm_bitcode(module, output_path)?;
+                }
+                OutputFormat::Assembly => {
+                    if self.verbose {
+                        println!("  Emitting assembly...");
+                    }
+                    llvm_aot_backend::emit_assembly(
+                        module,
+                        output_path,
+                        target_triple_str,
+                        llvm_opt,
+                    )?;
+                }
+                _ => unreachable!(),
             }
         }
 
@@ -346,6 +407,87 @@ impl AotCompiler {
         let output = cmd
             .output()
             .map_err(|e| format!("Failed to run linker: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("Linking failed:\n{}", stderr));
+        }
+
+        Ok(())
+    }
+
+    /// Link an object file into a native executable with a C main() entry point.
+    /// Used when system LLVM tools handle optimization (so the main wrapper isn't
+    /// baked into the LLVM IR). The C main calls the Haxe entry function.
+    fn link_executable_with_entry(
+        &self,
+        obj_path: &Path,
+        output_path: &Path,
+        entry_func_name: &str,
+    ) -> Result<(), String> {
+        // Write a tiny C main() that calls the Haxe entry point.
+        // If the entry was "main", it was renamed to "_haxe_main" in the IR.
+        let actual_entry = if entry_func_name == "main" {
+            "_haxe_main"
+        } else {
+            entry_func_name
+        };
+        let main_c_path = output_path.with_extension("_main.c");
+        let main_c = format!(
+            "extern void {}(long);\nint main(int argc, char** argv) {{ {}(0); return 0; }}\n",
+            actual_entry, actual_entry
+        );
+        std::fs::write(&main_c_path, &main_c)
+            .map_err(|e| format!("Failed to write main wrapper: {}", e))?;
+
+        let linker = self.find_linker()?;
+        let runtime_path = self.find_runtime()?;
+
+        let mut cmd = Command::new(&linker);
+        cmd.arg("-o").arg(output_path);
+        cmd.arg(obj_path);
+        cmd.arg(&main_c_path);
+        cmd.arg(&runtime_path);
+
+        let opt_flag = match self.opt_level {
+            OptimizationLevel::O0 => "-O0",
+            OptimizationLevel::O1 => "-O1",
+            OptimizationLevel::O2 => "-O2",
+            OptimizationLevel::O3 => "-O3",
+        };
+        cmd.arg(opt_flag);
+
+        if let Some(ref triple) = self.target_triple {
+            cmd.arg(format!("--target={}", triple));
+        }
+        if let Some(ref sysroot) = self.sysroot {
+            cmd.arg(format!("--sysroot={}", sysroot.display()));
+        }
+
+        let triple_str = self.target_triple.as_deref().unwrap_or("");
+        if triple_str.contains("darwin") || triple_str.is_empty() && cfg!(target_os = "macos") {
+            cmd.args(["-lSystem", "-lc", "-lm", "-lpthread"]);
+            cmd.args(["-framework", "CoreFoundation", "-framework", "Security"]);
+        } else if triple_str.contains("windows") {
+            cmd.args(["kernel32.lib", "ws2_32.lib", "userenv.lib", "bcrypt.lib"]);
+        } else {
+            cmd.args(["-lc", "-lm", "-lpthread", "-ldl"]);
+        }
+
+        if self.strip_symbols {
+            cmd.arg("-s");
+        }
+
+        if self.verbose {
+            println!("    {}", format_command(&cmd));
+        }
+
+        let output = cmd
+            .output()
+            .map_err(|e| format!("Failed to run linker: {}", e))?;
+
+        // Cleanup
+        let _ = std::fs::remove_file(&main_c_path);
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

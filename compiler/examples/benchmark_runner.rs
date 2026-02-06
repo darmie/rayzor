@@ -464,7 +464,17 @@ fn setup_tiered_benchmark(
         .map_err(|e| format!("parse: {}", e))?;
     unit.lower_to_tast().map_err(|e| format!("tast: {:?}", e))?;
 
-    let mir_modules = unit.get_mir_modules();
+    let mut mir_modules = unit.get_mir_modules();
+
+    // Apply MIR optimization (O2) before loading into tiered backend.
+    // Without this, SRA doesn't run, so 875K heap allocs/frame leak in mandelbrot.
+    // Pre-compiled bundles (.rzb) are already optimized, which is why
+    // rayzor-precompiled-tiered has no memory leak.
+    let mut pass_manager = PassManager::for_level(OptimizationLevel::O2);
+    for module in &mut mir_modules {
+        let module_mut = std::sync::Arc::make_mut(module);
+        let _ = pass_manager.run(module_mut);
+    }
 
     // Use Benchmark preset - optimized for performance testing
     // - Fast tier promotion (thresholds: 2, 3, 5)
@@ -1744,6 +1754,10 @@ fn main() {
                     eprintln!("  [FAIL] {}: {}\n", target.name(), e);
                 }
             }
+
+            // Brief pause between targets to let the allocator reclaim memory and
+            // reduce fragmentation-related crashes (intermittent malloc errors).
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
 
         // Sort results by target name for consistent ordering

@@ -13,7 +13,7 @@
 </head>
 <body>
     <h1>Rayzor Benchmark Results</h1>
-    <p style="text-align: center">Generated: 2026-02-05</p>
+    <p style="text-align: center">Generated: 2026-02-06</p>
     <div class="summary">
         <h3>System</h3>
         <p><strong>OS:</strong> macos | <strong>Arch:</strong> aarch64 | <strong>CPU cores:</strong> 10 | <strong>RAM:</strong> 16.0 GB | <strong>Host:</strong> Damilares-MBP.lan</p>
@@ -21,8 +21,8 @@
     <div class="summary">
         <h3>Summary</h3>
         <ul>
-            <li><strong>mandelbrot</strong>: 1 targets measured</li>
-            <li><strong>nbody</strong>: 1 targets measured</li>
+            <li><strong>mandelbrot</strong>: 9 targets measured</li>
+            <li><strong>nbody</strong>: 9 targets measured</li>
         </ul>
     </div>
     <div class="summary">
@@ -48,16 +48,16 @@
         new Chart(document.getElementById('chart_0'), {
             type: 'bar',
             data: {
-                labels: ['rayzor-llvm'],
+                labels: ['haxe-cpp', 'haxe-interp', 'haxe-jvm', 'rayzor-aot', 'rayzor-cranelift', 'rayzor-llvm', 'rayzor-precompiled', 'rayzor-precompiled-tiered', 'rayzor-tiered'],
                 datasets: [
                     {
                         label: 'Compile (ms)',
-                        data: [170.73],
+                        data: [291.68, 0.00, 414.42, 2407.31, 150.60, 166.39, 3.85, 2.85, 125.24],
                         backgroundColor: 'rgba(54, 162, 235, 0.8)'
                     },
                     {
                         label: 'Execute (ms)',
-                        data: [302.67],
+                        data: [758.30, 43874.04, 1128.78, 335.29, 358.84, 331.92, 355.50, 331.11, 331.47],
                         backgroundColor: 'rgba(255, 99, 132, 0.8)'
                     }
                 ]
@@ -83,16 +83,16 @@
         new Chart(document.getElementById('chart_1'), {
             type: 'bar',
             data: {
-                labels: ['rayzor-cranelift'],
+                labels: ['haxe-cpp', 'haxe-interp', 'haxe-jvm', 'rayzor-aot', 'rayzor-cranelift', 'rayzor-llvm', 'rayzor-precompiled', 'rayzor-precompiled-tiered', 'rayzor-tiered'],
                 datasets: [
                     {
                         label: 'Compile (ms)',
-                        data: [214.90],
+                        data: [223.86, 0.00, 405.29, 631.33, 278.82, 302.89, 4.56, 1.42, 258.15],
                         backgroundColor: 'rgba(54, 162, 235, 0.8)'
                     },
                     {
                         label: 'Execute (ms)',
-                        data: [776.64],
+                        data: [661.43, 31697.00, 866.23, 609.90, 829.69, 619.15, 1075.51, 604.30, 605.94],
                         backgroundColor: 'rgba(255, 99, 132, 0.8)'
                     }
                 ]

@@ -303,6 +303,51 @@ impl IrBuilder {
             ty.clone()
         };
 
+        // Coerce argument types to match the function's parameter types.
+        // This handles implicit int→float conversions (e.g., passing integer 0
+        // to a Float parameter) which Haxe allows but the backend requires
+        // matching types. Without this, inlining propagates the wrong type
+        // into store instructions (e.g., storing i32 into an f64 field).
+        let param_types: Vec<IrType> = self
+            .module
+            .functions
+            .get(&func_id)
+            .map(|f| {
+                f.signature
+                    .parameters
+                    .iter()
+                    .map(|p| p.ty.clone())
+                    .collect()
+            })
+            .or_else(|| {
+                self.module.extern_functions.get(&func_id).map(|f| {
+                    f.signature
+                        .parameters
+                        .iter()
+                        .map(|p| p.ty.clone())
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
+
+        let mut final_args = args;
+        for (i, arg_id) in final_args.iter_mut().enumerate() {
+            if let Some(param_ty) = param_types.get(i) {
+                if let Some(arg_ty) = self.get_register_type(*arg_id) {
+                    let needs_cast = matches!(
+                        (&arg_ty, param_ty),
+                        (IrType::I32 | IrType::I64, IrType::F64 | IrType::F32)
+                            | (IrType::F64 | IrType::F32, IrType::I32 | IrType::I64)
+                    );
+                    if needs_cast {
+                        if let Some(cast_id) = self.build_cast(*arg_id, arg_ty, param_ty.clone()) {
+                            *arg_id = cast_id;
+                        }
+                    }
+                }
+            }
+        }
+
         // Only allocate a destination register if the function returns a value
         let dest = if actual_return_type == IrType::Void {
             None
@@ -311,14 +356,14 @@ impl IrBuilder {
         };
 
         // Default to Move ownership for all arguments (will be refined by HIR lowering)
-        let arg_ownership = args
+        let arg_ownership = final_args
             .iter()
             .map(|_| crate::ir::instructions::OwnershipMode::Move)
             .collect();
         self.add_instruction(IrInstruction::CallDirect {
             dest,
             func_id,
-            args,
+            args: final_args,
             arg_ownership,
             type_args: Vec::new(),
             is_tail_call: false,

@@ -1472,8 +1472,75 @@ fn cmd_dump(
 
     // Always run the pass manager — even O0 has correctness passes
     // (InsertFreePass and forced inlining of Haxe `inline` functions)
-    let mut pass_manager = PassManager::for_level(opt);
-    let _ = pass_manager.run(&mut module);
+    if std::env::var("RAYZOR_RAW_MIR").is_ok() {
+        eprintln!("(skipping optimization passes — raw MIR dump)");
+    } else if std::env::var("RAYZOR_PASS_DEBUG").is_ok() {
+        // Debug mode: run passes one at a time and report
+        use compiler::ir::optimization::OptimizationPass;
+        let passes: Vec<Box<dyn OptimizationPass>> = match opt {
+            OptimizationLevel::O0 => {
+                let forced_inline_model = compiler::ir::inlining::InliningCostModel {
+                    max_inline_size: 15,
+                    ..Default::default()
+                };
+                vec![
+                    Box::new(compiler::ir::inlining::InliningPass::with_cost_model(
+                        forced_inline_model,
+                    )),
+                    Box::new(compiler::ir::optimization::DeadCodeEliminationPass::new()),
+                    Box::new(compiler::ir::scalar_replacement::ScalarReplacementPass::new()),
+                    Box::new(compiler::ir::optimization::CopyPropagationPass::new()),
+                    Box::new(compiler::ir::optimization::DeadCodeEliminationPass::new()),
+                ]
+            }
+            _ => {
+                let mut pass_manager = PassManager::for_level(opt);
+                let _ = pass_manager.run(&mut module);
+                vec![]
+            }
+        };
+        for mut pass in passes {
+            let result = pass.run_on_module(&mut module);
+            // Check if new() function has unreachable blocks after this pass
+            for func in module.functions.values() {
+                if func.name == "new" && func.signature.parameters.len() == 1 {
+                    let has_unreachable = func.cfg.blocks.values().any(|b| {
+                        matches!(
+                            b.terminator,
+                            compiler::ir::blocks::IrTerminator::Unreachable
+                        )
+                    });
+                    if has_unreachable {
+                        eprintln!(
+                            "⚠ After pass '{}': new() has UNREACHABLE blocks! modified={}",
+                            pass.name(),
+                            result.modified
+                        );
+                        for (bid, b) in &func.cfg.blocks {
+                            if matches!(
+                                b.terminator,
+                                compiler::ir::blocks::IrTerminator::Unreachable
+                            ) {
+                                eprintln!(
+                                    "  {:?}: {} instructions, terminator=unreachable",
+                                    bid,
+                                    b.instructions.len()
+                                );
+                            }
+                        }
+                    } else {
+                        eprintln!(
+                            "✓ After pass '{}': new() OK (no unreachable blocks)",
+                            pass.name()
+                        );
+                    }
+                }
+            }
+        }
+    } else {
+        let mut pass_manager = PassManager::for_level(opt);
+        let _ = pass_manager.run(&mut module);
+    }
 
     // Generate MIR dump
     let mir_text = if cfg_only {

@@ -35,31 +35,17 @@ pub fn init_llvm_aot() {
 
 #[cfg(feature = "llvm-backend")]
 fn create_target_machine(
-    module: &Module,
     target_triple: Option<&str>,
+    cpu: &str,
+    features: &str,
     reloc_mode: RelocMode,
     opt_level: OptimizationLevel,
 ) -> Result<TargetMachine, String> {
-    let (triple, cpu, features) = if let Some(triple_str) = target_triple {
-        (
-            TargetTriple::create(triple_str),
-            "generic".to_string(),
-            String::new(),
-        )
+    let triple = if let Some(triple_str) = target_triple {
+        TargetTriple::create(triple_str)
     } else {
-        let triple = TargetMachine::get_default_triple();
-        let cpu = TargetMachine::get_host_cpu_name()
-            .to_str()
-            .unwrap_or("generic")
-            .to_string();
-        let features = TargetMachine::get_host_cpu_features()
-            .to_str()
-            .unwrap_or("")
-            .to_string();
-        (triple, cpu, features)
+        TargetMachine::get_default_triple()
     };
-
-    module.set_triple(&triple);
 
     let target = Target::from_triple(&triple)
         .map_err(|e| format!("Failed to get target for triple: {}", e))?;
@@ -67,13 +53,147 @@ fn create_target_machine(
     target
         .create_target_machine(
             &triple,
-            &cpu,
-            &features,
+            cpu,
+            features,
             opt_level,
             reloc_mode,
             CodeModel::Default,
         )
         .ok_or_else(|| "Failed to create target machine".to_string())
+}
+
+/// Get host CPU name and feature string
+#[cfg(feature = "llvm-backend")]
+fn get_host_cpu_info() -> (String, String) {
+    let cpu = TargetMachine::get_host_cpu_name()
+        .to_str()
+        .unwrap_or("generic")
+        .to_string();
+    let features = TargetMachine::get_host_cpu_features()
+        .to_str()
+        .unwrap_or("")
+        .to_string();
+    (cpu, features)
+}
+
+/// Find a system LLVM tool binary.
+/// Checks unversioned name first, then versioned variants (21, 20, 19).
+fn find_llvm_tool(name: &str) -> Option<String> {
+    use std::process::Command;
+    let candidates: Vec<String> = std::iter::once(name.to_string())
+        .chain((19..=21).rev().map(|v| format!("{}-{}", name, v)))
+        .collect();
+    candidates.into_iter().find(|bin| {
+        Command::new(bin)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
+}
+
+/// Check if system LLVM tools (opt + llc) are available.
+pub fn has_system_llvm_tools() -> bool {
+    find_llvm_tool("opt").is_some() && find_llvm_tool("llc").is_some()
+}
+
+/// Compile LLVM IR to an object file using system `opt` + `llc`.
+/// This produces better code than inkwell's built-in `run_passes` + `write_to_file`
+/// because system LLVM (typically newer) has better inlining heuristics.
+/// Returns Ok(true) if system tools were used, Ok(false) if unavailable.
+///
+/// If `rename_entry` is Some, the named function is renamed to `_haxe_<name>` in the
+/// IR text before optimization (to avoid conflicts with the C main() added later).
+pub fn compile_ir_with_system_tools(
+    ir_text: &str,
+    output_obj: &std::path::Path,
+    opt_flag: &str,
+    rename_entry: Option<&str>,
+) -> Result<bool, String> {
+    use std::process::Command;
+
+    let opt_bin = match find_llvm_tool("opt") {
+        Some(b) => b,
+        None => return Ok(false),
+    };
+    let llc_bin = match find_llvm_tool("llc") {
+        Some(b) => b,
+        None => return Ok(false),
+    };
+
+    let tmp_dir = std::env::temp_dir();
+    let ir_path = tmp_dir.join("rayzor_aot_unopt.ll");
+    let bc_path = tmp_dir.join("rayzor_aot_opt.bc");
+
+    // Strip fast-math flags from IR text. These flags (nnan ninf nsz) were tuned
+    // for LLVM 18's behavior; newer LLVM versions optimize more aggressively with
+    // them, changing FP results (e.g. mandelbrot checksum). Without the flags,
+    // system opt still produces excellent code via inlining/vectorization.
+    let mut ir_clean = ir_text
+        .replace(" nnan ninf nsz ", " ")
+        .replace("nnan ninf nsz ", "");
+
+    // Rename entry function if it would conflict with C main()
+    if let Some(entry) = rename_entry {
+        if entry == "main" {
+            // Rename @main to @_haxe_main in LLVM IR text
+            ir_clean = ir_clean
+                .replace("define void @main(", "define void @_haxe_main(")
+                .replace("call void @main(", "call void @_haxe_main(");
+        }
+    }
+
+    std::fs::write(&ir_path, &ir_clean).map_err(|e| format!("Failed to write temp IR: {}", e))?;
+
+    // opt: IR → optimized bitcode
+    // Use --fp-contract=on to only fuse "blessed" FP ops (matching Cranelift JIT
+    // same-block FMA behavior) instead of the aggressive "fast" default that
+    // changes floating-point results in iteration-heavy loops.
+    let opt_out = Command::new(&opt_bin)
+        .arg(opt_flag)
+        .arg("--fp-contract=off")
+        .arg("-o")
+        .arg(&bc_path)
+        .arg(&ir_path)
+        .output()
+        .map_err(|e| format!("Failed to run {}: {}", opt_bin, e))?;
+
+    if !opt_out.status.success() {
+        let stderr = String::from_utf8_lossy(&opt_out.stderr);
+        eprintln!(
+            "[AOT] System {} failed (falling back to built-in): {}",
+            opt_bin,
+            stderr.lines().next().unwrap_or("unknown error")
+        );
+        let _ = std::fs::remove_file(&ir_path);
+        return Ok(false);
+    }
+
+    // llc: optimized bitcode → object file
+    let llc_out = Command::new(&llc_bin)
+        .arg(opt_flag)
+        .arg("-filetype=obj")
+        .arg("-o")
+        .arg(output_obj)
+        .arg(&bc_path)
+        .output()
+        .map_err(|e| format!("Failed to run {}: {}", llc_bin, e))?;
+
+    // Cleanup temp files
+    let _ = std::fs::remove_file(&ir_path);
+    let _ = std::fs::remove_file(&bc_path);
+
+    if !llc_out.status.success() {
+        let stderr = String::from_utf8_lossy(&llc_out.stderr);
+        eprintln!(
+            "[AOT] System {} failed (falling back to built-in): {}",
+            llc_bin,
+            stderr.lines().next().unwrap_or("unknown error")
+        );
+        return Ok(false);
+    }
+
+    Ok(true)
 }
 
 #[cfg(feature = "llvm-backend")]
@@ -93,17 +213,52 @@ fn run_opt_passes(
         module
             .run_passes(passes, target_machine, pass_options)
             .map_err(|e| format!("Failed to run optimization passes: {}", e))?;
+
+        // Debug: dump optimized IR if requested
+        if std::env::var("RAYZOR_DUMP_LLVM_IR").is_ok() {
+            let ir_str = module.print_to_string().to_string();
+            if std::fs::write("/tmp/rayzor_aot_opt.ll", &ir_str).is_ok() {
+                eprintln!(
+                    "=== AOT Optimized LLVM IR saved to /tmp/rayzor_aot_opt.ll ({} bytes) ===",
+                    ir_str.len()
+                );
+            }
+        }
     }
     Ok(())
 }
 
-/// Compile to object file with configurable target and relocation mode.
+/// Set target data layout and triple on the module without running passes.
+/// Call this before extracting IR text for system opt.
 #[cfg(feature = "llvm-backend")]
-pub fn compile_to_object_file(
+pub fn set_module_target(module: &Module, target_triple: Option<&str>) -> Result<(), String> {
+    let (host_cpu, host_features) = get_host_cpu_info();
+    let (cpu, features) = if target_triple.is_some() {
+        ("generic", "")
+    } else {
+        (host_cpu.as_str(), host_features.as_str())
+    };
+    let target_machine = create_target_machine(
+        target_triple,
+        cpu,
+        features,
+        RelocMode::Default,
+        OptimizationLevel::None,
+    )?;
+    let data_layout = target_machine.get_target_data().get_data_layout();
+    module.set_data_layout(&data_layout);
+    // NOTE: Do NOT set target triple here. When the triple is present, system opt
+    // (LLVM 21) enables target-specific FP optimizations that change results.
+    // The data layout alone is sufficient for accurate type size info.
+    Ok(())
+}
+
+/// Run LLVM optimization passes on the module.
+/// Call this BEFORE adding main() wrappers or other post-optimization transforms.
+#[cfg(feature = "llvm-backend")]
+pub fn optimize_module(
     module: &Module,
-    output_path: &Path,
     target_triple: Option<&str>,
-    reloc_mode: RelocMode,
     opt_level: OptimizationLevel,
 ) -> Result<(), String> {
     if let Err(msg) = module.verify() {
@@ -113,8 +268,50 @@ pub fn compile_to_object_file(
         ));
     }
 
-    let target_machine = create_target_machine(module, target_triple, reloc_mode, opt_level)?;
+    let (host_cpu, host_features) = get_host_cpu_info();
+    let (cpu, features) = if target_triple.is_some() {
+        ("generic", "")
+    } else {
+        (host_cpu.as_str(), host_features.as_str())
+    };
+    // RelocMode doesn't affect optimization, only codegen
+    let target_machine =
+        create_target_machine(target_triple, cpu, features, RelocMode::Default, opt_level)?;
+
+    // Set data layout from the target machine — this provides type size information
+    // that the optimizer needs for accurate inlining cost analysis.
+    let data_layout = target_machine.get_target_data().get_data_layout();
+    module.set_data_layout(&data_layout);
+
     run_opt_passes(module, &target_machine, opt_level)?;
+    Ok(())
+}
+
+/// Compile to object file with configurable target and relocation mode.
+/// The module should already be optimized via `optimize_module`.
+#[cfg(feature = "llvm-backend")]
+pub fn compile_to_object_file(
+    module: &Module,
+    output_path: &Path,
+    target_triple: Option<&str>,
+    reloc_mode: RelocMode,
+    opt_level: OptimizationLevel,
+) -> Result<(), String> {
+    let (host_cpu, host_features) = get_host_cpu_info();
+    let (cpu, features) = if target_triple.is_some() {
+        ("generic", "")
+    } else {
+        (host_cpu.as_str(), host_features.as_str())
+    };
+    let target_machine =
+        create_target_machine(target_triple, cpu, features, reloc_mode, opt_level)?;
+
+    let triple = if let Some(t) = target_triple {
+        TargetTriple::create(t)
+    } else {
+        TargetMachine::get_default_triple()
+    };
+    module.set_triple(&triple);
 
     target_machine
         .write_to_file(module, FileType::Object, output_path)
@@ -151,6 +348,7 @@ pub fn emit_llvm_bitcode(module: &Module, output_path: &Path) -> Result<(), Stri
 }
 
 /// Emit native assembly (.s).
+/// The module should already be optimized via `optimize_module`.
 #[cfg(feature = "llvm-backend")]
 pub fn emit_assembly(
     module: &Module,
@@ -158,16 +356,21 @@ pub fn emit_assembly(
     target_triple: Option<&str>,
     opt_level: OptimizationLevel,
 ) -> Result<(), String> {
-    if let Err(msg) = module.verify() {
-        return Err(format!(
-            "LLVM module verification failed: {}",
-            msg.to_string()
-        ));
-    }
-
+    let (host_cpu, host_features) = get_host_cpu_info();
+    let (cpu, features) = if target_triple.is_some() {
+        ("generic", "")
+    } else {
+        (host_cpu.as_str(), host_features.as_str())
+    };
     let target_machine =
-        create_target_machine(module, target_triple, RelocMode::Default, opt_level)?;
-    run_opt_passes(module, &target_machine, opt_level)?;
+        create_target_machine(target_triple, cpu, features, RelocMode::Default, opt_level)?;
+
+    let triple = if let Some(t) = target_triple {
+        TargetTriple::create(t)
+    } else {
+        TargetMachine::get_default_triple()
+    };
+    module.set_triple(&triple);
 
     target_machine
         .write_to_file(module, FileType::Assembly, output_path)

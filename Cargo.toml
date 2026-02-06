@@ -16,7 +16,7 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-llvm-backend = []
+llvm-backend = ["compiler/llvm-backend"]
 
 [dependencies]
 parser = { path = "parser" }

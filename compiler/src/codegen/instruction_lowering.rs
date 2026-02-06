@@ -725,8 +725,7 @@ impl CraneliftBackend {
                 | CompareOp::FUno
         );
 
-        if use_float_cmp || (is_float_op && (lhs_cl_ty.is_float() || rhs_cl_ty.is_float()))
-        {
+        if use_float_cmp || (is_float_op && (lhs_cl_ty.is_float() || rhs_cl_ty.is_float())) {
             // Ensure both operands are floats (convert ints to f64 if needed)
             let (float_lhs, float_rhs) = if lhs_cl_ty.is_float() && rhs_cl_ty.is_float() {
                 (lhs, rhs)
@@ -766,15 +765,19 @@ impl CraneliftBackend {
             // First, handle mixed float/int types by converting floats to ints
             use cranelift_codegen::ir::types;
             let (int_lhs, int_rhs) = if lhs_cl_ty.is_float() || rhs_cl_ty.is_float() {
-                let mut convert_to_int = |val: Value, val_ty: cranelift_codegen::ir::Type| -> Value {
-                    if val_ty.is_float() {
-                        // Convert float to i64 (truncating toward zero)
-                        builder.ins().fcvt_to_sint_sat(types::I64, val)
-                    } else {
-                        val
-                    }
-                };
-                (convert_to_int(lhs, lhs_cl_ty), convert_to_int(rhs, rhs_cl_ty))
+                let mut convert_to_int =
+                    |val: Value, val_ty: cranelift_codegen::ir::Type| -> Value {
+                        if val_ty.is_float() {
+                            // Convert float to i64 (truncating toward zero)
+                            builder.ins().fcvt_to_sint_sat(types::I64, val)
+                        } else {
+                            val
+                        }
+                    };
+                (
+                    convert_to_int(lhs, lhs_cl_ty),
+                    convert_to_int(rhs, rhs_cl_ty),
+                )
             } else {
                 (lhs, rhs)
             };

@@ -1965,7 +1965,10 @@ impl CraneliftBackend {
                             let arg_type = builder.func.dfg.value_type(arg);
 
                             // Convert int to float if necessary, or skip if unsupported type
-                            if arg_type.is_float() || arg_type == types::I32 || arg_type == types::I64 {
+                            if arg_type.is_float()
+                                || arg_type == types::I32
+                                || arg_type == types::I64
+                            {
                                 let float_arg = if arg_type.is_float() {
                                     arg
                                 } else {
@@ -1987,7 +1990,10 @@ impl CraneliftBackend {
                                 Some(result)
                             } else {
                                 // Unknown type, skip intrinsic and fall through to function call
-                                debug!("Math intrinsic: {} skipped, unsupported arg type {:?}", extern_func.name, arg_type);
+                                debug!(
+                                    "Math intrinsic: {} skipped, unsupported arg type {:?}",
+                                    extern_func.name, arg_type
+                                );
                                 None
                             }
                         }

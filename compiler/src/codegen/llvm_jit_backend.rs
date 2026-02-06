@@ -322,12 +322,13 @@ impl<'ctx> LLVMJitBackend<'ctx> {
     ///                     AllowReciprocal(16) | AllowContract(32) | ApproxFunc(64)
     ///
     /// Currently using conservative flags to ensure IEEE 754 compliance:
-    /// - NoNaNs(2) + NoInfs(4) + NoSignedZeros(8) + AllowContract(32) = 46
-    /// - AllowContract enables FMA fusion which is safe and improves performance
+    /// - NoNaNs(2) + NoInfs(4) + NoSignedZeros(8) = 14
+    /// - AllowContract is DISABLED to prevent cross-block FMA fusion that changes
+    ///   floating-point rounding (mandelbrot checksum 112798515 → 112798802)
     /// - AllowReassoc is DISABLED as it can change results due to FP non-associativity
     /// - ApproxFunc is DISABLED as it uses approximations for math functions
     /// - AllowReciprocal is DISABLED as it can change division precision
-    const FAST_MATH_FLAGS: u32 = 0x2E; // NoNaNs + NoInfs + NoSignedZeros + AllowContract (46)
+    const FAST_MATH_FLAGS: u32 = 0x0E; // NoNaNs + NoInfs + NoSignedZeros (14)
 
     /// Apply fast-math flags to a float instruction for aggressive optimization.
     /// This enables LLVM to perform optimizations like:
@@ -342,6 +343,61 @@ impl<'ctx> LLVMJitBackend<'ctx> {
         if let Some(inst) = result.as_instruction_value() {
             inst.set_fast_math_flags(Self::FAST_MATH_FLAGS);
         }
+    }
+
+    /// Check if an LLVM float value was produced by an fmul in the same basic block.
+    /// Returns the two fmul operands if so, enabling FMA fusion.
+    /// Only fuses same-block to match Cranelift backend behavior and hxcpp results.
+    fn try_extract_fmul_llvm(
+        &self,
+        value: inkwell::values::FloatValue<'ctx>,
+    ) -> Option<(
+        inkwell::values::FloatValue<'ctx>,
+        inkwell::values::FloatValue<'ctx>,
+    )> {
+        if std::env::var("RAYZOR_NO_FMA").is_ok() {
+            return None;
+        }
+        let inst = value.as_instruction_value()?;
+        if inst.get_opcode() != inkwell::values::InstructionOpcode::FMul {
+            return None;
+        }
+        // Same-block check
+        let inst_block = inst.get_parent()?;
+        let current_block = self.builder.get_insert_block()?;
+        if inst_block != current_block {
+            return None;
+        }
+        let a = inst.get_operand(0)?.left()?.into_float_value();
+        let b = inst.get_operand(1)?.left()?.into_float_value();
+        Some((a, b))
+    }
+
+    /// Build an FMA intrinsic call: fma(a, b, c) = a * b + c
+    fn build_fma(
+        &self,
+        a: inkwell::values::FloatValue<'ctx>,
+        b: inkwell::values::FloatValue<'ctx>,
+        c: inkwell::values::FloatValue<'ctx>,
+        name: &str,
+    ) -> Result<inkwell::values::FloatValue<'ctx>, String> {
+        use inkwell::intrinsics::Intrinsic;
+        let fma_intrinsic =
+            Intrinsic::find("llvm.fma.f64").ok_or("llvm.fma.f64 intrinsic not found")?;
+        let f64_type = self.context.f64_type();
+        let fma_func = fma_intrinsic
+            .get_declaration(&self.module, &[f64_type.into()])
+            .ok_or("Failed to get llvm.fma.f64 declaration")?;
+        let result = self
+            .builder
+            .build_call(fma_func, &[a.into(), b.into(), c.into()], name)
+            .map_err(|e| format!("Failed to build fma call: {}", e))?
+            .try_as_basic_value()
+            .left()
+            .ok_or("fma intrinsic returned void")?
+            .into_float_value();
+        self.apply_fast_math(result);
+        Ok(result)
     }
 
     /// Compile a single function (for tiered JIT)
@@ -909,17 +965,11 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 })?;
 
             // Per-function verification to catch return type mismatches early
-            if !llvm_func.verify(self.aot_mode) {
-                // In AOT mode, verify(true) prints the error to stderr
+            if !llvm_func.verify(true) {
+                // verify(true) prints the error to stderr
                 return Err(format!(
-                    "LLVM verification failed for function '{}' ({:?}). {}",
-                    function.name,
-                    func_id,
-                    if self.aot_mode {
-                        "Check stderr for details."
-                    } else {
-                        ""
-                    }
+                    "LLVM verification failed for function '{}' ({:?}). Check stderr for details.",
+                    function.name, func_id,
                 ));
             }
         }
@@ -1296,7 +1346,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             }
 
             // Slices are represented as {ptr, len}
-            IrType::Slice(_) | IrType::String => {
+            IrType::Slice(_) => {
                 let ptr_ty = self.context.ptr_type(AddressSpace::default());
                 let len_ty = self.context.i64_type();
                 Ok(self
@@ -1304,6 +1354,9 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                     .struct_type(&[ptr_ty.into(), len_ty.into()], false)
                     .into())
             }
+
+            // Strings are heap-allocated HaxeString* pointers
+            IrType::String => Ok(self.context.ptr_type(AddressSpace::default()).into()),
 
             // Functions become function pointers
             IrType::Function { .. } => Ok(self.context.ptr_type(AddressSpace::default()).into()),
@@ -3850,36 +3903,46 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             IrValue::F32(v) => Ok(self.context.f32_type().const_float(*v as f64).into()),
             IrValue::F64(v) => Ok(self.context.f64_type().const_float(*v).into()),
             IrValue::String(s) => {
-                // Create global string constant
+                // Create global string constant with the raw bytes
                 let global_str = self
                     .builder
                     .build_global_string_ptr(s, "str")
                     .map_err(|e| format!("Failed to build global string: {}", e))?;
                 let str_ptr = global_str.as_pointer_value();
-
-                // String type is { ptr, i64 } - construct the struct with pointer and length
                 let str_len = self.context.i64_type().const_int(s.len() as u64, false);
-                let str_ty = self.context.struct_type(
-                    &[
-                        self.context.ptr_type(AddressSpace::default()).into(),
-                        self.context.i64_type().into(),
-                    ],
-                    false,
-                );
 
-                // Build the struct { ptr, len }
-                let str_struct = self
-                    .builder
-                    .build_insert_value(str_ty.const_zero(), str_ptr, 0, "str_ptr")
-                    .map_err(|e| format!("Failed to insert string ptr: {}", e))?
-                    .into_struct_value();
-                let str_struct = self
-                    .builder
-                    .build_insert_value(str_struct, str_len, 1, "str_len")
-                    .map_err(|e| format!("Failed to insert string len: {}", e))?
-                    .into_struct_value();
+                // Get or declare haxe_string_literal(ptr, len) -> *mut HaxeString
+                let string_literal_fn = match self.module.get_function("haxe_string_literal") {
+                    Some(f) => f,
+                    None => {
+                        let fn_type = self.context.ptr_type(AddressSpace::default()).fn_type(
+                            &[
+                                self.context.ptr_type(AddressSpace::default()).into(),
+                                self.context.i64_type().into(),
+                            ],
+                            false,
+                        );
+                        self.module
+                            .add_function("haxe_string_literal", fn_type, None)
+                    }
+                };
 
-                Ok(str_struct.into())
+                // Call haxe_string_literal(ptr, len) -> *mut HaxeString
+                let result = self
+                    .builder
+                    .build_call(
+                        string_literal_fn,
+                        &[str_ptr.into(), str_len.into()],
+                        "str_literal",
+                    )
+                    .map_err(|e| format!("Failed to call haxe_string_literal: {}", e))?;
+
+                let haxe_str_ptr = result
+                    .try_as_basic_value()
+                    .left()
+                    .ok_or("haxe_string_literal did not return a value")?;
+
+                Ok(haxe_str_ptr)
             }
             IrValue::Array(_)
             | IrValue::Struct(_)
@@ -3936,11 +3999,19 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 if is_float {
                     let left_f = to_float(left, &self.builder, "add_l_f")?;
                     let right_f = to_float(right, &self.builder, "add_r_f")?;
-                    let result = self
-                        .builder
-                        .build_float_add(left_f, right_f, &name)
-                        .map_err(|e| format!("Failed to build fadd: {}", e))?;
-                    self.apply_fast_math(result);
+                    // Fuse multiply-add: fadd(fmul(a, b), c) → fma(a, b, c)
+                    let result = if let Some((a, b)) = self.try_extract_fmul_llvm(left_f) {
+                        self.build_fma(a, b, right_f, &name)?
+                    } else if let Some((a, b)) = self.try_extract_fmul_llvm(right_f) {
+                        self.build_fma(a, b, left_f, &name)?
+                    } else {
+                        let r = self
+                            .builder
+                            .build_float_add(left_f, right_f, &name)
+                            .map_err(|e| format!("Failed to build fadd: {}", e))?;
+                        self.apply_fast_math(r);
+                        r
+                    };
                     Ok(result.into())
                 } else {
                     let result = self
@@ -3954,11 +4025,27 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 if is_float {
                     let left_f = to_float(left, &self.builder, "sub_l_f")?;
                     let right_f = to_float(right, &self.builder, "sub_r_f")?;
-                    let result = self
-                        .builder
-                        .build_float_sub(left_f, right_f, &name)
-                        .map_err(|e| format!("Failed to build fsub: {}", e))?;
-                    self.apply_fast_math(result);
+                    // Fuse multiply-subtract: fsub(fmul(a, b), c) → fma(a, b, fneg(c))
+                    let result = if let Some((a, b)) = self.try_extract_fmul_llvm(left_f) {
+                        let neg_rhs = self
+                            .builder
+                            .build_float_neg(right_f, "neg_rhs")
+                            .map_err(|e| format!("Failed to build fneg: {}", e))?;
+                        self.build_fma(a, b, neg_rhs, &name)?
+                    } else if let Some((a, b)) = self.try_extract_fmul_llvm(right_f) {
+                        let neg_a = self
+                            .builder
+                            .build_float_neg(a, "neg_a")
+                            .map_err(|e| format!("Failed to build fneg: {}", e))?;
+                        self.build_fma(neg_a, b, left_f, &name)?
+                    } else {
+                        let r = self
+                            .builder
+                            .build_float_sub(left_f, right_f, &name)
+                            .map_err(|e| format!("Failed to build fsub: {}", e))?;
+                        self.apply_fast_math(r);
+                        r
+                    };
                     Ok(result.into())
                 } else {
                     let result = self
@@ -4172,19 +4259,47 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
             // Float arithmetic (explicit float operations)
             BinaryOp::FAdd => {
-                let result = self
-                    .builder
-                    .build_float_add(left.into_float_value(), right.into_float_value(), &name)
-                    .map_err(|e| format!("Failed to build fadd: {}", e))?;
-                self.apply_fast_math(result);
+                let left_f = left.into_float_value();
+                let right_f = right.into_float_value();
+                // Fuse multiply-add: fadd(fmul(a, b), c) → fma(a, b, c)
+                let result = if let Some((a, b)) = self.try_extract_fmul_llvm(left_f) {
+                    self.build_fma(a, b, right_f, &name)?
+                } else if let Some((a, b)) = self.try_extract_fmul_llvm(right_f) {
+                    self.build_fma(a, b, left_f, &name)?
+                } else {
+                    let r = self
+                        .builder
+                        .build_float_add(left_f, right_f, &name)
+                        .map_err(|e| format!("Failed to build fadd: {}", e))?;
+                    self.apply_fast_math(r);
+                    r
+                };
                 Ok(result.into())
             }
             BinaryOp::FSub => {
-                let result = self
-                    .builder
-                    .build_float_sub(left.into_float_value(), right.into_float_value(), &name)
-                    .map_err(|e| format!("Failed to build fsub: {}", e))?;
-                self.apply_fast_math(result);
+                let left_f = left.into_float_value();
+                let right_f = right.into_float_value();
+                // Fuse multiply-subtract: fsub(fmul(a, b), c) → fma(a, b, fneg(c))
+                let result = if let Some((a, b)) = self.try_extract_fmul_llvm(left_f) {
+                    let neg_rhs = self
+                        .builder
+                        .build_float_neg(right_f, "neg_rhs")
+                        .map_err(|e| format!("Failed to build fneg: {}", e))?;
+                    self.build_fma(a, b, neg_rhs, &name)?
+                } else if let Some((a, b)) = self.try_extract_fmul_llvm(right_f) {
+                    let neg_a = self
+                        .builder
+                        .build_float_neg(a, "neg_a")
+                        .map_err(|e| format!("Failed to build fneg: {}", e))?;
+                    self.build_fma(neg_a, b, left_f, &name)?
+                } else {
+                    let r = self
+                        .builder
+                        .build_float_sub(left_f, right_f, &name)
+                        .map_err(|e| format!("Failed to build fsub: {}", e))?;
+                    self.apply_fast_math(r);
+                    r
+                };
                 Ok(result.into())
             }
             BinaryOp::FMul => {
@@ -4327,6 +4442,35 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             Ok(ext.into())
         };
 
+        // Helper to coerce two integer operands to the same bit width.
+        // LLVM's icmp requires both operands to have the same type.
+        // If widths differ (e.g., i32 vs i64), sign-extend the narrower one.
+        let coerce_ints = |l: BasicValueEnum<'ctx>,
+                           r: BasicValueEnum<'ctx>,
+                           builder: &inkwell::builder::Builder<'ctx>|
+         -> (
+            inkwell::values::IntValue<'ctx>,
+            inkwell::values::IntValue<'ctx>,
+        ) {
+            let li = l.into_int_value();
+            let ri = r.into_int_value();
+            let lw = li.get_type().get_bit_width();
+            let rw = ri.get_type().get_bit_width();
+            if lw == rw {
+                (li, ri)
+            } else if lw < rw {
+                let ext = builder
+                    .build_int_s_extend(li, ri.get_type(), "cmp_sext_l")
+                    .unwrap();
+                (ext, ri)
+            } else {
+                let ext = builder
+                    .build_int_s_extend(ri, li.get_type(), "cmp_sext_r")
+                    .unwrap();
+                (li, ext)
+            }
+        };
+
         match op {
             // Integer/Float comparisons - dispatch based on operand type
             CompareOp::Eq => {
@@ -4339,14 +4483,10 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                         .map_err(|e| format!("Failed to build feq: {}", e))?;
                     to_i8(result, &self.builder, &format!("{}_i8", name))
                 } else {
+                    let (li, ri) = coerce_ints(left, right, &self.builder);
                     let result = self
                         .builder
-                        .build_int_compare(
-                            IntPredicate::EQ,
-                            left.into_int_value(),
-                            right.into_int_value(),
-                            &name,
-                        )
+                        .build_int_compare(IntPredicate::EQ, li, ri, &name)
                         .map_err(|e| format!("Failed to build eq: {}", e))?;
                     to_i8(result, &self.builder, &format!("{}_i8", name))
                 }
@@ -4361,14 +4501,10 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                         .map_err(|e| format!("Failed to build fne: {}", e))?;
                     to_i8(result, &self.builder, &format!("{}_i8", name))
                 } else {
+                    let (li, ri) = coerce_ints(left, right, &self.builder);
                     let result = self
                         .builder
-                        .build_int_compare(
-                            IntPredicate::NE,
-                            left.into_int_value(),
-                            right.into_int_value(),
-                            &name,
-                        )
+                        .build_int_compare(IntPredicate::NE, li, ri, &name)
                         .map_err(|e| format!("Failed to build ne: {}", e))?;
                     to_i8(result, &self.builder, &format!("{}_i8", name))
                 }
@@ -4383,14 +4519,10 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                         .map_err(|e| format!("Failed to build flt: {}", e))?;
                     to_i8(result, &self.builder, &format!("{}_i8", name))
                 } else {
+                    let (li, ri) = coerce_ints(left, right, &self.builder);
                     let result = self
                         .builder
-                        .build_int_compare(
-                            IntPredicate::SLT,
-                            left.into_int_value(),
-                            right.into_int_value(),
-                            &name,
-                        )
+                        .build_int_compare(IntPredicate::SLT, li, ri, &name)
                         .map_err(|e| format!("Failed to build lt: {}", e))?;
                     to_i8(result, &self.builder, &format!("{}_i8", name))
                 }
@@ -4405,14 +4537,10 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                         .map_err(|e| format!("Failed to build fle: {}", e))?;
                     to_i8(result, &self.builder, &format!("{}_i8", name))
                 } else {
+                    let (li, ri) = coerce_ints(left, right, &self.builder);
                     let result = self
                         .builder
-                        .build_int_compare(
-                            IntPredicate::SLE,
-                            left.into_int_value(),
-                            right.into_int_value(),
-                            &name,
-                        )
+                        .build_int_compare(IntPredicate::SLE, li, ri, &name)
                         .map_err(|e| format!("Failed to build le: {}", e))?;
                     to_i8(result, &self.builder, &format!("{}_i8", name))
                 }
@@ -4427,14 +4555,10 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                         .map_err(|e| format!("Failed to build fgt: {}", e))?;
                     to_i8(result, &self.builder, &format!("{}_i8", name))
                 } else {
+                    let (li, ri) = coerce_ints(left, right, &self.builder);
                     let result = self
                         .builder
-                        .build_int_compare(
-                            IntPredicate::SGT,
-                            left.into_int_value(),
-                            right.into_int_value(),
-                            &name,
-                        )
+                        .build_int_compare(IntPredicate::SGT, li, ri, &name)
                         .map_err(|e| format!("Failed to build gt: {}", e))?;
                     to_i8(result, &self.builder, &format!("{}_i8", name))
                 }
@@ -4449,14 +4573,10 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                         .map_err(|e| format!("Failed to build fge: {}", e))?;
                     to_i8(result, &self.builder, &format!("{}_i8", name))
                 } else {
+                    let (li, ri) = coerce_ints(left, right, &self.builder);
                     let result = self
                         .builder
-                        .build_int_compare(
-                            IntPredicate::SGE,
-                            left.into_int_value(),
-                            right.into_int_value(),
-                            &name,
-                        )
+                        .build_int_compare(IntPredicate::SGE, li, ri, &name)
                         .map_err(|e| format!("Failed to build ge: {}", e))?;
                     to_i8(result, &self.builder, &format!("{}_i8", name))
                 }
@@ -4464,50 +4584,34 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
             // Unsigned comparisons
             CompareOp::ULt => {
+                let (li, ri) = coerce_ints(left, right, &self.builder);
                 let result = self
                     .builder
-                    .build_int_compare(
-                        IntPredicate::ULT,
-                        left.into_int_value(),
-                        right.into_int_value(),
-                        &name,
-                    )
+                    .build_int_compare(IntPredicate::ULT, li, ri, &name)
                     .map_err(|e| format!("Failed to build ult: {}", e))?;
                 to_i8(result, &self.builder, &format!("{}_i8", name))
             }
             CompareOp::ULe => {
+                let (li, ri) = coerce_ints(left, right, &self.builder);
                 let result = self
                     .builder
-                    .build_int_compare(
-                        IntPredicate::ULE,
-                        left.into_int_value(),
-                        right.into_int_value(),
-                        &name,
-                    )
+                    .build_int_compare(IntPredicate::ULE, li, ri, &name)
                     .map_err(|e| format!("Failed to build ule: {}", e))?;
                 to_i8(result, &self.builder, &format!("{}_i8", name))
             }
             CompareOp::UGt => {
+                let (li, ri) = coerce_ints(left, right, &self.builder);
                 let result = self
                     .builder
-                    .build_int_compare(
-                        IntPredicate::UGT,
-                        left.into_int_value(),
-                        right.into_int_value(),
-                        &name,
-                    )
+                    .build_int_compare(IntPredicate::UGT, li, ri, &name)
                     .map_err(|e| format!("Failed to build ugt: {}", e))?;
                 to_i8(result, &self.builder, &format!("{}_i8", name))
             }
             CompareOp::UGe => {
+                let (li, ri) = coerce_ints(left, right, &self.builder);
                 let result = self
                     .builder
-                    .build_int_compare(
-                        IntPredicate::UGE,
-                        left.into_int_value(),
-                        right.into_int_value(),
-                        &name,
-                    )
+                    .build_int_compare(IntPredicate::UGE, li, ri, &name)
                     .map_err(|e| format!("Failed to build uge: {}", e))?;
                 to_i8(result, &self.builder, &format!("{}_i8", name))
             }

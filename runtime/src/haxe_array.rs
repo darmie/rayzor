@@ -237,7 +237,11 @@ pub extern "C" fn haxe_array_set_i64(arr: *mut HaxeArray, index: usize, value: i
         let new_len = index + 1;
         if new_len > arr_ref.len {
             if new_len > arr_ref.cap {
-                let mut new_cap = if arr_ref.cap == 0 { INITIAL_CAPACITY } else { arr_ref.cap };
+                let mut new_cap = if arr_ref.cap == 0 {
+                    INITIAL_CAPACITY
+                } else {
+                    arr_ref.cap
+                };
                 while new_cap < new_len {
                     new_cap *= 2;
                 }
@@ -250,7 +254,9 @@ pub extern "C" fn haxe_array_set_i64(arr: *mut HaxeArray, index: usize, value: i
                     let old_layout = Layout::from_size_align_unchecked(old_size, 8);
                     realloc(arr_ref.ptr, old_layout, new_size)
                 };
-                if new_ptr.is_null() { return false; }
+                if new_ptr.is_null() {
+                    return false;
+                }
                 arr_ref.ptr = new_ptr;
                 arr_ref.cap = new_cap;
             }
@@ -283,7 +289,11 @@ pub extern "C" fn haxe_array_set_f64(arr: *mut HaxeArray, index: usize, value: f
         let new_len = index + 1;
         if new_len > arr_ref.len {
             if new_len > arr_ref.cap {
-                let mut new_cap = if arr_ref.cap == 0 { INITIAL_CAPACITY } else { arr_ref.cap };
+                let mut new_cap = if arr_ref.cap == 0 {
+                    INITIAL_CAPACITY
+                } else {
+                    arr_ref.cap
+                };
                 while new_cap < new_len {
                     new_cap *= 2;
                 }
@@ -296,7 +306,9 @@ pub extern "C" fn haxe_array_set_f64(arr: *mut HaxeArray, index: usize, value: f
                     let old_layout = Layout::from_size_align_unchecked(old_size, 8);
                     realloc(arr_ref.ptr, old_layout, new_size)
                 };
-                if new_ptr.is_null() { return false; }
+                if new_ptr.is_null() {
+                    return false;
+                }
                 arr_ref.ptr = new_ptr;
                 arr_ref.cap = new_cap;
             }
@@ -328,7 +340,11 @@ pub extern "C" fn haxe_array_set_null(arr: *mut HaxeArray, index: usize) -> bool
         let new_len = index + 1;
         if new_len > arr_ref.len {
             if new_len > arr_ref.cap {
-                let mut new_cap = if arr_ref.cap == 0 { INITIAL_CAPACITY } else { arr_ref.cap };
+                let mut new_cap = if arr_ref.cap == 0 {
+                    INITIAL_CAPACITY
+                } else {
+                    arr_ref.cap
+                };
                 while new_cap < new_len {
                     new_cap *= 2;
                 }
@@ -341,7 +357,9 @@ pub extern "C" fn haxe_array_set_null(arr: *mut HaxeArray, index: usize) -> bool
                     let old_layout = Layout::from_size_align_unchecked(old_size, 8);
                     realloc(arr_ref.ptr, old_layout, new_size)
                 };
-                if new_ptr.is_null() { return false; }
+                if new_ptr.is_null() {
+                    return false;
+                }
                 arr_ref.ptr = new_ptr;
                 arr_ref.cap = new_cap;
             }
