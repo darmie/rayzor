@@ -5163,16 +5163,24 @@ impl<'a> AstLowering<'a> {
                 // `this` receiver: `i = value` → `this.i = value`.
                 let is_instance_field =
                     if let Some(class_symbol) = self.context.class_context_stack.last() {
-                        let is_in_fields = self.class_fields.get(class_symbol)
-                            .map(|fields| fields.iter().any(|(_, field_sym, is_static)| {
-                                *field_sym == symbol_id && !is_static
-                            }))
+                        let is_in_fields = self
+                            .class_fields
+                            .get(class_symbol)
+                            .map(|fields| {
+                                fields.iter().any(|(_, field_sym, is_static)| {
+                                    *field_sym == symbol_id && !is_static
+                                })
+                            })
                             .unwrap_or(false);
                         // Exclude methods — they are handled by the call resolution path
-                        let is_method = self.class_methods.get(class_symbol)
-                            .map(|methods| methods.iter().any(|(_, method_sym, _)| {
-                                *method_sym == symbol_id
-                            }))
+                        let is_method = self
+                            .class_methods
+                            .get(class_symbol)
+                            .map(|methods| {
+                                methods
+                                    .iter()
+                                    .any(|(_, method_sym, _)| *method_sym == symbol_id)
+                            })
                             .unwrap_or(false);
                         is_in_fields && !is_method
                     } else {
