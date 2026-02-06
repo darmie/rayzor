@@ -321,14 +321,15 @@ impl<'ctx> LLVMJitBackend<'ctx> {
     /// LLVM FastMathFlags: AllowReassoc(1) | NoNaNs(2) | NoInfs(4) | NoSignedZeros(8) |
     ///                     AllowReciprocal(16) | AllowContract(32) | ApproxFunc(64)
     ///
-    /// Currently using conservative flags to ensure IEEE 754 compliance:
-    /// - NoNaNs(2) + NoInfs(4) + NoSignedZeros(8) = 14
-    /// - AllowContract is DISABLED to prevent cross-block FMA fusion that changes
-    ///   floating-point rounding (mandelbrot checksum 112798515 → 112798802)
+    /// Using conservative flags with AllowContract for FMA fusion:
+    /// - NoNaNs(2) + NoInfs(4) + NoSignedZeros(8) + AllowContract(32) = 46
+    /// - AllowContract enables FMA fusion (fmul+fadd → fma) which is critical for
+    ///   x86_64 performance. On ARM, manual llvm.fma.f64 intrinsics suffice, but on
+    ///   x86_64 MCJIT needs AllowContract so the optimizer can emit vfmadd* instructions.
     /// - AllowReassoc is DISABLED as it can change results due to FP non-associativity
     /// - ApproxFunc is DISABLED as it uses approximations for math functions
     /// - AllowReciprocal is DISABLED as it can change division precision
-    const FAST_MATH_FLAGS: u32 = 0x0E; // NoNaNs + NoInfs + NoSignedZeros (14)
+    const FAST_MATH_FLAGS: u32 = 0x2E; // NoNaNs + NoInfs + NoSignedZeros + AllowContract (46)
 
     /// Apply fast-math flags to a float instruction for aggressive optimization.
     /// This enables LLVM to perform optimizations like:
