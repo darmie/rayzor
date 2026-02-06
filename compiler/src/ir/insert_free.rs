@@ -1,24 +1,26 @@
 //! Insert Free Pass — adds Free instructions for non-escaping heap allocations.
 //!
-//! This pass runs at the MIR level after HIR→MIR lowering to ensure all heap
-//! allocations that don't escape the function are properly freed. It handles
-//! cases the HIR-level drop analysis misses, such as factory function return
-//! values (e.g., `createComplex()` which returns `new Complex()`).
+//! This pass runs at the MIR level to ensure heap allocations that don't escape
+//! the function are properly freed. It handles both `Alloc` instructions and
+//! malloc call results (e.g., from inlined constructors).
 //!
 //! ## Algorithm
 //!
 //! For each function:
-//! 1. Find all `Alloc` instructions
+//! 1. Find all allocation sources (`Alloc` + `CallDirect` to malloc)
 //! 2. Track derived pointers (GEP, Cast, Copy of alloc result)
 //! 3. Check escape conditions:
 //!    - Pointer returned from function → escapes
 //!    - Pointer passed as argument to a function call → escapes
 //!    - Pointer stored as a value (not as a store target) → escapes
-//!    - Pointer used in phi node → complex control flow, skip (V1)
+//!    - Pointer placed into a struct (CreateStruct) → escapes
+//!    - Pointer stored to global or used in memcpy → escapes
+//!    - Pointer used in phi node → escapes (conservative; SRA handles these)
 //! 4. For non-escaping allocations that have no existing Free, insert Free
 //!    before each return instruction in the function
 
 use super::blocks::{IrBlockId, IrTerminator};
+use super::functions::IrFunctionId;
 use super::instructions::IrInstruction;
 use super::optimization::{OptimizationPass, OptimizationResult};
 use super::{IrFunction, IrId, IrModule};
@@ -40,10 +42,29 @@ impl OptimizationPass for InsertFreePass {
     fn run_on_module(&mut self, module: &mut IrModule) -> OptimizationResult {
         let mut total_inserted = 0;
 
+        // Identify malloc and free function IDs
+        let mut malloc_ids = HashSet::new();
+        let mut free_ids = HashSet::new();
+        for (&fid, func) in &module.functions {
+            if func.name == "malloc" {
+                malloc_ids.insert(fid);
+            } else if func.name == "free" {
+                free_ids.insert(fid);
+            }
+        }
+        for (&fid, func) in &module.extern_functions {
+            if func.name == "malloc" {
+                malloc_ids.insert(fid);
+            } else if func.name == "free" {
+                free_ids.insert(fid);
+            }
+        }
+
         let func_ids: Vec<_> = module.functions.keys().cloned().collect();
         for func_id in func_ids {
             if let Some(function) = module.functions.get_mut(&func_id) {
-                total_inserted += insert_free_for_function(function);
+                total_inserted +=
+                    insert_free_for_function(function, &malloc_ids, &free_ids);
             }
         }
 
@@ -64,19 +85,33 @@ impl OptimizationPass for InsertFreePass {
     }
 }
 
-/// Insert Free instructions for non-escaping Alloc in a single function.
+/// Insert Free instructions for non-escaping allocations in a single function.
 /// Returns the number of Free instructions inserted.
-fn insert_free_for_function(function: &mut IrFunction) -> usize {
+fn insert_free_for_function(
+    function: &mut IrFunction,
+    malloc_ids: &HashSet<IrFunctionId>,
+    free_ids: &HashSet<IrFunctionId>,
+) -> usize {
     if function.cfg.blocks.is_empty() {
         return 0;
     }
 
-    // Step 1: Find all Alloc instructions and their destinations
+    // Step 1: Find all allocation sources (Alloc + malloc calls)
     let mut alloc_ids: Vec<IrId> = Vec::new();
     for block in function.cfg.blocks.values() {
         for inst in &block.instructions {
-            if let IrInstruction::Alloc { dest, .. } = inst {
-                alloc_ids.push(*dest);
+            match inst {
+                IrInstruction::Alloc { dest, .. } => {
+                    alloc_ids.push(*dest);
+                }
+                IrInstruction::CallDirect {
+                    dest: Some(dest),
+                    func_id,
+                    ..
+                } if malloc_ids.contains(func_id) => {
+                    alloc_ids.push(*dest);
+                }
+                _ => {}
             }
         }
     }
@@ -85,29 +120,29 @@ fn insert_free_for_function(function: &mut IrFunction) -> usize {
         return 0;
     }
 
-    // Step 2: For each Alloc, build the set of derived pointers and check escape
+    // Step 2: For each alloc, check escape and collect non-escaping ones
     let mut allocs_needing_free: Vec<IrId> = Vec::new();
 
     for &alloc_id in &alloc_ids {
-        // Build derived pointer set (transitive closure of GEP, Cast, Copy)
         let derived = build_derived_set(alloc_id, function);
 
-        // Check if already has a Free
+        // Check if already has a Free (either Free instruction or free() call)
         let has_free = function.cfg.blocks.values().any(|block| {
-            block.instructions.iter().any(|inst| {
-                if let IrInstruction::Free { ptr } = inst {
-                    derived.contains(ptr) || *ptr == alloc_id
-                } else {
-                    false
+            block.instructions.iter().any(|inst| match inst {
+                IrInstruction::Free { ptr } => derived.contains(ptr) || *ptr == alloc_id,
+                IrInstruction::CallDirect {
+                    func_id, args, ..
+                } if free_ids.contains(func_id) => {
+                    args.iter().any(|a| *a == alloc_id || derived.contains(a))
                 }
+                _ => false,
             })
         });
 
         if has_free {
-            continue; // Already freed, skip
+            continue;
         }
 
-        // Check escape conditions
         if !pointer_escapes(alloc_id, &derived, function) {
             allocs_needing_free.push(alloc_id);
         }
@@ -117,7 +152,7 @@ fn insert_free_for_function(function: &mut IrFunction) -> usize {
         return 0;
     }
 
-    // Step 3: Find all blocks that end with a return
+    // Step 3: Find all return blocks
     let return_blocks: Vec<IrBlockId> = function
         .cfg
         .blocks
@@ -126,7 +161,7 @@ fn insert_free_for_function(function: &mut IrFunction) -> usize {
         .map(|(id, _)| *id)
         .collect();
 
-    // Pre-compute derived sets for each alloc (before mutating blocks)
+    // Pre-compute derived sets
     let derived_sets: HashMap<IrId, HashSet<IrId>> = allocs_needing_free
         .iter()
         .map(|&id| (id, build_derived_set(id, function)))
@@ -136,7 +171,6 @@ fn insert_free_for_function(function: &mut IrFunction) -> usize {
     let mut inserted = 0;
     for block_id in &return_blocks {
         if let Some(block) = function.cfg.blocks.get_mut(block_id) {
-            // Check if the return value is one of our allocs
             let return_value = if let IrTerminator::Return { value } = &block.terminator {
                 *value
             } else {
@@ -151,8 +185,6 @@ fn insert_free_for_function(function: &mut IrFunction) -> usize {
                         continue;
                     }
                 }
-
-                // Insert Free at the end of the block (before terminator)
                 block.instructions.push(IrInstruction::Free { ptr: alloc_id });
                 inserted += 1;
             }
@@ -168,7 +200,6 @@ fn build_derived_set(alloc_id: IrId, function: &IrFunction) -> HashSet<IrId> {
     let mut derived = HashSet::new();
     derived.insert(alloc_id);
 
-    // Fixed-point iteration to find all derived pointers
     let mut changed = true;
     while changed {
         changed = false;
@@ -202,7 +233,6 @@ fn build_derived_set(alloc_id: IrId, function: &IrFunction) -> HashSet<IrId> {
 /// Check if a pointer (or any of its derived pointers) escapes the function.
 fn pointer_escapes(alloc_id: IrId, derived: &HashSet<IrId>, function: &IrFunction) -> bool {
     for block in function.cfg.blocks.values() {
-        // Check instructions
         for inst in &block.instructions {
             match inst {
                 // Pointer passed as function argument → escapes
@@ -213,7 +243,9 @@ fn pointer_escapes(alloc_id: IrId, derived: &HashSet<IrId>, function: &IrFunctio
                         }
                     }
                 }
-                IrInstruction::CallIndirect { args, func_ptr, .. } => {
+                IrInstruction::CallIndirect {
+                    args, func_ptr, ..
+                } => {
                     if *func_ptr == alloc_id || derived.contains(func_ptr) {
                         return true;
                     }
@@ -225,9 +257,35 @@ fn pointer_escapes(alloc_id: IrId, derived: &HashSet<IrId>, function: &IrFunctio
                 }
 
                 // Pointer stored as a VALUE to memory → escapes
-                // Store { ptr, value } — if value is our alloc pointer, it escapes
                 IrInstruction::Store { value, .. } => {
                     if *value == alloc_id || derived.contains(value) {
+                        return true;
+                    }
+                }
+
+                // Pointer placed into a struct → escapes
+                IrInstruction::CreateStruct { fields, .. } => {
+                    for field in fields {
+                        if *field == alloc_id || derived.contains(field) {
+                            return true;
+                        }
+                    }
+                }
+
+                // Pointer stored to global → escapes
+                IrInstruction::StoreGlobal { value, .. } => {
+                    if *value == alloc_id || derived.contains(value) {
+                        return true;
+                    }
+                }
+
+                // Pointer used in memcpy → escapes
+                IrInstruction::MemCopy { dest, src, .. } => {
+                    if *dest == alloc_id
+                        || derived.contains(dest)
+                        || *src == alloc_id
+                        || derived.contains(src)
+                    {
                         return true;
                     }
                 }
@@ -236,7 +294,8 @@ fn pointer_escapes(alloc_id: IrId, derived: &HashSet<IrId>, function: &IrFunctio
             }
         }
 
-        // Check phi nodes — if alloc pointer flows through phi, complex control flow
+        // Phi nodes — conservative: if alloc flows through phi, treat as escape.
+        // SRA/phi-SRA handles these by eliminating the alloc entirely.
         for phi in &block.phi_nodes {
             for (_, val) in &phi.incoming {
                 if *val == alloc_id || derived.contains(val) {
@@ -245,7 +304,7 @@ fn pointer_escapes(alloc_id: IrId, derived: &HashSet<IrId>, function: &IrFunctio
             }
         }
 
-        // Check terminator — if pointer is returned, it escapes
+        // Pointer returned → escapes
         if let IrTerminator::Return { value: Some(val) } = &block.terminator {
             if *val == alloc_id || derived.contains(val) {
                 return true;
