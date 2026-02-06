@@ -144,6 +144,9 @@ register_symbol!("haxe_array_length", crate::haxe_array::haxe_array_length);
 // Access
 register_symbol!("haxe_array_get", crate::haxe_array::haxe_array_get);
 register_symbol!("haxe_array_set", crate::haxe_array::haxe_array_set);
+register_symbol!("haxe_array_set_i64", crate::haxe_array::haxe_array_set_i64);
+register_symbol!("haxe_array_set_f64", crate::haxe_array::haxe_array_set_f64);
+register_symbol!("haxe_array_set_null", crate::haxe_array::haxe_array_set_null);
 register_symbol!("haxe_array_get_ptr", crate::haxe_array::haxe_array_get_ptr);
 
 // Modification

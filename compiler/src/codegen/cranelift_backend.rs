@@ -1962,18 +1962,50 @@ impl CraneliftBackend {
                             if arg_values.len() == 1 =>
                         {
                             let arg = arg_values[0];
-                            let result = match extern_func.name.as_str() {
-                                "haxe_math_sqrt" => builder.ins().sqrt(arg),
-                                "haxe_math_abs" => builder.ins().fabs(arg),
-                                "haxe_math_floor" => builder.ins().floor(arg),
-                                "haxe_math_ceil" => builder.ins().ceil(arg),
-                                "haxe_math_round" => builder.ins().nearest(arg),
-                                _ => unreachable!(),
+                            let arg_type = builder.func.dfg.value_type(arg);
+
+                            // Convert int to float if necessary, or skip if unsupported type
+                            if arg_type.is_float() || arg_type == types::I32 || arg_type == types::I64 {
+                                let float_arg = if arg_type.is_float() {
+                                    arg
+                                } else {
+                                    builder.ins().fcvt_from_sint(types::F64, arg)
+                                };
+
+                                let result = match extern_func.name.as_str() {
+                                    "haxe_math_sqrt" => builder.ins().sqrt(float_arg),
+                                    "haxe_math_abs" => builder.ins().fabs(float_arg),
+                                    "haxe_math_floor" => builder.ins().floor(float_arg),
+                                    "haxe_math_ceil" => builder.ins().ceil(float_arg),
+                                    "haxe_math_round" => builder.ins().nearest(float_arg),
+                                    _ => unreachable!(),
+                                };
+                                debug!(
+                                    "Math intrinsic: {} → native Cranelift instruction",
+                                    extern_func.name
+                                );
+                                Some(result)
+                            } else {
+                                // Unknown type, skip intrinsic and fall through to function call
+                                debug!("Math intrinsic: {} skipped, unsupported arg type {:?}", extern_func.name, arg_type);
+                                None
+                            }
+                        }
+                        // Std.int(): float to int truncation
+                        "haxe_std_int" if arg_values.len() == 1 => {
+                            let arg = arg_values[0];
+                            let arg_type = builder.func.dfg.value_type(arg);
+                            let result = if arg_type.is_float() {
+                                // fcvt_to_sint_sat: saturating conversion (avoids UB on overflow)
+                                builder.ins().fcvt_to_sint_sat(types::I32, arg)
+                            } else if arg_type == types::I64 {
+                                // Already an int, just narrow to i32
+                                builder.ins().ireduce(types::I32, arg)
+                            } else {
+                                // Already i32, return as-is
+                                arg
                             };
-                            debug!(
-                                "Math intrinsic: {} → native Cranelift instruction",
-                                extern_func.name
-                            );
+                            debug!("Std intrinsic: haxe_std_int → {:?} to i32", arg_type);
                             Some(result)
                         }
                         // Array intrinsics (arm64 only — regresses on x86_64)
@@ -2108,9 +2140,6 @@ impl CraneliftBackend {
                         && !(called_func.name == "malloc"
                             || called_func.name == "realloc"
                             || called_func.name == "free");
-                    debug!("[ENV CHECK] func='{}' is_extern={} is_lambda={} is_c_cc={} calling_conv={:?} should_add_env={}",
-                             called_func.name, is_extern_func, is_lambda, is_c_calling_conv, called_func.signature.calling_convention, should_add_env);
-
                     if should_add_env {
                         // For direct calls to regular functions, we pass a null environment pointer
                         call_args.push(builder.ins().iconst(types::I64, 0));

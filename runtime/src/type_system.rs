@@ -1168,17 +1168,15 @@ pub extern "C" fn haxe_std_random(max: i64) -> i64 {
 // Pointer-based boxing/unboxing wrappers for MIR (simpler ABI)
 // ============================================================================
 
-/// Box an Int as Dynamic (returns opaque pointer)
-/// This is a simplified wrapper that returns a pointer to a DynamicValue
+/// Box an Int as Dynamic (returns opaque pointer to DynamicValue)
 #[no_mangle]
 pub extern "C" fn haxe_box_int_ptr(value: i64) -> *mut u8 {
     let dynamic = haxe_box_int(value);
-    // Allocate DynamicValue on heap and return pointer
     let boxed = Box::new(dynamic);
     Box::into_raw(boxed) as *mut u8
 }
 
-/// Box a Float as Dynamic (returns opaque pointer)
+/// Box a Float as Dynamic (returns opaque pointer to DynamicValue)
 #[no_mangle]
 pub extern "C" fn haxe_box_float_ptr(value: f64) -> *mut u8 {
     let dynamic = haxe_box_float(value);
@@ -1186,7 +1184,7 @@ pub extern "C" fn haxe_box_float_ptr(value: f64) -> *mut u8 {
     Box::into_raw(boxed) as *mut u8
 }
 
-/// Box a Bool as Dynamic (returns opaque pointer)
+/// Box a Bool as Dynamic (returns opaque pointer to DynamicValue)
 #[no_mangle]
 pub extern "C" fn haxe_box_bool_ptr(value: bool) -> *mut u8 {
     let dynamic = haxe_box_bool(value);
@@ -1194,7 +1192,7 @@ pub extern "C" fn haxe_box_bool_ptr(value: bool) -> *mut u8 {
     Box::into_raw(boxed) as *mut u8
 }
 
-/// Unbox an Int from Dynamic (takes opaque pointer)
+/// Unbox an Int from Dynamic (takes opaque pointer to DynamicValue)
 #[no_mangle]
 pub extern "C" fn haxe_unbox_int_ptr(ptr: *mut u8) -> i64 {
     if ptr.is_null() {
@@ -1207,7 +1205,7 @@ pub extern "C" fn haxe_unbox_int_ptr(ptr: *mut u8) -> i64 {
     }
 }
 
-/// Unbox a Float from Dynamic (takes opaque pointer)
+/// Unbox a Float from Dynamic (takes opaque pointer to DynamicValue)
 #[no_mangle]
 pub extern "C" fn haxe_unbox_float_ptr(ptr: *mut u8) -> f64 {
     if ptr.is_null() {
@@ -1220,7 +1218,7 @@ pub extern "C" fn haxe_unbox_float_ptr(ptr: *mut u8) -> f64 {
     }
 }
 
-/// Unbox a Bool from Dynamic (takes opaque pointer)
+/// Unbox a Bool from Dynamic (takes opaque pointer to DynamicValue)
 #[no_mangle]
 pub extern "C" fn haxe_unbox_bool_ptr(ptr: *mut u8) -> bool {
     if ptr.is_null() {

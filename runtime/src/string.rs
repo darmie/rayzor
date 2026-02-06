@@ -118,6 +118,15 @@ fn haxe_string_char_at(s: *const HaxeString, index: usize) -> u8 {
 
 /// Concatenate two strings and return a heap-allocated result pointer
 /// This avoids struct return ABI issues
+/// Note: exported as both `haxe_string_concat` (used by MIR/AOT) and `haxe_string_concat_ptr`
+#[no_mangle]
+pub extern "C" fn haxe_string_concat(
+    a: *const HaxeString,
+    b: *const HaxeString,
+) -> *mut HaxeString {
+    haxe_string_concat_ptr(a, b)
+}
+
 #[no_mangle]
 pub extern "C" fn haxe_string_concat_ptr(
     a: *const HaxeString,

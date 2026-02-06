@@ -21,6 +21,7 @@ llvm-backend = []
 [dependencies]
 parser = { path = "parser" }
 compiler = { path = "compiler" }
+rayzor-runtime = { path = "runtime" }
 clap = { version = "4.5", features = ["derive"] }
 
 # Workaround for LLVM optimizer bug that causes infinite loops in release builds

@@ -1629,12 +1629,33 @@ impl PassManager {
     pub fn for_level(level: OptimizationLevel) -> Self {
         let mut manager = Self::new();
 
+        // InsertFreePass runs at ALL optimization levels — it's a correctness pass
+        // that inserts Free instructions for non-escaping heap allocations.
+        // The HIR-level drop analysis only handles direct `new` expressions; this
+        // pass catches factory functions like createComplex() that return heap pointers.
+        manager.add_pass(super::insert_free::InsertFreePass::new());
+
         match level {
             OptimizationLevel::O0 => {
-                // No optimizations
+                // At O0, inline Haxe `inline`-marked functions (InlineHint::Always) plus
+                // very small functions (constructors, trivial helpers). This is needed because:
+                // 1. Haxe `inline` is a language guarantee, not an optimization hint
+                // 2. After inlining `inline` functions, small constructors must also be inlined
+                //    to expose Alloc+GEP patterns for scalar replacement, preventing memory leaks
+                let mut forced_inline_model = super::inlining::InliningCostModel::default();
+                forced_inline_model.max_inline_size = 15; // Small constructors + Always-hint
+                manager.add_pass(super::inlining::InliningPass::with_cost_model(
+                    forced_inline_model,
+                ));
+                manager.add_pass(DeadCodeEliminationPass::new());
+                manager.add_pass(super::scalar_replacement::ScalarReplacementPass::new());
+                manager.add_pass(CopyPropagationPass::new());
+                manager.add_pass(DeadCodeEliminationPass::new());
             }
             OptimizationLevel::O1 => {
                 // Fast, low-overhead optimizations
+                // Always inline Haxe `inline`-marked functions + cost-model inlining
+                manager.add_pass(super::inlining::InliningPass::new());
                 // manager.add_pass(GlobalLoadCachingPass::new()); // BUG: causes invalid IR
                 manager.add_pass(DeadCodeEliminationPass::new());
                 manager.add_pass(ConstantFoldingPass::new());

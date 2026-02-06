@@ -704,19 +704,48 @@ impl CraneliftBackend {
             .get(&right)
             .ok_or_else(|| format!("Right operand {:?} not found in value_map", right))?;
 
-        if ty.is_float()
-            || matches!(
-                op,
-                CompareOp::FEq
-                    | CompareOp::FNe
-                    | CompareOp::FLt
-                    | CompareOp::FLe
-                    | CompareOp::FGt
-                    | CompareOp::FGe
-                    | CompareOp::FOrd
-                    | CompareOp::FUno
-            )
+        // Get actual Cranelift value types
+        let lhs_cl_ty = builder.func.dfg.value_type(lhs);
+        let rhs_cl_ty = builder.func.dfg.value_type(rhs);
+
+        // Use actual Cranelift types to determine comparison mode (not MIR type)
+        // This handles cases where intrinsics return different types than MIR expects
+        let use_float_cmp = lhs_cl_ty.is_float() && rhs_cl_ty.is_float();
+
+        // Float comparison operators need float values - convert if needed
+        let is_float_op = matches!(
+            op,
+            CompareOp::FEq
+                | CompareOp::FNe
+                | CompareOp::FLt
+                | CompareOp::FLe
+                | CompareOp::FGt
+                | CompareOp::FGe
+                | CompareOp::FOrd
+                | CompareOp::FUno
+        );
+
+        if use_float_cmp || (is_float_op && (lhs_cl_ty.is_float() || rhs_cl_ty.is_float()))
         {
+            // Ensure both operands are floats (convert ints to f64 if needed)
+            let (float_lhs, float_rhs) = if lhs_cl_ty.is_float() && rhs_cl_ty.is_float() {
+                (lhs, rhs)
+            } else if lhs_cl_ty.is_float() && rhs_cl_ty.is_int() {
+                // Convert rhs int to float
+                let rhs_float = builder.ins().fcvt_from_sint(lhs_cl_ty, rhs);
+                (lhs, rhs_float)
+            } else if lhs_cl_ty.is_int() && rhs_cl_ty.is_float() {
+                // Convert lhs int to float
+                let lhs_float = builder.ins().fcvt_from_sint(rhs_cl_ty, lhs);
+                (lhs_float, rhs)
+            } else {
+                // Both are ints but MIR wants float comparison - convert both to f64
+                use cranelift_codegen::ir::types;
+                let lhs_float = builder.ins().fcvt_from_sint(types::F64, lhs);
+                let rhs_float = builder.ins().fcvt_from_sint(types::F64, rhs);
+                (lhs_float, rhs_float)
+            };
+
             let cc = match op {
                 CompareOp::Eq | CompareOp::FEq => FloatCC::Equal,
                 CompareOp::Ne | CompareOp::FNe => FloatCC::NotEqual,
@@ -728,14 +757,31 @@ impl CraneliftBackend {
                 CompareOp::FUno => FloatCC::Unordered,
                 _ => return Err(format!("Invalid float comparison: {:?}", op)),
             };
-            let cmp = builder.ins().fcmp(cc, lhs, rhs);
+            let cmp = builder.ins().fcmp(cc, float_lhs, float_rhs);
             // Return the i8 boolean result directly - don't extend to i32
             // Bool is represented as i8 in the type system
             Ok(cmp)
         } else {
-            // Get the types of both operands
-            let lhs_ty = builder.func.dfg.value_type(lhs);
-            let rhs_ty = builder.func.dfg.value_type(rhs);
+            // Integer comparison path
+            // First, handle mixed float/int types by converting floats to ints
+            use cranelift_codegen::ir::types;
+            let (int_lhs, int_rhs) = if lhs_cl_ty.is_float() || rhs_cl_ty.is_float() {
+                let mut convert_to_int = |val: Value, val_ty: cranelift_codegen::ir::Type| -> Value {
+                    if val_ty.is_float() {
+                        // Convert float to i64 (truncating toward zero)
+                        builder.ins().fcvt_to_sint_sat(types::I64, val)
+                    } else {
+                        val
+                    }
+                };
+                (convert_to_int(lhs, lhs_cl_ty), convert_to_int(rhs, rhs_cl_ty))
+            } else {
+                (lhs, rhs)
+            };
+
+            // Get the types after conversion
+            let lhs_ty = builder.func.dfg.value_type(int_lhs);
+            let rhs_ty = builder.func.dfg.value_type(int_rhs);
 
             // If types don't match, extend the smaller one to match the larger
             let (final_lhs, final_rhs) = if lhs_ty != rhs_ty && lhs_ty.is_int() && rhs_ty.is_int() {
@@ -745,22 +791,22 @@ impl CraneliftBackend {
                 if lhs_bits > rhs_bits {
                     // Extend rhs to match lhs
                     let extended_rhs = if ty.is_signed() {
-                        builder.ins().sextend(lhs_ty, rhs)
+                        builder.ins().sextend(lhs_ty, int_rhs)
                     } else {
-                        builder.ins().uextend(lhs_ty, rhs)
+                        builder.ins().uextend(lhs_ty, int_rhs)
                     };
-                    (lhs, extended_rhs)
+                    (int_lhs, extended_rhs)
                 } else {
                     // Extend lhs to match rhs
                     let extended_lhs = if ty.is_signed() {
-                        builder.ins().sextend(rhs_ty, lhs)
+                        builder.ins().sextend(rhs_ty, int_lhs)
                     } else {
-                        builder.ins().uextend(rhs_ty, lhs)
+                        builder.ins().uextend(rhs_ty, int_lhs)
                     };
-                    (extended_lhs, rhs)
+                    (extended_lhs, int_rhs)
                 }
             } else {
-                (lhs, rhs)
+                (int_lhs, int_rhs)
             };
 
             let cc = match op {
@@ -863,12 +909,26 @@ impl CraneliftBackend {
         Ok(addr)
     }
 
-    /// Check if a Cranelift value was produced by an fmul instruction.
+    /// Check if a Cranelift value was produced by an fmul instruction in the same block.
     /// Returns the two operands if so, enabling FMA fusion.
+    ///
+    /// Only fuses when fmul is in the same block as the current insertion point.
+    /// Cross-block fusion would change FP semantics for values that originally went
+    /// through memory (store/load), since SRA + CopyProp can expose fmul results
+    /// across block boundaries that were previously hidden by memory operations.
     fn try_extract_fmul(builder: &FunctionBuilder, value: Value) -> Option<(Value, Value)> {
+        if std::env::var("RAYZOR_NO_FMA").is_ok() {
+            return None;
+        }
         use cranelift_codegen::ir::{InstructionData, Opcode, ValueDef};
+        let current_block = builder.current_block()?;
         match builder.func.dfg.value_def(value) {
             ValueDef::Result(inst, 0) => {
+                // Only fuse if fmul is in the same block as the fadd/fsub
+                let fmul_block = builder.func.layout.inst_block(inst)?;
+                if fmul_block != current_block {
+                    return None;
+                }
                 if let InstructionData::Binary { opcode, args } = builder.func.dfg.insts[inst] {
                     if opcode == Opcode::Fmul {
                         return Some((args[0], args[1]));

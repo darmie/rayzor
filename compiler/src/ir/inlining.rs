@@ -203,6 +203,11 @@ impl InliningCostModel {
             return false;
         }
 
+        // Always inline functions marked with InlineHint::Always (Haxe `inline` keyword)
+        if callee.attributes.inline == super::InlineHint::Always {
+            return true;
+        }
+
         // Count instructions and blocks
         let mut inst_count = 0;
         for block in callee.cfg.blocks.values() {

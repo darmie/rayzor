@@ -612,7 +612,17 @@ fn run_file(
     // Compile source file to MIR
     let source =
         std::fs::read_to_string(&file).map_err(|e| format!("Failed to read file: {}", e))?;
-    let mir_module = compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"))?;
+    let mut mir_module = compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"))?;
+
+    // Run O0 pass manager to expand Haxe `inline` functions and apply SRA
+    // before the tiered backend sees the module. Without this, the initial JIT
+    // compilation path (compile_all_modules_jit) would compile raw MIR with no
+    // optimization, leaving heap allocations for inline-expanded structs.
+    {
+        use compiler::ir::optimization::{OptimizationLevel, PassManager};
+        let mut pass_manager = PassManager::for_level(OptimizationLevel::O0);
+        let _ = pass_manager.run(&mut mir_module);
+    }
 
     let total_functions = mir_module.functions.len();
     if verbose {
@@ -623,12 +633,25 @@ fn run_file(
         return Err("No functions found to execute".to_string());
     }
 
+    // Find main function before consuming mir_module
+    let main_func_id = mir_module
+        .functions
+        .iter()
+        .find(|(_, f)| f.name == "main")
+        .map(|(id, _)| *id)
+        .ok_or("No main function found")?;
+
+    // Get runtime symbols
+    let plugin = rayzor_runtime::get_plugin();
+    let symbols = plugin.runtime_symbols();
+    let symbols_ref: Vec<(&str, *const u8)> = symbols.iter().map(|(n, p)| (*n, *p)).collect();
+
     // Set up tiered JIT backend using the selected preset
     let mut config = TieredConfig::from_preset(preset.to_tier_preset());
     config.verbosity = if verbose { 2 } else { 0 };
     config.start_interpreted = false; // Start with JIT for immediate execution
 
-    let mut backend = TieredBackend::new(config)?;
+    let mut backend = TieredBackend::with_symbols(config, &symbols_ref)?;
 
     // Compile module with tiered JIT
     backend.compile_module(mir_module)?;
@@ -653,6 +676,11 @@ fn run_file(
         println!("  tier 2   {} functions", backend_stats.optimized_functions);
         println!("  tier 3   {} functions", backend_stats.llvm_functions);
     }
+
+    // Execute main function
+    backend
+        .execute_function(main_func_id, vec![])
+        .map_err(|e| format!("Execution failed: {}", e))?;
 
     backend.shutdown();
     println!("✓ Complete");
@@ -1442,10 +1470,10 @@ fn cmd_dump(
         _ => OptimizationLevel::O2,
     };
 
-    if opt != OptimizationLevel::O0 {
-        let mut pass_manager = PassManager::for_level(opt);
-        let _ = pass_manager.run(&mut module);
-    }
+    // Always run the pass manager — even O0 has correctness passes
+    // (InsertFreePass and forced inlining of Haxe `inline` functions)
+    let mut pass_manager = PassManager::for_level(opt);
+    let _ = pass_manager.run(&mut module);
 
     // Generate MIR dump
     let mir_text = if cfg_only {

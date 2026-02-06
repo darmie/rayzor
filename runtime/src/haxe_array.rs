@@ -133,16 +133,21 @@ pub extern "C" fn haxe_array_get(arr: *const HaxeArray, index: usize, out: *mut 
 }
 
 /// Set element at index (copies from data buffer)
+/// Auto-expands array if index is beyond current length (Haxe semantics)
+/// If data is null, stores zeros (null) at the index
 #[no_mangle]
 pub extern "C" fn haxe_array_set(arr: *mut HaxeArray, index: usize, data: *const u8) -> bool {
     debug!(
         "[haxe_array_set] Called with arr={:?}, index={}, data={:?}",
         arr, index, data
     );
-    if arr.is_null() || data.is_null() {
-        debug!("[haxe_array_set] arr or data is null, returning false");
+    if arr.is_null() {
+        debug!("[haxe_array_set] arr is null, returning false");
         return false;
     }
+
+    // Allow null data - will store zeros (null) at the index
+    let store_null = data.is_null();
 
     unsafe {
         let arr_ref = &mut *arr;
@@ -150,21 +155,207 @@ pub extern "C" fn haxe_array_set(arr: *mut HaxeArray, index: usize, data: *const
             "[haxe_array_set] arr.len={}, arr.elem_size={}",
             arr_ref.len, arr_ref.elem_size
         );
-        if index >= arr_ref.len {
+
+        // Auto-expand if index is beyond current length
+        let new_len = index + 1;
+        if new_len > arr_ref.len {
+            // Ensure we have enough capacity
+            if new_len > arr_ref.cap {
+                let mut new_cap = if arr_ref.cap == 0 {
+                    INITIAL_CAPACITY
+                } else {
+                    arr_ref.cap
+                };
+                while new_cap < new_len {
+                    new_cap *= 2;
+                }
+
+                let new_size = new_cap * arr_ref.elem_size;
+                let new_ptr = if arr_ref.ptr.is_null() || arr_ref.cap == 0 {
+                    let layout = Layout::from_size_align_unchecked(new_size, 8);
+                    alloc(layout)
+                } else {
+                    let old_size = arr_ref.cap * arr_ref.elem_size;
+                    let old_layout = Layout::from_size_align_unchecked(old_size, 8);
+                    realloc(arr_ref.ptr, old_layout, new_size)
+                };
+
+                if new_ptr.is_null() {
+                    debug!("[haxe_array_set] Failed to allocate memory");
+                    return false;
+                }
+
+                arr_ref.ptr = new_ptr;
+                arr_ref.cap = new_cap;
+            }
+
+            // Zero-initialize the new elements between old len and index
+            if arr_ref.len < new_len {
+                let start_offset = arr_ref.len * arr_ref.elem_size;
+                let zero_bytes = (new_len - arr_ref.len) * arr_ref.elem_size;
+                ptr::write_bytes(arr_ref.ptr.add(start_offset), 0, zero_bytes);
+            }
+
+            arr_ref.len = new_len;
             debug!(
-                "[haxe_array_set] index {} >= len {}, returning false",
-                index, arr_ref.len
+                "[haxe_array_set] Auto-expanded array to len={}, cap={}",
+                arr_ref.len, arr_ref.cap
             );
-            return false;
         }
 
         let elem_ptr = arr_ref.ptr.add(index * arr_ref.elem_size);
-        debug!(
-            "[haxe_array_set] Copying {} bytes from {:?} to {:?}",
-            arr_ref.elem_size, data, elem_ptr
-        );
-        ptr::copy_nonoverlapping(data, elem_ptr, arr_ref.elem_size);
+        if store_null {
+            // Store zeros (null) at the index
+            debug!(
+                "[haxe_array_set] Storing null (zeros) at {:?}, {} bytes",
+                elem_ptr, arr_ref.elem_size
+            );
+            ptr::write_bytes(elem_ptr, 0, arr_ref.elem_size);
+        } else {
+            debug!(
+                "[haxe_array_set] Copying {} bytes from {:?} to {:?}",
+                arr_ref.elem_size, data, elem_ptr
+            );
+            ptr::copy_nonoverlapping(data, elem_ptr, arr_ref.elem_size);
+        }
         debug!("[haxe_array_set] Successfully set element, returning true");
+        true
+    }
+}
+
+/// Set element at index by value (i64) - avoids boxing overhead
+/// Auto-expands array if index is beyond current length (Haxe semantics)
+#[no_mangle]
+pub extern "C" fn haxe_array_set_i64(arr: *mut HaxeArray, index: usize, value: i64) -> bool {
+    if arr.is_null() {
+        return false;
+    }
+    unsafe {
+        let arr_ref = &mut *arr;
+
+        // Auto-expand if needed
+        let new_len = index + 1;
+        if new_len > arr_ref.len {
+            if new_len > arr_ref.cap {
+                let mut new_cap = if arr_ref.cap == 0 { INITIAL_CAPACITY } else { arr_ref.cap };
+                while new_cap < new_len {
+                    new_cap *= 2;
+                }
+                let new_size = new_cap * arr_ref.elem_size;
+                let new_ptr = if arr_ref.ptr.is_null() || arr_ref.cap == 0 {
+                    let layout = Layout::from_size_align_unchecked(new_size, 8);
+                    alloc(layout)
+                } else {
+                    let old_size = arr_ref.cap * arr_ref.elem_size;
+                    let old_layout = Layout::from_size_align_unchecked(old_size, 8);
+                    realloc(arr_ref.ptr, old_layout, new_size)
+                };
+                if new_ptr.is_null() { return false; }
+                arr_ref.ptr = new_ptr;
+                arr_ref.cap = new_cap;
+            }
+            // Zero-fill gap
+            if arr_ref.len < new_len {
+                let start = arr_ref.len * arr_ref.elem_size;
+                let bytes = (new_len - arr_ref.len) * arr_ref.elem_size;
+                ptr::write_bytes(arr_ref.ptr.add(start), 0, bytes);
+            }
+            arr_ref.len = new_len;
+        }
+
+        let elem_ptr = arr_ref.ptr.add(index * arr_ref.elem_size) as *mut i64;
+        *elem_ptr = value;
+        true
+    }
+}
+
+/// Set element at index by value (f64) - avoids boxing overhead
+/// Auto-expands array if index is beyond current length (Haxe semantics)
+#[no_mangle]
+pub extern "C" fn haxe_array_set_f64(arr: *mut HaxeArray, index: usize, value: f64) -> bool {
+    if arr.is_null() {
+        return false;
+    }
+    unsafe {
+        let arr_ref = &mut *arr;
+
+        // Auto-expand if needed
+        let new_len = index + 1;
+        if new_len > arr_ref.len {
+            if new_len > arr_ref.cap {
+                let mut new_cap = if arr_ref.cap == 0 { INITIAL_CAPACITY } else { arr_ref.cap };
+                while new_cap < new_len {
+                    new_cap *= 2;
+                }
+                let new_size = new_cap * arr_ref.elem_size;
+                let new_ptr = if arr_ref.ptr.is_null() || arr_ref.cap == 0 {
+                    let layout = Layout::from_size_align_unchecked(new_size, 8);
+                    alloc(layout)
+                } else {
+                    let old_size = arr_ref.cap * arr_ref.elem_size;
+                    let old_layout = Layout::from_size_align_unchecked(old_size, 8);
+                    realloc(arr_ref.ptr, old_layout, new_size)
+                };
+                if new_ptr.is_null() { return false; }
+                arr_ref.ptr = new_ptr;
+                arr_ref.cap = new_cap;
+            }
+            if arr_ref.len < new_len {
+                let start = arr_ref.len * arr_ref.elem_size;
+                let bytes = (new_len - arr_ref.len) * arr_ref.elem_size;
+                ptr::write_bytes(arr_ref.ptr.add(start), 0, bytes);
+            }
+            arr_ref.len = new_len;
+        }
+
+        let elem_ptr = arr_ref.ptr.add(index * arr_ref.elem_size) as *mut f64;
+        *elem_ptr = value;
+        true
+    }
+}
+
+/// Set element at index to null (store zeros)
+/// Auto-expands array if index is beyond current length (Haxe semantics)
+#[no_mangle]
+pub extern "C" fn haxe_array_set_null(arr: *mut HaxeArray, index: usize) -> bool {
+    if arr.is_null() {
+        return false;
+    }
+    unsafe {
+        let arr_ref = &mut *arr;
+
+        // Auto-expand if needed
+        let new_len = index + 1;
+        if new_len > arr_ref.len {
+            if new_len > arr_ref.cap {
+                let mut new_cap = if arr_ref.cap == 0 { INITIAL_CAPACITY } else { arr_ref.cap };
+                while new_cap < new_len {
+                    new_cap *= 2;
+                }
+                let new_size = new_cap * arr_ref.elem_size;
+                let new_ptr = if arr_ref.ptr.is_null() || arr_ref.cap == 0 {
+                    let layout = Layout::from_size_align_unchecked(new_size, 8);
+                    alloc(layout)
+                } else {
+                    let old_size = arr_ref.cap * arr_ref.elem_size;
+                    let old_layout = Layout::from_size_align_unchecked(old_size, 8);
+                    realloc(arr_ref.ptr, old_layout, new_size)
+                };
+                if new_ptr.is_null() { return false; }
+                arr_ref.ptr = new_ptr;
+                arr_ref.cap = new_cap;
+            }
+            if arr_ref.len < new_len {
+                let start = arr_ref.len * arr_ref.elem_size;
+                let bytes = (new_len - arr_ref.len) * arr_ref.elem_size;
+                ptr::write_bytes(arr_ref.ptr.add(start), 0, bytes);
+            }
+            arr_ref.len = new_len;
+        }
+
+        // Write zeros for null
+        let elem_ptr = arr_ref.ptr.add(index * arr_ref.elem_size);
+        ptr::write_bytes(elem_ptr, 0, arr_ref.elem_size);
         true
     }
 }

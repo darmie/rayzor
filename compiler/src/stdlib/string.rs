@@ -438,7 +438,18 @@ fn build_string_from_chars(builder: &mut MirBuilder) {
 /// Prints a value to the console (Haxe's trace function)
 fn build_trace(builder: &mut MirBuilder) {
     let string_ref_ty = IrType::Ref(Box::new(IrType::String));
+    let string_ptr_ty = IrType::Ptr(Box::new(IrType::String));
 
+    // First, declare the extern trace function if not already declared
+    let extern_id = builder
+        .begin_function("haxe_trace_string_struct")
+        .param("s", string_ptr_ty.clone())
+        .returns(IrType::Void)
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(extern_id);
+
+    // Now build the wrapper function
     let func_id = builder
         .begin_function("trace")
         .param("value", string_ref_ty.clone())
@@ -452,11 +463,14 @@ fn build_trace(builder: &mut MirBuilder) {
     let entry = builder.create_block("entry");
     builder.set_insert_point(entry);
 
-    let _value_ptr = builder.get_param(0);
+    let value_ptr = builder.get_param(0);
 
-    // TODO: Implement actual printing to console
-    // This would typically call a runtime function or intrinsic
-    // For now, just return (no-op)
+    // Call the extern runtime function to actually print
+    let trace_func = builder
+        .get_function_by_name("haxe_trace_string_struct")
+        .expect("haxe_trace_string_struct not found");
+    let _ = builder.call(trace_func, vec![value_ptr]);
+
     builder.ret(None);
 }
 

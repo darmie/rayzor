@@ -270,6 +270,13 @@ impl<'a> TastToHirContext<'a> {
                         BinaryOperator::Sub => Some(HirLiteral::Int(l - r)),
                         BinaryOperator::Mul => Some(HirLiteral::Int(l * r)),
                         BinaryOperator::Div => Some(HirLiteral::Int(l / r)),
+                        BinaryOperator::Mod => Some(HirLiteral::Int(l % r)),
+                        // Bitwise operations
+                        BinaryOperator::Shl => Some(HirLiteral::Int(l << r)),
+                        BinaryOperator::Shr => Some(HirLiteral::Int(l >> r)),
+                        BinaryOperator::BitAnd => Some(HirLiteral::Int(l & r)),
+                        BinaryOperator::BitOr => Some(HirLiteral::Int(l | r)),
+                        BinaryOperator::BitXor => Some(HirLiteral::Int(l ^ r)),
                         _ => None,
                     },
                     _ => None,

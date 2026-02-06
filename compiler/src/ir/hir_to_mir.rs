@@ -1460,6 +1460,14 @@ impl<'a> HirToMirContext<'a> {
 
         let func_id = self.builder.start_function(symbol_id, func_name, signature);
         self.function_map.insert(symbol_id, func_id);
+
+        // Respect Haxe `inline` keyword — always inline these functions
+        if hir_func.is_inline {
+            if let Some(func) = self.builder.module.functions.get_mut(&func_id) {
+                func.attributes.inline = super::InlineHint::Always;
+            }
+        }
+
         self.builder.finish_function(); // Close to allow next function to start
     }
 
@@ -1500,6 +1508,14 @@ impl<'a> HirToMirContext<'a> {
 
         let func_id = self.builder.start_function(symbol_id, func_name, signature);
         self.function_map.insert(symbol_id, func_id);
+
+        // Respect Haxe `inline` keyword — always inline these functions
+        if hir_func.is_inline {
+            if let Some(func) = self.builder.module.functions.get_mut(&func_id) {
+                func.attributes.inline = super::InlineHint::Always;
+            }
+        }
+
         self.builder.finish_function();
     }
 
@@ -1893,6 +1909,13 @@ impl<'a> HirToMirContext<'a> {
         // These hints come from DFG/SSA analysis and guide MIR optimization
         if self.ssa_hints.inline_candidates.contains(&symbol_id) {
             // Mark for aggressive inlining (small function, simple control flow from SSA)
+            if let Some(func) = self.builder.module.functions.get_mut(&func_id) {
+                func.attributes.inline = super::InlineHint::Always;
+            }
+        }
+
+        // Respect Haxe `inline` keyword — always inline these functions
+        if hir_func.is_inline {
             if let Some(func) = self.builder.module.functions.get_mut(&func_id) {
                 func.attributes.inline = super::InlineHint::Always;
             }
@@ -4118,7 +4141,25 @@ impl<'a> HirToMirContext<'a> {
                 }
 
                 // Try to get from symbol_map first (local variables, parameters)
-                if let Some(&reg) = self.symbol_map.get(symbol) {
+                // SPECIAL CASE: If this is a "this" variable by name but not by the synthetic SymbolId(0),
+                // redirect the lookup to use the synthetic `this` symbol. This handles implicit `this`
+                // references created during AST lowering for field access in class methods/constructors.
+                let lookup_symbol = if let Some(sym_info) = self.symbol_table.get_symbol(*symbol) {
+                    if let Some(name) = self.string_interner.get(sym_info.name) {
+                        if name == "this" && *symbol != SymbolId::from_raw(0) {
+                            // Redirect to synthetic `this` symbol
+                            SymbolId::from_raw(0)
+                        } else {
+                            *symbol
+                        }
+                    } else {
+                        *symbol
+                    }
+                } else {
+                    *symbol
+                };
+
+                if let Some(&reg) = self.symbol_map.get(&lookup_symbol) {
                     // Check if we need to convert the type
                     // This handles cases where captured variables are stored as i64 in closure environment
                     // but need to be used as their original type (e.g., i32)
@@ -11359,8 +11400,6 @@ impl<'a> HirToMirContext<'a> {
                             let field_name =
                                 self.symbol_table.get_symbol(*field).map(|s| s.name)?;
 
-                            // debug!("Field write for {:?} ({}) not found by SymbolId, trying name lookup", field, field_name);
-
                             for (sym, (_, idx)) in &self.field_index_map {
                                 if let Some(sym_info) = self.symbol_table.get_symbol(*sym) {
                                     if sym_info.name == field_name {
@@ -11460,77 +11499,49 @@ impl<'a> HirToMirContext<'a> {
             }
             HirLValue::Index { object, index } => {
                 // Write object[index] = value
-                // Call haxe_array_set runtime function for HaxeArray
-                // Signature: fn haxe_array_set(arr: *mut HaxeArray, index: usize, data: *const u8) -> bool
+                // Use typed array set functions to pass values directly,
+                // avoiding DynamicValue boxing via haxe_box_*_ptr which
+                // would corrupt array storage (DynamicValue.type_id stored instead of value)
                 if let Some(obj_reg) = self.lower_expression(object) {
                     if let Some(idx_reg) = self.lower_expression(index) {
-                        // Box the value if it's a primitive type (Int, Float, Bool)
-                        // HaxeArray stores elements as boxed pointers
                         let value_ir_type = self.builder.get_register_type(value);
-                        let boxed_value = match &value_ir_type {
-                            Some(IrType::I32) | Some(IrType::I64) => {
-                                // Box integer value
-                                let box_func_id = self.get_or_register_extern_function(
-                                    "haxe_box_int_ptr",
-                                    vec![IrType::I64],
-                                    IrType::Ptr(Box::new(IrType::U8)),
-                                );
-                                self.builder.build_call_direct(
-                                    box_func_id,
-                                    vec![value],
-                                    IrType::Ptr(Box::new(IrType::U8)),
-                                )
-                            }
+                        match &value_ir_type {
                             Some(IrType::F32) | Some(IrType::F64) => {
-                                // Box float value
-                                let box_func_id = self.get_or_register_extern_function(
-                                    "haxe_box_float_ptr",
-                                    vec![IrType::F64],
-                                    IrType::Ptr(Box::new(IrType::U8)),
+                                // Use haxe_array_set_f64(arr, index, value)
+                                let func_id = self.get_or_register_extern_function(
+                                    "haxe_array_set_f64",
+                                    vec![
+                                        IrType::Ptr(Box::new(IrType::Void)),
+                                        IrType::I64,
+                                        IrType::F64,
+                                    ],
+                                    IrType::Bool,
                                 );
                                 self.builder.build_call_direct(
-                                    box_func_id,
-                                    vec![value],
-                                    IrType::Ptr(Box::new(IrType::U8)),
-                                )
-                            }
-                            Some(IrType::Bool) => {
-                                // Box bool value
-                                let box_func_id = self.get_or_register_extern_function(
-                                    "haxe_box_bool_ptr",
-                                    vec![IrType::Bool],
-                                    IrType::Ptr(Box::new(IrType::U8)),
+                                    func_id,
+                                    vec![obj_reg, idx_reg, value],
+                                    IrType::Bool,
                                 );
-                                self.builder.build_call_direct(
-                                    box_func_id,
-                                    vec![value],
-                                    IrType::Ptr(Box::new(IrType::U8)),
-                                )
                             }
                             _ => {
-                                // Already a pointer or unknown type, use as-is
-                                Some(value)
+                                // For Int, Bool, null, pointers: use haxe_array_set_i64
+                                // null=0, bool=0/1, pointers=address - all fit in i64
+                                let func_id = self.get_or_register_extern_function(
+                                    "haxe_array_set_i64",
+                                    vec![
+                                        IrType::Ptr(Box::new(IrType::Void)),
+                                        IrType::I64,
+                                        IrType::I64,
+                                    ],
+                                    IrType::Bool,
+                                );
+                                self.builder.build_call_direct(
+                                    func_id,
+                                    vec![obj_reg, idx_reg, value],
+                                    IrType::Bool,
+                                );
                             }
                         }
-                        .unwrap_or(value);
-
-                        // Get or declare the haxe_array_set extern function
-                        let func_id = self.get_or_register_extern_function(
-                            "haxe_array_set",
-                            vec![
-                                IrType::Ptr(Box::new(IrType::Void)), // array
-                                IrType::I64,                         // index
-                                IrType::Ptr(Box::new(IrType::U8)),   // data pointer
-                            ],
-                            IrType::Bool, // returns bool (success indicator)
-                        );
-
-                        // Call haxe_array_set(array, index, boxed_value)
-                        self.builder.build_call_direct(
-                            func_id,
-                            vec![obj_reg, idx_reg, boxed_value],
-                            IrType::Bool,
-                        );
                     }
                 }
             }

@@ -102,6 +102,38 @@ fn declare_array_externs(builder: &mut MirBuilder) {
         .calling_convention(CallingConvention::C)
         .build();
     builder.mark_as_extern(func_id);
+
+    // haxe_array_set_i64(arr: *mut HaxeArray, index: usize, value: i64) -> bool
+    let func_id = builder
+        .begin_function("haxe_array_set_i64")
+        .param("arr", ptr_void.clone())
+        .param("index", i64_ty.clone())
+        .param("value", i64_ty.clone())
+        .returns(IrType::Bool)
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // haxe_array_set_f64(arr: *mut HaxeArray, index: usize, value: f64) -> bool
+    let func_id = builder
+        .begin_function("haxe_array_set_f64")
+        .param("arr", ptr_void.clone())
+        .param("index", i64_ty.clone())
+        .param("value", IrType::F64)
+        .returns(IrType::Bool)
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // haxe_array_set_null(arr: *mut HaxeArray, index: usize) -> bool
+    let func_id = builder
+        .begin_function("haxe_array_set_null")
+        .param("arr", ptr_void.clone())
+        .param("index", i64_ty.clone())
+        .returns(IrType::Bool)
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
 }
 
 /// Build: fn array_push(arr: Any, value: Any) -> void

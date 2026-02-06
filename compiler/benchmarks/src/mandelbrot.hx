@@ -1,6 +1,6 @@
-// Mandelbrot Benchmark (Class-based)
-// Matches official Haxe benchmark at https://benchs.haxe.org/mandelbrot/
-// Source: https://github.com/HaxeBenchmarks/benchmark-runner/blob/master/cases/mandelbrot/BMMandelbrotCode.hx
+// Mandelbrot Benchmark
+// Exact copy from https://github.com/HaxeBenchmarks/benchmark-runner/blob/master/cases/mandelbrot/BMMandelbrotCode.hx
+// Used by Rayzor for fair comparison with official Haxe targets
 //
 // Tests: CPU-intensive computation, floating-point arithmetic, class instantiation
 
@@ -11,10 +11,10 @@ class RGB {
     public var g:Int;
     public var b:Int;
 
-    public function new(r:Int, g:Int, b:Int) {
-        this.r = r;
-        this.g = g;
-        this.b = b;
+    public function new(inR:Int, inG:Int, inB:Int) {
+        r = inR;
+        g = inG;
+        b = inB;
     }
 }
 
@@ -22,67 +22,72 @@ class Complex {
     public var i:Float;
     public var j:Float;
 
-    public function new(i:Float, j:Float) {
-        this.i = i;
-        this.j = j;
+    public function new(inI:Float, inJ:Float) {
+        i = inI;
+        j = inJ;
     }
 }
 
 class Mandelbrot {
-    static var SIZE = 25;
-    static var MAX_ITER = 1000;
-    static var MAX_RAD = 65536;
-    static var WIDTH = 875;   // 35 * SIZE
-    static var HEIGHT = 500;  // 20 * SIZE
+    static inline var SIZE = 25;
+    static inline var MaxIterations = 1000;
+    static inline var MaxRad = 1 << 16;
+    static inline var width = 875; // 35 * SIZE
+    static inline var height = 500; // 20 * SIZE
 
-    public static function main() {
+    public function new() {
         var palette = new Array<RGB>();
-        for (idx in 0...1001) {
-            palette.push(createPalette(idx / 1000.0));
-        }
+        for (i in 0...MaxIterations + 1)
+            palette.push(createPalette(i / MaxIterations));
 
         var image = new Array<RGB>();
+        image[width * height - 1] = null;
         var outPixel = 0;
-        var scale = 0.1 / 25.0;
-        var w = 875;
-        var h = 500;
-        var maxIter = 1000;
-        var maxRad = 65536;
-
-        for (y in 0...h) {
-            for (x in 0...w) {
+        var scale = 0.1 / SIZE;
+        var checksum = 0;
+        for (y in 0...height) {
+            for (x in 0...width) {
                 var iteration = 0;
 
-                var offset = new Complex(x * scale - 2.5, y * scale - 1.0);
-                var val = new Complex(0.0, 0.0);
-                while (complexLength2(val) < maxRad && iteration < maxIter) {
+                var offset = createComplex(x * scale - 2.5, y * scale - 1);
+                var val = createComplex(0.0, 0.0);
+                while (complexLength2(val) < MaxRad && iteration < MaxIterations) {
                     val = complexAdd(complexSquare(val), offset);
-                    iteration = iteration + 1;
+                    iteration++;
                 }
 
-                image.push(palette[iteration]);
+                var color = palette[iteration];
+                image[outPixel++] = color;
+                checksum = checksum + color.r + color.g + color.b;
             }
         }
+        trace("Checksum: " + checksum);
     }
 
-    static function complexLength2(val:Complex):Float {
+    public function complexLength2(val:Complex):Float {
         return val.i * val.i + val.j * val.j;
     }
 
-    static function complexAdd(val0:Complex, val1:Complex):Complex {
-        return new Complex(val0.i + val1.i, val0.j + val1.j);
+    public inline function complexAdd(val0:Complex, val1:Complex) {
+        return createComplex(val0.i + val1.i, val0.j + val1.j);
     }
 
-    static function complexSquare(val:Complex):Complex {
-        return new Complex(val.i * val.i - val.j * val.j, 2.0 * val.i * val.j);
+    public inline function complexSquare(val:Complex) {
+        return createComplex(val.i * val.i - val.j * val.j, 2.0 * val.i * val.j);
     }
 
-    static function createPalette(fraction:Float):RGB {
-        var r = Std.int(fraction * 255);
-        var g = Std.int((1.0 - fraction) * 255);
-        var abs_val = fraction - 0.5;
-        if (abs_val < 0.0) abs_val = -abs_val;
-        var b = Std.int((0.5 - abs_val) * 2.0 * 255);
+    public function createComplex(inI:Float, inJ:Float) {
+        return new Complex(inI, inJ);
+    }
+
+    public function createPalette(inFraction:Float) {
+        var r = Std.int(inFraction * 255);
+        var g = Std.int((1 - inFraction) * 255);
+        var b = Std.int((0.5 - Math.abs(inFraction - 0.5)) * 2 * 255);
         return new RGB(r, g, b);
+    }
+
+    public static function main() {
+        new Mandelbrot();
     }
 }

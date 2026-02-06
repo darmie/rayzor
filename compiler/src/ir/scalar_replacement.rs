@@ -79,13 +79,9 @@ impl OptimizationPass for ScalarReplacementPass {
     fn run_on_module(&mut self, module: &mut IrModule) -> OptimizationResult {
         let mut result = OptimizationResult::unchanged();
 
-        let debug_sra = std::env::var("RAYZOR_DEBUG_SRA").is_ok();
-
-        if debug_sra {
-            eprintln!(
-                "[SRA] Running on module with {} functions",
-                module.functions.len()
-            );
+        // Allow completely disabling SRA via environment variable for debugging
+        if std::env::var("RAYZOR_NO_SRA").is_ok() {
+            return result;
         }
 
         // Identify malloc and free function IDs
@@ -150,26 +146,8 @@ fn run_sra_on_function(
 ) -> OptimizationResult {
     let mut result = OptimizationResult::unchanged();
 
-    let debug_sra = std::env::var("RAYZOR_DEBUG_SRA").is_ok();
-
     let constants = build_constant_map(&function.cfg);
     let candidates = find_candidates_in_function(&function.cfg, &constants, malloc_ids, free_ids);
-
-    if debug_sra {
-        eprintln!(
-            "[SRA] Function '{}': found {} candidates",
-            function.name,
-            candidates.len()
-        );
-        for (i, c) in candidates.iter().enumerate() {
-            eprintln!(
-                "[SRA]   Candidate {}: alloc_dest={:?}, tracked={:?}",
-                i, c.alloc_dest, c.tracked
-            );
-        }
-        use std::io::Write;
-        let _ = std::io::stderr().flush();
-    }
 
     for candidate in &candidates {
         let eliminated = apply_sra(function, candidate);
@@ -180,12 +158,6 @@ fn run_sra_on_function(
                 .stats
                 .entry("allocs_replaced".to_string())
                 .or_insert(0) += 1;
-            if debug_sra {
-                eprintln!(
-                    "[SRA]   Applied SRA to {:?}, eliminated {} instructions",
-                    candidate.alloc_dest, eliminated
-                );
-            }
         }
     }
 
@@ -200,24 +172,9 @@ fn run_phi_sra_on_function(
     free_ids: &HashSet<IrFunctionId>,
 ) -> OptimizationResult {
     let mut result = OptimizationResult::unchanged();
-    let debug_sra = std::env::var("RAYZOR_DEBUG_SRA").is_ok();
 
     let constants = build_constant_map(&function.cfg);
     let candidates = find_phi_sra_candidates(&function.cfg, &constants, malloc_ids, free_ids);
-
-    if debug_sra && !candidates.is_empty() {
-        eprintln!(
-            "[PHI-SRA] Function '{}': found {} phi-sra candidates",
-            function.name,
-            candidates.len()
-        );
-        for (i, c) in candidates.iter().enumerate() {
-            eprintln!(
-                "[PHI-SRA]   Candidate {}: phi_dest={:?}, num_fields={}",
-                i, c.phi_dest, c.num_fields
-            );
-        }
-    }
 
     // Process only ONE candidate per pass to avoid stale data issues.
     // When we apply phi-SRA to one candidate, it modifies the function structure,
@@ -233,12 +190,6 @@ fn run_phi_sra_on_function(
                 .stats
                 .entry("phi_allocs_replaced".to_string())
                 .or_insert(0) += 1;
-            if debug_sra {
-                eprintln!(
-                    "[PHI-SRA]   Applied phi-SRA to {:?}, eliminated {} instructions",
-                    candidate.phi_dest, eliminated
-                );
-            }
         }
     }
 
@@ -887,13 +838,6 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
         }
     }
 
-    if std::env::var("RAYZOR_DEBUG_SRA").is_ok() {
-        eprintln!(
-            "[PHI-SRA] dead_pointers for {:?}: {:?}",
-            candidate.phi_dest, dead_pointers
-        );
-    }
-
     // Process each block: replace loads, remove dead stores/GEPs/mallocs/frees
     for block_id in &block_order {
         let block = match function.cfg.blocks.get_mut(block_id) {
@@ -1070,13 +1014,6 @@ fn apply_phi_sra(function: &mut IrFunction, candidate: &PhiSraCandidate) -> usiz
                 }
             }
         }
-    }
-
-    if std::env::var("RAYZOR_DEBUG_SRA").is_ok() {
-        eprintln!(
-            "[PHI-SRA] After phi cleanup, dead_pointers for {:?}: {:?}",
-            candidate.phi_dest, dead_pointers
-        );
     }
 
     // Now re-process to remove Free instructions that reference the expanded dead_pointers

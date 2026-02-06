@@ -3551,16 +3551,20 @@ impl<'a> AstLowering<'a> {
                     type_hint,
                     expr,
                 } => {
-                    let field_type = if let Some(type_hint) = type_hint {
-                        self.lower_type(type_hint)?
-                    } else {
-                        self.context.type_table.borrow().dynamic_type()
-                    };
-
+                    // Lower initializer first so we can infer type from it
                     let initializer = if let Some(expr) = expr {
                         Some(self.lower_expression(expr)?)
                     } else {
                         None
+                    };
+
+                    let field_type = if let Some(type_hint) = type_hint {
+                        self.lower_type(type_hint)?
+                    } else if let Some(ref init_expr) = initializer {
+                        // Infer type from initializer expression
+                        init_expr.expr_type
+                    } else {
+                        self.context.type_table.borrow().dynamic_type()
                     };
 
                     let is_static = field
@@ -3582,16 +3586,20 @@ impl<'a> AstLowering<'a> {
                     type_hint,
                     expr,
                 } => {
-                    let field_type = if let Some(type_hint) = type_hint {
-                        self.lower_type(type_hint)?
-                    } else {
-                        self.context.type_table.borrow().dynamic_type()
-                    };
-
+                    // Lower initializer first so we can infer type from it
                     let initializer = if let Some(expr) = expr {
                         Some(self.lower_expression(expr)?)
                     } else {
                         None
+                    };
+
+                    let field_type = if let Some(type_hint) = type_hint {
+                        self.lower_type(type_hint)?
+                    } else if let Some(ref init_expr) = initializer {
+                        // Infer type from initializer expression
+                        init_expr.expr_type
+                    } else {
+                        self.context.type_table.borrow().dynamic_type()
                     };
 
                     let is_static = field
@@ -5134,18 +5142,51 @@ impl<'a> AstLowering<'a> {
                             location: self.context.create_location_from_span(expression.span),
                         })?;
 
-                // Check if this is an enum variant and handle it specially
-                // if let Some(symbol) = self.context.symbol_table.get_symbol(symbol_id) {
-                //     if symbol.kind == crate::tast::symbols::SymbolKind::EnumVariant {
-                //         // This is an enum constructor - we'll need special handling for generic instantiation
-                //         println!(
-                //             "DEBUG: Found enum variant symbol '{}' with type {:?}",
-                //             name, symbol.type_id
-                //         );
-                //     }
-                // }
+                // Check if this symbol is an instance field of the current class.
+                // If so, we need to create a FieldAccess with implicit `this` receiver.
+                // Fields inside a class body (e.g., `i = value` where `i` is a field) should
+                // become `this.i = value`, not a bare variable reference.
+                let is_instance_field = if let Some(class_symbol) = self.context.class_context_stack.last() {
+                    if let Some(fields) = self.class_fields.get(class_symbol) {
+                        // Check if symbol_id matches any non-static field
+                        fields.iter().any(|(_, field_sym, is_static)| *field_sym == symbol_id && !is_static)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
 
-                TypedExpressionKind::Variable { symbol_id }
+                if is_instance_field {
+                    // Create implicit `this` receiver
+                    let this_name = self.context.intern_string("this");
+                    let this_symbol = self
+                        .resolve_symbol_in_scope_hierarchy(this_name)
+                        .unwrap_or_else(|| self.context.symbol_table.create_variable(this_name));
+                    let this_type = self
+                        .context
+                        .class_context_stack
+                        .last()
+                        .and_then(|cs| self.context.symbol_table.get_symbol(*cs))
+                        .map(|s| s.type_id)
+                        .unwrap_or_else(|| self.context.type_table.borrow().dynamic_type());
+                    let receiver = TypedExpression {
+                        expr_type: this_type,
+                        kind: TypedExpressionKind::Variable {
+                            symbol_id: this_symbol,
+                        },
+                        usage: VariableUsage::Copy,
+                        lifetime_id: crate::tast::LifetimeId::first(),
+                        source_location: self.context.create_location(),
+                        metadata: ExpressionMetadata::default(),
+                    };
+                    TypedExpressionKind::FieldAccess {
+                        object: Box::new(receiver),
+                        field_symbol: symbol_id,
+                    }
+                } else {
+                    TypedExpressionKind::Variable { symbol_id }
+                }
             }
             ExprKind::Binary { left, op, right } => {
                 let left_expr = self.lower_expression(left)?;

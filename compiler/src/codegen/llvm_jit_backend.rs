@@ -527,6 +527,12 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             return Ok(llvm_func);
         }
 
+        // Replace Std functions with inline implementations (e.g., Std.int → fptosi)
+        if let Some(llvm_func) = self.try_create_std_intrinsic(&func_name, &fn_type)? {
+            self.function_map.insert(func_id, llvm_func);
+            return Ok(llvm_func);
+        }
+
         // Replace array operations with inline implementations
         // HaxeArray layout: { ptr, len, cap, elem_size } - all 8 bytes each
         if let Some(llvm_func) = self.try_create_array_intrinsic(&func_name, &fn_type)? {
@@ -630,6 +636,88 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             .try_as_basic_value()
             .left()
             .ok_or("Intrinsic returned void unexpectedly")?;
+
+        builder
+            .build_return(Some(&result))
+            .map_err(|e| format!("Failed to build return: {}", e))?;
+
+        Ok(Some(wrapper))
+    }
+
+    /// Create inline Std intrinsics (e.g., Std.int for float-to-int conversion).
+    /// Returns Some(func) if replaced, None if not a known Std function.
+    fn try_create_std_intrinsic(
+        &self,
+        func_name: &str,
+        fn_type: &inkwell::types::FunctionType<'ctx>,
+    ) -> Result<Option<FunctionValue<'ctx>>, String> {
+        if func_name != "haxe_std_int" {
+            return Ok(None);
+        }
+
+        // Create a wrapper function with internal linkage
+        let wrapper = self.module.add_function(
+            func_name,
+            *fn_type,
+            Some(inkwell::module::Linkage::Internal),
+        );
+        wrapper.add_attribute(
+            inkwell::attributes::AttributeLoc::Function,
+            self.context.create_enum_attribute(
+                inkwell::attributes::Attribute::get_named_enum_kind_id("alwaysinline"),
+                0,
+            ),
+        );
+
+        let bb = self.context.append_basic_block(wrapper, "entry");
+        let builder = self.context.create_builder();
+        builder.position_at_end(bb);
+
+        let i32_type = self.context.i32_type();
+
+        // Get the first non-pointer parameter (could be float or int)
+        let param = wrapper
+            .get_params()
+            .into_iter()
+            .find(|p| p.is_float_value() || p.is_int_value())
+            .ok_or("haxe_std_int: expected numeric parameter")?;
+
+        // Determine the actual return type from the function signature
+        let ret_type = fn_type
+            .get_return_type()
+            .map(|t| t.into_int_type())
+            .unwrap_or(i32_type);
+
+        let i32_result: inkwell::values::IntValue = if param.is_float_value() {
+            // Convert f64 to i32 using fptosi (truncation toward zero)
+            builder
+                .build_float_to_signed_int(param.into_float_value(), i32_type, "int_result")
+                .map_err(|e| format!("Failed to build fptosi: {}", e))?
+        } else {
+            // Already an int, truncate/extend to i32 if needed
+            let int_val = param.into_int_value();
+            let int_bits = int_val.get_type().get_bit_width();
+            if int_bits > 32 {
+                builder
+                    .build_int_truncate(int_val, i32_type, "trunc")
+                    .map_err(|e| format!("Failed to truncate: {}", e))?
+            } else if int_bits < 32 {
+                builder
+                    .build_int_s_extend(int_val, i32_type, "sext")
+                    .map_err(|e| format!("Failed to sign-extend: {}", e))?
+            } else {
+                int_val
+            }
+        };
+
+        // Sign-extend result to match the function's return type if needed
+        let result = if ret_type.get_bit_width() > 32 {
+            builder
+                .build_int_s_extend(i32_result, ret_type, "sext_ret")
+                .map_err(|e| format!("Failed to sign-extend return: {}", e))?
+        } else {
+            i32_result
+        };
 
         builder
             .build_return(Some(&result))
@@ -1348,6 +1436,12 @@ impl<'ctx> LLVMJitBackend<'ctx> {
             // Replace known math runtime functions with LLVM intrinsic wrappers
             // (e.g. haxe_math_sqrt → @llvm.sqrt.f64 → single fsqrt instruction)
             if let Some(llvm_func) = self.try_create_math_intrinsic(&func_name, &fn_type)? {
+                self.function_map.insert(func_id, llvm_func);
+                return Ok(llvm_func);
+            }
+
+            // Replace Std functions with inline implementations (e.g., Std.int → fptosi)
+            if let Some(llvm_func) = self.try_create_std_intrinsic(&func_name, &fn_type)? {
                 self.function_map.insert(func_id, llvm_func);
                 return Ok(llvm_func);
             }

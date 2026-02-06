@@ -1106,6 +1106,7 @@ dependencies = [
  "clap",
  "compiler",
  "parser",
+ "rayzor-runtime",
 ]
 
 [[package]]

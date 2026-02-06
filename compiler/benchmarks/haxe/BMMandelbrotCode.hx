@@ -39,6 +39,7 @@ class BMMandelbrotCode {
         image[width * height - 1] = null;
         var outPixel = 0;
         var scale = 0.1 / SIZE;
+        var checksum = 0;
         for (y in 0...height) {
             for (x in 0...width) {
                 var iteration = 0;
@@ -50,9 +51,12 @@ class BMMandelbrotCode {
                     iteration++;
                 }
 
-                image[outPixel++] = palette[iteration];
+                var color = palette[iteration];
+                image[outPixel++] = color;
+                checksum = checksum + color.r + color.g + color.b;
             }
         }
+        trace("Checksum: " + checksum);
     }
 
     public function complexLength2(val:Complex):Float {
