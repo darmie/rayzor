@@ -72,6 +72,14 @@ jobs:
       - name: Build rayzor-runtime static library
         run: cargo build --release -p rayzor-runtime
 
+      - name: Build rayzor CLI
+        run: cargo build --release --features llvm-backend
+
+      - name: Regenerate precompiled bundles
+        run: |
+          ./target/release/rayzor bundle compiler/benchmarks/src/mandelbrot.hx -o compiler/benchmarks/precompiled/mandelbrot.rzb --strip
+          ./target/release/rayzor bundle compiler/benchmarks/src/nbody.hx -o compiler/benchmarks/precompiled/nbody.rzb --strip
+
       - name: Run nbody benchmark
         run: cargo run --release --package compiler --features all-backends --example benchmark_runner -- nbody --json
 

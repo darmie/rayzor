@@ -5161,31 +5161,38 @@ impl<'a> AstLowering<'a> {
                     };
 
                 if is_instance_field {
-                    // Create implicit `this` receiver
+                    // Create implicit `this` receiver — but only if `this` is actually
+                    // available (i.e., we're in an instance method, not a static one).
+                    // In static methods, `this` won't be in scope, so we fall through
+                    // to a plain Variable reference which preserves the existing
+                    // "instance member cannot be accessed from static context" error.
                     let this_name = self.context.intern_string("this");
-                    let this_symbol = self
-                        .resolve_symbol_in_scope_hierarchy(this_name)
-                        .unwrap_or_else(|| self.context.symbol_table.create_variable(this_name));
-                    let this_type = self
-                        .context
-                        .class_context_stack
-                        .last()
-                        .and_then(|cs| self.context.symbol_table.get_symbol(*cs))
-                        .map(|s| s.type_id)
-                        .unwrap_or_else(|| self.context.type_table.borrow().dynamic_type());
-                    let receiver = TypedExpression {
-                        expr_type: this_type,
-                        kind: TypedExpressionKind::Variable {
-                            symbol_id: this_symbol,
-                        },
-                        usage: VariableUsage::Copy,
-                        lifetime_id: crate::tast::LifetimeId::first(),
-                        source_location: self.context.create_location(),
-                        metadata: ExpressionMetadata::default(),
-                    };
-                    TypedExpressionKind::FieldAccess {
-                        object: Box::new(receiver),
-                        field_symbol: symbol_id,
+                    if let Some(this_symbol) = self.resolve_symbol_in_scope_hierarchy(this_name) {
+                        let this_type = self
+                            .context
+                            .class_context_stack
+                            .last()
+                            .and_then(|cs| self.context.symbol_table.get_symbol(*cs))
+                            .map(|s| s.type_id)
+                            .unwrap_or_else(|| self.context.type_table.borrow().dynamic_type());
+                        let receiver = TypedExpression {
+                            expr_type: this_type,
+                            kind: TypedExpressionKind::Variable {
+                                symbol_id: this_symbol,
+                            },
+                            usage: VariableUsage::Copy,
+                            lifetime_id: crate::tast::LifetimeId::first(),
+                            source_location: self.context.create_location(),
+                            metadata: ExpressionMetadata::default(),
+                        };
+                        TypedExpressionKind::FieldAccess {
+                            object: Box::new(receiver),
+                            field_symbol: symbol_id,
+                        }
+                    } else {
+                        // `this` not in scope — we're in a static context.
+                        // Keep as plain Variable so static-context checks can report the error.
+                        TypedExpressionKind::Variable { symbol_id }
                     }
                 } else {
                     TypedExpressionKind::Variable { symbol_id }
