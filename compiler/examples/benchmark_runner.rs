@@ -827,9 +827,9 @@ fn run_haxe_benchmark(bench_name: &str, target: Target) -> Result<(Duration, Dur
             std::fs::create_dir_all(&c_out_dir).ok();
 
             let hlc_output = Command::new("hl")
+                .arg(&hl_path)
                 .arg("--hlc")
                 .arg(&c_out_dir)
-                .arg(&hl_path)
                 .output()
                 .map_err(|e| format!("Failed to run hlc: {}", e))?;
 
@@ -864,13 +864,17 @@ fn run_haxe_benchmark(bench_name: &str, target: Target) -> Result<(Duration, Dur
             let binary = tmp_dir.join("hlc_binary");
             let gcc_output = Command::new("gcc")
                 .arg("-O2")
+                .arg("-std=c11")
                 .arg("-o")
                 .arg(&binary)
                 .arg(c_out_dir.join("main.c"))
                 .arg("-I")
                 .arg(&c_out_dir)
+                .arg("-I")
+                .arg("/usr/local/include")
                 .arg("-lhl")
                 .arg("-lm")
+                .arg("-lpthread")
                 .output()
                 .map_err(|e| format!("Failed to gcc compile: {}", e))?;
 
