@@ -263,7 +263,7 @@ impl AotCompiler {
                     module,
                     &obj_path,
                     target_triple_str,
-                    RelocMode::Default,
+                    RelocMode::PIC,
                     llvm_opt,
                 )?;
             }

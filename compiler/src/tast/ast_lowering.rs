@@ -607,6 +607,8 @@ pub struct AstLowering<'a> {
     /// Pending 'using' modules that need to be loaded (not yet compiled)
     /// These are module paths like "StringTools" that were used but only pre-registered
     pub pending_usings: Vec<String>,
+    /// Whether we're currently lowering a static method body (no `this` available)
+    in_static_method: bool,
 }
 
 /// Result of type parameter substitution for generic method return types
@@ -1098,6 +1100,7 @@ impl<'a> AstLowering<'a> {
             collected_errors: Vec::new(),
             using_modules: Vec::new(),
             pending_usings: Vec::new(),
+            in_static_method: false,
         }
     }
 
@@ -3972,6 +3975,16 @@ impl<'a> AstLowering<'a> {
             parameters.push(self.lower_parameter(param)?);
         }
 
+        // Check if this is a static method BEFORE lowering the body, so that
+        // the implicit `this` logic in identifier resolution knows whether
+        // `this` is available.
+        let is_static_method = field
+            .modifiers
+            .iter()
+            .any(|m| matches!(m, parser::Modifier::Static));
+        let prev_static = self.in_static_method;
+        self.in_static_method = is_static_method;
+
         // Process body first (we need it to infer return type if not specified)
         let (body, body_statements_for_inference) = if let Some(body_expr) = &func.body {
             let typed_expr = self.lower_expression(body_expr)?;
@@ -3988,6 +4001,9 @@ impl<'a> AstLowering<'a> {
         } else {
             (Vec::new(), Vec::new())
         };
+
+        // Restore static method flag
+        self.in_static_method = prev_static;
 
         // Process return type - if not specified, infer from body
         let return_type = if let Some(ret_type) = &func.return_type {
@@ -5142,57 +5158,54 @@ impl<'a> AstLowering<'a> {
                             location: self.context.create_location_from_span(expression.span),
                         })?;
 
-                // Check if this symbol is an instance field of the current class.
-                // If so, we need to create a FieldAccess with implicit `this` receiver.
-                // Fields inside a class body (e.g., `i = value` where `i` is a field) should
-                // become `this.i = value`, not a bare variable reference.
+                // Check if this symbol is an instance VAR field of the current class
+                // (not a method). If so, we need to create a FieldAccess with implicit
+                // `this` receiver: `i = value` → `this.i = value`.
                 let is_instance_field =
                     if let Some(class_symbol) = self.context.class_context_stack.last() {
-                        if let Some(fields) = self.class_fields.get(class_symbol) {
-                            // Check if symbol_id matches any non-static field
-                            fields.iter().any(|(_, field_sym, is_static)| {
+                        let is_in_fields = self.class_fields.get(class_symbol)
+                            .map(|fields| fields.iter().any(|(_, field_sym, is_static)| {
                                 *field_sym == symbol_id && !is_static
-                            })
-                        } else {
-                            false
-                        }
+                            }))
+                            .unwrap_or(false);
+                        // Exclude methods — they are handled by the call resolution path
+                        let is_method = self.class_methods.get(class_symbol)
+                            .map(|methods| methods.iter().any(|(_, method_sym, _)| {
+                                *method_sym == symbol_id
+                            }))
+                            .unwrap_or(false);
+                        is_in_fields && !is_method
                     } else {
                         false
                     };
 
-                if is_instance_field {
-                    // Create implicit `this` receiver — but only if `this` is actually
-                    // available (i.e., we're in an instance method, not a static one).
-                    // In static methods, `this` won't be in scope, so we fall through
-                    // to a plain Variable reference which preserves the existing
-                    // "instance member cannot be accessed from static context" error.
+                if is_instance_field && !self.in_static_method {
+                    // Create implicit `this` receiver for instance field access
+                    // in non-static methods/constructors.
                     let this_name = self.context.intern_string("this");
-                    if let Some(this_symbol) = self.resolve_symbol_in_scope_hierarchy(this_name) {
-                        let this_type = self
-                            .context
-                            .class_context_stack
-                            .last()
-                            .and_then(|cs| self.context.symbol_table.get_symbol(*cs))
-                            .map(|s| s.type_id)
-                            .unwrap_or_else(|| self.context.type_table.borrow().dynamic_type());
-                        let receiver = TypedExpression {
-                            expr_type: this_type,
-                            kind: TypedExpressionKind::Variable {
-                                symbol_id: this_symbol,
-                            },
-                            usage: VariableUsage::Copy,
-                            lifetime_id: crate::tast::LifetimeId::first(),
-                            source_location: self.context.create_location(),
-                            metadata: ExpressionMetadata::default(),
-                        };
-                        TypedExpressionKind::FieldAccess {
-                            object: Box::new(receiver),
-                            field_symbol: symbol_id,
-                        }
-                    } else {
-                        // `this` not in scope — we're in a static context.
-                        // Keep as plain Variable so static-context checks can report the error.
-                        TypedExpressionKind::Variable { symbol_id }
+                    let this_symbol = self
+                        .resolve_symbol_in_scope_hierarchy(this_name)
+                        .unwrap_or_else(|| self.context.symbol_table.create_variable(this_name));
+                    let this_type = self
+                        .context
+                        .class_context_stack
+                        .last()
+                        .and_then(|cs| self.context.symbol_table.get_symbol(*cs))
+                        .map(|s| s.type_id)
+                        .unwrap_or_else(|| self.context.type_table.borrow().dynamic_type());
+                    let receiver = TypedExpression {
+                        expr_type: this_type,
+                        kind: TypedExpressionKind::Variable {
+                            symbol_id: this_symbol,
+                        },
+                        usage: VariableUsage::Copy,
+                        lifetime_id: crate::tast::LifetimeId::first(),
+                        source_location: self.context.create_location(),
+                        metadata: ExpressionMetadata::default(),
+                    };
+                    TypedExpressionKind::FieldAccess {
+                        object: Box::new(receiver),
+                        field_symbol: symbol_id,
                     }
                 } else {
                     TypedExpressionKind::Variable { symbol_id }

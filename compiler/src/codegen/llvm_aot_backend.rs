@@ -170,8 +170,11 @@ pub fn compile_ir_with_system_tools(
     }
 
     // llc: optimized bitcode → object file
+    // Use PIC relocation model so the object can be linked into a PIE executable
+    // (modern Linux defaults to PIE).
     let llc_out = Command::new(&llc_bin)
         .arg(opt_flag)
+        .arg("--relocation-model=pic")
         .arg("-filetype=obj")
         .arg("-o")
         .arg(output_obj)
