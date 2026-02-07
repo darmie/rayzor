@@ -1,3 +1,5 @@
+![200x200](website/rayzor-blade-logo.png)
+
 # Rayzor
 
 > A high-performance, next-generation Haxe compiler with tiered JIT compilation and native code generation
