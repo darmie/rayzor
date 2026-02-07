@@ -58,7 +58,7 @@ pub unsafe extern "C" fn rayzor_gpu_compute_create_buffer(ctx: i64, tensor_ptr: 
     let tensor = tensor_ptr as *const u8;
     let data_ptr = *(tensor as *const *const u8);
     let numel = *(tensor.add(32) as *const usize);
-    let dtype = *(tensor.add(40) as *const u8);
+    let dtype = *tensor.add(40);
     let byte_size = numel * dtype_byte_size(dtype);
 
     #[cfg(target_os = "macos")]
@@ -173,8 +173,8 @@ pub unsafe extern "C" fn rayzor_gpu_compute_to_tensor(ctx: i64, buffer_ptr: i64)
         *(tensor.add(16) as *mut *mut usize) = strides; // strides: offset 16
         *(tensor.add(24) as *mut usize) = 1; // ndim: offset 24
         *(tensor.add(32) as *mut usize) = buf.numel; // numel: offset 32
-        *(tensor.add(40) as *mut u8) = buf.dtype; // dtype: offset 40
-        *(tensor.add(41) as *mut u8) = 1; // owns_data: offset 41
+        *tensor.add(40) = buf.dtype; // dtype: offset 40
+        *tensor.add(41) = 1; // owns_data: offset 41
 
         tensor as i64
     }

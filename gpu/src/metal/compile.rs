@@ -44,7 +44,7 @@ pub fn compile_msl(
         .newComputePipelineStateWithFunction_error(&function)
         .map_err(|e| format!("pipeline creation failed: {}", e))?;
 
-    let max_threads_per_group = pipeline.maxTotalThreadsPerThreadgroup() as usize;
+    let max_threads_per_group = pipeline.maxTotalThreadsPerThreadgroup();
 
     Ok(CompiledKernel {
         pipeline,

@@ -31,6 +31,12 @@ pub struct KernelCache {
     _placeholder: (),
 }
 
+impl Default for KernelCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KernelCache {
     pub fn new() -> Self {
         KernelCache {
@@ -53,14 +59,20 @@ impl KernelCache {
     ) -> Result<&CachedKernel, String> {
         let key = (op, dtype);
 
-        if !self.entries.contains_key(&key) {
+        if let std::collections::hash_map::Entry::Vacant(e) = self.entries.entry(key) {
             let source = msl::emit_kernel(op, dtype);
             let fn_name = msl::kernel_fn_name(op, dtype);
             let compiled = compile::compile_msl(ctx, &source, &fn_name)?;
-            self.entries.insert(key, CachedKernel { compiled });
+            e.insert(CachedKernel { compiled });
         }
 
         Ok(self.entries.get(&key).unwrap())
+    }
+
+    /// Whether the cache is empty.
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Number of cached kernels.

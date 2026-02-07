@@ -10,6 +10,9 @@
 //! to auto-register method mappings and extern declarations — **no compiler core
 //! changes required**.
 
+// All extern "C" functions in this crate are FFI entry points called by the JIT runtime.
+#![allow(clippy::missing_safety_doc)]
+
 pub mod buffer;
 pub mod codegen;
 pub mod device;
@@ -83,7 +86,7 @@ pub struct SymbolEntry {
 
 /// Plugin initialization — returns a flat symbol table for JIT linking.
 #[no_mangle]
-pub extern "C" fn rayzor_gpu_plugin_init(out_count: *mut usize) -> *const SymbolEntry {
+pub unsafe extern "C" fn rayzor_gpu_plugin_init(out_count: *mut usize) -> *const SymbolEntry {
     let symbols = collect_symbols();
     let count = symbols.len();
     let ptr = symbols.as_ptr();
@@ -101,7 +104,9 @@ pub extern "C" fn rayzor_gpu_plugin_init(out_count: *mut usize) -> *const Symbol
 /// The compiler reads these to auto-generate method mappings and extern
 /// declarations — no manual MIR wrappers or compiler core changes needed.
 #[no_mangle]
-pub extern "C" fn rayzor_gpu_plugin_describe(out_count: *mut usize) -> *const NativeMethodDesc {
+pub unsafe extern "C" fn rayzor_gpu_plugin_describe(
+    out_count: *mut usize,
+) -> *const NativeMethodDesc {
     if !out_count.is_null() {
         unsafe {
             *out_count = GPU_METHODS.len();

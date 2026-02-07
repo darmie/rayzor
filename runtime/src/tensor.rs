@@ -309,8 +309,8 @@ pub unsafe extern "C" fn rayzor_tensor_shape(tensor_ptr: i64) -> i64 {
 
     // Copy shape values as i64
     let data_i64 = data_ptr as *mut i64;
-    for i in 0..ndim {
-        *data_i64.add(i) = shape_slice[i] as i64;
+    for (i, &val) in shape_slice[..ndim].iter().enumerate() {
+        *data_i64.add(i) = val as i64;
     }
 
     // Fill HaxeArray fields: ptr, len, cap, elem_size

@@ -594,63 +594,61 @@ fn try_load_gpu_plugin() -> Option<GpuPlugin> {
         Some(std::path::PathBuf::from(lib_name)),
     ];
 
-    for path_opt in &search_paths {
-        if let Some(ref path) = path_opt {
-            if let Ok(lib) = unsafe { libloading::Library::new(path) } {
-                let mut symbols = Vec::new();
+    for path in search_paths.iter().flatten() {
+        if let Ok(lib) = unsafe { libloading::Library::new(path) } {
+            let mut symbols = Vec::new();
 
-                // Load runtime symbols for JIT linking
-                type InitFn = unsafe extern "C" fn(*mut usize) -> *const u8;
-                if let Ok(init_fn) = unsafe { lib.get::<InitFn>(b"rayzor_gpu_plugin_init") } {
-                    let mut count: usize = 0;
-                    let entries_ptr = unsafe { init_fn(&mut count) };
-                    if !entries_ptr.is_null() && count > 0 {
-                        let entries = unsafe {
-                            std::slice::from_raw_parts(
-                                entries_ptr as *const (usize, usize, usize),
-                                count,
-                            )
+            // Load runtime symbols for JIT linking
+            type InitFn = unsafe extern "C" fn(*mut usize) -> *const u8;
+            if let Ok(init_fn) = unsafe { lib.get::<InitFn>(b"rayzor_gpu_plugin_init") } {
+                let mut count: usize = 0;
+                let entries_ptr = unsafe { init_fn(&mut count) };
+                if !entries_ptr.is_null() && count > 0 {
+                    let entries = unsafe {
+                        std::slice::from_raw_parts(
+                            entries_ptr as *const (usize, usize, usize),
+                            count,
+                        )
+                    };
+                    for &(name_ptr, name_len, fn_ptr) in entries {
+                        let name = unsafe {
+                            std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                                name_ptr as *const u8,
+                                name_len,
+                            ))
                         };
-                        for &(name_ptr, name_len, fn_ptr) in entries {
-                            let name = unsafe {
-                                std::str::from_utf8_unchecked(std::slice::from_raw_parts(
-                                    name_ptr as *const u8,
-                                    name_len,
-                                ))
-                            };
-                            let name: &'static str = unsafe { std::mem::transmute(name) };
-                            symbols.push((name, fn_ptr as *const u8));
-                        }
+                        let name: &'static str = unsafe { std::mem::transmute(name) };
+                        symbols.push((name, fn_ptr as *const u8));
                     }
                 }
+            }
 
-                // Load method descriptors for compiler-side registration
-                type DescribeFn =
-                    unsafe extern "C" fn(*mut usize) -> *const rayzor_plugin::NativeMethodDesc;
-                let compiler_plugin = unsafe {
-                    if let Ok(describe_fn) = lib.get::<DescribeFn>(b"rayzor_gpu_plugin_describe") {
-                        let mut count: usize = 0;
-                        let descs = describe_fn(&mut count);
-                        if !descs.is_null() && count > 0 {
-                            Some(compiler::compiler_plugin::NativePlugin::from_descriptors(
-                                "rayzor_gpu_compute",
-                                descs,
-                                count,
-                            ))
-                        } else {
-                            None
-                        }
+            // Load method descriptors for compiler-side registration
+            type DescribeFn =
+                unsafe extern "C" fn(*mut usize) -> *const rayzor_plugin::NativeMethodDesc;
+            let compiler_plugin = unsafe {
+                if let Ok(describe_fn) = lib.get::<DescribeFn>(b"rayzor_gpu_plugin_describe") {
+                    let mut count: usize = 0;
+                    let descs = describe_fn(&mut count);
+                    if !descs.is_null() && count > 0 {
+                        Some(compiler::compiler_plugin::NativePlugin::from_descriptors(
+                            "rayzor_gpu_compute",
+                            descs,
+                            count,
+                        ))
                     } else {
                         None
                     }
-                };
+                } else {
+                    None
+                }
+            };
 
-                return Some(GpuPlugin {
-                    _lib: lib,
-                    symbols,
-                    compiler_plugin,
-                });
-            }
+            return Some(GpuPlugin {
+                _lib: lib,
+                symbols,
+                compiler_plugin,
+            });
         }
     }
     None

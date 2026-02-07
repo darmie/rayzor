@@ -74,10 +74,10 @@ pub fn emit_unary_elementwise(op: KernelOp, dtype: u8) -> String {
     let fn_name = kernel_fn_name(op, dtype);
     let op_expr = match op {
         KernelOp::Neg => "-a[id]".to_string(),
-        KernelOp::Abs => format!("abs(a[id])"),
-        KernelOp::Sqrt => format!("sqrt(a[id])"),
-        KernelOp::Exp => format!("exp(a[id])"),
-        KernelOp::Log => format!("log(a[id])"),
+        KernelOp::Abs => "abs(a[id])".to_string(),
+        KernelOp::Sqrt => "sqrt(a[id])".to_string(),
+        KernelOp::Exp => "exp(a[id])".to_string(),
+        KernelOp::Log => "log(a[id])".to_string(),
         KernelOp::Relu => format!("max(({msl_type})0, a[id])"),
         _ => unreachable!("not a unary op"),
     };

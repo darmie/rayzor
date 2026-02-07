@@ -308,7 +308,7 @@ unsafe fn reduce_impl(ctx: i64, buf: i64, op: KernelOp) -> f64 {
     let num_tgs = if numel <= tg_size {
         1
     } else {
-        ((numel + tg_size - 1) / tg_size).min(256)
+        numel.div_ceil(tg_size).min(256)
     };
 
     // Create numel constant buffer
@@ -446,8 +446,8 @@ unsafe fn matmul_impl(ctx: i64, a: i64, b: i64, m: usize, k: usize, n: usize) ->
     // Dispatch as 2D grid
     let threads_per_tg = 16usize;
     let tg_count = MTLSize {
-        width: (n + threads_per_tg - 1) / threads_per_tg,
-        height: (m + threads_per_tg - 1) / threads_per_tg,
+        width: n.div_ceil(threads_per_tg),
+        height: m.div_ceil(threads_per_tg),
         depth: 1,
     };
     let tg_threads = MTLSize {
@@ -1081,13 +1081,13 @@ mod tests {
 
         let ptr = result_buf.inner.contents() as *const f32;
         let expected = [19.0f32, 22.0, 43.0, 50.0];
-        for i in 0..4 {
+        for (i, &exp) in expected.iter().enumerate() {
             let actual = unsafe { *ptr.add(i) };
             assert!(
-                (actual - expected[i]).abs() < 1e-3,
+                (actual - exp).abs() < 1e-3,
                 "matmul[{}]: expected {}, got {}",
                 i,
-                expected[i],
+                exp,
                 actual
             );
         }
@@ -1104,7 +1104,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     unsafe fn create_test_buffer(ctx: i64, data: &[f32]) -> i64 {
         let gpu_ctx = &*(ctx as *const GpuContext);
-        let byte_size = data.len() * std::mem::size_of::<f32>();
+        let byte_size = std::mem::size_of_val(data);
         let inner = MetalBuffer::from_data(&gpu_ctx.inner, data.as_ptr() as *const u8, byte_size)
             .expect("failed to create test buffer");
 
