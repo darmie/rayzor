@@ -1,6 +1,7 @@
 
-
-<img style="margin: 0 auto; display: block;" src="website/rayzor-blade-logo.png" alt="Rayzor Blade Logo" width="250"/>
+<p align="center">
+<img style="display: block;" src="website/rayzor-blade-logo.png" alt="Rayzor Blade Logo" width="250"/>
+</p>
 
 # Rayzor
 
