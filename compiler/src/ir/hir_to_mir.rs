@@ -2612,10 +2612,31 @@ impl<'a> HirToMirContext<'a> {
                     else if let HirExprKind::Call {
                         callee,
                         args: call_args,
+                        is_method,
                         ..
                     } = &init_expr.kind
                     {
                         self.detect_stdlib_class_from_call(callee, call_args)
+                            .or_else(|| {
+                                // For static calls (is_method=false) with Variable callee,
+                                // resolve the method via stdlib mapping to identify the class.
+                                // This handles extern class factory methods like GPUCompute.create().
+                                if !is_method {
+                                    if let HirExprKind::Variable { symbol, .. } = &callee.kind {
+                                        self.get_stdlib_runtime_info(
+                                            *symbol,
+                                            TypeId::invalid(),
+                                            Some(call_args.len()),
+                                            None,
+                                        )
+                                        .map(|(class_name, _, _)| class_name.to_string())
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            })
                     } else {
                         None
                     };
@@ -3108,6 +3129,62 @@ impl<'a> HirToMirContext<'a> {
         None
     }
 
+    /// Find the class name that owns a given method symbol by scanning HIR type declarations.
+    /// Returns the normalized class name (e.g., "rayzor_gpu_GPUCompute") if found.
+    /// Extract the normalized class name from an HirExpr's type by looking up
+    /// the receiver in HIR type declarations. Handles extern classes whose TypeId
+    /// may be invalid by checking all HIR types for a class with the method symbol.
+    fn find_receiver_class_name(&self, receiver: &crate::ir::hir::HirExpr) -> Option<String> {
+        // Strategy 1: Look up receiver.ty directly in current_hir_types
+        if let Some(decl) = self.current_hir_types.get(&receiver.ty) {
+            if let Some(name) = self.extract_class_native_name(decl) {
+                return Some(name);
+            }
+        }
+
+        // Strategy 2: If the receiver is a variable, get its symbol's type_id
+        // and look that up. Extern class variables may have a different TypeId
+        // than the class declaration.
+        if let crate::ir::hir::HirExprKind::Variable { symbol, .. } = &receiver.kind {
+            if let Some(sym) = self.symbol_table.get_symbol(*symbol) {
+                // Try the symbol's type_id
+                if let Some(decl) = self.current_hir_types.get(&sym.type_id) {
+                    if let Some(name) = self.extract_class_native_name(decl) {
+                        return Some(name);
+                    }
+                }
+                // Try the symbol's native_name → look for matching class
+                if let Some(native) = sym.native_name {
+                    if let Some(native_str) = self.string_interner.get(native) {
+                        return Some(native_str.replace("::", "_"));
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    fn extract_class_native_name(&self, decl: &HirTypeDecl) -> Option<String> {
+        if let HirTypeDecl::Class(cls) = decl {
+            for attr in &cls.metadata {
+                let attr_name = self.string_interner.get(attr.name).unwrap_or("");
+                if attr_name == "native" {
+                    if let Some(crate::ir::hir::HirAttributeArg::Literal(
+                        crate::ir::hir::HirLiteral::String(s),
+                    )) = attr.args.first()
+                    {
+                        if let Some(native_str) = self.string_interner.get(*s) {
+                            return Some(native_str.replace("::", "_"));
+                        }
+                    }
+                }
+            }
+            return self.string_interner.get(cls.name).map(|s| s.to_string());
+        }
+        None
+    }
+
     /// Check if a method symbol corresponds to a stdlib method with runtime mapping
     ///
     /// Returns (class_name, method_name, runtime_function_name) if this is a stdlib method
@@ -3305,6 +3382,30 @@ impl<'a> HirToMirContext<'a> {
                             sig.class, sig.method, mapping.runtime_name
                         );
                         return Some((sig.class, sig.method, mapping));
+                    }
+
+                    // Additional disambiguation: check which matching class's runtime function
+                    // is actually registered as an extern function in the current module.
+                    if filtered.len() > 1 {
+                        let extern_filtered: Vec<_> = filtered
+                            .iter()
+                            .filter(|(_, mapping)| {
+                                self.builder
+                                    .module
+                                    .extern_functions
+                                    .values()
+                                    .any(|ef| ef.name == mapping.runtime_name)
+                            })
+                            .copied()
+                            .collect();
+                        if extern_filtered.len() == 1 {
+                            let (sig, mapping) = extern_filtered[0];
+                            debug!(
+                                "[FALLBACK2] Disambiguated {}.{} by extern function presence -> {}",
+                                sig.class, sig.method, mapping.runtime_name
+                            );
+                            return Some((sig.class, sig.method, mapping));
+                        }
                     }
                 }
             }
@@ -4997,10 +5098,24 @@ impl<'a> HirToMirContext<'a> {
                                             )
                                         })
                                 } else {
-                                    self.get_stdlib_runtime_info(*field, object.ty, None, None)
+                                    // Extract receiver class hint by finding which class owns this method symbol
+                                    let receiver_hint: Option<String> =
+                                        self.find_receiver_class_name(object);
+                                    let hint_ref = receiver_hint.as_deref();
+                                    self.get_stdlib_runtime_info(
+                                        *field,
+                                        object.ty,
+                                        Some(args.len()),
+                                        hint_ref,
+                                    )
                                 }
                             } else {
-                                self.get_stdlib_runtime_info(*field, object.ty, None, None)
+                                self.get_stdlib_runtime_info(
+                                    *field,
+                                    object.ty,
+                                    Some(args.len()),
+                                    None,
+                                )
                             }
                         };
 
@@ -5786,17 +5901,21 @@ impl<'a> HirToMirContext<'a> {
                         let receiver_type = receiver.ty;
 
                         // Extract receiver class hint for disambiguation (e.g., "rayzor_ds_Tensor")
-                        let receiver_class_hint = if let HirExprKind::Variable {
-                            symbol: recv_sym,
-                            ..
-                        } = &receiver.kind
-                        {
-                            self.monomorphized_var_types
-                                .get(recv_sym)
-                                .map(|s| s.as_str())
-                        } else {
-                            None
-                        };
+                        let receiver_class_hint_owned: Option<String> =
+                            if let HirExprKind::Variable {
+                                symbol: recv_sym, ..
+                            } = &receiver.kind
+                            {
+                                self.monomorphized_var_types
+                                    .get(recv_sym)
+                                    .map(|s| s.to_string())
+                            } else {
+                                None
+                            };
+                        // Fallback: use find_receiver_class_name if monomorphized_var_types didn't have it
+                        let receiver_class_hint_owned = receiver_class_hint_owned
+                            .or_else(|| self.find_receiver_class_name(receiver));
+                        let receiver_class_hint = receiver_class_hint_owned.as_deref();
 
                         // Calculate actual param count (excluding the receiver) for overload disambiguation
                         // e.g., s.indexOf("World", 0) has args=[s, "World", 0], param_count=2

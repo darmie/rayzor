@@ -1673,6 +1673,41 @@ impl TieredBackend {
     /// - Other platforms (aarch64 macOS, etc.): Uses MCJIT directly (stable and fast).
     ///
     /// The compiled code is leaked to ensure it remains valid for program lifetime.
+
+    /// Clone stored modules and tree-shake to only reachable functions.
+    /// This prevents LLVM from compiling unused stdlib wrappers (Tensor, GPU, etc.)
+    /// that are included in the module but never called by the program.
+    #[cfg(feature = "llvm-backend")]
+    fn tree_shake_modules_for_llvm(&self) -> Vec<IrModule> {
+        let modules_lock = self.modules.read().unwrap();
+        let mut modules: Vec<IrModule> = modules_lock.iter().cloned().collect();
+        drop(modules_lock);
+
+        // Find the entry (main) function for tree-shaking
+        let entry = modules.iter().enumerate().find_map(|(idx, m)| {
+            m.functions
+                .values()
+                .find(|f| f.name.ends_with("_main") || f.name == "main")
+                .map(|f| (m.name.clone(), f.name.clone()))
+        });
+
+        if let Some((entry_module, entry_function)) = entry {
+            let stats = crate::ir::tree_shake::tree_shake_bundle(
+                &mut modules,
+                &entry_module,
+                &entry_function,
+            );
+            tracing::trace!(
+                "[LLVM] Tree-shaking: removed {} functions, {} externs (kept {} functions)",
+                stats.functions_removed,
+                stats.extern_functions_removed,
+                stats.functions_kept,
+            );
+        }
+
+        modules
+    }
+
     #[cfg(feature = "llvm-backend")]
     #[allow(dead_code)]
     fn compile_all_with_llvm(&self) -> Result<HashMap<IrFunctionId, usize>, String> {
@@ -1733,14 +1768,16 @@ impl TieredBackend {
 
         let mut backend = LLVMJitBackend::with_symbols(context, &symbols)?;
 
-        let modules_lock = self.modules.read().unwrap();
-        for module in modules_lock.iter() {
+        // Tree-shake to remove unreachable stdlib wrappers (Tensor, GPU, etc.)
+        // before LLVM compilation. Without this, LLVM compiles all functions
+        // including unused wrappers, which can cause heap corruption on Linux.
+        let modules = self.tree_shake_modules_for_llvm();
+        for module in &modules {
             backend.declare_module(module)?;
         }
-        for module in modules_lock.iter() {
+        for module in &modules {
             backend.compile_module_bodies(module)?;
         }
-        drop(modules_lock);
 
         // Get function symbols before finalize (we need names for global storage)
         let function_symbols = backend.get_function_symbols();
@@ -1858,15 +1895,16 @@ impl TieredBackend {
 
         let mut backend = LLVMJitBackend::with_symbols(context, &symbols)?;
 
-        // Two-pass compilation
-        let modules_lock = self.modules.read().unwrap();
-        for module in modules_lock.iter() {
+        // Tree-shake to remove unreachable stdlib wrappers (Tensor, GPU, etc.)
+        // before LLVM compilation. Without this, LLVM compiles all functions
+        // including unused wrappers, which can cause heap corruption on Linux.
+        let modules = self.tree_shake_modules_for_llvm();
+        for module in &modules {
             backend.declare_module(module)?;
         }
-        for module in modules_lock.iter() {
+        for module in &modules {
             backend.compile_module_bodies(module)?;
         }
-        drop(modules_lock);
 
         // Get function symbols before compiling (we need the names for dlsym)
         let function_symbols = backend.get_function_symbols();

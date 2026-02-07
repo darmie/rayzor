@@ -5074,11 +5074,26 @@ impl<'a> AstLowering<'a> {
                 // Try to resolve method from variable's type
                 if let Some(symbol) = self.context.symbol_table.get_symbol(*symbol_id) {
                     if let Some(class_symbol) = self.resolve_type_to_class_symbol(symbol.type_id) {
+                        // First check local class_methods (for classes lowered in this compilation unit)
                         if let Some(methods) = self.class_methods.get(&class_symbol) {
                             if let Some((_, method_symbol, _)) =
                                 methods.iter().find(|(name, _, _)| *name == method_name)
                             {
                                 return *method_symbol;
+                            }
+                        }
+                        // Fallback: check the shared symbol table's class scope
+                        // (for extern classes compiled in a different compilation unit)
+                        if let Some(class_sym) = self.context.symbol_table.get_symbol(class_symbol)
+                        {
+                            if let Some(method_sym) = self
+                                .context
+                                .symbol_table
+                                .lookup_symbol(class_sym.scope_id, method_name)
+                            {
+                                if method_sym.kind == crate::tast::symbols::SymbolKind::Function {
+                                    return method_sym.id;
+                                }
                             }
                         }
                     }
@@ -5123,6 +5138,42 @@ impl<'a> AstLowering<'a> {
                             }
                         }
                     }
+                }
+            }
+        }
+
+        // Fallback: Try to resolve using the receiver expression's type
+        // (may differ from the variable symbol's type for extern classes)
+        if let Some(class_symbol) = self.resolve_type_to_class_symbol(receiver.expr_type) {
+            if let Some(methods) = self.class_methods.get(&class_symbol) {
+                if let Some((_, method_symbol, _)) =
+                    methods.iter().find(|(name, _, _)| *name == method_name)
+                {
+                    return *method_symbol;
+                }
+            }
+        }
+
+        // Last resort: scan ALL class_methods for a unique match by name.
+        // This handles extern classes where TypeId is invalid but the method
+        // definition symbols have full metadata (qualified_name, native_name, etc.).
+        {
+            let mut found: Option<SymbolId> = None;
+            let mut ambiguous = false;
+            for (_class_sym, methods) in &self.class_methods {
+                if let Some((_, method_symbol, _)) =
+                    methods.iter().find(|(name, _, _)| *name == method_name)
+                {
+                    if found.is_some() {
+                        ambiguous = true;
+                        break;
+                    }
+                    found = Some(*method_symbol);
+                }
+            }
+            if let Some(method_symbol) = found {
+                if !ambiguous {
+                    return method_symbol;
                 }
             }
         }
@@ -6429,87 +6480,74 @@ impl<'a> AstLowering<'a> {
                                 let method_name = self.context.intern_string(field);
 
                                 // Look for the method in this class
-                                let method_symbol = if let Some(methods) =
-                                    self.class_methods.get(&class_symbol)
-                                {
-                                    let found = methods
-                                        .iter()
-                                        .find(|(name, _, _)| *name == method_name)
-                                        .map(|(_, symbol, _)| *symbol);
+                                // 1. Check local class_methods (for classes lowered in this compilation unit)
+                                // 2. Check shared symbol table's class scope (for extern classes from other units)
+                                // 3. Create placeholder as last resort
+                                let method_symbol = {
+                                    // Strategy 1: local class_methods
+                                    let from_local =
+                                        self.class_methods.get(&class_symbol).and_then(|methods| {
+                                            methods
+                                                .iter()
+                                                .find(|(name, _, _)| *name == method_name)
+                                                .map(|(_, symbol, _)| *symbol)
+                                        });
 
-                                    if let Some(sym) = found {
+                                    if let Some(sym) = from_local {
                                         sym
                                     } else {
-                                        let new_symbol =
-                                            self.context.symbol_table.create_function(method_name);
-
-                                        // IMPORTANT: Set qualified name for the new symbol based on class + method
-                                        if let Some(class_sym) =
-                                            self.context.symbol_table.get_symbol(class_symbol)
-                                        {
-                                            if let Some(class_qname) = class_sym
-                                                .qualified_name
-                                                .and_then(|qn| self.context.string_interner.get(qn))
-                                            {
-                                                let method_qname = format!(
-                                                    "{}.{}",
-                                                    class_qname,
-                                                    self.context
-                                                        .string_interner
-                                                        .get(method_name)
-                                                        .unwrap_or("")
-                                                );
-                                                let method_qname_interned =
-                                                    self.context.intern_string(&method_qname);
-                                                self.context.symbol_table.update_qualified_name(
-                                                    new_symbol,
-                                                    &self.context.scope_tree,
-                                                    &self.context.string_interner,
-                                                );
-                                                // Override with our computed qualified name
-                                                if let Some(sym_mut) = self
-                                                    .context
+                                        // Strategy 2: shared symbol table scope lookup
+                                        let from_scope = self
+                                            .context
+                                            .symbol_table
+                                            .get_symbol(class_symbol)
+                                            .map(|s| s.scope_id)
+                                            .and_then(|scope_id| {
+                                                self.context
                                                     .symbol_table
-                                                    .get_symbol_mut(new_symbol)
+                                                    .lookup_symbol(scope_id, method_name)
+                                                    .map(|sym| sym.id)
+                                            });
+
+                                        if let Some(sym) = from_scope {
+                                            sym
+                                        } else {
+                                            // Strategy 3: create placeholder with qualified name
+                                            let new_symbol = self
+                                                .context
+                                                .symbol_table
+                                                .create_function(method_name);
+                                            if let Some(class_sym) =
+                                                self.context.symbol_table.get_symbol(class_symbol)
+                                            {
+                                                if let Some(class_qname) =
+                                                    class_sym.qualified_name.and_then(|qn| {
+                                                        self.context.string_interner.get(qn)
+                                                    })
                                                 {
-                                                    sym_mut.qualified_name =
-                                                        Some(method_qname_interned);
+                                                    let method_qname = format!(
+                                                        "{}.{}",
+                                                        class_qname,
+                                                        self.context
+                                                            .string_interner
+                                                            .get(method_name)
+                                                            .unwrap_or("")
+                                                    );
+                                                    let method_qname_interned =
+                                                        self.context.intern_string(&method_qname);
+                                                    if let Some(sym_mut) = self
+                                                        .context
+                                                        .symbol_table
+                                                        .get_symbol_mut(new_symbol)
+                                                    {
+                                                        sym_mut.qualified_name =
+                                                            Some(method_qname_interned);
+                                                    }
                                                 }
                                             }
-                                        }
-                                        new_symbol
-                                    }
-                                } else {
-                                    let new_symbol =
-                                        self.context.symbol_table.create_function(method_name);
-
-                                    // IMPORTANT: Set qualified name for the new symbol based on class + method
-                                    if let Some(class_sym) =
-                                        self.context.symbol_table.get_symbol(class_symbol)
-                                    {
-                                        if let Some(class_qname) = class_sym
-                                            .qualified_name
-                                            .and_then(|qn| self.context.string_interner.get(qn))
-                                        {
-                                            let method_qname = format!(
-                                                "{}.{}",
-                                                class_qname,
-                                                self.context
-                                                    .string_interner
-                                                    .get(method_name)
-                                                    .unwrap_or("")
-                                            );
-                                            let method_qname_interned =
-                                                self.context.intern_string(&method_qname);
-                                            if let Some(sym_mut) =
-                                                self.context.symbol_table.get_symbol_mut(new_symbol)
-                                            {
-                                                sym_mut.qualified_name =
-                                                    Some(method_qname_interned);
-                                            }
+                                            new_symbol
                                         }
                                     }
-                                    new_symbol
                                 };
 
                                 let kind = TypedExpressionKind::StaticMethodCall {

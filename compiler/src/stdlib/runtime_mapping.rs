@@ -2888,9 +2888,9 @@ impl StdlibMapping {
             // Tensor.full(shape: Array<Int>, value: Float, dtype: DType): Tensor
             map_method!(static "rayzor_ds_Tensor", "full" => "Tensor_full", params: 3, mir_wrapper,
                 types: &[PtrVoid, F64, I64] => PtrVoid),
-            // Tensor.fromArray(data: Array<Float>, shape: Array<Int>): Tensor
+            // Tensor.fromArray(data: Array<Float>, dtype: DType): Tensor
             map_method!(static "rayzor_ds_Tensor", "fromArray" => "Tensor_fromArray", params: 2, mir_wrapper,
-                types: &[PtrVoid, PtrVoid] => PtrVoid),
+                types: &[PtrVoid, I64] => PtrVoid),
             // Tensor.rand(shape: Array<Int>, dtype: DType): Tensor
             map_method!(static "rayzor_ds_Tensor", "rand" => "Tensor_rand", params: 2, mir_wrapper,
                 types: &[PtrVoid, I64] => PtrVoid),

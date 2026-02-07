@@ -2159,7 +2159,7 @@ impl CraneliftBackend {
 
                     for (i, arg_id) in args.iter().enumerate() {
                         let mut arg_val = *value_map.get(arg_id).ok_or_else(|| {
-                            format!("Argument {:?} not found in value_map", arg_id)
+                            format!("Argument {:?} not found in value_map (in function '{}', calling '{}')", arg_id, function.name, called_func.name)
                         })?;
 
                         // Get the actual Cranelift type of the argument

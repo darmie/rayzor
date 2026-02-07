@@ -34,9 +34,9 @@ extern class Tensor {
     @:native("tensor_full")
     public static function full(shape:Array<Int>, value:Float, dtype:DType):Tensor;
 
-    /** Create a tensor from a flat array of floats */
+    /** Create a 1-D tensor from a flat array of floats */
     @:native("tensor_fromArray")
-    public static function fromArray(data:Array<Float>, shape:Array<Int>):Tensor;
+    public static function fromArray(data:Array<Float>, dtype:DType):Tensor;
 
     /** Create a tensor with random values in [0, 1) */
     @:native("tensor_rand")

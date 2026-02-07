@@ -181,30 +181,39 @@ pub unsafe extern "C" fn rayzor_tensor_full(
     alloc_tensor(&shape, dtype as u8, Some(value as f32))
 }
 
-/// Tensor.fromArray(data_ptr, data_len, shape_ptr, ndim) -> i64
+/// Tensor.fromArray(data_ptr, data_len, dtype) -> i64
+/// Creates a 1-D tensor with shape=[data_len] from a flat array of f64 values.
 #[no_mangle]
-pub unsafe extern "C" fn rayzor_tensor_from_array(
-    data_ptr: i64,
-    data_len: i64,
-    shape_ptr: i64,
-    ndim: i64,
-) -> i64 {
-    let shape = read_shape(shape_ptr, ndim as usize);
-    let numel: usize = shape.iter().product();
+pub unsafe extern "C" fn rayzor_tensor_from_array(data_ptr: i64, data_len: i64, dtype: i64) -> i64 {
+    let numel = data_len as usize;
+    let shape = vec![numel];
+    let dtype_u8 = dtype as u8;
 
-    let tensor_ptr = alloc_tensor(&shape, DTYPE_F32, None);
+    let tensor_ptr = alloc_tensor(&shape, dtype_u8, None);
     if tensor_ptr == 0 {
         return 0;
     }
 
     let tensor = &*(tensor_ptr as *const RayzorTensor);
 
-    // Copy f64 data from Haxe Array<Float> to f32 tensor data
+    // Copy f64 data from Haxe Array<Float>, converting to target dtype
     let src = data_ptr as *const f64;
-    let dst = tensor.data as *mut f32;
-    let copy_len = numel.min(data_len as usize);
-    for i in 0..copy_len {
-        *dst.add(i) = *src.add(i) as f32;
+    if dtype_u8 == DTYPE_F32 {
+        let dst = tensor.data as *mut f32;
+        for i in 0..numel {
+            *dst.add(i) = *src.add(i) as f32;
+        }
+    } else if dtype_u8 == DTYPE_I32 {
+        let dst = tensor.data as *mut i32;
+        for i in 0..numel {
+            *dst.add(i) = *src.add(i) as i32;
+        }
+    } else {
+        // Fallback: copy as f32 (most common GPU dtype)
+        let dst = tensor.data as *mut f32;
+        for i in 0..numel {
+            *dst.add(i) = *src.add(i) as f32;
+        }
     }
 
     tensor_ptr

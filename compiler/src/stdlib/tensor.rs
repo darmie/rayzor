@@ -99,13 +99,12 @@ fn declare_tensor_externs(builder: &mut MirBuilder) {
         .build();
     builder.mark_as_extern(func_id);
 
-    // from_array: (data_ptr, data_len, shape_ptr, ndim) -> i64
+    // from_array: (data_ptr, data_len, dtype) -> i64
     let func_id = builder
         .begin_function("rayzor_tensor_from_array")
         .param("data_ptr", i64_ty.clone())
         .param("data_len", i64_ty.clone())
-        .param("shape_ptr", i64_ty.clone())
-        .param("ndim", i64_ty.clone())
+        .param("dtype", i64_ty.clone())
         .returns(i64_ty.clone())
         .calling_convention(CallingConvention::C)
         .build();
@@ -370,14 +369,14 @@ fn build_tensor_full(builder: &mut MirBuilder) {
     builder.ret(Some(result));
 }
 
-/// Tensor_fromArray(data_arr: i64, shape_arr: i64) -> i64
+/// Tensor_fromArray(data_arr: i64, dtype: i64) -> i64
 fn build_tensor_from_array(builder: &mut MirBuilder) {
     let i64_ty = IrType::I64;
 
     let func_id = builder
         .begin_function("Tensor_fromArray")
         .param("data_arr", i64_ty.clone())
-        .param("shape_arr", i64_ty.clone())
+        .param("dtype", i64_ty.clone())
         .returns(i64_ty)
         .calling_convention(CallingConvention::C)
         .build();
@@ -387,15 +386,14 @@ fn build_tensor_from_array(builder: &mut MirBuilder) {
     builder.set_insert_point(entry);
 
     let data_arr = builder.get_param(0);
-    let shape_arr = builder.get_param(1);
+    let dtype = builder.get_param(1);
     let (data_ptr, data_len) = extract_array_ptr_len(builder, data_arr);
-    let (shape_ptr, shape_ndim) = extract_array_ptr_len(builder, shape_arr);
 
     let extern_id = builder
         .get_function_by_name("rayzor_tensor_from_array")
         .expect("rayzor_tensor_from_array not found");
     let result = builder
-        .call(extern_id, vec![data_ptr, data_len, shape_ptr, shape_ndim])
+        .call(extern_id, vec![data_ptr, data_len, dtype])
         .unwrap();
     builder.ret(Some(result));
 }
