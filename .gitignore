@@ -48,6 +48,7 @@ cranelift-fork/
 
 # Benchmark results (generated fresh by CI, local runs should not be committed)
 compiler/benchmarks/results/*.json
+compiler/benchmarks/charts/*.html
 
 # Thread stress test logs
 ci/thread-test/logs/
