@@ -662,6 +662,9 @@ impl<'a> AstLowering<'a> {
                         flags = flags.union(SymbolFlags::NO_MANGLE);
                     }
                 }
+                "gpuStruct" => {
+                    flags = flags.union(SymbolFlags::GPU_STRUCT);
+                }
                 "no_mangle" => flags = flags.union(SymbolFlags::NO_MANGLE),
                 "frameworks" | "cInclude" | "cSource" | "clib" => {
                     // @:frameworks(["Accelerate"]), @:cInclude(["vendor/stb"]), @:cSource(["lib.c"])
@@ -2872,6 +2875,81 @@ impl<'a> AstLowering<'a> {
                     memory_annotations: vec![],
                 },
             });
+        }
+
+        // Auto-inject synthetic gpuDef(), gpuSize(), gpuAlignment() for @:gpuStruct classes
+        if symbol_flags.is_gpu_struct() {
+            let string_type = self.context.type_table.borrow().string_type();
+            let int_type = self.context.type_table.borrow().int_type();
+
+            // Helper to create a synthetic static method with empty body
+            let synthetic_names = [
+                ("gpuDef", string_type),
+                ("gpuSize", int_type),
+                ("gpuAlignment", int_type),
+            ];
+            for (name_str, ret_type) in &synthetic_names {
+                let method_name = self.context.intern_string(name_str);
+                let method_symbol = self
+                    .context
+                    .symbol_table
+                    .create_function_in_scope(method_name, class_scope);
+                self.context
+                    .symbol_table
+                    .add_symbol_flags(method_symbol, crate::tast::symbols::SymbolFlags::STATIC);
+                if let Some(scope) = self.context.scope_tree.get_scope_mut(class_scope) {
+                    scope.add_symbol(method_symbol, method_name);
+                }
+                let fn_type = self
+                    .context
+                    .type_table
+                    .borrow_mut()
+                    .create_function_type(vec![], *ret_type);
+                self.context
+                    .symbol_table
+                    .update_symbol_type(method_symbol, fn_type);
+
+                if let Some(methods_list) = self.class_methods.get_mut(&class_symbol) {
+                    methods_list.push((method_name, method_symbol, true));
+                }
+
+                methods.push(crate::tast::node::TypedFunction {
+                    symbol_id: method_symbol,
+                    name: method_name,
+                    parameters: vec![],
+                    return_type: *ret_type,
+                    body: vec![],
+                    visibility: crate::tast::symbols::Visibility::Public,
+                    effects: crate::tast::node::FunctionEffects {
+                        can_throw: false,
+                        async_kind: crate::tast::node::AsyncKind::Sync,
+                        is_pure: true,
+                        is_inline: true,
+                        exception_types: vec![],
+                        memory_effects: crate::tast::node::MemoryEffects::default(),
+                        resource_effects: crate::tast::node::ResourceEffects::default(),
+                    },
+                    type_parameters: vec![],
+                    is_static: true,
+                    source_location: crate::tast::symbols::SourceLocation {
+                        file_id: 0,
+                        line: 0,
+                        column: 0,
+                        byte_offset: 0,
+                    },
+                    metadata: crate::tast::node::FunctionMetadata {
+                        complexity_score: 0,
+                        statement_count: 0,
+                        is_recursive: false,
+                        call_count: 0,
+                        is_override: false,
+                        overload_signatures: vec![],
+                        operator_metadata: vec![],
+                        is_array_access: false,
+                        memory_annotations: vec![],
+                    },
+                });
+            }
         }
 
         // Extract memory safety annotations from metadata

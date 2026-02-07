@@ -217,3 +217,182 @@ pub unsafe extern "C" fn rayzor_gpu_compute_buffer_dtype(buffer_ptr: i64) -> i64
     let buf = &*(buffer_ptr as *const GpuBuffer);
     buf.dtype as i64
 }
+
+// ---------------------------------------------------------------------------
+// Structured buffer API for @:gpuStruct
+// ---------------------------------------------------------------------------
+
+/// Create a GPU buffer from an array of @:gpuStruct instances.
+///
+/// Packs `count` structs into a contiguous GPU buffer. Each struct is
+/// `struct_size` bytes on the CPU side (matching the GPU layout since
+/// @:gpuStruct already uses GPU-compatible layout on CPU).
+///
+/// Arguments: (ctx, array_ptr, count, struct_size)
+/// - array_ptr: pointer to Haxe Array of gpuStruct pointers
+/// - count: number of elements
+/// - struct_size: byte size of each struct (from gpuSize())
+#[no_mangle]
+pub unsafe extern "C" fn rayzor_gpu_compute_create_struct_buffer(
+    ctx: i64,
+    array_ptr: i64,
+    count: i64,
+    struct_size: i64,
+) -> i64 {
+    if ctx == 0 || array_ptr == 0 || count <= 0 || struct_size <= 0 {
+        return 0;
+    }
+
+    let gpu_ctx = &*(ctx as *const GpuContext);
+    let count = count as usize;
+    let struct_size = struct_size as usize;
+    let total_bytes = count * struct_size;
+
+    // Allocate staging buffer and pack structs contiguously
+    let staging = libc::malloc(total_bytes) as *mut u8;
+    if staging.is_null() {
+        return 0;
+    }
+
+    // Haxe Array layout: first 8 bytes = data pointer (pointer to array of pointers)
+    // Each element is a pointer to a @:gpuStruct (flat malloc'd block)
+    let array_data = *(array_ptr as *const *const i64);
+    for i in 0..count {
+        let struct_ptr = *array_data.add(i) as *const u8;
+        if !struct_ptr.is_null() {
+            std::ptr::copy_nonoverlapping(struct_ptr, staging.add(i * struct_size), struct_size);
+        } else {
+            std::ptr::write_bytes(staging.add(i * struct_size), 0, struct_size);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use crate::metal::buffer_ops::MetalBuffer;
+        match MetalBuffer::from_data(&gpu_ctx.inner, staging, total_bytes) {
+            Some(inner) => {
+                libc::free(staging as *mut libc::c_void);
+                // Store as raw bytes — numel = total_bytes, dtype = DTYPE_I32 (placeholder)
+                let buf = GpuBuffer {
+                    inner,
+                    numel: count,
+                    dtype: DTYPE_F32, // struct buffers use F32 as marker
+                };
+                Box::into_raw(Box::new(buf)) as i64
+            }
+            None => {
+                libc::free(staging as *mut libc::c_void);
+                0
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        libc::free(staging as *mut libc::c_void);
+        0
+    }
+}
+
+/// Allocate an empty GPU buffer for `count` structs of `struct_size` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn rayzor_gpu_compute_alloc_struct_buffer(
+    ctx: i64,
+    count: i64,
+    struct_size: i64,
+) -> i64 {
+    if ctx == 0 || count <= 0 || struct_size <= 0 {
+        return 0;
+    }
+
+    let gpu_ctx = &*(ctx as *const GpuContext);
+    let count = count as usize;
+    let struct_size = struct_size as usize;
+    let total_bytes = count * struct_size;
+
+    #[cfg(target_os = "macos")]
+    {
+        use crate::metal::buffer_ops::MetalBuffer;
+        match MetalBuffer::allocate(&gpu_ctx.inner, total_bytes) {
+            Some(inner) => {
+                let buf = GpuBuffer {
+                    inner,
+                    numel: count,
+                    dtype: DTYPE_F32,
+                };
+                Box::into_raw(Box::new(buf)) as i64
+            }
+            None => 0,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = total_bytes;
+        0
+    }
+}
+
+/// Read a single f32 field from a structured GPU buffer, promote to f64.
+///
+/// Arguments: (ctx, buffer, index, field_byte_offset)
+/// Returns: f64 value of the field
+#[no_mangle]
+pub unsafe extern "C" fn rayzor_gpu_compute_read_struct_float(
+    _ctx: i64,
+    buffer_ptr: i64,
+    index: i64,
+    struct_size: i64,
+    field_offset: i64,
+) -> f64 {
+    if buffer_ptr == 0 {
+        return 0.0;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let buf = &*(buffer_ptr as *const GpuBuffer);
+        let ptr = buf.inner.contents();
+        if ptr.is_null() {
+            return 0.0;
+        }
+        let byte_offset = (index as usize) * (struct_size as usize) + (field_offset as usize);
+        let val = *(ptr.add(byte_offset) as *const f32);
+        val as f64
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        0.0
+    }
+}
+
+/// Read a single i32 field from a structured GPU buffer, extend to i64.
+///
+/// Arguments: (ctx, buffer, index, struct_size, field_byte_offset)
+/// Returns: i64 value of the field
+#[no_mangle]
+pub unsafe extern "C" fn rayzor_gpu_compute_read_struct_int(
+    _ctx: i64,
+    buffer_ptr: i64,
+    index: i64,
+    struct_size: i64,
+    field_offset: i64,
+) -> i64 {
+    if buffer_ptr == 0 {
+        return 0;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let buf = &*(buffer_ptr as *const GpuBuffer);
+        let ptr = buf.inner.contents();
+        if ptr.is_null() {
+            return 0;
+        }
+        let byte_offset = (index as usize) * (struct_size as usize) + (field_offset as usize);
+        let val = *(ptr.add(byte_offset) as *const i32);
+        val as i64
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        0
+    }
+}

@@ -59,6 +59,11 @@ declare_native_methods! {
     "rayzor_gpu_GPUCompute", "dot",          instance, "rayzor_gpu_compute_dot",           [Ptr, Ptr, Ptr] => F64;
     // Matmul: (self, a, b, m, k, n) -> GpuBuffer
     "rayzor_gpu_GPUCompute", "matmul",       instance, "rayzor_gpu_compute_matmul",        [Ptr, Ptr, Ptr, I64, I64, I64] => Ptr;
+    // Structured buffer ops: (self, ...) -> result
+    "rayzor_gpu_GPUCompute", "createStructBuffer", instance, "rayzor_gpu_compute_create_struct_buffer", [Ptr, Ptr, I64, I64] => Ptr;
+    "rayzor_gpu_GPUCompute", "allocStructBuffer",  instance, "rayzor_gpu_compute_alloc_struct_buffer",  [Ptr, I64, I64]      => Ptr;
+    "rayzor_gpu_GPUCompute", "readStructFloat",    instance, "rayzor_gpu_compute_read_struct_float",    [Ptr, Ptr, I64, I64, I64] => F64;
+    "rayzor_gpu_GPUCompute", "readStructInt",      instance, "rayzor_gpu_compute_read_struct_int",      [Ptr, Ptr, I64, I64, I64] => I64;
     // GpuBuffer instance methods
     "rayzor_gpu_GpuBuffer",  "numel",        instance, "rayzor_gpu_compute_buffer_numel",  [Ptr]           => I64;
     "rayzor_gpu_GpuBuffer",  "dtype",        instance, "rayzor_gpu_compute_buffer_dtype",  [Ptr]           => I64;
@@ -214,6 +219,23 @@ pub fn get_runtime_symbols() -> Vec<(&'static str, *const u8)> {
         (
             "rayzor_gpu_compute_matmul",
             ops::rayzor_gpu_compute_matmul as *const u8,
+        ),
+        // Structured buffer ops
+        (
+            "rayzor_gpu_compute_create_struct_buffer",
+            buffer::rayzor_gpu_compute_create_struct_buffer as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_alloc_struct_buffer",
+            buffer::rayzor_gpu_compute_alloc_struct_buffer as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_read_struct_float",
+            buffer::rayzor_gpu_compute_read_struct_float as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_read_struct_int",
+            buffer::rayzor_gpu_compute_read_struct_int as *const u8,
         ),
     ]
 }

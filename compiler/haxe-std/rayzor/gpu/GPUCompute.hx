@@ -126,4 +126,22 @@ extern class GPUCompute {
     /** Matrix multiplication: C(M×N) = A(M×K) × B(K×N). */
     @:native("gpu_compute_matmul")
     public function matmul(a:GpuBuffer, b:GpuBuffer, m:Int, k:Int, n:Int):GpuBuffer;
+
+    // -- Structured buffer ops (@:gpuStruct) -----------------------------------
+
+    /** Create a GPU buffer from an array of @:gpuStruct instances. */
+    @:native("gpu_compute_createStructBuffer")
+    public function createStructBuffer(array:Dynamic, count:Int, structSize:Int):GpuBuffer;
+
+    /** Allocate an empty GPU buffer for `count` structs of `structSize` bytes. */
+    @:native("gpu_compute_allocStructBuffer")
+    public function allocStructBuffer(count:Int, structSize:Int):GpuBuffer;
+
+    /** Read a float field from a structured buffer (returns Float). */
+    @:native("gpu_compute_readStructFloat")
+    public function readStructFloat(buffer:GpuBuffer, index:Int, structSize:Int, fieldOffset:Int):Float;
+
+    /** Read an int field from a structured buffer (returns Int). */
+    @:native("gpu_compute_readStructInt")
+    public function readStructInt(buffer:GpuBuffer, index:Int, structSize:Int, fieldOffset:Int):Int;
 }

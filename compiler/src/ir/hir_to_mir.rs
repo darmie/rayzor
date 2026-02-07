@@ -54,6 +54,33 @@ struct CStructLayout {
     cdef_string: String,
 }
 
+/// Layout information for a single field in a @:gpuStruct class
+#[derive(Debug, Clone)]
+struct GpuStructFieldLayout {
+    symbol_id: SymbolId,
+    name: String,
+    byte_offset: u32,
+    /// IR type used on CPU side (F32 for Float fields, I32 for Int, etc.)
+    ir_type: IrType,
+    /// MSL type string ("float", "int", "uint", etc.)
+    msl_type: String,
+    /// Size in bytes on GPU
+    size: u32,
+}
+
+/// Precomputed GPU-compatible layout for a @:gpuStruct class
+#[derive(Debug, Clone)]
+struct GpuStructLayout {
+    fields: Vec<GpuStructFieldLayout>,
+    total_size: u32,
+    alignment: u32,
+    msl_name: String,
+    /// MSL struct typedef string
+    msl_typedef: String,
+    /// Dependency typedefs for nested @:gpuStruct (in topological order)
+    dep_typedefs: Vec<String>,
+}
+
 /// Context for lowering HIR to MIR
 pub struct HirToMirContext<'a> {
     /// MIR builder
@@ -194,6 +221,10 @@ pub struct HirToMirContext<'a> {
     /// Maps class TypeId to its CStructLayout
     cstruct_layouts: BTreeMap<TypeId, CStructLayout>,
 
+    /// Precomputed GPU-compatible layouts for @:gpuStruct classes
+    /// Maps class TypeId to its GpuStructLayout
+    gpu_struct_layouts: BTreeMap<TypeId, GpuStructLayout>,
+
     /// Lazily-initialized TCC runtime function IDs for __c__ inline code
     tcc_func_ids: Option<TccFuncIds>,
 
@@ -331,6 +362,7 @@ impl<'a> HirToMirContext<'a> {
             current_stmt_index: 0,
             reassigned_in_scope: BTreeSet::new(),
             cstruct_layouts: BTreeMap::new(),
+            gpu_struct_layouts: BTreeMap::new(),
             tcc_func_ids: None,
             current_function_symbol: None,
         };
@@ -1063,6 +1095,194 @@ impl<'a> HirToMirContext<'a> {
         "void*".to_string()
     }
 
+    /// Check if a class symbol has the @:gpuStruct flag
+    fn is_gpu_struct_class(&self, type_id: TypeId) -> bool {
+        let type_table = self.type_table.borrow();
+        if let Some(type_info) = type_table.get(type_id) {
+            if let Some(symbol_id) = type_info.symbol_id() {
+                if let Some(sym) = self.symbol_table.get_symbol(symbol_id) {
+                    return sym.flags.is_gpu_struct();
+                }
+            }
+        }
+        false
+    }
+
+    /// Get or compute the GPU struct layout for a @:gpuStruct class type.
+    ///
+    /// GPU structs use 4-byte floats (not 8-byte like C doubles), 4-byte ints,
+    /// and 4-byte bools. This matches Metal/CUDA/WGSL struct layout conventions.
+    fn get_or_compute_gpu_struct_layout(&mut self, type_id: TypeId) -> Option<GpuStructLayout> {
+        if let Some(layout) = self.gpu_struct_layouts.get(&type_id) {
+            return Some(layout.clone());
+        }
+
+        // Look up class info from type table
+        let (symbol_id, class_name) = {
+            let type_table = self.type_table.borrow();
+            let type_info = type_table.get(type_id)?;
+            let symbol_id = type_info.symbol_id()?;
+            let sym = self.symbol_table.get_symbol(symbol_id)?;
+            let name = self.string_interner.get(sym.name)?.to_string();
+            (symbol_id, name)
+        };
+
+        // Get fields from field_index_map (same approach as cstruct)
+        let mut fields_with_index: Vec<(SymbolId, u32)> = Vec::new();
+        for (field_sym, (class_ty, idx)) in &self.field_index_map {
+            if *class_ty == type_id {
+                fields_with_index.push((*field_sym, *idx));
+            }
+        }
+        // Fallback: match by class symbol_id via HirTypeDecl
+        if fields_with_index.is_empty() {
+            let field_class_tys: std::collections::HashSet<TypeId> =
+                self.field_index_map.values().map(|(ty, _)| *ty).collect();
+            for candidate_ty in &field_class_tys {
+                let is_our_class = self.current_hir_types.iter().any(|(tid, decl)| {
+                    if *tid != *candidate_ty {
+                        return false;
+                    }
+                    if let HirTypeDecl::Class(c) = decl {
+                        c.symbol_id == symbol_id
+                    } else {
+                        false
+                    }
+                });
+                if is_our_class {
+                    for (field_sym, (class_ty, idx)) in &self.field_index_map {
+                        if class_ty == candidate_ty {
+                            fields_with_index.push((*field_sym, *idx));
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        fields_with_index.sort_by_key(|(_, idx)| *idx);
+
+        // Use simple class name (last segment) for MSL struct name
+        let msl_name = class_name
+            .split('.')
+            .last()
+            .unwrap_or(&class_name)
+            .to_string();
+
+        let mut byte_offset: u32 = 0;
+        let mut max_align: u32 = 1;
+        let mut layout_fields = Vec::new();
+        let mut dep_typedefs: Vec<String> = Vec::new();
+
+        for (field_sym_id, _idx) in &fields_with_index {
+            let sym = self.symbol_table.get_symbol(*field_sym_id)?;
+            let field_name = self.string_interner.get(sym.name)?.to_string();
+            let ir_type = self.convert_type(sym.type_id);
+
+            let (size, align, msl_type, gpu_ir_type) =
+                self.resolve_gpu_struct_field_type(sym.type_id, ir_type, &mut dep_typedefs);
+
+            // Align offset
+            if align > 0 {
+                byte_offset = (byte_offset + align - 1) & !(align - 1);
+            }
+            if align > max_align {
+                max_align = align;
+            }
+
+            layout_fields.push(GpuStructFieldLayout {
+                symbol_id: *field_sym_id,
+                name: field_name,
+                byte_offset,
+                ir_type: gpu_ir_type,
+                msl_type,
+                size,
+            });
+
+            byte_offset += size;
+        }
+
+        // Pad total size to alignment
+        if max_align > 0 {
+            byte_offset = (byte_offset + max_align - 1) & !(max_align - 1);
+        }
+
+        // Build MSL typedef string
+        let mut msl_typedef = format!("struct {} {{ ", msl_name);
+        for f in &layout_fields {
+            msl_typedef.push_str(&format!("{} {}; ", f.msl_type, f.name));
+        }
+        msl_typedef.push_str("};\n");
+
+        let layout = GpuStructLayout {
+            fields: layout_fields,
+            total_size: byte_offset,
+            alignment: max_align,
+            msl_name,
+            msl_typedef,
+            dep_typedefs,
+        };
+
+        self.gpu_struct_layouts.insert(type_id, layout.clone());
+        Some(layout)
+    }
+
+    /// Resolve a field's Haxe type to GPU type info for @:gpuStruct layout.
+    ///
+    /// Key difference from cstruct: Float → f32 (4 bytes), not f64 (8 bytes).
+    /// Returns (size_bytes, alignment, msl_type_string, ir_type).
+    fn resolve_gpu_struct_field_type(
+        &mut self,
+        haxe_type_id: TypeId,
+        ir_type: IrType,
+        dep_typedefs: &mut Vec<String>,
+    ) -> (u32, u32, String, IrType) {
+        let type_info = {
+            let type_table = self.type_table.borrow();
+            type_table.get(haxe_type_id).map(|t| (t.kind.clone(), t.id))
+        };
+
+        if let Some((kind, _tid)) = type_info {
+            match &kind {
+                // Nested @:gpuStruct — embed inline
+                TypeKind::Class { symbol_id, .. } => {
+                    let is_nested_gpu_struct = self
+                        .symbol_table
+                        .get_symbol(*symbol_id)
+                        .map(|s| s.flags.is_gpu_struct())
+                        .unwrap_or(false);
+                    if is_nested_gpu_struct {
+                        if let Some(nested) = self.get_or_compute_gpu_struct_layout(haxe_type_id) {
+                            // Add nested typedef as dependency
+                            if !dep_typedefs.contains(&nested.msl_typedef) {
+                                for dep in &nested.dep_typedefs {
+                                    if !dep_typedefs.contains(dep) {
+                                        dep_typedefs.push(dep.clone());
+                                    }
+                                }
+                                dep_typedefs.push(nested.msl_typedef.clone());
+                            }
+                            let msl_type = nested.msl_name.clone();
+                            let size = nested.total_size;
+                            let align = nested.alignment;
+                            return (size, align, msl_type, IrType::I64);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // GPU type mapping: Float→f32 (4 bytes), Int→i32 (4 bytes), Bool→u32 (4 bytes)
+        match &ir_type {
+            IrType::F64 => (4, 4, "float".to_string(), IrType::F32), // Float → GPU f32
+            IrType::F32 => (4, 4, "float".to_string(), IrType::F32),
+            IrType::I64 => (4, 4, "int".to_string(), IrType::I32), // Int → GPU i32
+            IrType::I32 => (4, 4, "int".to_string(), IrType::I32),
+            IrType::Bool => (4, 4, "uint".to_string(), IrType::I32), // Bool → GPU u32
+            _ => (4, 4, "int".to_string(), IrType::I32),
+        }
+    }
+
     /// Register a constructor by qualified name for cross-file resolution
     /// This is critical when the TypeId differs between files (e.g., loading StringIteratorUnicode
     /// as a dependency gives it a different TypeId than when StringTools.hx references it)
@@ -1278,21 +1498,41 @@ impl<'a> HirToMirContext<'a> {
                             continue;
                         }
 
-                        // Skip synthetic cdef() on @:cstruct classes — handled at call site
-                        if method.function.body.is_none() {
-                            if let Some(method_name) =
-                                self.string_interner.get(method.function.name)
-                            {
-                                if method_name == "cdef" {
-                                    let is_cstruct = self
-                                        .symbol_table
-                                        .get_symbol(class.symbol_id)
-                                        .map(|sym| sym.flags.is_cstruct())
-                                        .unwrap_or(false);
-                                    if is_cstruct {
-                                        // Pre-compute layout so it's available at call site
-                                        self.get_or_compute_cstruct_layout(*type_id);
-                                        continue;
+                        // Skip synthetic methods on @:cstruct / @:gpuStruct — handled at call site
+                        {
+                            let has_no_body = method.function.body.is_none()
+                                || method
+                                    .function
+                                    .body
+                                    .as_ref()
+                                    .map(|b| b.statements.is_empty())
+                                    .unwrap_or(false);
+                            if has_no_body {
+                                if let Some(method_name) =
+                                    self.string_interner.get(method.function.name)
+                                {
+                                    if method_name == "cdef" {
+                                        let is_cstruct = self
+                                            .symbol_table
+                                            .get_symbol(class.symbol_id)
+                                            .map(|sym| sym.flags.is_cstruct())
+                                            .unwrap_or(false);
+                                        if is_cstruct {
+                                            self.get_or_compute_cstruct_layout(*type_id);
+                                            continue;
+                                        }
+                                    }
+                                    if matches!(method_name, "gpuDef" | "gpuSize" | "gpuAlignment")
+                                    {
+                                        let is_gpu_struct = self
+                                            .symbol_table
+                                            .get_symbol(class.symbol_id)
+                                            .map(|sym| sym.flags.is_gpu_struct())
+                                            .unwrap_or(false);
+                                        if is_gpu_struct {
+                                            self.get_or_compute_gpu_struct_layout(*type_id);
+                                            continue;
+                                        }
                                     }
                                 }
                             }
@@ -4387,13 +4627,86 @@ impl<'a> HirToMirContext<'a> {
                     "[CALL CHECK] callee.kind discriminant = {:?}",
                     std::mem::discriminant(&callee.kind)
                 );
-                // Static cdef() call resolved as Variable — find parent @:cstruct class
+                // Static synthetic calls resolved as Variable — find parent class
                 if let HirExprKind::Variable { symbol, .. } = &callee.kind {
                     let callee_name = self
                         .symbol_table
                         .get_symbol(*symbol)
                         .and_then(|s| self.string_interner.get(s.name))
                         .map(|s| s.to_string());
+
+                    // @:gpuStruct synthetic static methods: gpuDef/gpuSize/gpuAlignment
+                    if matches!(
+                        callee_name.as_deref(),
+                        Some("gpuDef") | Some("gpuSize") | Some("gpuAlignment")
+                    ) {
+                        for (tid, decl) in self.current_hir_types.iter() {
+                            if let crate::ir::hir::HirTypeDecl::Class(c) = decl {
+                                let is_gpu_struct = self
+                                    .symbol_table
+                                    .get_symbol(c.symbol_id)
+                                    .map(|s| s.flags.is_gpu_struct())
+                                    .unwrap_or(false);
+                                if !is_gpu_struct {
+                                    continue;
+                                }
+                                let has_method =
+                                    c.methods.iter().any(|m| m.function.symbol_id == *symbol);
+                                if has_method {
+                                    // Find canonical TypeId
+                                    let canonical_tid = {
+                                        let type_table = self.type_table.borrow();
+                                        type_table.get(*tid).and_then(|_| Some(*tid)).or_else(
+                                            || {
+                                                type_table.iter().find_map(|(_, t)| {
+                                                    if let crate::tast::core::TypeKind::Class {
+                                                        symbol_id: sid,
+                                                        ..
+                                                    } = &t.kind
+                                                    {
+                                                        if *sid == c.symbol_id {
+                                                            return Some(t.id);
+                                                        }
+                                                    }
+                                                    None
+                                                })
+                                            },
+                                        )
+                                    };
+                                    if let Some(real_tid) = canonical_tid {
+                                        if let Some(layout) =
+                                            self.get_or_compute_gpu_struct_layout(real_tid)
+                                        {
+                                            match callee_name.as_deref().unwrap() {
+                                                "gpuDef" => {
+                                                    let mut full = String::new();
+                                                    for dep in &layout.dep_typedefs {
+                                                        full.push_str(dep);
+                                                    }
+                                                    full.push_str(&layout.msl_typedef);
+                                                    return self
+                                                        .builder
+                                                        .build_const(IrValue::String(full));
+                                                }
+                                                "gpuSize" => {
+                                                    return self.builder.build_const(IrValue::I64(
+                                                        layout.total_size as i64,
+                                                    ));
+                                                }
+                                                "gpuAlignment" => {
+                                                    return self.builder.build_const(IrValue::I64(
+                                                        layout.alignment as i64,
+                                                    ));
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     if callee_name.as_deref() == Some("cdef") {
                         // Find the @:cstruct class that has this cdef method
                         for (tid, decl) in self.current_hir_types.iter() {
@@ -4526,6 +4839,83 @@ impl<'a> HirToMirContext<'a> {
                             });
                             if let Some(cdef) = cdef_str {
                                 return self.builder.build_const(IrValue::String(cdef));
+                            }
+                        }
+                    }
+
+                    // @:gpuStruct synthetic methods — gpuDef/gpuSize/gpuAlignment
+                    if matches!(
+                        method_name,
+                        Some("gpuDef") | Some("gpuSize") | Some("gpuAlignment")
+                    ) {
+                        let obj_type = object.ty;
+                        // Try direct type check first, then fallback via symbol_id
+                        let gpu_layout = if self.is_gpu_struct_class(obj_type) {
+                            self.get_or_compute_gpu_struct_layout(obj_type)
+                        } else {
+                            // Static call: obj_type may differ from cached TypeId
+                            let obj_sym_id = {
+                                let type_table = self.type_table.borrow();
+                                type_table.get(obj_type).and_then(|t| {
+                                    if let crate::tast::core::TypeKind::Class {
+                                        symbol_id, ..
+                                    } = &t.kind
+                                    {
+                                        Some(*symbol_id)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            };
+                            obj_sym_id.and_then(|sym_id| {
+                                self.gpu_struct_layouts.iter().find_map(|(tid, layout)| {
+                                    let type_table = self.type_table.borrow();
+                                    if let Some(t) = type_table.get(*tid) {
+                                        if let crate::tast::core::TypeKind::Class {
+                                            symbol_id,
+                                            ..
+                                        } = &t.kind
+                                        {
+                                            if *symbol_id == sym_id {
+                                                return Some(layout.clone());
+                                            }
+                                        }
+                                    }
+                                    for (htid, decl) in self.current_hir_types.iter() {
+                                        if *htid == *tid {
+                                            if let crate::ir::hir::HirTypeDecl::Class(c) = decl {
+                                                if c.symbol_id == sym_id {
+                                                    return Some(layout.clone());
+                                                }
+                                            }
+                                        }
+                                    }
+                                    None
+                                })
+                            })
+                        };
+                        if let Some(layout) = gpu_layout {
+                            match method_name.unwrap() {
+                                "gpuDef" => {
+                                    // Return full MSL typedef (deps + own)
+                                    let mut full = String::new();
+                                    for dep in &layout.dep_typedefs {
+                                        full.push_str(dep);
+                                    }
+                                    full.push_str(&layout.msl_typedef);
+                                    return self.builder.build_const(IrValue::String(full));
+                                }
+                                "gpuSize" => {
+                                    return self
+                                        .builder
+                                        .build_const(IrValue::I64(layout.total_size as i64));
+                                }
+                                "gpuAlignment" => {
+                                    return self
+                                        .builder
+                                        .build_const(IrValue::I64(layout.alignment as i64));
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -8762,6 +9152,50 @@ impl<'a> HirToMirContext<'a> {
                     }
                 }
 
+                // @:gpuStruct CLASS: GPU-compatible flat allocation (no object header)
+                // Uses 4-byte floats, 4-byte ints — matches Metal/CUDA struct layout
+                if self.is_gpu_struct_class(*class_type) {
+                    if let Some(layout) = self.get_or_compute_gpu_struct_layout(*class_type) {
+                        let obj_ptr = self.build_heap_alloc(layout.total_size as u64)?;
+
+                        // Zero-initialize all fields
+                        if let Some(_zero) = self.builder.build_const(IrValue::I32(0)) {
+                            for field in &layout.fields {
+                                let offset_const = self
+                                    .builder
+                                    .build_const(IrValue::I64(field.byte_offset as i64))?;
+                                let field_ptr = self.builder.build_ptr_add(
+                                    obj_ptr,
+                                    offset_const,
+                                    IrType::Ptr(Box::new(IrType::U8)),
+                                )?;
+                                let zero_val = match &field.ir_type {
+                                    IrType::F32 => self.builder.build_const(IrValue::F32(0.0))?,
+                                    IrType::I32 => self.builder.build_const(IrValue::I32(0))?,
+                                    _ => self.builder.build_const(IrValue::I32(0))?,
+                                };
+                                self.builder.build_store(field_ptr, zero_val);
+                            }
+                        }
+
+                        // Call constructor if exists
+                        let constructor_func_id =
+                            self.constructor_map.get(&constructor_type_id).copied();
+                        if let Some(constructor_func_id) = constructor_func_id {
+                            let arg_regs: Vec<_> = std::iter::once(obj_ptr)
+                                .chain(args.iter().filter_map(|a| self.lower_expression(a)))
+                                .collect();
+                            self.builder.build_call_direct(
+                                constructor_func_id,
+                                arg_regs,
+                                IrType::Void,
+                            );
+                        }
+
+                        return Some(obj_ptr);
+                    }
+                }
+
                 // CLASS TYPE CONSTRUCTOR:
                 // Allocate object on HEAP (not stack) since objects may escape the current function
                 // When a method returns `new Foo()`, the object must outlive the callee's stack frame
@@ -11466,6 +11900,57 @@ impl<'a> HirToMirContext<'a> {
                             }
                         }
 
+                        // @:gpuStruct: byte-offset PtrAdd with f64→f32 truncation on write
+                        if self.is_gpu_struct_class(obj_type_id) {
+                            if let Some(layout) = self.get_or_compute_gpu_struct_layout(obj_type_id)
+                            {
+                                let field_layout = layout
+                                    .fields
+                                    .iter()
+                                    .find(|f| f.symbol_id == *field)
+                                    .or_else(|| {
+                                        let fname = self
+                                            .symbol_table
+                                            .get_symbol(*field)
+                                            .and_then(|s| self.string_interner.get(s.name));
+                                        fname.and_then(|n| {
+                                            layout.fields.iter().find(|f| f.name == n)
+                                        })
+                                    })
+                                    .cloned();
+                                if let Some(fl) = field_layout {
+                                    let offset_const = self
+                                        .builder
+                                        .build_const(IrValue::I64(fl.byte_offset as i64));
+                                    if let Some(offset_const) = offset_const {
+                                        let field_ptr = self.builder.build_ptr_add(
+                                            obj_reg,
+                                            offset_const,
+                                            IrType::Ptr(Box::new(IrType::U8)),
+                                        );
+                                        if let Some(field_ptr) = field_ptr {
+                                            // GPU structs use f32 for Float — truncate f64→f32 on write
+                                            let store_val = if fl.ir_type == IrType::F32 {
+                                                // Value may be f64, cast to f32
+                                                self.builder
+                                                    .build_cast(value, IrType::F64, IrType::F32)
+                                                    .unwrap_or(value)
+                                            } else if fl.ir_type == IrType::I32 {
+                                                // Value may be i64, cast to i32
+                                                self.builder
+                                                    .build_cast(value, IrType::I64, IrType::I32)
+                                                    .unwrap_or(value)
+                                            } else {
+                                                value
+                                            };
+                                            self.builder.build_store(field_ptr, store_val);
+                                        }
+                                    }
+                                    return;
+                                }
+                            }
+                        }
+
                         // Create constant for field index
                         if let Some(index_const) =
                             self.builder.build_const(IrValue::I32(field_index as i32))
@@ -12052,6 +12537,54 @@ impl<'a> HirToMirContext<'a> {
                         self.builder.set_register_type(field_value, field_ir_ty);
                         return Some(field_value);
                     }
+                }
+            }
+        }
+
+        // @:gpuStruct: byte-offset PtrAdd with f32→f64 promotion on read
+        let gpu_struct_type = if self.is_gpu_struct_class(class_type_id) {
+            Some(class_type_id)
+        } else if self.is_gpu_struct_class(receiver_ty) {
+            Some(receiver_ty)
+        } else {
+            None
+        };
+        if let Some(gpu_ty) = gpu_struct_type {
+            if let Some(layout) = self.get_or_compute_gpu_struct_layout(gpu_ty) {
+                let find_field = |layout: &GpuStructLayout| -> Option<GpuStructFieldLayout> {
+                    layout
+                        .fields
+                        .iter()
+                        .find(|f| f.symbol_id == field)
+                        .cloned()
+                        .or_else(|| {
+                            let fname = self
+                                .symbol_table
+                                .get_symbol(field)
+                                .and_then(|s| self.string_interner.get(s.name));
+                            fname.and_then(|n| layout.fields.iter().find(|f| f.name == n).cloned())
+                        })
+                };
+                if let Some(fl) = find_field(&layout) {
+                    let offset_const = self
+                        .builder
+                        .build_const(IrValue::I64(fl.byte_offset as i64))?;
+                    let byte_ptr_ty = IrType::Ptr(Box::new(IrType::U8));
+                    let field_ptr = self.builder.build_ptr_add(obj, offset_const, byte_ptr_ty)?;
+                    // Load as GPU type (f32/i32)
+                    let raw_value = self.builder.build_load(field_ptr, fl.ir_type.clone())?;
+                    // Promote f32→f64 so Haxe Float semantics work on CPU
+                    let promoted = if fl.ir_type == IrType::F32 {
+                        let cast = self.builder.build_cast(raw_value, IrType::F32, IrType::F64);
+                        cast.unwrap_or(raw_value)
+                    } else if fl.ir_type == IrType::I32 && field_ir_ty == IrType::I64 {
+                        let cast = self.builder.build_cast(raw_value, IrType::I32, IrType::I64);
+                        cast.unwrap_or(raw_value)
+                    } else {
+                        raw_value
+                    };
+                    self.builder.set_register_type(promoted, field_ir_ty);
+                    return Some(promoted);
                 }
             }
         }

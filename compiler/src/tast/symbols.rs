@@ -319,6 +319,8 @@ impl SymbolFlags {
     pub const CSTRUCT: Self = Self(1 << 14);
     /// @:no_mangle or @:cstruct(NoMangle) - use unmangled name in C typedef
     pub const NO_MANGLE: Self = Self(1 << 15);
+    /// @:gpuStruct - GPU-compatible flat struct layout (4-byte floats, no object header)
+    pub const GPU_STRUCT: Self = Self(1 << 16);
 
     pub const fn empty() -> Self {
         Self::NONE
@@ -371,6 +373,11 @@ impl SymbolFlags {
     /// Check if this symbol has @:no_mangle metadata
     pub const fn is_no_mangle(self) -> bool {
         self.contains(Self::NO_MANGLE)
+    }
+
+    /// Check if this symbol has @:gpuStruct metadata
+    pub const fn is_gpu_struct(self) -> bool {
+        self.contains(Self::GPU_STRUCT)
     }
 }
 
