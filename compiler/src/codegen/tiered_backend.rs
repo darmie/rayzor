@@ -1840,18 +1840,15 @@ impl TieredBackend {
             timestamp, pid, random_suffix
         ));
 
-        #[cfg(not(feature = "tcc-linker"))]
-        let dylib_path = {
-            let dylib_ext = if cfg!(target_os = "macos") {
-                "dylib"
-            } else {
-                "so"
-            };
-            temp_dir.join(format!(
-                "rayzor_llvm_{}_{}_{}.{}",
-                timestamp, pid, random_suffix, dylib_ext
-            ))
+        let dylib_ext = if cfg!(target_os = "macos") {
+            "dylib"
+        } else {
+            "so"
         };
+        let dylib_path = temp_dir.join(format!(
+            "rayzor_llvm_{}_{}_{}.{}",
+            timestamp, pid, random_suffix, dylib_ext
+        ));
 
         // Create LLVM context and backend
         let context = Box::leak(Box::new(Context::create()));
@@ -1881,27 +1878,11 @@ impl TieredBackend {
         tracing::trace!("[LLVM:AOT] Compiling to object file: {:?}", obj_path);
         backend.compile_to_object_file(&obj_path)?;
 
-        // Link and load — use TCC in-process linker if available,
-        // otherwise fall back to system linker + dlopen.
-        #[cfg(feature = "tcc-linker")]
-        let all_pointers = {
-            tracing::trace!("[LLVM:AOT] Linking with TCC in-process linker");
-            let mut linker = super::tcc_linker::TccLinker::new(&self.runtime_symbols)?;
-            let pointers = linker.link_object_file(&obj_path, &function_symbols)?;
-            // Leak the linker to keep code alive (same pattern as dylib)
-            Box::leak(Box::new(linker));
-            let _ = std::fs::remove_file(&obj_path);
-            pointers
-        };
-
-        #[cfg(not(feature = "tcc-linker"))]
-        let all_pointers = {
-            tracing::trace!("[LLVM:AOT] Linking with system linker");
-            let pointers =
-                self.link_and_load_with_system_linker(&obj_path, &dylib_path, &function_symbols)?;
-            let _ = std::fs::remove_file(&obj_path);
-            pointers
-        };
+        // Link object file to dylib via system linker, then dlopen
+        tracing::trace!("[LLVM:AOT] Linking with system linker");
+        let all_pointers =
+            self.link_and_load_with_system_linker(&obj_path, &dylib_path, &function_symbols)?;
+        let _ = std::fs::remove_file(&obj_path);
 
         // Build name -> pointer map for global storage (so other backends can reuse)
         let global_ptrs: HashMap<String, usize> = function_symbols
@@ -1949,8 +1930,8 @@ impl TieredBackend {
     /// Link object file to dynamic library using system linker
     ///
     /// Link object file to dylib using system linker, load via dlopen,
-    /// and extract function pointers. Used as fallback when TCC is not available.
-    #[cfg(all(feature = "llvm-backend", not(feature = "tcc-linker")))]
+    /// and extract function pointers.
+    #[cfg(feature = "llvm-backend")]
     fn link_and_load_with_system_linker(
         &self,
         obj_path: &Path,
@@ -2040,7 +2021,7 @@ impl TieredBackend {
     /// On Linux: Uses gcc or clang
     ///
     /// Returns error if no linker is available - caller should fall back to Cranelift
-    #[cfg(all(feature = "llvm-backend", not(feature = "tcc-linker")))]
+    #[cfg(feature = "llvm-backend")]
     fn link_to_dylib(
         &self,
         obj_path: &Path,
@@ -2165,7 +2146,7 @@ impl TieredBackend {
     ///
     /// Searches for: clang, gcc, cc (in order of preference)
     /// Returns the path to the linker or an error if none found
-    #[cfg(all(feature = "llvm-backend", not(feature = "tcc-linker")))]
+    #[cfg(feature = "llvm-backend")]
     fn find_linker() -> Result<String, String> {
         // Check for linkers in order of preference
         let candidates = ["clang", "gcc", "cc"];
@@ -2187,14 +2168,7 @@ impl TieredBackend {
     /// Check if LLVM AOT compilation is available on this system
     #[cfg(feature = "llvm-backend")]
     pub fn is_llvm_aot_available() -> bool {
-        #[cfg(feature = "tcc-linker")]
-        {
-            true // TCC is statically linked, always available
-        }
-        #[cfg(not(feature = "tcc-linker"))]
-        {
-            Self::find_linker().is_ok()
-        }
+        Self::find_linker().is_ok()
     }
 
     /// Legacy single-function compile (returns just one pointer)

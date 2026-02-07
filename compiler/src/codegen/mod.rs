@@ -15,12 +15,6 @@ pub mod mir_interpreter;
 pub mod profiling;
 pub mod tiered_backend;
 
-// TinyCC-based in-process linker for LLVM AOT object files
-// NOTE: TCC linker has stability issues with phi-SRA generated code on Linux.
-// The system linker (default) is recommended for production use.
-#[cfg(feature = "tcc-linker")]
-pub mod tcc_linker;
-
 // Apple Silicon-specific JIT memory management
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub mod apple_jit_memory;

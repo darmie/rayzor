@@ -55,7 +55,6 @@ harness = false
 default = ["cranelift-backend"]
 cranelift-backend = []
 llvm-backend = ["inkwell", "llvm-sys"]
-tcc-linker = []  # NOTE: Has stability issues with phi-SRA on Linux; use system linker instead
 all-backends = ["cranelift-backend", "llvm-backend"]
 
 [[bin]]

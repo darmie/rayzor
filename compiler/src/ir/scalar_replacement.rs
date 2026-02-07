@@ -111,7 +111,6 @@ impl OptimizationPass for ScalarReplacementPass {
 
             // Phi-aware SRA handles loop-carried allocations where pointers flow through phi nodes.
             // Enabled by default since stability fixes. Disable with RAYZOR_NO_PHI_SRA=1 if needed.
-            // NOTE: If crashes occur on Linux with TCC linker, use system linker instead (no tcc-linker feature)
             // Run BEFORE regular SRA to avoid conflicts
             if std::env::var("RAYZOR_NO_PHI_SRA").is_err() {
                 let r = run_phi_sra_on_function(function, &malloc_ids, &free_ids);
