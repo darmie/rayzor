@@ -118,9 +118,7 @@ fn emit_op(
                 _ => unreachable!("not a binary op: {:?}", kernel_op),
             };
 
-            lines.push(format!(
-                "    let {var} = {lhs_expr} {op_str} {rhs_expr};"
-            ));
+            lines.push(format!("    let {var} = {lhs_expr} {op_str} {rhs_expr};"));
             var
         }
     }
@@ -159,7 +157,9 @@ mod tests {
         assert!(result.source.contains("fn fused_"));
         assert!(result.source.contains("var<storage, read> in0: array<f32>"));
         assert!(result.source.contains("var<storage, read> in1: array<f32>"));
-        assert!(result.source.contains("var<storage, read_write> result: array<f32>"));
+        assert!(result
+            .source
+            .contains("var<storage, read_write> result: array<f32>"));
         assert!(result.source.contains("+"));
         assert!(result.source.contains("max("));
         assert_eq!(result.num_inputs, 2);

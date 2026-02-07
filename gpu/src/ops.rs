@@ -232,13 +232,23 @@ fn reduce_dispatch(
             let partial_buf = MetalBuffer::allocate(metal_ctx, num_tgs * elem_size)
                 .ok_or("failed to alloc partial buf")?;
 
-            let tg_count = MTLSize { width: num_tgs, height: 1, depth: 1 };
-            let tg_threads = MTLSize { width: tg_size, height: 1, depth: 1 };
+            let tg_count = MTLSize {
+                width: num_tgs,
+                height: 1,
+                depth: 1,
+            };
+            let tg_threads = MTLSize {
+                width: tg_size,
+                height: 1,
+                depth: 1,
+            };
 
             dispatch::dispatch_threadgroups(
-                metal_ctx, kernel,
+                metal_ctx,
+                kernel,
                 &[input_metal, &partial_buf, &numel_buf],
-                tg_count, tg_threads,
+                tg_count,
+                tg_threads,
             )?;
 
             let result_buf = if num_tgs > 1 {
@@ -249,10 +259,19 @@ fn reduce_dispatch(
                     .ok_or("failed to alloc pass2 numel buf")?;
                 let pass2_tg_size = next_power_of_2(num_tgs);
                 dispatch::dispatch_threadgroups(
-                    metal_ctx, kernel,
+                    metal_ctx,
+                    kernel,
                     &[&partial_buf, &final_buf, &pass2_numel_buf],
-                    MTLSize { width: 1, height: 1, depth: 1 },
-                    MTLSize { width: pass2_tg_size, height: 1, depth: 1 },
+                    MTLSize {
+                        width: 1,
+                        height: 1,
+                        depth: 1,
+                    },
+                    MTLSize {
+                        width: pass2_tg_size,
+                        height: 1,
+                        depth: 1,
+                    },
                 )?;
                 final_buf
             } else {
@@ -282,35 +301,31 @@ fn reduce_dispatch(
             // Create numel uniform buffer
             let numel_u32 = numel as u32;
             let numel_buf = unsafe {
-                WgpuBuffer::from_data(
-                    wgpu_ctx,
-                    &numel_u32 as *const u32 as *const u8,
-                    4,
-                )
-            }.ok_or("failed to alloc numel buf")?;
+                WgpuBuffer::from_data(wgpu_ctx, &numel_u32 as *const u32 as *const u8, 4)
+            }
+            .ok_or("failed to alloc numel buf")?;
 
             let partial_buf = WgpuBuffer::allocate(wgpu_ctx, num_tgs * elem_size)
                 .ok_or("failed to alloc partial buf")?;
 
             dispatch::dispatch_workgroups(
-                wgpu_ctx, kernel,
+                wgpu_ctx,
+                kernel,
                 &[input_wgpu, &partial_buf, &numel_buf],
                 (num_tgs, 1, 1),
             )?;
 
             let result_buf = if num_tgs > 1 {
-                let final_buf = WgpuBuffer::allocate(wgpu_ctx, elem_size)
-                    .ok_or("failed to alloc final buf")?;
+                let final_buf =
+                    WgpuBuffer::allocate(wgpu_ctx, elem_size).ok_or("failed to alloc final buf")?;
                 let pass2_numel = num_tgs as u32;
                 let pass2_numel_buf = unsafe {
-                    WgpuBuffer::from_data(
-                        wgpu_ctx,
-                        &pass2_numel as *const u32 as *const u8,
-                        4,
-                    )
-                }.ok_or("failed to alloc pass2 numel buf")?;
+                    WgpuBuffer::from_data(wgpu_ctx, &pass2_numel as *const u32 as *const u8, 4)
+                }
+                .ok_or("failed to alloc pass2 numel buf")?;
                 dispatch::dispatch_workgroups(
-                    wgpu_ctx, kernel,
+                    wgpu_ctx,
+                    kernel,
                     &[&partial_buf, &final_buf, &pass2_numel_buf],
                     (1, 1, 1),
                 )?;
@@ -319,7 +334,8 @@ fn reduce_dispatch(
                 partial_buf
             };
 
-            let data = result_buf.read_to_vec(elem_size)
+            let data = result_buf
+                .read_to_vec(elem_size)
                 .ok_or("failed to read back reduction result")?;
             Ok(match dtype {
                 buffer::DTYPE_F32 => unsafe { *(data.as_ptr() as *const f32) as f64 },
@@ -369,7 +385,11 @@ unsafe fn matmul_impl(ctx: i64, a: i64, b: i64, m: usize, k: usize, n: usize) ->
         &cached.compiled,
         a_buf.native_buffer(),
         b_buf.native_buffer(),
-        m, k, n, elem_size, dtype,
+        m,
+        k,
+        n,
+        elem_size,
+        dtype,
     ) {
         Ok(result_native) => {
             let result = GpuBuffer::materialized(result_native, m * n, dtype);
@@ -410,15 +430,24 @@ fn matmul_dispatch(
             let result_inner = MetalBuffer::allocate(metal_ctx, m * n * elem_size)
                 .ok_or("failed to alloc result")?;
             let dims: [u32; 4] = [m as u32, k as u32, n as u32, 0];
-            let dims_buf = MetalBuffer::from_value(metal_ctx, &dims)
-                .ok_or("failed to alloc dims")?;
+            let dims_buf =
+                MetalBuffer::from_value(metal_ctx, &dims).ok_or("failed to alloc dims")?;
 
             let threads_per_tg = 16usize;
             dispatch::dispatch_threadgroups(
-                metal_ctx, kernel,
+                metal_ctx,
+                kernel,
                 &[a_metal, b_metal, &result_inner, &dims_buf],
-                MTLSize { width: n.div_ceil(threads_per_tg), height: m.div_ceil(threads_per_tg), depth: 1 },
-                MTLSize { width: threads_per_tg, height: threads_per_tg, depth: 1 },
+                MTLSize {
+                    width: n.div_ceil(threads_per_tg),
+                    height: m.div_ceil(threads_per_tg),
+                    depth: 1,
+                },
+                MTLSize {
+                    width: threads_per_tg,
+                    height: threads_per_tg,
+                    depth: 1,
+                },
             )?;
 
             Ok(NativeBuffer::Metal(result_inner))
@@ -439,17 +468,14 @@ fn matmul_dispatch(
             let result_inner = WgpuBuffer::allocate(wgpu_ctx, m * n * elem_size)
                 .ok_or("failed to alloc result")?;
             let dims: [u32; 4] = [m as u32, k as u32, n as u32, 0];
-            let dims_buf = unsafe {
-                WgpuBuffer::from_data(
-                    wgpu_ctx,
-                    dims.as_ptr() as *const u8,
-                    16,
-                )
-            }.ok_or("failed to alloc dims")?;
+            let dims_buf =
+                unsafe { WgpuBuffer::from_data(wgpu_ctx, dims.as_ptr() as *const u8, 16) }
+                    .ok_or("failed to alloc dims")?;
 
             let threads_per_wg = 16usize;
             dispatch::dispatch_workgroups(
-                wgpu_ctx, kernel,
+                wgpu_ctx,
+                kernel,
                 &[a_wgpu, b_wgpu, &result_inner, &dims_buf],
                 (n.div_ceil(threads_per_wg), m.div_ceil(threads_per_wg), 1),
             )?;
@@ -597,7 +623,9 @@ mod tests {
             assert!(
                 (val - expected).abs() < 1e-6,
                 "add mismatch at {}: expected {}, got {}",
-                i, expected, val
+                i,
+                expected,
+                val
             );
         }
 
@@ -646,7 +674,9 @@ mod tests {
             assert!(
                 (val - expected).abs() < 1e-5,
                 "fused mismatch at {}: expected {}, got {}",
-                i, expected, val
+                i,
+                expected,
+                val
             );
         }
 
@@ -682,7 +712,8 @@ mod tests {
         assert!(
             (result - expected).abs() < 1.0,
             "sum: expected {}, got {}",
-            expected, result
+            expected,
+            result
         );
 
         unsafe {
@@ -712,7 +743,8 @@ mod tests {
         assert!(
             (sum - expected).abs() < 1.0,
             "lazy sum: expected {}, got {}",
-            expected, sum
+            expected,
+            sum
         );
 
         unsafe {
@@ -748,7 +780,9 @@ mod tests {
             assert!(
                 (result_slice[i] - exp).abs() < 1e-3,
                 "matmul[{}]: expected {}, got {}",
-                i, exp, result_slice[i]
+                i,
+                exp,
+                result_slice[i]
             );
         }
 

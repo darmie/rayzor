@@ -22,10 +22,12 @@ pub fn compile_wgsl(
     _num_buffers: usize,
     workgroup_size: u32,
 ) -> Result<WgpuCompiledKernel, String> {
-    let shader_module = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("rayzor_compute_shader"),
-        source: wgpu::ShaderSource::Wgsl(source.into()),
-    });
+    let shader_module = ctx
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rayzor_compute_shader"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
 
     // Auto-derive layout from shader reflection — handles mixed storage/uniform bindings
     let pipeline = ctx
