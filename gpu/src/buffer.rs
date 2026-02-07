@@ -1,16 +1,16 @@
 //! GPU buffer management — CPU↔GPU data transfer
 //!
-//! GpuBuffer wraps a Metal buffer (or future CUDA/WebGPU buffer) with
-//! metadata about element count and dtype, enabling typed tensor interop.
+//! GpuBuffer wraps a NativeBuffer (Metal or wgpu) with metadata about
+//! element count and dtype, enabling typed tensor interop.
 //!
 //! Buffers can be either **materialized** (backed by GPU memory) or **lazy**
 //! (a pending computation DAG that gets fused and dispatched on demand).
 
+use std::rc::Rc;
+
+use crate::backend::{NativeBuffer, NativeCompiledKernel, NativeContext};
 use crate::device::GpuContext;
 use crate::lazy::LazyNode;
-
-#[cfg(target_os = "macos")]
-use crate::metal::buffer_ops;
 
 /// DType tags matching runtime/src/tensor.rs
 pub const DTYPE_F32: u8 = 0;
@@ -30,30 +30,25 @@ pub fn dtype_byte_size(dtype: u8) -> usize {
 }
 
 /// The internal state of a GpuBuffer — materialized or lazy.
-#[cfg(target_os = "macos")]
 pub enum GpuBufferKind {
     /// Backed by actual GPU memory.
-    Materialized(buffer_ops::MetalBuffer),
+    Materialized(Rc<NativeBuffer>),
     /// Pending computation — will be fused and dispatched when materialized.
     Lazy(LazyNode),
 }
 
 /// Opaque GPU buffer handle.
 pub struct GpuBuffer {
-    #[cfg(target_os = "macos")]
     pub(crate) kind: GpuBufferKind,
-    #[cfg(not(target_os = "macos"))]
-    _placeholder: (),
     pub numel: usize,
     pub dtype: u8,
 }
 
-#[cfg(target_os = "macos")]
 impl GpuBuffer {
     /// Create a new materialized buffer.
-    pub(crate) fn materialized(inner: buffer_ops::MetalBuffer, numel: usize, dtype: u8) -> Self {
+    pub(crate) fn materialized(inner: NativeBuffer, numel: usize, dtype: u8) -> Self {
         GpuBuffer {
-            kind: GpuBufferKind::Materialized(inner),
+            kind: GpuBufferKind::Materialized(Rc::new(inner)),
             numel,
             dtype,
         }
@@ -68,10 +63,10 @@ impl GpuBuffer {
         }
     }
 
-    /// Get the underlying MetalBuffer, panicking if lazy.
+    /// Get a shared reference to the underlying NativeBuffer.
     ///
     /// Call `ensure_materialized()` first if the buffer might be lazy.
-    pub(crate) fn metal_buffer(&self) -> &buffer_ops::MetalBuffer {
+    pub(crate) fn native_buffer(&self) -> &Rc<NativeBuffer> {
         match &self.kind {
             GpuBufferKind::Materialized(buf) => buf,
             GpuBufferKind::Lazy(_) => {
@@ -85,70 +80,140 @@ impl GpuBuffer {
     /// No-op if already materialized.
     pub(crate) fn ensure_materialized(&mut self, gpu_ctx: &mut GpuContext) -> Result<(), String> {
         if let GpuBufferKind::Lazy(ref lazy_node) = self.kind {
-            let metal_buf = materialize_lazy(gpu_ctx, lazy_node)?;
-            self.kind = GpuBufferKind::Materialized(metal_buf);
+            let native_buf = materialize_lazy(gpu_ctx, lazy_node)?;
+            self.kind = GpuBufferKind::Materialized(Rc::new(native_buf));
         }
         Ok(())
     }
 }
 
-/// Compile and dispatch a fused kernel for a lazy node, returning the result MetalBuffer.
-#[cfg(target_os = "macos")]
+/// Compile and dispatch a fused kernel for a lazy node, returning the result NativeBuffer.
 fn materialize_lazy(
     gpu_ctx: &mut GpuContext,
     lazy_node: &LazyNode,
-) -> Result<buffer_ops::MetalBuffer, String> {
-    use crate::codegen::msl_fused;
-    use crate::lazy;
-    use crate::metal::{compile, dispatch};
-
+) -> Result<NativeBuffer, String> {
     let op = &lazy_node.op;
     let dtype = lazy_node.dtype;
     let numel = lazy_node.numel;
 
-    // Collect all input Metal buffers from the lazy tree
-    let (input_bufs, ptr_to_idx) = lazy::collect_inputs(op);
+    // Collect all input buffers from the lazy tree
+    let (input_bufs, ptr_to_idx) = crate::lazy::collect_inputs(op);
 
     // Check fused kernel cache (keyed by structural hash + dtype)
-    let struct_hash = lazy::structural_hash(op);
+    let struct_hash = crate::lazy::structural_hash(op);
     let cache_key = (struct_hash, dtype);
 
     let compiled = if let Some(cached) = gpu_ctx.fused_cache.get(&cache_key) {
         cached.clone()
     } else {
-        // Generate fused MSL source
-        let fused = msl_fused::emit_fused_kernel(op, dtype, &ptr_to_idx, input_bufs.len());
-
-        // Compile the fused kernel
-        let compiled = compile::compile_msl(&gpu_ctx.inner, &fused.source, &fused.fn_name)?;
-        let compiled = std::rc::Rc::new(compiled);
+        let compiled =
+            compile_fused_kernel(&gpu_ctx.inner, op, dtype, &ptr_to_idx, input_bufs.len())?;
+        let compiled = Rc::new(compiled);
         gpu_ctx.fused_cache.insert(cache_key, compiled.clone());
         compiled
     };
 
     // Allocate result buffer
     let byte_size = numel * dtype_byte_size(dtype);
-    let result_buf = buffer_ops::MetalBuffer::allocate(&gpu_ctx.inner, byte_size)
+    let result_buf = gpu_ctx
+        .inner
+        .allocate_buffer(byte_size)
         .ok_or("failed to allocate result buffer for fused kernel")?;
 
-    // Build buffer bindings: [input0, input1, ..., result]
-    // We need MetalBuffer refs for dispatch, but we have Retained<MTLBuffer>s.
-    // Create temporary MetalBuffer wrappers that borrow the Retained handles.
-    let input_wrappers: Vec<buffer_ops::MetalBuffer> = input_bufs
-        .iter()
-        .map(|mtl_buf| buffer_ops::MetalBuffer {
-            mtl_buffer: mtl_buf.clone(),
-            byte_size: 0, // not used by dispatch
-        })
-        .collect();
-
-    let mut all_bufs: Vec<&buffer_ops::MetalBuffer> = input_wrappers.iter().collect();
-    all_bufs.push(&result_buf);
-
-    // Dispatch
-    dispatch::dispatch(&gpu_ctx.inner, &compiled, &all_bufs, numel)?;
+    // Dispatch fused kernel
+    dispatch_fused(&gpu_ctx.inner, &compiled, &input_bufs, &result_buf, numel)?;
 
     Ok(result_buf)
+}
+
+/// Compile a fused kernel for the active backend.
+#[allow(unused_variables)]
+fn compile_fused_kernel(
+    ctx: &NativeContext,
+    op: &crate::lazy::LazyOp,
+    dtype: u8,
+    ptr_to_idx: &std::collections::HashMap<usize, usize>,
+    num_inputs: usize,
+) -> Result<NativeCompiledKernel, String> {
+    match ctx {
+        #[cfg(feature = "metal-backend")]
+        NativeContext::Metal(metal_ctx) => {
+            use crate::codegen::msl_fused;
+            use crate::metal::compile;
+            let fused = msl_fused::emit_fused_kernel(op, dtype, ptr_to_idx, num_inputs);
+            let compiled = compile::compile_msl(metal_ctx, &fused.source, &fused.fn_name)?;
+            Ok(NativeCompiledKernel::Metal(compiled))
+        }
+        #[cfg(feature = "webgpu-backend")]
+        NativeContext::Wgpu(wgpu_ctx) => {
+            use crate::codegen::wgsl_fused;
+            use crate::wgpu_backend::compile;
+            let fused = wgsl_fused::emit_fused_kernel(op, dtype, ptr_to_idx, num_inputs);
+            let num_buffers = num_inputs + 1;
+            let compiled = compile::compile_wgsl(
+                wgpu_ctx,
+                &fused.source,
+                &fused.fn_name,
+                num_buffers,
+                crate::codegen::wgsl::WORKGROUP_SIZE,
+            )?;
+            Ok(NativeCompiledKernel::Wgpu(compiled))
+        }
+        NativeContext::Unavailable => Err("no GPU backend available".to_string()),
+    }
+}
+
+/// Dispatch a fused kernel on the active backend.
+#[allow(unused_variables)]
+fn dispatch_fused(
+    ctx: &NativeContext,
+    compiled: &NativeCompiledKernel,
+    input_bufs: &[Rc<NativeBuffer>],
+    result_buf: &NativeBuffer,
+    numel: usize,
+) -> Result<(), String> {
+    match (ctx, compiled) {
+        #[cfg(feature = "metal-backend")]
+        (NativeContext::Metal(metal_ctx), NativeCompiledKernel::Metal(kernel)) => {
+            use crate::metal::{buffer_ops::MetalBuffer, dispatch};
+            let input_wrappers: Vec<MetalBuffer> = input_bufs
+                .iter()
+                .filter_map(|nb| match nb.as_ref() {
+                    NativeBuffer::Metal(mb) => Some(MetalBuffer {
+                        mtl_buffer: mb.mtl_buffer.clone(),
+                        byte_size: 0,
+                    }),
+                    _ => None,
+                })
+                .collect();
+            let result_metal = match result_buf {
+                NativeBuffer::Metal(mb) => mb,
+                _ => return Err("result buffer is not Metal".to_string()),
+            };
+            let mut all_bufs: Vec<&MetalBuffer> = input_wrappers.iter().collect();
+            all_bufs.push(result_metal);
+            dispatch::dispatch(metal_ctx, kernel, &all_bufs, numel)
+        }
+        #[cfg(feature = "webgpu-backend")]
+        (NativeContext::Wgpu(wgpu_ctx), NativeCompiledKernel::Wgpu(kernel)) => {
+            use crate::wgpu_backend::{buffer_ops::WgpuBuffer, dispatch};
+            let input_wgpu: Vec<&WgpuBuffer> = input_bufs
+                .iter()
+                .filter_map(|nb| match nb.as_ref() {
+                    NativeBuffer::Wgpu(wb) => Some(wb),
+                    _ => None,
+                })
+                .collect();
+            let result_wgpu = match result_buf {
+                NativeBuffer::Wgpu(wb) => wb,
+                _ => return Err("result buffer is not wgpu".to_string()),
+            };
+            let mut all_bufs: Vec<&WgpuBuffer> = input_wgpu;
+            all_bufs.push(result_wgpu);
+            dispatch::dispatch(wgpu_ctx, kernel, &all_bufs, numel)
+        }
+        _ => Err("backend mismatch between context and compiled kernel".to_string()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -156,10 +221,6 @@ fn materialize_lazy(
 // ---------------------------------------------------------------------------
 
 /// Create a GPU buffer from a RayzorTensor.
-/// Copies tensor data to GPU-accessible memory.
-///
-/// tensor_ptr: i64 pointer to RayzorTensor struct
-/// Returns: i64 pointer to GpuBuffer, or 0 on failure
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_gpu_compute_create_buffer(ctx: i64, tensor_ptr: i64) -> i64 {
     if ctx == 0 || tensor_ptr == 0 {
@@ -167,30 +228,18 @@ pub unsafe extern "C" fn rayzor_gpu_compute_create_buffer(ctx: i64, tensor_ptr: 
     }
 
     let gpu_ctx = &*(ctx as *const GpuContext);
-
-    // RayzorTensor layout: { data: *mut u8, shape: *mut usize, strides: *mut usize,
-    //                        ndim: usize, numel: usize, dtype: u8, owns_data: bool }
-    // RayzorTensor field offsets on 64-bit: data=0, shape=8, strides=16, ndim=24, numel=32, dtype=40
     let tensor = tensor_ptr as *const u8;
     let data_ptr = *(tensor as *const *const u8);
     let numel = *(tensor.add(32) as *const usize);
     let dtype = *tensor.add(40);
     let byte_size = numel * dtype_byte_size(dtype);
 
-    #[cfg(target_os = "macos")]
-    {
-        match buffer_ops::MetalBuffer::from_data(&gpu_ctx.inner, data_ptr, byte_size) {
-            Some(inner) => {
-                let buf = GpuBuffer::materialized(inner, numel, dtype);
-                Box::into_raw(Box::new(buf)) as i64
-            }
-            None => 0,
+    match gpu_ctx.inner.buffer_from_data(data_ptr, byte_size) {
+        Some(inner) => {
+            let buf = GpuBuffer::materialized(inner, numel, dtype);
+            Box::into_raw(Box::new(buf)) as i64
         }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (data_ptr, byte_size);
-        0
+        None => 0,
     }
 }
 
@@ -206,104 +255,78 @@ pub unsafe extern "C" fn rayzor_gpu_compute_alloc_buffer(ctx: i64, numel: i64, d
     let dtype = dtype as u8;
     let byte_size = numel * dtype_byte_size(dtype);
 
-    #[cfg(target_os = "macos")]
-    {
-        match buffer_ops::MetalBuffer::allocate(&gpu_ctx.inner, byte_size) {
-            Some(inner) => {
-                let buf = GpuBuffer::materialized(inner, numel, dtype);
-                Box::into_raw(Box::new(buf)) as i64
-            }
-            None => 0,
+    match gpu_ctx.inner.allocate_buffer(byte_size) {
+        Some(inner) => {
+            let buf = GpuBuffer::materialized(inner, numel, dtype);
+            Box::into_raw(Box::new(buf)) as i64
         }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = byte_size;
-        0
+        None => 0,
     }
 }
 
 /// Copy GPU buffer data back to a new RayzorTensor.
-/// Returns i64 pointer to a newly allocated RayzorTensor.
-///
-/// Triggers materialization of lazy buffers.
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_gpu_compute_to_tensor(ctx: i64, buffer_ptr: i64) -> i64 {
     if ctx == 0 || buffer_ptr == 0 {
         return 0;
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        // Materialize lazy buffers before reading
-        let buf = &mut *(buffer_ptr as *mut GpuBuffer);
-        let gpu_ctx = &mut *(ctx as *mut GpuContext);
-        if buf.ensure_materialized(gpu_ctx).is_err() {
-            return 0;
-        }
-
-        let metal_buf = buf.metal_buffer();
-        let byte_size = buf.numel * dtype_byte_size(buf.dtype);
-        let src_ptr = metal_buf.contents();
-        if src_ptr.is_null() {
-            return 0;
-        }
-
-        // Allocate tensor data
-        let data = libc::malloc(byte_size) as *mut u8;
-        if data.is_null() {
-            return 0;
-        }
-        std::ptr::copy_nonoverlapping(src_ptr, data, byte_size);
-
-        // Build 1D shape: [numel]
-        let shape = libc::malloc(std::mem::size_of::<usize>()) as *mut usize;
-        if shape.is_null() {
-            libc::free(data as *mut libc::c_void);
-            return 0;
-        }
-        *shape = buf.numel;
-
-        let strides = libc::malloc(std::mem::size_of::<usize>()) as *mut usize;
-        if strides.is_null() {
-            libc::free(data as *mut libc::c_void);
-            libc::free(shape as *mut libc::c_void);
-            return 0;
-        }
-        *strides = 1;
-
-        // Allocate RayzorTensor struct (48 bytes, 8-aligned)
-        let tensor_size: usize = 48;
-        let tensor = libc::malloc(tensor_size) as *mut u8;
-        if tensor.is_null() {
-            libc::free(data as *mut libc::c_void);
-            libc::free(shape as *mut libc::c_void);
-            libc::free(strides as *mut libc::c_void);
-            return 0;
-        }
-
-        // Write fields
-        *(tensor as *mut *mut u8) = data; // data: offset 0
-        *(tensor.add(8) as *mut *mut usize) = shape; // shape: offset 8
-        *(tensor.add(16) as *mut *mut usize) = strides; // strides: offset 16
-        *(tensor.add(24) as *mut usize) = 1; // ndim: offset 24
-        *(tensor.add(32) as *mut usize) = buf.numel; // numel: offset 32
-        *tensor.add(40) = buf.dtype; // dtype: offset 40
-        *tensor.add(41) = 1; // owns_data: offset 41
-
-        tensor as i64
+    let buf = &mut *(buffer_ptr as *mut GpuBuffer);
+    let gpu_ctx = &mut *(ctx as *mut GpuContext);
+    if buf.ensure_materialized(gpu_ctx).is_err() {
+        return 0;
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        0
+
+    let byte_size = buf.numel * dtype_byte_size(buf.dtype);
+    let native_buf = buf.native_buffer();
+
+    let data_vec = match native_buf.read_bytes(byte_size) {
+        Some(d) => d,
+        None => return 0,
+    };
+
+    let data = libc::malloc(byte_size) as *mut u8;
+    if data.is_null() {
+        return 0;
     }
+    std::ptr::copy_nonoverlapping(data_vec.as_ptr(), data, byte_size);
+
+    let shape = libc::malloc(std::mem::size_of::<usize>()) as *mut usize;
+    if shape.is_null() {
+        libc::free(data as *mut libc::c_void);
+        return 0;
+    }
+    *shape = buf.numel;
+
+    let strides = libc::malloc(std::mem::size_of::<usize>()) as *mut usize;
+    if strides.is_null() {
+        libc::free(data as *mut libc::c_void);
+        libc::free(shape as *mut libc::c_void);
+        return 0;
+    }
+    *strides = 1;
+
+    let tensor_size: usize = 48;
+    let tensor = libc::malloc(tensor_size) as *mut u8;
+    if tensor.is_null() {
+        libc::free(data as *mut libc::c_void);
+        libc::free(shape as *mut libc::c_void);
+        libc::free(strides as *mut libc::c_void);
+        return 0;
+    }
+
+    *(tensor as *mut *mut u8) = data;
+    *(tensor.add(8) as *mut *mut usize) = shape;
+    *(tensor.add(16) as *mut *mut usize) = strides;
+    *(tensor.add(24) as *mut usize) = 1;
+    *(tensor.add(32) as *mut usize) = buf.numel;
+    *tensor.add(40) = buf.dtype;
+    *tensor.add(41) = 1;
+
+    tensor as i64
 }
 
 /// Free a GPU buffer.
-///
-/// Takes (ctx, buffer) for consistency with the instance method calling convention,
-/// though ctx is unused. This allows the compiler to call the extern directly
-/// without a MIR wrapper.
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_gpu_compute_free_buffer(_ctx: i64, buffer_ptr: i64) {
     if buffer_ptr == 0 {
@@ -337,15 +360,6 @@ pub unsafe extern "C" fn rayzor_gpu_compute_buffer_dtype(buffer_ptr: i64) -> i64
 // ---------------------------------------------------------------------------
 
 /// Create a GPU buffer from an array of @:gpuStruct instances.
-///
-/// Packs `count` structs into a contiguous GPU buffer. Each struct is
-/// `struct_size` bytes on the CPU side (matching the GPU layout since
-/// @:gpuStruct already uses GPU-compatible layout on CPU).
-///
-/// Arguments: (ctx, array_ptr, count, struct_size)
-/// - array_ptr: pointer to Haxe Array of gpuStruct pointers
-/// - count: number of elements
-/// - struct_size: byte size of each struct (from gpuSize())
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_gpu_compute_create_struct_buffer(
     ctx: i64,
@@ -362,14 +376,11 @@ pub unsafe extern "C" fn rayzor_gpu_compute_create_struct_buffer(
     let struct_size = struct_size as usize;
     let total_bytes = count * struct_size;
 
-    // Allocate staging buffer and pack structs contiguously
     let staging = libc::malloc(total_bytes) as *mut u8;
     if staging.is_null() {
         return 0;
     }
 
-    // Haxe Array layout: first 8 bytes = data pointer (pointer to array of pointers)
-    // Each element is a pointer to a @:gpuStruct (flat malloc'd block)
     let array_data = *(array_ptr as *const *const i64);
     for i in 0..count {
         let struct_ptr = *array_data.add(i) as *const u8;
@@ -380,26 +391,16 @@ pub unsafe extern "C" fn rayzor_gpu_compute_create_struct_buffer(
         }
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        use crate::metal::buffer_ops::MetalBuffer;
-        match MetalBuffer::from_data(&gpu_ctx.inner, staging, total_bytes) {
-            Some(inner) => {
-                libc::free(staging as *mut libc::c_void);
-                let buf = GpuBuffer::materialized(inner, count, DTYPE_F32);
-                Box::into_raw(Box::new(buf)) as i64
-            }
-            None => {
-                libc::free(staging as *mut libc::c_void);
-                0
-            }
+    let result = match gpu_ctx.inner.buffer_from_data(staging, total_bytes) {
+        Some(inner) => {
+            let buf = GpuBuffer::materialized(inner, count, DTYPE_F32);
+            Box::into_raw(Box::new(buf)) as i64
         }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        libc::free(staging as *mut libc::c_void);
-        0
-    }
+        None => 0,
+    };
+
+    libc::free(staging as *mut libc::c_void);
+    result
 }
 
 /// Allocate an empty GPU buffer for `count` structs of `struct_size` bytes.
@@ -414,32 +415,18 @@ pub unsafe extern "C" fn rayzor_gpu_compute_alloc_struct_buffer(
     }
 
     let gpu_ctx = &*(ctx as *const GpuContext);
-    let count = count as usize;
-    let struct_size = struct_size as usize;
-    let total_bytes = count * struct_size;
+    let total_bytes = (count as usize) * (struct_size as usize);
 
-    #[cfg(target_os = "macos")]
-    {
-        use crate::metal::buffer_ops::MetalBuffer;
-        match MetalBuffer::allocate(&gpu_ctx.inner, total_bytes) {
-            Some(inner) => {
-                let buf = GpuBuffer::materialized(inner, count, DTYPE_F32);
-                Box::into_raw(Box::new(buf)) as i64
-            }
-            None => 0,
+    match gpu_ctx.inner.allocate_buffer(total_bytes) {
+        Some(inner) => {
+            let buf = GpuBuffer::materialized(inner, count as usize, DTYPE_F32);
+            Box::into_raw(Box::new(buf)) as i64
         }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = total_bytes;
-        0
+        None => 0,
     }
 }
 
 /// Read a single f32 field from a structured GPU buffer, promote to f64.
-///
-/// Arguments: (ctx, buffer, index, field_byte_offset)
-/// Returns: f64 value of the field
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_gpu_compute_read_struct_float(
     _ctx: i64,
@@ -452,27 +439,28 @@ pub unsafe extern "C" fn rayzor_gpu_compute_read_struct_float(
         return 0.0;
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        let buf = &*(buffer_ptr as *const GpuBuffer);
-        let ptr = buf.metal_buffer().contents();
-        if ptr.is_null() {
-            return 0.0;
-        }
-        let byte_offset = (index as usize) * (struct_size as usize) + (field_offset as usize);
+    let buf = &*(buffer_ptr as *const GpuBuffer);
+    let native_buf = buf.native_buffer();
+    let byte_offset = (index as usize) * (struct_size as usize) + (field_offset as usize);
+
+    let ptr = native_buf.contents_ptr();
+    if !ptr.is_null() {
         let val = *(ptr.add(byte_offset) as *const f32);
-        val as f64
+        return val as f64;
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        0.0
+
+    // Fallback for wgpu: read via staging buffer
+    let total = byte_offset + 4;
+    if let Some(data) = native_buf.read_bytes(total) {
+        if data.len() >= total {
+            let val = *(data.as_ptr().add(byte_offset) as *const f32);
+            return val as f64;
+        }
     }
+    0.0
 }
 
 /// Read a single i32 field from a structured GPU buffer, extend to i64.
-///
-/// Arguments: (ctx, buffer, index, struct_size, field_byte_offset)
-/// Returns: i64 value of the field
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_gpu_compute_read_struct_int(
     _ctx: i64,
@@ -485,19 +473,22 @@ pub unsafe extern "C" fn rayzor_gpu_compute_read_struct_int(
         return 0;
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        let buf = &*(buffer_ptr as *const GpuBuffer);
-        let ptr = buf.metal_buffer().contents();
-        if ptr.is_null() {
-            return 0;
-        }
-        let byte_offset = (index as usize) * (struct_size as usize) + (field_offset as usize);
+    let buf = &*(buffer_ptr as *const GpuBuffer);
+    let native_buf = buf.native_buffer();
+    let byte_offset = (index as usize) * (struct_size as usize) + (field_offset as usize);
+
+    let ptr = native_buf.contents_ptr();
+    if !ptr.is_null() {
         let val = *(ptr.add(byte_offset) as *const i32);
-        val as i64
+        return val as i64;
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        0
+
+    let total = byte_offset + 4;
+    if let Some(data) = native_buf.read_bytes(total) {
+        if data.len() >= total {
+            let val = *(data.as_ptr().add(byte_offset) as *const i32);
+            return val as i64;
+        }
     }
+    0
 }

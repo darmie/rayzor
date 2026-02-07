@@ -18,25 +18,18 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
+use crate::backend::NativeBuffer;
 use crate::kernel_ir::KernelOp;
-
-#[cfg(target_os = "macos")]
-use objc2::rc::Retained;
-#[cfg(target_os = "macos")]
-use objc2::runtime::ProtocolObject;
-#[cfg(target_os = "macos")]
-use objc2_metal::MTLBuffer;
 
 /// A node in the lazy computation DAG.
 ///
-/// Input nodes hold a cloned reference to a Metal buffer (refcounted by ObjC
-/// runtime, so the GPU memory stays alive even if the original GpuBuffer is freed).
-/// Operation nodes compose their inputs recursively via `Arc` for cheap sharing.
+/// Input nodes hold a reference-counted NativeBuffer (keeping GPU memory alive
+/// even if the original GpuBuffer is freed). Operation nodes compose their
+/// inputs recursively via `Rc` for cheap sharing.
 #[derive(Clone)]
 pub enum LazyOp {
-    /// Leaf: reference to an already-materialized Metal buffer.
-    #[cfg(target_os = "macos")]
-    Input(Retained<ProtocolObject<dyn MTLBuffer>>),
+    /// Leaf: reference to an already-materialized GPU buffer.
+    Input(Rc<NativeBuffer>),
 
     /// Unary elementwise operation.
     Unary { op: KernelOp, input: Rc<LazyOp> },
@@ -70,7 +63,6 @@ pub fn structural_hash(op: &LazyOp) -> u64 {
 
 fn hash_op(op: &LazyOp, hasher: &mut impl Hasher) {
     match op {
-        #[cfg(target_os = "macos")]
         LazyOp::Input(_) => {
             0u8.hash(hasher);
         }
@@ -89,35 +81,28 @@ fn hash_op(op: &LazyOp, hasher: &mut impl Hasher) {
 }
 
 /// Result of `collect_inputs`: (input buffers, raw-ptr → binding index).
-#[cfg(target_os = "macos")]
-pub type CollectedInputs = (
-    Vec<Retained<ProtocolObject<dyn MTLBuffer>>>,
-    HashMap<usize, usize>,
-);
+pub type CollectedInputs = (Vec<Rc<NativeBuffer>>, HashMap<usize, usize>);
 
 /// Collect all unique Input buffer pointers from a LazyOp tree.
 ///
 /// Returns the buffers in discovery order (left-to-right, depth-first),
-/// deduplicating by pointer identity. The returned indices map each
-/// input buffer to its `[[buffer(N)]]` binding index.
-#[cfg(target_os = "macos")]
+/// deduplicating by `Rc` pointer identity. The returned indices map each
+/// input buffer to its binding index.
 pub fn collect_inputs(op: &LazyOp) -> CollectedInputs {
-    let mut buffers: Vec<Retained<ProtocolObject<dyn MTLBuffer>>> = Vec::new();
-    // Map from raw pointer → buffer index
+    let mut buffers: Vec<Rc<NativeBuffer>> = Vec::new();
     let mut ptr_to_idx: HashMap<usize, usize> = HashMap::new();
     collect_inputs_rec(op, &mut buffers, &mut ptr_to_idx);
     (buffers, ptr_to_idx)
 }
 
-#[cfg(target_os = "macos")]
 fn collect_inputs_rec(
     op: &LazyOp,
-    buffers: &mut Vec<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    buffers: &mut Vec<Rc<NativeBuffer>>,
     ptr_to_idx: &mut HashMap<usize, usize>,
 ) {
     match op {
         LazyOp::Input(buf) => {
-            let ptr = Retained::as_ptr(buf) as usize;
+            let ptr = Rc::as_ptr(buf) as usize;
             if let std::collections::hash_map::Entry::Vacant(e) = ptr_to_idx.entry(ptr) {
                 let idx = buffers.len();
                 e.insert(idx);
@@ -137,7 +122,6 @@ fn collect_inputs_rec(
 /// Count the depth of a lazy op tree (for complexity estimation).
 pub fn tree_depth(op: &LazyOp) -> usize {
     match op {
-        #[cfg(target_os = "macos")]
         LazyOp::Input(_) => 0,
         LazyOp::Unary { input, .. } => 1 + tree_depth(input),
         LazyOp::Binary { lhs, rhs, .. } => 1 + tree_depth(lhs).max(tree_depth(rhs)),

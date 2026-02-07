@@ -6,16 +6,25 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+metal-backend = ["dep:objc2", "dep:objc2-metal", "dep:objc2-foundation"]
+webgpu-backend = ["dep:wgpu", "dep:pollster"]
+
 [dependencies]
 rayzor-plugin = { path = "../plugin" }
 rayzor-runtime = { path = "../runtime" }
 libc = "0.2"
 
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
-objc2-metal = { version = "0.3", features = [
+# Metal backend (macOS only)
+objc2 = { version = "0.6", optional = true }
+objc2-metal = { version = "0.3", optional = true, features = [
     "MTLDevice", "MTLCommandQueue", "MTLBuffer", "MTLLibrary",
     "MTLComputePipeline", "MTLCommandBuffer", "MTLComputeCommandEncoder",
     "MTLCommandEncoder", "MTLResource"
 ] }
-objc2-foundation = "0.3"
+objc2-foundation = { version = "0.3", optional = true }
+
+# WebGPU backend (cross-platform)
+wgpu = { version = "24", optional = true }
+pollster = { version = "0.4", optional = true }

@@ -21,8 +21,13 @@ pub mod kernel_ir;
 pub mod lazy;
 pub mod ops;
 
-#[cfg(target_os = "macos")]
+pub mod backend;
+
+#[cfg(feature = "metal-backend")]
 pub mod metal;
+
+#[cfg(feature = "webgpu-backend")]
+pub mod wgpu_backend;
 
 use rayzor_plugin::{declare_native_methods, NativeMethodDesc};
 use std::ffi::c_void;

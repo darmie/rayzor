@@ -1,8 +1,9 @@
-//! Fused kernel MSL code generation.
+//! Fused kernel WGSL code generation.
 //!
-//! Translates a LazyOp expression tree into a single MSL kernel that performs
-//! all operations in one dispatch. Input buffers are bound to consecutive
-//! `[[buffer(N)]]` slots, and the result is written to the last buffer slot.
+//! Translates a LazyOp expression tree into a single WGSL compute shader that
+//! performs all operations in one dispatch. Input buffers are bound to
+//! consecutive `@group(0) @binding(N)` slots, and the result is written to the
+//! last binding slot.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -10,11 +11,11 @@ use std::rc::Rc;
 use crate::kernel_ir::KernelOp;
 use crate::lazy::LazyOp;
 
-use super::msl::dtype_to_msl;
+use super::wgsl::{dtype_to_wgsl, WORKGROUP_SIZE};
 
 /// Result of fused kernel emission.
 pub struct FusedKernelSource {
-    /// MSL source code.
+    /// WGSL source code.
     pub source: String,
     /// Kernel function name.
     pub fn_name: String,
@@ -22,7 +23,7 @@ pub struct FusedKernelSource {
     pub num_inputs: usize,
 }
 
-/// Generate MSL source for a fused elementwise kernel.
+/// Generate WGSL source for a fused elementwise kernel.
 ///
 /// `ptr_to_idx` maps `Rc::as_ptr()` → buffer binding index.
 pub fn emit_fused_kernel(
@@ -31,29 +32,28 @@ pub fn emit_fused_kernel(
     ptr_to_idx: &HashMap<usize, usize>,
     num_inputs: usize,
 ) -> FusedKernelSource {
-    let msl_type = dtype_to_msl(dtype);
+    let wgsl_type = dtype_to_wgsl(dtype);
     let mut counter: usize = 0;
     let mut body_lines: Vec<String> = Vec::new();
 
-    let result_var = emit_op(op, msl_type, ptr_to_idx, &mut counter, &mut body_lines);
+    let result_var = emit_op(op, wgsl_type, ptr_to_idx, &mut counter, &mut body_lines);
 
-    // Build parameter list
-    let mut params: Vec<String> = Vec::new();
+    // Build binding declarations
+    let mut bindings: Vec<String> = Vec::new();
     for i in 0..num_inputs {
-        params.push(format!(
-            "    device const {msl_type}* in{i} [[buffer({i})]],",
+        bindings.push(format!(
+            "@group(0) @binding({i}) var<storage, read> in{i}: array<{wgsl_type}>;"
         ));
     }
-    params.push(format!(
-        "    device {msl_type}* result [[buffer({num_inputs})]],",
+    bindings.push(format!(
+        "@group(0) @binding({num_inputs}) var<storage, read_write> result: array<{wgsl_type}>;"
     ));
-    params.push("    uint id [[thread_position_in_grid]]".to_string());
 
     let fn_name = format!("fused_{num_inputs}in_{counter}ops");
 
     let source = format!(
-        "#include <metal_stdlib>\nusing namespace metal;\n\nkernel void {fn_name}(\n{params}\n) {{\n{body}\n    result[id] = {result_var};\n}}\n",
-        params = params.join("\n"),
+        "{bindings}\n\n@compute @workgroup_size({WORKGROUP_SIZE})\nfn {fn_name}(@builtin(global_invocation_id) gid: vec3<u32>) {{\n    let id = gid.x;\n    if (id >= arrayLength(&in0)) {{\n        return;\n    }}\n{body}\n    result[id] = {result_var};\n}}\n",
+        bindings = bindings.join("\n"),
         body = body_lines.join("\n"),
     );
 
@@ -64,11 +64,11 @@ pub fn emit_fused_kernel(
     }
 }
 
-/// Recursively emit MSL for a LazyOp node, returning the variable name
+/// Recursively emit WGSL for a LazyOp node, returning the variable name
 /// holding the result of this subtree.
 fn emit_op(
     op: &LazyOp,
-    msl_type: &str,
+    wgsl_type: &str,
     ptr_to_idx: &HashMap<usize, usize>,
     counter: &mut usize,
     lines: &mut Vec<String>,
@@ -83,7 +83,7 @@ fn emit_op(
             op: kernel_op,
             input,
         } => {
-            let input_expr = emit_op(input, msl_type, ptr_to_idx, counter, lines);
+            let input_expr = emit_op(input, wgsl_type, ptr_to_idx, counter, lines);
             let var = format!("v{counter}");
             *counter += 1;
 
@@ -93,11 +93,11 @@ fn emit_op(
                 KernelOp::Sqrt => format!("sqrt({input_expr})"),
                 KernelOp::Exp => format!("exp({input_expr})"),
                 KernelOp::Log => format!("log({input_expr})"),
-                KernelOp::Relu => format!("max(({msl_type})0, {input_expr})"),
+                KernelOp::Relu => format!("max({wgsl_type}(0), {input_expr})"),
                 _ => unreachable!("not a unary op: {:?}", kernel_op),
             };
 
-            lines.push(format!("    {msl_type} {var} = {expr};"));
+            lines.push(format!("    let {var} = {expr};"));
             var
         }
         LazyOp::Binary {
@@ -105,8 +105,8 @@ fn emit_op(
             lhs,
             rhs,
         } => {
-            let lhs_expr = emit_op(lhs, msl_type, ptr_to_idx, counter, lines);
-            let rhs_expr = emit_op(rhs, msl_type, ptr_to_idx, counter, lines);
+            let lhs_expr = emit_op(lhs, wgsl_type, ptr_to_idx, counter, lines);
+            let rhs_expr = emit_op(rhs, wgsl_type, ptr_to_idx, counter, lines);
             let var = format!("v{counter}");
             *counter += 1;
 
@@ -119,7 +119,7 @@ fn emit_op(
             };
 
             lines.push(format!(
-                "    {msl_type} {var} = {lhs_expr} {op_str} {rhs_expr};"
+                "    let {var} = {lhs_expr} {op_str} {rhs_expr};"
             ));
             var
         }
@@ -134,23 +134,14 @@ mod tests {
     use crate::lazy;
     use std::rc::Rc;
 
-    #[cfg(feature = "metal-backend")]
-    use crate::metal::{buffer_ops::MetalBuffer, device_init::MetalContext};
+    fn make_dummy_buf() -> Rc<NativeBuffer> {
+        Rc::new(NativeBuffer::Unavailable)
+    }
 
     #[test]
-    #[cfg(feature = "metal-backend")]
     fn test_fused_add_relu() {
-        if !MetalContext::is_available() {
-            return;
-        }
-        let ctx = MetalContext::new().unwrap();
-
-        let data = [1.0f32; 4];
-        let buf_a = MetalBuffer::from_data(&ctx, data.as_ptr() as *const u8, 16).unwrap();
-        let buf_b = MetalBuffer::from_data(&ctx, data.as_ptr() as *const u8, 16).unwrap();
-
-        let nb_a = Rc::new(NativeBuffer::Metal(buf_a));
-        let nb_b = Rc::new(NativeBuffer::Metal(buf_b));
+        let nb_a = make_dummy_buf();
+        let nb_b = make_dummy_buf();
 
         let op = LazyOp::Unary {
             op: KernelOp::Relu,
@@ -165,26 +156,18 @@ mod tests {
         assert_eq!(inputs.len(), 2);
 
         let result = emit_fused_kernel(&op, buffer::DTYPE_F32, &ptr_to_idx, inputs.len());
-        assert!(result.source.contains("kernel void fused_"));
-        assert!(result.source.contains("device const float* in0"));
-        assert!(result.source.contains("device const float* in1"));
-        assert!(result.source.contains("device float* result"));
+        assert!(result.source.contains("fn fused_"));
+        assert!(result.source.contains("var<storage, read> in0: array<f32>"));
+        assert!(result.source.contains("var<storage, read> in1: array<f32>"));
+        assert!(result.source.contains("var<storage, read_write> result: array<f32>"));
         assert!(result.source.contains("+"));
         assert!(result.source.contains("max("));
         assert_eq!(result.num_inputs, 2);
     }
 
     #[test]
-    #[cfg(feature = "metal-backend")]
     fn test_fused_shared_input() {
-        if !MetalContext::is_available() {
-            return;
-        }
-        let ctx = MetalContext::new().unwrap();
-
-        let data = [1.0f32; 4];
-        let buf_a = MetalBuffer::from_data(&ctx, data.as_ptr() as *const u8, 16).unwrap();
-        let nb_a = Rc::new(NativeBuffer::Metal(buf_a));
+        let nb_a = make_dummy_buf();
 
         let input_a = Rc::new(LazyOp::Input(nb_a));
         let op = LazyOp::Binary {
@@ -197,7 +180,7 @@ mod tests {
         assert_eq!(inputs.len(), 1);
 
         let result = emit_fused_kernel(&op, buffer::DTYPE_F32, &ptr_to_idx, inputs.len());
-        assert!(result.source.contains("device const float* in0"));
+        assert!(result.source.contains("var<storage, read> in0: array<f32>"));
         assert!(!result.source.contains("in1"));
     }
 }
