@@ -61,4 +61,10 @@ impl MetalBuffer {
     pub fn byte_size(&self) -> usize {
         self.byte_size
     }
+
+    /// Create a Metal buffer from a single value (e.g., a u32 for numel).
+    pub fn from_value<T: Copy>(ctx: &MetalContext, value: &T) -> Option<Self> {
+        let bytes = std::mem::size_of::<T>();
+        Self::from_data(ctx, value as *const T as *const u8, bytes)
+    }
 }

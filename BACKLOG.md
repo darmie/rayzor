@@ -1481,20 +1481,54 @@ All metadata works on both classes and functions. When `__c__()` is used, metada
 - [ ] Normalization: layerNorm, rmsNorm
 - [ ] SIMD4f vectorized CPU paths for f32 ops
 
-### 14.3 rayzor-gpu Plugin 🔴
+### 14.3 rayzor-gpu Plugin 🟡
 
 GPU compute is a **packaged plugin** (not core stdlib) — keeps core lean, optional dependency.
 Strategy: Tinygrad-style source code emission (Kernel IR → text per backend → runtime compile).
 
-- [ ] Kernel IR (~20 ops: elementwise, reduce, matmul, gather, scatter)
-- [ ] Source code emitters: CUDA C, MSL, WGSL, SPIR-V, OpenCL C
-- [ ] Runtime dispatch per backend (NVRTC, MTLDevice, wgpu, vkCreateShaderModule, clBuildProgram)
-- [ ] Device memory management (CPU↔GPU transfers)
+**Phase 1 ✅ Metal device + buffers + NativePlugin**
+- [x] Metal device init (MTLDevice + MTLCommandQueue)
+- [x] GPU buffer management (create from Tensor, alloc, readback to Tensor, free)
+- [x] NativePlugin architecture (`declare_native_methods!` macro) — no compiler core changes
+- [x] Haxe API: `GPUCompute.create()`, `.createBuffer()`, `.toTensor()`, `.freeBuffer()`
+
+**Phase 2 ✅ Kernel IR + MSL codegen**
+- [x] KernelOp IR enum (Add, Sub, Mul, Div, Neg, Abs, Sqrt, Exp, Log, Relu)
+- [x] MSL source code generation (binary + unary elementwise kernels)
+- [x] Metal shader compilation (MSL → MTLComputePipelineState)
+- [x] Compute command dispatch (threadgroup sizing, buffer binding)
+- [x] KernelCache: HashMap<(KernelOp, dtype), CompiledKernel>
+
+**Phase 3 ✅ Elementwise ops API**
+- [x] Binary ops: gpu.add/sub/mul/div(bufA, bufB) → bufResult
+- [x] Unary ops: gpu.neg/abs/sqrt/exp/log/relu(buf) → bufResult
+- [x] 15 GPU tests passing (codegen + Metal integration + ops)
+
+**Phase 4 — Reductions + Matmul**
+- [ ] Tree-reduction kernels (sum, mean, max, min) with threadgroup shared memory
+- [ ] Tiled 16x16 shared-memory matmul
+- [ ] Dot product
+
+**Phase 5 — Compute Data Structures (@:gpuStruct)**
+- [ ] `@:gpuStruct` annotation (GPU-aligned flat structs, 4-byte floats)
+- [ ] Structured buffer create/alloc/read
+- [ ] MSL/CUDA typedef generation via `gpuDef()`
+
+**Phase 6 — Kernel Fusion**
+- [ ] Lazy evaluation DAG for elementwise op chains
+- [ ] Fused kernel codegen (e.g., `a.add(b).mul(c).relu()` → single kernel)
+
+**Phase 7 — Additional Backends**
 - [ ] CUDA backend (NVRTC) — NVIDIA GPUs
-- [ ] Metal backend (MTLDevice) — macOS/iOS
 - [ ] WebGPU backend (wgpu) — cross-platform
 - [ ] Vulkan backend (SPIR-V) — Windows/Linux/Android
 - [ ] OpenCL backend — cross-platform legacy
+
+### 14.5 Operator Overloading for GPU/Tensor Types 🔴
+
+- [ ] Exercise existing `@:op` annotations on Tensor (add E2E tests using `a + b` syntax)
+- [ ] Add `@:op` overloading to GpuBuffer (requires ctx back-pointer in buffer struct)
+- [ ] Verify abstract type `@:op` support works end-to-end (currently only extern class tested)
 
 ### 14.4 Interpreter SIMD Correctness 🔴
 

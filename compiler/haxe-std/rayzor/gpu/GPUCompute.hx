@@ -54,4 +54,76 @@ extern class GPUCompute {
     /** Free a GPU buffer. */
     @:native("gpu_compute_freeBuffer")
     public function freeBuffer(buffer:GpuBuffer):Void;
+
+    // -- Binary elementwise ops: result[i] = a[i] OP b[i] -------------------
+
+    /** GPU-accelerated elementwise addition. */
+    @:native("gpu_compute_add")
+    public function add(a:GpuBuffer, b:GpuBuffer):GpuBuffer;
+
+    /** GPU-accelerated elementwise subtraction. */
+    @:native("gpu_compute_sub")
+    public function sub(a:GpuBuffer, b:GpuBuffer):GpuBuffer;
+
+    /** GPU-accelerated elementwise multiplication. */
+    @:native("gpu_compute_mul")
+    public function mul(a:GpuBuffer, b:GpuBuffer):GpuBuffer;
+
+    /** GPU-accelerated elementwise division. */
+    @:native("gpu_compute_div")
+    public function div(a:GpuBuffer, b:GpuBuffer):GpuBuffer;
+
+    // -- Unary elementwise ops: result[i] = OP(a[i]) ------------------------
+
+    /** GPU-accelerated elementwise negation. */
+    @:native("gpu_compute_neg")
+    public function neg(a:GpuBuffer):GpuBuffer;
+
+    /** GPU-accelerated elementwise absolute value. */
+    @:native("gpu_compute_abs")
+    public function abs(a:GpuBuffer):GpuBuffer;
+
+    /** GPU-accelerated elementwise square root. */
+    @:native("gpu_compute_sqrt")
+    public function sqrt(a:GpuBuffer):GpuBuffer;
+
+    /** GPU-accelerated elementwise exponential (e^x). */
+    @:native("gpu_compute_exp")
+    public function exp(a:GpuBuffer):GpuBuffer;
+
+    /** GPU-accelerated elementwise natural logarithm. */
+    @:native("gpu_compute_log")
+    public function log(a:GpuBuffer):GpuBuffer;
+
+    /** GPU-accelerated elementwise ReLU: max(0, x). */
+    @:native("gpu_compute_relu")
+    public function relu(a:GpuBuffer):GpuBuffer;
+
+    // -- Reductions: buffer -> scalar ----------------------------------------
+
+    /** Sum all elements in a GPU buffer. */
+    @:native("gpu_compute_sum")
+    public function sum(buf:GpuBuffer):Float;
+
+    /** Mean of all elements in a GPU buffer. */
+    @:native("gpu_compute_mean")
+    public function mean(buf:GpuBuffer):Float;
+
+    /** Maximum element in a GPU buffer. */
+    @:native("gpu_compute_max")
+    public function max(buf:GpuBuffer):Float;
+
+    /** Minimum element in a GPU buffer. */
+    @:native("gpu_compute_min")
+    public function min(buf:GpuBuffer):Float;
+
+    // -- Linear algebra ------------------------------------------------------
+
+    /** Dot product of two GPU buffers (elementwise multiply + sum). */
+    @:native("gpu_compute_dot")
+    public function dot(a:GpuBuffer, b:GpuBuffer):Float;
+
+    /** Matrix multiplication: C(M×N) = A(M×K) × B(K×N). */
+    @:native("gpu_compute_matmul")
+    public function matmul(a:GpuBuffer, b:GpuBuffer, m:Int, k:Int, n:Int):GpuBuffer;
 }

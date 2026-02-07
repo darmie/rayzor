@@ -11,7 +11,11 @@
 //! changes required**.
 
 pub mod buffer;
+pub mod codegen;
 pub mod device;
+pub mod kernel_cache;
+pub mod kernel_ir;
+pub mod ops;
 
 #[cfg(target_os = "macos")]
 pub mod metal;
@@ -34,6 +38,27 @@ declare_native_methods! {
     "rayzor_gpu_GPUCompute", "allocBuffer",  instance, "rayzor_gpu_compute_alloc_buffer",  [Ptr, I64, I64] => Ptr;
     "rayzor_gpu_GPUCompute", "toTensor",     instance, "rayzor_gpu_compute_to_tensor",     [Ptr, Ptr]      => Ptr;
     "rayzor_gpu_GPUCompute", "freeBuffer",   instance, "rayzor_gpu_compute_free_buffer",   [Ptr, Ptr]      => Void;
+    // Binary elementwise ops: (self, a, b) -> result
+    "rayzor_gpu_GPUCompute", "add",          instance, "rayzor_gpu_compute_add",           [Ptr, Ptr, Ptr] => Ptr;
+    "rayzor_gpu_GPUCompute", "sub",          instance, "rayzor_gpu_compute_sub",           [Ptr, Ptr, Ptr] => Ptr;
+    "rayzor_gpu_GPUCompute", "mul",          instance, "rayzor_gpu_compute_mul",           [Ptr, Ptr, Ptr] => Ptr;
+    "rayzor_gpu_GPUCompute", "div",          instance, "rayzor_gpu_compute_div",           [Ptr, Ptr, Ptr] => Ptr;
+    // Unary elementwise ops: (self, a) -> result
+    "rayzor_gpu_GPUCompute", "neg",          instance, "rayzor_gpu_compute_neg",           [Ptr, Ptr]      => Ptr;
+    "rayzor_gpu_GPUCompute", "abs",          instance, "rayzor_gpu_compute_abs",           [Ptr, Ptr]      => Ptr;
+    "rayzor_gpu_GPUCompute", "sqrt",         instance, "rayzor_gpu_compute_sqrt",          [Ptr, Ptr]      => Ptr;
+    "rayzor_gpu_GPUCompute", "exp",          instance, "rayzor_gpu_compute_exp",           [Ptr, Ptr]      => Ptr;
+    "rayzor_gpu_GPUCompute", "log",          instance, "rayzor_gpu_compute_log",           [Ptr, Ptr]      => Ptr;
+    "rayzor_gpu_GPUCompute", "relu",         instance, "rayzor_gpu_compute_relu",          [Ptr, Ptr]      => Ptr;
+    // Reductions: (self, buf) -> f64
+    "rayzor_gpu_GPUCompute", "sum",          instance, "rayzor_gpu_compute_sum",           [Ptr, Ptr]      => F64;
+    "rayzor_gpu_GPUCompute", "mean",         instance, "rayzor_gpu_compute_mean",          [Ptr, Ptr]      => F64;
+    "rayzor_gpu_GPUCompute", "max",          instance, "rayzor_gpu_compute_max",           [Ptr, Ptr]      => F64;
+    "rayzor_gpu_GPUCompute", "min",          instance, "rayzor_gpu_compute_min",           [Ptr, Ptr]      => F64;
+    // Dot product: (self, a, b) -> f64
+    "rayzor_gpu_GPUCompute", "dot",          instance, "rayzor_gpu_compute_dot",           [Ptr, Ptr, Ptr] => F64;
+    // Matmul: (self, a, b, m, k, n) -> GpuBuffer
+    "rayzor_gpu_GPUCompute", "matmul",       instance, "rayzor_gpu_compute_matmul",        [Ptr, Ptr, Ptr, I64, I64, I64] => Ptr;
     // GpuBuffer instance methods
     "rayzor_gpu_GpuBuffer",  "numel",        instance, "rayzor_gpu_compute_buffer_numel",  [Ptr]           => I64;
     "rayzor_gpu_GpuBuffer",  "dtype",        instance, "rayzor_gpu_compute_buffer_dtype",  [Ptr]           => I64;
@@ -120,6 +145,75 @@ pub fn get_runtime_symbols() -> Vec<(&'static str, *const u8)> {
         (
             "rayzor_gpu_compute_buffer_dtype",
             buffer::rayzor_gpu_compute_buffer_dtype as *const u8,
+        ),
+        // Binary elementwise ops
+        (
+            "rayzor_gpu_compute_add",
+            ops::rayzor_gpu_compute_add as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_sub",
+            ops::rayzor_gpu_compute_sub as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_mul",
+            ops::rayzor_gpu_compute_mul as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_div",
+            ops::rayzor_gpu_compute_div as *const u8,
+        ),
+        // Unary elementwise ops
+        (
+            "rayzor_gpu_compute_neg",
+            ops::rayzor_gpu_compute_neg as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_abs",
+            ops::rayzor_gpu_compute_abs as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_sqrt",
+            ops::rayzor_gpu_compute_sqrt as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_exp",
+            ops::rayzor_gpu_compute_exp as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_log",
+            ops::rayzor_gpu_compute_log as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_relu",
+            ops::rayzor_gpu_compute_relu as *const u8,
+        ),
+        // Reductions
+        (
+            "rayzor_gpu_compute_sum",
+            ops::rayzor_gpu_compute_sum as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_mean",
+            ops::rayzor_gpu_compute_mean as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_max",
+            ops::rayzor_gpu_compute_max as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_min",
+            ops::rayzor_gpu_compute_min as *const u8,
+        ),
+        // Dot product
+        (
+            "rayzor_gpu_compute_dot",
+            ops::rayzor_gpu_compute_dot as *const u8,
+        ),
+        // Matmul
+        (
+            "rayzor_gpu_compute_matmul",
+            ops::rayzor_gpu_compute_matmul as *const u8,
         ),
     ]
 }

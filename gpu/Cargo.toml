@@ -13,5 +13,9 @@ libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-metal = "0.3"
+objc2-metal = { version = "0.3", features = [
+    "MTLDevice", "MTLCommandQueue", "MTLBuffer", "MTLLibrary",
+    "MTLComputePipeline", "MTLCommandBuffer", "MTLComputeCommandEncoder",
+    "MTLCommandEncoder", "MTLResource"
+] }
 objc2-foundation = "0.3"

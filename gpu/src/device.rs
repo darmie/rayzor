@@ -1,15 +1,18 @@
 //! GPU compute context — device initialization and lifecycle
 
+use crate::kernel_cache::KernelCache;
+
 #[cfg(target_os = "macos")]
 use crate::metal::device_init;
 
 /// Opaque GPU context handle passed as i64 through the JIT ABI.
 ///
-/// On macOS this wraps an MTLDevice + MTLCommandQueue.
+/// On macOS this wraps an MTLDevice + MTLCommandQueue + kernel cache.
 /// On unsupported platforms all operations return null/0.
 pub struct GpuContext {
     #[cfg(target_os = "macos")]
     pub(crate) inner: device_init::MetalContext,
+    pub(crate) kernel_cache: KernelCache,
 }
 
 // ---------------------------------------------------------------------------
@@ -24,7 +27,10 @@ pub extern "C" fn rayzor_gpu_compute_create() -> i64 {
     {
         match device_init::MetalContext::new() {
             Some(ctx) => {
-                let gpu_ctx = GpuContext { inner: ctx };
+                let gpu_ctx = GpuContext {
+                    inner: ctx,
+                    kernel_cache: KernelCache::new(),
+                };
                 let boxed = Box::new(gpu_ctx);
                 Box::into_raw(boxed) as i64
             }
