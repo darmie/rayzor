@@ -488,18 +488,17 @@ mod tests {
 
     #[test]
     fn test_inline_get_set() {
-        let handle = rayzor_anon_new(DYNAMIC_SHAPE, 0);
         // Create an inline object with 3 fields
         let handle = rayzor_anon_new(0, 3);
         rayzor_anon_set_field_by_index(handle, 0, 42);
         rayzor_anon_set_field_by_index(handle, 1, 100);
-        rayzor_anon_set_field_by_index(handle, 2, f64::to_bits(3.14));
+        rayzor_anon_set_field_by_index(handle, 2, f64::to_bits(2.78));
 
         assert_eq!(rayzor_anon_get_field_by_index(handle, 0), 42);
         assert_eq!(rayzor_anon_get_field_by_index(handle, 1), 100);
         assert_eq!(
             f64::from_bits(rayzor_anon_get_field_by_index(handle, 2)),
-            3.14
+            2.78
         );
 
         rayzor_anon_drop(handle);

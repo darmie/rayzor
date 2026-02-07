@@ -210,7 +210,6 @@ pub extern "C" fn haxe_type_typeof(v: *mut u8) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::anon_object::{rayzor_anon_drop, rayzor_anon_new, DYNAMIC_SHAPE};
     use crate::type_system::{haxe_box_int_ptr, haxe_box_float_ptr};
 
     #[test]
@@ -222,7 +221,7 @@ mod tests {
 
     #[test]
     fn test_typeof_float() {
-        let boxed = haxe_box_float_ptr(3.14);
+        let boxed = haxe_box_float_ptr(3.1);
         assert_eq!(haxe_type_typeof(boxed), TVALUETYPE_TFLOAT);
     }
 
