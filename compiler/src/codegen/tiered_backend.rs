@@ -284,7 +284,7 @@ impl<'a> Drop for ExecutionGuard<'a> {
 use super::cranelift_backend::CraneliftBackend;
 use super::mir_interpreter::{InterpError, InterpValue, MirInterpreter};
 use super::profiling::{ProfileConfig, ProfileData, ProfileStatistics};
-use crate::ir::{IrFunction, IrFunctionId, IrModule};
+use crate::ir::{IrFunction, IrFunctionId, IrInstruction, IrModule};
 
 #[cfg(feature = "llvm-backend")]
 use super::llvm_jit_backend::LLVMJitBackend;
@@ -921,10 +921,35 @@ impl TieredBackend {
         })
     }
 
+    /// Check if a function uses SIMD/vector instructions.
+    /// The interpreter returns void for all vector ops, so these functions
+    /// must skip Tier 0 (Interpreted) and start at Baseline (Cranelift JIT).
+    fn function_uses_simd(func: &IrFunction) -> bool {
+        for block in func.cfg.blocks.values() {
+            for inst in &block.instructions {
+                match inst {
+                    IrInstruction::VectorLoad { .. }
+                    | IrInstruction::VectorStore { .. }
+                    | IrInstruction::VectorBinOp { .. }
+                    | IrInstruction::VectorSplat { .. }
+                    | IrInstruction::VectorExtract { .. }
+                    | IrInstruction::VectorInsert { .. }
+                    | IrInstruction::VectorReduce { .. }
+                    | IrInstruction::VectorUnaryOp { .. }
+                    | IrInstruction::VectorMinMax { .. } => return true,
+                    _ => {}
+                }
+            }
+        }
+        false
+    }
+
     /// Compile/load a MIR module
     ///
     /// If `start_interpreted` is true:
     /// - Functions start at Phase 0 (Interpreted) for instant startup
+    /// - Functions using SIMD instructions are promoted to Baseline immediately
+    ///   (the interpreter doesn't support vector operations)
     /// - Background worker will JIT-compile functions as they get hot
     ///
     /// If `start_interpreted` is false:
@@ -950,11 +975,26 @@ impl TieredBackend {
         }
 
         // Register function tiers (actual compilation deferred for JIT mode)
-        for func_id in module.functions.keys() {
+        // Functions using SIMD instructions skip the interpreter tier since
+        // the interpreter returns void for all vector operations.
+        for (func_id, func) in &module.functions {
+            let tier = if initial_tier == OptimizationTier::Interpreted
+                && Self::function_uses_simd(func)
+            {
+                if self.config.verbosity >= 1 {
+                    debug!(
+                        "[TieredBackend] Force-promoting {:?} to Baseline (uses SIMD)",
+                        func_id
+                    );
+                }
+                OptimizationTier::Baseline
+            } else {
+                initial_tier
+            };
             self.function_tiers
                 .write()
                 .unwrap()
-                .insert(*func_id, initial_tier);
+                .insert(*func_id, tier);
         }
 
         // Store module for later recompilation/interpretation
