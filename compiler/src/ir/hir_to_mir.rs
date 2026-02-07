@@ -11994,8 +11994,9 @@ impl<'a> HirToMirContext<'a> {
                                 let sorted_index = {
                                     let type_table = self.type_table.borrow();
                                     if let Some(ty_info) = type_table.get(object.ty) {
-                                        if let TypeKind::Anonymous { fields: anon_fields } =
-                                            &ty_info.kind
+                                        if let TypeKind::Anonymous {
+                                            fields: anon_fields,
+                                        } = &ty_info.kind
                                         {
                                             let mut field_names: Vec<String> = anon_fields
                                                 .iter()
@@ -12006,9 +12007,7 @@ impl<'a> HirToMirContext<'a> {
                                                 })
                                                 .collect();
                                             field_names.sort();
-                                            field_names
-                                                .iter()
-                                                .position(|n| *n == field_name)
+                                            field_names.iter().position(|n| *n == field_name)
                                         } else {
                                             None
                                         }
@@ -12038,9 +12037,8 @@ impl<'a> HirToMirContext<'a> {
                                     let val_i64 =
                                         self.coerce_to_i64(value, field_type_id).unwrap_or(value);
 
-                                    let idx_val = self
-                                        .builder
-                                        .build_const(IrValue::I32(sorted_idx as i32));
+                                    let idx_val =
+                                        self.builder.build_const(IrValue::I32(sorted_idx as i32));
                                     if let Some(idx_val) = idx_val {
                                         self.builder.build_call_direct(
                                             anon_set_id,
@@ -12586,7 +12584,10 @@ impl<'a> HirToMirContext<'a> {
                     // Get all anonymous fields, sort them, and find both the sorted index
                     // AND the actual field type (not the possibly-Dynamic expr type)
                     let sorted_result = if let Some(ty_info) = type_table.get(receiver_ty) {
-                        if let TypeKind::Anonymous { fields: anon_fields } = &ty_info.kind {
+                        if let TypeKind::Anonymous {
+                            fields: anon_fields,
+                        } = &ty_info.kind
+                        {
                             // Build (name, type_id) pairs and sort by name
                             let mut named_fields: Vec<(String, TypeId)> = anon_fields
                                 .iter()
@@ -12614,16 +12615,11 @@ impl<'a> HirToMirContext<'a> {
                         // Emit: rayzor_anon_get_field_by_index(handle, sorted_idx) -> u64
                         let anon_get_id = self.get_or_register_extern_function(
                             "rayzor_anon_get_field_by_index",
-                            vec![
-                                IrType::Ptr(Box::new(IrType::U8)),
-                                IrType::I32,
-                            ],
+                            vec![IrType::Ptr(Box::new(IrType::U8)), IrType::I32],
                             IrType::I64,
                         );
 
-                        let idx_val = self
-                            .builder
-                            .build_const(IrValue::I32(sorted_idx as i32))?;
+                        let idx_val = self.builder.build_const(IrValue::I32(sorted_idx as i32))?;
                         let raw_val = self.builder.build_call_direct(
                             anon_get_id,
                             vec![obj, idx_val],
@@ -15341,19 +15337,13 @@ impl<'a> HirToMirContext<'a> {
         // Register rayzor_anon_set_field_by_index extern: (handle: *mut u8, index: u32, value: u64) -> void
         let anon_set_id = self.get_or_register_extern_function(
             "rayzor_anon_set_field_by_index",
-            vec![
-                IrType::Ptr(Box::new(IrType::U8)),
-                IrType::I32,
-                IrType::I64,
-            ],
+            vec![IrType::Ptr(Box::new(IrType::U8)), IrType::I32, IrType::I64],
             IrType::Void,
         );
 
         // Emit: handle = rayzor_anon_new(shape_id, field_count)
         let shape_id_val = self.builder.build_const(IrValue::I32(shape_id as i32))?;
-        let field_count_val = self
-            .builder
-            .build_const(IrValue::I32(field_count as i32))?;
+        let field_count_val = self.builder.build_const(IrValue::I32(field_count as i32))?;
         let handle = self.builder.build_call_direct(
             anon_new_id,
             vec![shape_id_val, field_count_val],
@@ -15387,27 +15377,18 @@ impl<'a> HirToMirContext<'a> {
         match &ir_type {
             IrType::I64 => Some(value),
             IrType::I32 | IrType::U64 | IrType::Bool => {
-                self.builder
-                    .build_cast(value, ir_type.clone(), IrType::I64)
+                self.builder.build_cast(value, ir_type.clone(), IrType::I64)
             }
             IrType::F64 => {
                 // Float: bitcast f64 to i64 (preserves bits)
                 self.builder.build_bitcast(value, IrType::I64)
             }
             IrType::F32 => {
-                let as_f64 = self
-                    .builder
-                    .build_cast(value, IrType::F32, IrType::F64)?;
+                let as_f64 = self.builder.build_cast(value, IrType::F32, IrType::F64)?;
                 self.builder.build_bitcast(as_f64, IrType::I64)
             }
-            IrType::Ptr(_) => {
-                self.builder
-                    .build_cast(value, ir_type.clone(), IrType::I64)
-            }
-            _ => {
-                self.builder
-                    .build_cast(value, ir_type.clone(), IrType::I64)
-            }
+            IrType::Ptr(_) => self.builder.build_cast(value, ir_type.clone(), IrType::I64),
+            _ => self.builder.build_cast(value, ir_type.clone(), IrType::I64),
         }
     }
 
@@ -15418,8 +15399,7 @@ impl<'a> HirToMirContext<'a> {
         match &ir_type {
             IrType::I64 => Some(value),
             IrType::I32 | IrType::U64 | IrType::Bool => {
-                self.builder
-                    .build_cast(value, IrType::I64, ir_type.clone())
+                self.builder.build_cast(value, IrType::I64, ir_type.clone())
             }
             IrType::F64 => {
                 // i64 -> f64 bitcast (preserves bits)
@@ -15427,17 +15407,10 @@ impl<'a> HirToMirContext<'a> {
             }
             IrType::F32 => {
                 let as_f64 = self.builder.build_bitcast(value, IrType::F64)?;
-                self.builder
-                    .build_cast(as_f64, IrType::F64, IrType::F32)
+                self.builder.build_cast(as_f64, IrType::F64, IrType::F32)
             }
-            IrType::Ptr(_) => {
-                self.builder
-                    .build_cast(value, IrType::I64, ir_type.clone())
-            }
-            _ => {
-                self.builder
-                    .build_cast(value, IrType::I64, ir_type.clone())
-            }
+            IrType::Ptr(_) => self.builder.build_cast(value, IrType::I64, ir_type.clone()),
+            _ => self.builder.build_cast(value, IrType::I64, ir_type.clone()),
         }
     }
 

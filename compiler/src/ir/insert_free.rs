@@ -127,10 +127,20 @@ impl OptimizationPass for InsertFreePass {
 /// Classify a function by name into the appropriate ID sets.
 fn classify_func(fid: IrFunctionId, name: &str, ids: &mut AllocFuncIds) {
     match name {
-        "malloc" => { ids.malloc_ids.insert(fid); }
-        "free" => { ids.free_ids.insert(fid); }
-        "rayzor_anon_new" => { ids.anon_new_ids.insert(fid); ids.anon_safe_ids.insert(fid); }
-        "rayzor_anon_drop" => { ids.anon_drop_ids.insert(fid); ids.anon_safe_ids.insert(fid); }
+        "malloc" => {
+            ids.malloc_ids.insert(fid);
+        }
+        "free" => {
+            ids.free_ids.insert(fid);
+        }
+        "rayzor_anon_new" => {
+            ids.anon_new_ids.insert(fid);
+            ids.anon_safe_ids.insert(fid);
+        }
+        "rayzor_anon_drop" => {
+            ids.anon_drop_ids.insert(fid);
+            ids.anon_safe_ids.insert(fid);
+        }
         _ if name.starts_with("rayzor_anon_") || name.starts_with("haxe_reflect_") => {
             ids.anon_safe_ids.insert(fid);
         }
@@ -140,10 +150,7 @@ fn classify_func(fid: IrFunctionId, name: &str, ids: &mut AllocFuncIds) {
 
 /// Insert Free instructions for non-escaping allocations in a single function.
 /// Returns the number of Free instructions inserted.
-fn insert_free_for_function(
-    function: &mut IrFunction,
-    ids: &AllocFuncIds,
-) -> usize {
+fn insert_free_for_function(function: &mut IrFunction, ids: &AllocFuncIds) -> usize {
     if function.cfg.blocks.is_empty() {
         return 0;
     }

@@ -14,7 +14,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use crate::type_system::{DynamicValue, TypeId, TYPE_BOOL, TYPE_FLOAT, TYPE_INT, TYPE_NULL, TYPE_STRING};
+use crate::type_system::{
+    DynamicValue, TypeId, TYPE_BOOL, TYPE_FLOAT, TYPE_INT, TYPE_NULL, TYPE_STRING,
+};
 
 /// Type ID for anonymous objects in the DynamicValue type system
 pub const TYPE_ANON_OBJECT: TypeId = TypeId(6);
@@ -202,10 +204,8 @@ pub extern "C" fn rayzor_anon_has_field(ptr: *mut u8, name_ptr: *const u8, name_
     }
     unsafe {
         let arc_ref = borrow_arc(ptr);
-        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(
-            name_ptr,
-            name_len as usize,
-        ));
+        let name =
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize));
 
         match &arc_ref.data {
             AnonData::Inline(_) => {
@@ -232,10 +232,8 @@ pub extern "C" fn rayzor_anon_get_field(
     }
     unsafe {
         let arc_ref = borrow_arc(ptr);
-        let name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(
-            name_ptr,
-            name_len as usize,
-        ));
+        let name =
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize));
 
         match &arc_ref.data {
             AnonData::Inline(fields) => {
@@ -275,8 +273,7 @@ pub extern "C" fn rayzor_anon_set_field(
         return;
     }
     let name = unsafe {
-        String::from_utf8_lossy(std::slice::from_raw_parts(name_ptr, name_len as usize))
-            .to_string()
+        String::from_utf8_lossy(std::slice::from_raw_parts(name_ptr, name_len as usize)).to_string()
     };
 
     // Extract type_id and raw value from DynamicValue pointer
@@ -336,8 +333,7 @@ pub extern "C" fn rayzor_anon_delete_field(
         return false;
     }
     let name = unsafe {
-        String::from_utf8_lossy(std::slice::from_raw_parts(name_ptr, name_len as usize))
-            .to_string()
+        String::from_utf8_lossy(std::slice::from_raw_parts(name_ptr, name_len as usize)).to_string()
     };
 
     unsafe {
@@ -410,11 +406,7 @@ pub extern "C" fn rayzor_anon_fields(ptr: *mut u8) -> *mut u8 {
             let hs_layout = std::alloc::Layout::new::<HaxeString>();
             let hs_ptr = std::alloc::alloc(hs_layout) as *mut HaxeString;
             if !hs_ptr.is_null() {
-                crate::haxe_string::haxe_string_from_bytes(
-                    hs_ptr,
-                    name.as_ptr(),
-                    name.len(),
-                );
+                crate::haxe_string::haxe_string_from_bytes(hs_ptr, name.as_ptr(), name.len());
                 // Push the HaxeString pointer into the array
                 crate::haxe_array::haxe_array_push(
                     arr_ptr,
@@ -450,9 +442,7 @@ pub extern "C" fn rayzor_anon_copy(ptr: *mut u8) -> *mut u8 {
 fn box_value_as_dynamic(type_id: u32, value: u64) -> *mut u8 {
     match TypeId(type_id) {
         t if t == TYPE_INT => crate::type_system::haxe_box_int_ptr(value as i64),
-        t if t == TYPE_FLOAT => {
-            crate::type_system::haxe_box_float_ptr(f64::from_bits(value))
-        }
+        t if t == TYPE_FLOAT => crate::type_system::haxe_box_float_ptr(f64::from_bits(value)),
         t if t == TYPE_BOOL => crate::type_system::haxe_box_bool_ptr(value != 0),
         t if t == TYPE_STRING => {
             crate::type_system::haxe_box_reference_ptr(value as *mut u8, TYPE_STRING.0)

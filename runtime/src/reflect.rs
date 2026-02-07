@@ -210,7 +210,7 @@ pub extern "C" fn haxe_type_typeof(v: *mut u8) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::type_system::{haxe_box_int_ptr, haxe_box_float_ptr};
+    use crate::type_system::{haxe_box_float_ptr, haxe_box_int_ptr};
 
     #[test]
     fn test_typeof_int() {
