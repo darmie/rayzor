@@ -32,7 +32,7 @@ jobs:
       - name: Prepare site
         run: |
           mkdir -p _site
-          cp website/index.html _site/
+          cp -r website/* _site/
           # Include existing benchmark results if available
           if [ -d "compiler/benchmarks/charts" ]; then
             mkdir -p _site/benchmarks
