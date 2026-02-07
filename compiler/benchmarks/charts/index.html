@@ -13,16 +13,16 @@
 </head>
 <body>
     <h1>Rayzor Benchmark Results</h1>
-    <p style="text-align: center">Generated: 2026-02-06</p>
+    <p style="text-align: center">Generated: 2026-02-07</p>
     <div class="summary">
         <h3>System</h3>
-        <p><strong>OS:</strong> macos | <strong>Arch:</strong> aarch64 | <strong>CPU cores:</strong> 10 | <strong>RAM:</strong> 16.0 GB | <strong>Host:</strong> Damilares-MBP.lan</p>
+        <p><strong>OS:</strong> macos | <strong>Arch:</strong> aarch64 | <strong>CPU cores:</strong> 10 | <strong>RAM:</strong> 16.0 GB | <strong>Host:</strong> Damilares-MacBook-Pro.local</p>
     </div>
     <div class="summary">
         <h3>Summary</h3>
         <ul>
-            <li><strong>mandelbrot</strong>: 9 targets measured</li>
             <li><strong>nbody</strong>: 9 targets measured</li>
+            <li><strong>mandelbrot</strong>: 9 targets measured</li>
         </ul>
     </div>
     <div class="summary">
@@ -31,16 +31,16 @@
         Compile time and execution time are measured separately. Results show the <strong>mean</strong> of measured iterations.</p>
         <ul>
             <li><strong>rayzor-cranelift</strong> &mdash; Source &rarr; MIR (O2) &rarr; Cranelift JIT. Compile includes parsing, type-checking, MIR lowering, optimization, and JIT compilation.</li>
-            <li><strong>rayzor-llvm</strong> &mdash; Source &rarr; MIR (O2) &rarr; LLVM MCJIT. Same frontend pipeline, LLVM backend for peak throughput.</li>
-            <li><strong>rayzor-tiered</strong> &mdash; Source &rarr; interpreter &rarr; Cranelift JIT. Uses the <em>Benchmark</em> tier preset: interpreter thresholds (2/3/5), immediate bailout, synchronous optimization. Compile includes parsing + module loading; execution includes interpreter startup and JIT tier-up.</li>
+            <li><strong>rayzor-llvm</strong> &mdash; Source &rarr; MIR (O2) &rarr; LLVM backend. Uses AOT compile-to-dylib on x86_64 Linux for best codegen quality; MCJIT on aarch64 macOS.</li>
+            <li><strong>rayzor-tiered</strong> &mdash; Source &rarr; interpreter &rarr; Cranelift JIT &rarr; LLVM tier-up. Uses the <em>Benchmark</em> tier preset: interpreter thresholds (2/3/5), immediate bailout, synchronous optimization. LLVM tier uses AOT on x86_64 Linux, MCJIT on aarch64. Compile includes parsing + module loading; execution includes interpreter startup and JIT tier-up.</li>
             <li><strong>rayzor-precompiled</strong> &mdash; Pre-bundled .rzb (MIR already O2-optimized) &rarr; Cranelift JIT. Compile is bundle load + JIT only (no parsing/lowering).</li>
             <li><strong>rayzor-precompiled-tiered</strong> &mdash; Pre-bundled .rzb &rarr; tiered execution with LLVM upgrade after warmup.</li>
         </ul>
         <p>All targets share the same runtime (<code>librayzor_runtime</code>) and execute the same Haxe source code.
-        MIR optimization level O2 includes: dead code elimination, constant folding, copy propagation, function inlining, LICM, and CSE.</p>
+        MIR optimization level O2 includes: dead code elimination, constant folding, copy propagation, function inlining, bounds check elimination, LICM, and CSE.</p>
     </div>
 
-    <h2>mandelbrot</h2>
+    <h2>nbody</h2>
     <div class="chart-container">
         <canvas id="chart_0"></canvas>
     </div>
@@ -52,47 +52,12 @@
                 datasets: [
                     {
                         label: 'Compile (ms)',
-                        data: [291.68, 0.00, 414.42, 2407.31, 150.60, 166.39, 3.85, 2.85, 125.24],
+                        data: [210.52, 0.00, 429.60, 726.55, 276.28, 306.88, 3.96, 1.09, 258.04],
                         backgroundColor: 'rgba(54, 162, 235, 0.8)'
                     },
                     {
                         label: 'Execute (ms)',
-                        data: [758.30, 43874.04, 1128.78, 335.29, 358.84, 331.92, 355.50, 331.11, 331.47],
-                        backgroundColor: 'rgba(255, 99, 132, 0.8)'
-                    }
-                ]
-            },
-            options: {
-                responsive: true,
-                scales: {
-                    x: { stacked: true },
-                    y: { stacked: true, title: { display: true, text: 'Time (ms)' } }
-                },
-                plugins: {
-                    title: { display: true, text: 'mandelbrot' }
-                }
-            }
-        });
-    </script>
-
-    <h2>nbody</h2>
-    <div class="chart-container">
-        <canvas id="chart_1"></canvas>
-    </div>
-    <script>
-        new Chart(document.getElementById('chart_1'), {
-            type: 'bar',
-            data: {
-                labels: ['haxe-cpp', 'haxe-interp', 'haxe-jvm', 'rayzor-aot', 'rayzor-cranelift', 'rayzor-llvm', 'rayzor-precompiled', 'rayzor-precompiled-tiered', 'rayzor-tiered'],
-                datasets: [
-                    {
-                        label: 'Compile (ms)',
-                        data: [223.86, 0.00, 405.29, 631.33, 278.82, 302.89, 4.56, 1.42, 258.15],
-                        backgroundColor: 'rgba(54, 162, 235, 0.8)'
-                    },
-                    {
-                        label: 'Execute (ms)',
-                        data: [661.43, 31697.00, 866.23, 609.90, 829.69, 619.15, 1075.51, 604.30, 605.94],
+                        data: [669.45, 31934.49, 882.58, 599.83, 827.38, 603.96, 896.32, 602.83, 602.32],
                         backgroundColor: 'rgba(255, 99, 132, 0.8)'
                     }
                 ]
@@ -105,6 +70,41 @@
                 },
                 plugins: {
                     title: { display: true, text: 'nbody' }
+                }
+            }
+        });
+    </script>
+
+    <h2>mandelbrot</h2>
+    <div class="chart-container">
+        <canvas id="chart_1"></canvas>
+    </div>
+    <script>
+        new Chart(document.getElementById('chart_1'), {
+            type: 'bar',
+            data: {
+                labels: ['haxe-cpp', 'haxe-interp', 'haxe-jvm', 'rayzor-aot', 'rayzor-cranelift', 'rayzor-llvm', 'rayzor-precompiled', 'rayzor-precompiled-tiered', 'rayzor-tiered'],
+                datasets: [
+                    {
+                        label: 'Compile (ms)',
+                        data: [229.15, 0.00, 436.94, 590.85, 149.01, 174.46, 4.03, 0.65, 124.22],
+                        backgroundColor: 'rgba(54, 162, 235, 0.8)'
+                    },
+                    {
+                        label: 'Execute (ms)',
+                        data: [703.84, 44398.67, 1233.23, 288.56, 352.00, 276.85, 354.23, 281.69, 278.48],
+                        backgroundColor: 'rgba(255, 99, 132, 0.8)'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    x: { stacked: true },
+                    y: { stacked: true, title: { display: true, text: 'Time (ms)' } }
+                },
+                plugins: {
+                    title: { display: true, text: 'mandelbrot' }
                 }
             }
         });
