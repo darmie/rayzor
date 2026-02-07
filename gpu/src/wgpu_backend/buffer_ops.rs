@@ -20,20 +20,25 @@ pub struct WgpuBuffer {
 
 impl WgpuBuffer {
     /// Create a wgpu buffer by copying data from a CPU pointer.
-    pub fn from_data(ctx: &WgpuContext, data: *const u8, byte_size: usize) -> Option<Self> {
+    ///
+    /// # Safety
+    /// `data` must point to at least `byte_size` readable bytes.
+    pub unsafe fn from_data(ctx: &WgpuContext, data: *const u8, byte_size: usize) -> Option<Self> {
         if data.is_null() || byte_size == 0 {
             return None;
         }
 
         let slice = unsafe { std::slice::from_raw_parts(data, byte_size) };
-        let buffer = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("rayzor_gpu_buffer"),
-            contents: slice,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::UNIFORM
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-        });
+        let buffer = ctx
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("rayzor_gpu_buffer"),
+                contents: slice,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::UNIFORM
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+            });
 
         Some(WgpuBuffer {
             buffer,

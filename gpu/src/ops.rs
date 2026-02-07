@@ -281,11 +281,13 @@ fn reduce_dispatch(
 
             // Create numel uniform buffer
             let numel_u32 = numel as u32;
-            let numel_buf = WgpuBuffer::from_data(
-                wgpu_ctx,
-                &numel_u32 as *const u32 as *const u8,
-                4,
-            ).ok_or("failed to alloc numel buf")?;
+            let numel_buf = unsafe {
+                WgpuBuffer::from_data(
+                    wgpu_ctx,
+                    &numel_u32 as *const u32 as *const u8,
+                    4,
+                )
+            }.ok_or("failed to alloc numel buf")?;
 
             let partial_buf = WgpuBuffer::allocate(wgpu_ctx, num_tgs * elem_size)
                 .ok_or("failed to alloc partial buf")?;
@@ -300,11 +302,13 @@ fn reduce_dispatch(
                 let final_buf = WgpuBuffer::allocate(wgpu_ctx, elem_size)
                     .ok_or("failed to alloc final buf")?;
                 let pass2_numel = num_tgs as u32;
-                let pass2_numel_buf = WgpuBuffer::from_data(
-                    wgpu_ctx,
-                    &pass2_numel as *const u32 as *const u8,
-                    4,
-                ).ok_or("failed to alloc pass2 numel buf")?;
+                let pass2_numel_buf = unsafe {
+                    WgpuBuffer::from_data(
+                        wgpu_ctx,
+                        &pass2_numel as *const u32 as *const u8,
+                        4,
+                    )
+                }.ok_or("failed to alloc pass2 numel buf")?;
                 dispatch::dispatch_workgroups(
                     wgpu_ctx, kernel,
                     &[&partial_buf, &final_buf, &pass2_numel_buf],
@@ -435,11 +439,13 @@ fn matmul_dispatch(
             let result_inner = WgpuBuffer::allocate(wgpu_ctx, m * n * elem_size)
                 .ok_or("failed to alloc result")?;
             let dims: [u32; 4] = [m as u32, k as u32, n as u32, 0];
-            let dims_buf = WgpuBuffer::from_data(
-                wgpu_ctx,
-                dims.as_ptr() as *const u8,
-                16,
-            ).ok_or("failed to alloc dims")?;
+            let dims_buf = unsafe {
+                WgpuBuffer::from_data(
+                    wgpu_ctx,
+                    dims.as_ptr() as *const u8,
+                    16,
+                )
+            }.ok_or("failed to alloc dims")?;
 
             let threads_per_wg = 16usize;
             dispatch::dispatch_workgroups(

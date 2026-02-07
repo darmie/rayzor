@@ -82,7 +82,14 @@ impl NativeContext {
     }
 
     /// Create a GPU buffer by copying data from a CPU pointer.
-    pub fn buffer_from_data(&self, data: *const u8, byte_size: usize) -> Option<NativeBuffer> {
+    ///
+    /// # Safety
+    /// `data` must point to at least `byte_size` readable bytes.
+    pub unsafe fn buffer_from_data(
+        &self,
+        data: *const u8,
+        byte_size: usize,
+    ) -> Option<NativeBuffer> {
         match self {
             #[cfg(feature = "metal-backend")]
             NativeContext::Metal(ctx) => {
@@ -99,7 +106,8 @@ impl NativeContext {
     /// Create a GPU buffer from a single value (e.g., a u32 for numel).
     pub fn buffer_from_value<T: Copy>(&self, value: &T) -> Option<NativeBuffer> {
         let bytes = std::mem::size_of::<T>();
-        self.buffer_from_data(value as *const T as *const u8, bytes)
+        // Safety: value is a valid reference, so the pointer and size are correct.
+        unsafe { self.buffer_from_data(value as *const T as *const u8, bytes) }
     }
 }
 
