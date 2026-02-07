@@ -3593,6 +3593,22 @@ impl CompilationUnit {
         &self.hdll_symbols
     }
 
+    /// Register an external compiler plugin.
+    ///
+    /// This allows native packages (loaded via dlopen) to provide method mappings
+    /// and extern declarations without modifying compiler source code. Must be
+    /// called before `lower_to_tast()`.
+    pub fn register_compiler_plugin(&mut self, plugin: Box<dyn crate::compiler_plugin::CompilerPlugin>) {
+        self.compiler_plugin_registry.register(plugin);
+    }
+
+    /// Add external runtime symbols for JIT linking.
+    ///
+    /// These are merged with HDLL symbols and made available to the JIT backend.
+    pub fn add_external_symbols(&mut self, symbols: Vec<(String, *const u8)>) {
+        self.hdll_symbols.extend(symbols);
+    }
+
     /// Scan parsed user files for `@:hlNative` metadata and load corresponding HDLL libraries.
     ///
     /// This should be called after user files have been added (so `user_files` is populated)

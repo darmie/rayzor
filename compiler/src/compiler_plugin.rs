@@ -267,6 +267,206 @@ impl CompilerPlugin for BuiltinPlugin {
     }
 }
 
+// ============================================================================
+// NativePlugin — auto-generated from NativeMethodDesc (no compiler core changes)
+// ============================================================================
+
+use crate::ir::{CallingConvention, IrType};
+use crate::stdlib::IrTypeDescriptor;
+
+/// A compiler plugin created dynamically from [`rayzor_plugin::NativeMethodDesc`]
+/// descriptors loaded from a native package's cdylib.
+///
+/// This enables external packages (like rayzor-gpu) to register their methods
+/// with the compiler **without modifying compiler source code**. The plugin
+/// handles:
+/// - Method mappings (Haxe method → extern C function)
+/// - Extern function declarations in MIR
+/// - No MIR wrappers needed (direct extern calls)
+pub struct NativePlugin {
+    plugin_name: String,
+    methods: Vec<NativeMethodInfo>,
+}
+
+/// Parsed method info (owned strings, safe for compiler lifetime).
+struct NativeMethodInfo {
+    symbol_name: String,
+    class_name: String,
+    method_name: String,
+    is_static: bool,
+    param_count: u8,
+    return_type: u8,
+    param_types: Vec<u8>,
+}
+
+impl NativePlugin {
+    /// Create a NativePlugin from raw descriptors read from a cdylib.
+    ///
+    /// Copies all string data from the descriptor pointers into owned Strings,
+    /// so the plugin is independent of the dylib's memory after construction.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `descs` points to `count` valid `NativeMethodDesc`
+    /// structs with valid string pointers.
+    pub unsafe fn from_descriptors(
+        name: &str,
+        descs: *const rayzor_plugin::NativeMethodDesc,
+        count: usize,
+    ) -> Self {
+        let mut methods = Vec::with_capacity(count);
+        let slice = std::slice::from_raw_parts(descs, count);
+
+        for desc in slice {
+            let symbol_name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                desc.symbol_name,
+                desc.symbol_name_len,
+            ))
+            .to_string();
+
+            let class_name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                desc.class_name,
+                desc.class_name_len,
+            ))
+            .to_string();
+
+            let method_name = std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                desc.method_name,
+                desc.method_name_len,
+            ))
+            .to_string();
+
+            let param_types = desc.param_types[..desc.param_count as usize].to_vec();
+
+            methods.push(NativeMethodInfo {
+                symbol_name,
+                class_name,
+                method_name,
+                is_static: desc.is_static != 0,
+                param_count: desc.param_count,
+                return_type: desc.return_type,
+                param_types,
+            });
+        }
+
+        NativePlugin {
+            plugin_name: name.to_string(),
+            methods,
+        }
+    }
+}
+
+/// Convert a native_type tag to an IrTypeDescriptor.
+fn native_type_to_descriptor(tag: u8) -> IrTypeDescriptor {
+    match tag {
+        0 => IrTypeDescriptor::Void,
+        1 => IrTypeDescriptor::I64,
+        2 => IrTypeDescriptor::F64,
+        3 => IrTypeDescriptor::PtrVoid,
+        4 => IrTypeDescriptor::Bool,
+        _ => IrTypeDescriptor::I64, // fallback
+    }
+}
+
+/// Convert a native_type tag to an IrType.
+fn native_type_to_ir(tag: u8) -> IrType {
+    native_type_to_descriptor(tag).to_ir_type()
+}
+
+impl CompilerPlugin for NativePlugin {
+    fn name(&self) -> &str {
+        &self.plugin_name
+    }
+
+    fn method_mappings(&self) -> Vec<(MethodSignature, RuntimeFunctionCall)> {
+        let mut mappings = Vec::with_capacity(self.methods.len());
+
+        for m in &self.methods {
+            // Leak strings to get 'static lifetime (same pattern as HdllPlugin)
+            let class: &'static str = Box::leak(m.class_name.clone().into_boxed_str());
+            let method: &'static str = Box::leak(m.method_name.clone().into_boxed_str());
+            let runtime_name: &'static str = Box::leak(m.symbol_name.clone().into_boxed_str());
+
+            // For instance methods: param_count includes self, but MethodSignature
+            // wants the count EXCLUDING self.
+            let user_param_count = if m.is_static {
+                m.param_count as usize
+            } else {
+                (m.param_count as usize).saturating_sub(1)
+            };
+
+            let has_return = m.return_type != 0; // 0 = Void
+
+            // Build param_types descriptor array (includes self for instance methods)
+            let param_descs: Vec<IrTypeDescriptor> =
+                m.param_types.iter().map(|&t| native_type_to_descriptor(t)).collect();
+            let param_types: &'static [IrTypeDescriptor] =
+                Box::leak(param_descs.into_boxed_slice());
+
+            let return_desc = if has_return {
+                Some(native_type_to_descriptor(m.return_type))
+            } else {
+                None
+            };
+
+            let sig = MethodSignature {
+                class,
+                method,
+                is_static: m.is_static,
+                is_constructor: false,
+                param_count: user_param_count,
+            };
+
+            let call = RuntimeFunctionCall {
+                runtime_name,
+                needs_out_param: false,
+                has_self_param: !m.is_static,
+                param_count: user_param_count,
+                has_return,
+                params_need_ptr_conversion: 0,
+                raw_value_params: 0,
+                returns_raw_value: false,
+                extend_to_i64_params: 0,
+                param_types: Some(param_types),
+                return_type: return_desc,
+                is_mir_wrapper: false,
+                source: crate::stdlib::FunctionSource::ExternC,
+            };
+
+            mappings.push((sig, call));
+        }
+
+        mappings
+    }
+
+    fn declare_externs(&self, builder: &mut MirBuilder) {
+        for m in &self.methods {
+            let mut fb = builder.begin_function(&m.symbol_name);
+
+            for (i, &ptype) in m.param_types.iter().enumerate() {
+                fb = fb.param(&format!("p{}", i), native_type_to_ir(ptype));
+            }
+
+            fb = fb.returns(native_type_to_ir(m.return_type));
+            fb = fb.calling_convention(CallingConvention::C);
+
+            let func_id = fb.build();
+            builder.mark_as_extern(func_id);
+        }
+    }
+
+    fn build_mir_wrappers(&self, _builder: &mut MirBuilder) {
+        // No MIR wrappers needed — the compiler calls externs directly.
+        // Instance methods include self as the first parameter in the extern
+        // signature, matching what the compiler passes.
+    }
+
+    fn priority(&self) -> i32 {
+        // Higher than builtin (0), same as HDLL
+        10
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

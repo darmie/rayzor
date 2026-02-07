@@ -70,6 +70,10 @@ enum Commands {
         /// Build with optimizations (uses target/release instead of target/debug)
         #[arg(long)]
         release: bool,
+
+        /// Enable GPU compute support (loads rayzor-gpu dynamic library)
+        #[arg(long)]
+        compute: bool,
     },
 
     /// JIT compile with interactive REPL
@@ -401,8 +405,9 @@ fn main() {
             cache,
             cache_dir,
             release,
+            compute,
         } => run_file(
-            file, verbose, stats, tier, llvm, preset, cache, cache_dir, release,
+            file, verbose, stats, tier, llvm, preset, cache, cache_dir, release, compute,
         ),
         Commands::Jit {
             file,
@@ -513,7 +518,11 @@ fn main() {
 /// Helper function to compile Haxe source through the full pipeline to MIR
 /// Uses CompilationUnit for proper multi-file, stdlib-aware compilation
 /// Returns the primary MIR module (user code)
-fn compile_haxe_to_mir(source: &str, filename: &str) -> Result<compiler::ir::IrModule, String> {
+fn compile_haxe_to_mir(
+    source: &str,
+    filename: &str,
+    plugins: Vec<Box<dyn compiler::compiler_plugin::CompilerPlugin>>,
+) -> Result<compiler::ir::IrModule, String> {
     use compiler::compilation::{CompilationConfig, CompilationUnit};
 
     // Create compilation unit with stdlib support
@@ -523,6 +532,11 @@ fn compile_haxe_to_mir(source: &str, filename: &str) -> Result<compiler::ir::IrM
     };
 
     let mut unit = CompilationUnit::new(config);
+
+    // Register external plugins (e.g., GPU compute) before compilation
+    for plugin in plugins {
+        unit.register_compiler_plugin(plugin);
+    }
 
     // Load the standard library first
     unit.load_stdlib()
@@ -550,6 +564,100 @@ fn compile_haxe_to_mir(source: &str, filename: &str) -> Result<compiler::ir::IrM
     Ok(module)
 }
 
+/// Loaded GPU plugin — keeps the dylib alive and provides both runtime symbols
+/// and a compiler plugin for method registration.
+struct GpuPlugin {
+    _lib: libloading::Library,
+    symbols: Vec<(&'static str, *const u8)>,
+    compiler_plugin: Option<compiler::compiler_plugin::NativePlugin>,
+}
+
+/// Try to load the GPU compute plugin from the rayzor-gpu dynamic library.
+///
+/// On success, returns a GpuPlugin containing:
+/// - Runtime symbols for JIT linking
+/// - A NativePlugin for compiler-side method registration
+fn try_load_gpu_plugin() -> Option<GpuPlugin> {
+    let lib_name = if cfg!(target_os = "macos") {
+        "librayzor_gpu.dylib"
+    } else if cfg!(target_os = "linux") {
+        "librayzor_gpu.so"
+    } else {
+        return None;
+    };
+
+    // Try paths: next to executable, then current dir
+    let search_paths = [
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join(lib_name))),
+        Some(std::path::PathBuf::from(lib_name)),
+    ];
+
+    for path_opt in &search_paths {
+        if let Some(ref path) = path_opt {
+            if let Ok(lib) = unsafe { libloading::Library::new(path) } {
+                let mut symbols = Vec::new();
+
+                // Load runtime symbols for JIT linking
+                type InitFn = unsafe extern "C" fn(*mut usize) -> *const u8;
+                if let Ok(init_fn) = unsafe { lib.get::<InitFn>(b"rayzor_gpu_plugin_init") } {
+                    let mut count: usize = 0;
+                    let entries_ptr = unsafe { init_fn(&mut count) };
+                    if !entries_ptr.is_null() && count > 0 {
+                        let entries = unsafe {
+                            std::slice::from_raw_parts(
+                                entries_ptr as *const (usize, usize, usize),
+                                count,
+                            )
+                        };
+                        for &(name_ptr, name_len, fn_ptr) in entries {
+                            let name = unsafe {
+                                std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                                    name_ptr as *const u8,
+                                    name_len,
+                                ))
+                            };
+                            let name: &'static str = unsafe { std::mem::transmute(name) };
+                            symbols.push((name, fn_ptr as *const u8));
+                        }
+                    }
+                }
+
+                // Load method descriptors for compiler-side registration
+                type DescribeFn = unsafe extern "C" fn(*mut usize)
+                    -> *const rayzor_plugin::NativeMethodDesc;
+                let compiler_plugin = unsafe {
+                    if let Ok(describe_fn) =
+                        lib.get::<DescribeFn>(b"rayzor_gpu_plugin_describe")
+                    {
+                        let mut count: usize = 0;
+                        let descs = describe_fn(&mut count);
+                        if !descs.is_null() && count > 0 {
+                            Some(compiler::compiler_plugin::NativePlugin::from_descriptors(
+                                "rayzor_gpu_compute",
+                                descs,
+                                count,
+                            ))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                };
+
+                return Some(GpuPlugin {
+                    _lib: lib,
+                    symbols,
+                    compiler_plugin,
+                });
+            }
+        }
+    }
+    None
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_file(
     file_arg: Option<PathBuf>,
@@ -558,12 +666,12 @@ fn run_file(
     _tier: u8,
     _llvm: bool,
     preset: Preset,
-    cache: bool,
-    cache_dir: Option<PathBuf>,
+    _cache: bool,
+    _cache_dir: Option<PathBuf>,
     release: bool,
+    compute: bool,
 ) -> Result<(), String> {
     use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig};
-    use compiler::compilation::{CompilationConfig, CompilationUnit};
 
     // Resolve file: from arg or rayzor.toml
     let file = match file_arg {
@@ -590,34 +698,44 @@ fn run_file(
     if !file.exists() {
         return Err(format!("File not found: {}", file.display()));
     }
+    let source =
+        std::fs::read_to_string(&file).map_err(|e| format!("Failed to read file: {}", e))?;
 
-    // Create compilation unit with cache configuration
-    let cache_dir_resolved = if let Some(dir) = cache_dir {
-        Some(dir)
-    } else if cache {
-        Some(CompilationConfig::get_profile_cache_dir(profile))
+    // Load GPU compute plugin BEFORE compilation (if --compute flag is set)
+    // so its NativePlugin can register method mappings during MIR generation.
+    let mut gpu_plugin = if compute {
+        match try_load_gpu_plugin() {
+            Some(gpu) => {
+                if verbose {
+                    eprintln!(
+                        "  gpu      loaded {} symbols from rayzor-gpu plugin",
+                        gpu.symbols.len()
+                    );
+                }
+                Some(gpu)
+            }
+            None => {
+                eprintln!("warning: --compute flag set but rayzor-gpu library not found");
+                None
+            }
+        }
     } else {
         None
     };
 
-    let config = CompilationConfig {
-        load_stdlib: false,
-        enable_cache: cache,
-        cache_dir: cache_dir_resolved,
-        ..Default::default()
-    };
+    // Extract compiler plugin from GPU (moved into compiler during compilation)
+    let mut compiler_plugins: Vec<Box<dyn compiler::compiler_plugin::CompilerPlugin>> = Vec::new();
+    if let Some(ref mut gpu) = gpu_plugin {
+        if let Some(cp) = gpu.compiler_plugin.take() {
+            compiler_plugins.push(Box::new(cp));
+        }
+    }
 
-    let _unit = CompilationUnit::new(config);
-
-    // Compile source file to MIR
-    let source =
-        std::fs::read_to_string(&file).map_err(|e| format!("Failed to read file: {}", e))?;
-    let mut mir_module = compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"))?;
+    // Compile source file to MIR (with GPU plugin registered if available)
+    let mut mir_module =
+        compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"), compiler_plugins)?;
 
     // Run O0 pass manager to expand Haxe `inline` functions and apply SRA
-    // before the tiered backend sees the module. Without this, the initial JIT
-    // compilation path (compile_all_modules_jit) would compile raw MIR with no
-    // optimization, leaving heap allocations for inline-expanded structs.
     {
         use compiler::ir::optimization::{OptimizationLevel, PassManager};
         let mut pass_manager = PassManager::for_level(OptimizationLevel::O0);
@@ -643,7 +761,15 @@ fn run_file(
 
     // Get runtime symbols
     let plugin = rayzor_runtime::get_plugin();
-    let symbols = plugin.runtime_symbols();
+    let mut symbols = plugin.runtime_symbols();
+
+    // Merge GPU runtime symbols for JIT linking
+    if let Some(ref gpu) = gpu_plugin {
+        symbols.extend_from_slice(&gpu.symbols);
+    }
+    // Keep GPU dylib alive until backend is done
+    let _gpu_plugin = gpu_plugin;
+
     let symbols_ref: Vec<(&str, *const u8)> = symbols.iter().map(|(n, p)| (*n, *p)).collect();
 
     // Set up tiered JIT backend using the selected preset
@@ -846,7 +972,7 @@ fn build_from_manifest(
             // Compile via the standard pipeline
             let source = std::fs::read_to_string(&entry)
                 .map_err(|e| format!("Failed to read {}: {}", entry.display(), e))?;
-            let mir_module = compile_haxe_to_mir(&source, entry.to_str().unwrap_or("unknown"))?;
+            let mir_module = compile_haxe_to_mir(&source, entry.to_str().unwrap_or("unknown"), vec![])?;
 
             println!("  Compiled {} functions", mir_module.functions.len());
 
@@ -1034,12 +1160,12 @@ fn compile_file(
             cached
         } else {
             println!("  cache    miss, compiling...");
-            let module = compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"))?;
+            let module = compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"), vec![])?;
             unit.save_to_cache(&file, &module)?;
             module
         }
     } else {
-        compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"))?
+        compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"), vec![])?
     };
 
     println!("  mir      {} functions", mir_module.functions.len());

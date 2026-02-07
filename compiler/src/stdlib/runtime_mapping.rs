@@ -249,7 +249,6 @@ impl StdlibMapping {
         mapping.register_cstring_methods();
         mapping.register_simd4f_methods();
         mapping.register_tensor_methods();
-
         mapping
     }
 
