@@ -31,7 +31,7 @@
         Compile time and execution time are measured separately. Results show the <strong>mean</strong> of measured iterations.</p>
         <ul>
             <li><strong>rayzor-cranelift</strong> &mdash; Source &rarr; MIR (O2) &rarr; Cranelift JIT. Compile includes parsing, type-checking, MIR lowering, optimization, and JIT compilation.</li>
-            <li><strong>rayzor-llvm</strong> &mdash; Source &rarr; MIR (O2) &rarr; LLVM backend. Uses AOT compile-to-dylib on x86_64 Linux for best codegen quality; MCJIT on aarch64 macOS.</li>
+            <li><strong>rayzor-llvm</strong> &mdash; Source &rarr; MIR (O2) &rarr; LLVM MCJIT. Same frontend pipeline, LLVM backend for peak throughput.</li>
             <li><strong>rayzor-tiered</strong> &mdash; Source &rarr; interpreter &rarr; Cranelift JIT &rarr; LLVM tier-up. Uses the <em>Benchmark</em> tier preset: interpreter thresholds (2/3/5), immediate bailout, synchronous optimization. LLVM tier uses AOT on x86_64 Linux, MCJIT on aarch64. Compile includes parsing + module loading; execution includes interpreter startup and JIT tier-up.</li>
             <li><strong>rayzor-precompiled</strong> &mdash; Pre-bundled .rzb (MIR already O2-optimized) &rarr; Cranelift JIT. Compile is bundle load + JIT only (no parsing/lowering).</li>
             <li><strong>rayzor-precompiled-tiered</strong> &mdash; Pre-bundled .rzb &rarr; tiered execution with LLVM upgrade after warmup.</li>
