@@ -234,6 +234,13 @@ impl<'ctx> LLVMJitBackend<'ctx> {
 
         let target_data = target_machine.get_target_data();
 
+        // Set the module's target triple and data layout to match the host.
+        // Without this, MCJIT's internal TargetMachine may use generic defaults
+        // instead of the host CPU's features (FMA, AVX2, etc.), causing
+        // significantly worse codegen on x86_64 Linux.
+        module.set_triple(&target_triple);
+        module.set_data_layout(&target_data.get_data_layout());
+
         Ok(Self {
             context,
             module,
@@ -330,6 +337,22 @@ impl<'ctx> LLVMJitBackend<'ctx> {
     /// - ApproxFunc is DISABLED as it uses approximations for math functions
     /// - AllowReciprocal is DISABLED as it can change division precision
     const FAST_MATH_FLAGS: u32 = 0x2E; // NoNaNs + NoInfs + NoSignedZeros + AllowContract (46)
+
+    /// Create tuned `PassBuilderOptions` for LLVM optimization passes.
+    ///
+    /// Explicitly enables loop vectorization, unrolling, interleaving, and SLP
+    /// vectorization. While `default<O3>` enables many of these, explicit flags
+    /// ensure they are active on all platforms — especially x86_64 Linux where
+    /// the defaults may be more conservative than on aarch64 macOS.
+    fn create_pass_options() -> PassBuilderOptions {
+        let opts = PassBuilderOptions::create();
+        opts.set_loop_vectorization(true);
+        opts.set_loop_unrolling(true);
+        opts.set_loop_interleaving(true);
+        opts.set_loop_slp_vectorization(true);
+        opts.set_merge_functions(true);
+        opts
+    }
 
     /// Apply fast-math flags to a float instruction for aggressive optimization.
     /// This enables LLVM to perform optimizations like:
@@ -1074,8 +1097,8 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 )
                 .ok_or("Failed to create target machine for optimization")?;
 
-            // Run optimization passes
-            let pass_options = PassBuilderOptions::create();
+            // Run optimization passes with tuned options for x86_64 performance
+            let pass_options = Self::create_pass_options();
             self.module
                 .run_passes(passes, &target_machine, pass_options)
                 .map_err(|e| format!("Failed to run optimization passes: {}", e))?;
@@ -1211,7 +1234,7 @@ impl<'ctx> LLVMJitBackend<'ctx> {
                 OptimizationLevel::Default => "default<O2>",
                 OptimizationLevel::Aggressive => "default<O3>",
             };
-            let pass_options = PassBuilderOptions::create();
+            let pass_options = Self::create_pass_options();
             self.module
                 .run_passes(passes, &target_machine, pass_options)
                 .map_err(|e| format!("Failed to run optimization passes: {}", e))?;
