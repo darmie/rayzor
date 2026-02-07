@@ -249,6 +249,9 @@ impl StdlibMapping {
         mapping.register_cstring_methods();
         mapping.register_simd4f_methods();
         mapping.register_tensor_methods();
+        // Reflect + Type API
+        mapping.register_reflect_methods();
+        mapping.register_type_methods();
         mapping
     }
 
@@ -3020,6 +3023,51 @@ impl StdlibMapping {
             // CC.call3(fnAddr, arg0, arg1, arg2): Int — call JIT function with 3 args
             map_method!(static "rayzor_runtime_CC", "call3" => "rayzor_tcc_call3", params: 4, returns: primitive,
                 types: &[I64, I64, I64, I64] => I64),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    fn register_reflect_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
+        let mappings = vec![
+            // Reflect.hasField(o:Dynamic, field:String):Bool
+            map_method!(static "Reflect", "hasField" => "haxe_reflect_has_field", params: 2, returns: primitive,
+                types: &[PtrU8, PtrU8] => Bool),
+            // Reflect.field(o:Dynamic, field:String):Dynamic
+            map_method!(static "Reflect", "field" => "haxe_reflect_field", params: 2, returns: primitive,
+                types: &[PtrU8, PtrU8] => PtrU8),
+            // Reflect.setField(o:Dynamic, field:String, value:Dynamic):Void
+            map_method!(static "Reflect", "setField" => "haxe_reflect_set_field", params: 3, returns: void,
+                types: &[PtrU8, PtrU8, PtrU8]),
+            // Reflect.deleteField(o:Dynamic, field:String):Bool
+            map_method!(static "Reflect", "deleteField" => "haxe_reflect_delete_field", params: 2, returns: primitive,
+                types: &[PtrU8, PtrU8] => Bool),
+            // Reflect.fields(o:Dynamic):Array<String>
+            map_method!(static "Reflect", "fields" => "haxe_reflect_fields", params: 1, returns: primitive,
+                types: &[PtrU8] => PtrU8),
+            // Reflect.isObject(v:Dynamic):Bool
+            map_method!(static "Reflect", "isObject" => "haxe_reflect_is_object", params: 1, returns: primitive,
+                types: &[PtrU8] => Bool),
+            // Reflect.isFunction(f:Dynamic):Bool
+            map_method!(static "Reflect", "isFunction" => "haxe_reflect_is_function", params: 1, returns: primitive,
+                types: &[PtrU8] => Bool),
+            // Reflect.copy(o:Dynamic):Dynamic
+            map_method!(static "Reflect", "copy" => "haxe_reflect_copy", params: 1, returns: primitive,
+                types: &[PtrU8] => PtrU8),
+        ];
+
+        self.register_from_tuples(mappings);
+    }
+
+    fn register_type_methods(&mut self) {
+        use IrTypeDescriptor::*;
+
+        let mappings = vec![
+            // Type.typeof(v:Dynamic):ValueType (returns ordinal as i32)
+            map_method!(static "Type", "typeof" => "haxe_type_typeof", params: 1, returns: primitive,
+                types: &[PtrU8] => I32),
         ];
 
         self.register_from_tuples(mappings);

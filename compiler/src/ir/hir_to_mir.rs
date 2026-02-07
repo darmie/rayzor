@@ -230,6 +230,13 @@ pub struct HirToMirContext<'a> {
 
     /// Current function's SymbolId (for function-level metadata like @:frameworks)
     current_function_symbol: Option<SymbolId>,
+
+    /// Mapping from sorted anonymous field names to shape_id (for runtime shape table)
+    /// Key: comma-joined sorted field names — Value: shape_id (u32)
+    anonymous_shapes: BTreeMap<String, u32>,
+
+    /// Next shape ID to allocate (incremented each time a new shape is registered)
+    next_anon_shape_id: u32,
 }
 
 /// TCC runtime function IDs for __c__ inline code lowering
@@ -365,6 +372,8 @@ impl<'a> HirToMirContext<'a> {
             gpu_struct_layouts: BTreeMap::new(),
             tcc_func_ids: None,
             current_function_symbol: None,
+            anonymous_shapes: BTreeMap::new(),
+            next_anon_shape_id: 0,
         };
 
         // Pre-declare malloc so it's available for heap allocations during lowering
@@ -11962,6 +11971,89 @@ impl<'a> HirToMirContext<'a> {
                         }
                     }
 
+                    // ANONYMOUS OBJECT FIELD STORE
+                    // If object is an anonymous type, use rayzor_anon_set_field_by_index
+                    {
+                        let is_anon = {
+                            let type_table = self.type_table.borrow();
+                            if let Some(ty_info) = type_table.get(object.ty) {
+                                matches!(ty_info.kind, TypeKind::Anonymous { .. })
+                            } else {
+                                false
+                            }
+                        };
+
+                        if is_anon {
+                            let field_name = self
+                                .symbol_table
+                                .get_symbol(*field)
+                                .and_then(|s| self.string_interner.get(s.name))
+                                .map(|s| s.to_string());
+
+                            if let Some(field_name) = field_name {
+                                let sorted_index = {
+                                    let type_table = self.type_table.borrow();
+                                    if let Some(ty_info) = type_table.get(object.ty) {
+                                        if let TypeKind::Anonymous { fields: anon_fields } =
+                                            &ty_info.kind
+                                        {
+                                            let mut field_names: Vec<String> = anon_fields
+                                                .iter()
+                                                .filter_map(|f| {
+                                                    self.string_interner
+                                                        .get(f.name)
+                                                        .map(|s| s.to_string())
+                                                })
+                                                .collect();
+                                            field_names.sort();
+                                            field_names
+                                                .iter()
+                                                .position(|n| *n == field_name)
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                };
+
+                                if let Some(sorted_idx) = sorted_index {
+                                    let anon_set_id = self.get_or_register_extern_function(
+                                        "rayzor_anon_set_field_by_index",
+                                        vec![
+                                            IrType::Ptr(Box::new(IrType::U8)),
+                                            IrType::I32,
+                                            IrType::I64,
+                                        ],
+                                        IrType::Void,
+                                    );
+
+                                    // Coerce value to i64 for storage
+                                    // Use the field symbol's type if available, fall back to I64
+                                    let field_type_id = self
+                                        .symbol_table
+                                        .get_symbol(*field)
+                                        .map(|s| s.type_id)
+                                        .unwrap_or(TypeId(u32::MAX));
+                                    let val_i64 =
+                                        self.coerce_to_i64(value, field_type_id).unwrap_or(value);
+
+                                    let idx_val = self
+                                        .builder
+                                        .build_const(IrValue::I32(sorted_idx as i32));
+                                    if let Some(idx_val) = idx_val {
+                                        self.builder.build_call_direct(
+                                            anon_set_id,
+                                            vec![obj_reg, idx_val, val_i64],
+                                            IrType::Void,
+                                        );
+                                    }
+                                    return;
+                                }
+                            }
+                        }
+                    }
+
                     // Look up the field index (with fallback to name lookup)
                     let field_index_opt = self
                         .field_index_map
@@ -12469,6 +12561,82 @@ impl<'a> HirToMirContext<'a> {
                 }
                 crate::tast::PropertyAccessor::Default | crate::tast::PropertyAccessor::Dynamic => {
                     // Fall through to direct field access
+                }
+            }
+        }
+
+        // ANONYMOUS OBJECT FIELD ACCESS
+        // If receiver is an anonymous type, use rayzor_anon_get_field_by_index
+        {
+            let type_table = self.type_table.borrow();
+            let is_anon = matches!(
+                type_table.get(receiver_ty).map(|t| &t.kind),
+                Some(TypeKind::Anonymous { .. })
+            );
+
+            if is_anon {
+                // Get field name and find its sorted index + actual type from the anonymous struct
+                let field_name = self
+                    .symbol_table
+                    .get_symbol(field)
+                    .and_then(|s| self.string_interner.get(s.name))
+                    .map(|s| s.to_string());
+
+                if let Some(field_name) = field_name {
+                    // Get all anonymous fields, sort them, and find both the sorted index
+                    // AND the actual field type (not the possibly-Dynamic expr type)
+                    let sorted_result = if let Some(ty_info) = type_table.get(receiver_ty) {
+                        if let TypeKind::Anonymous { fields: anon_fields } = &ty_info.kind {
+                            // Build (name, type_id) pairs and sort by name
+                            let mut named_fields: Vec<(String, TypeId)> = anon_fields
+                                .iter()
+                                .filter_map(|f| {
+                                    self.string_interner
+                                        .get(f.name)
+                                        .map(|s| (s.to_string(), f.type_id))
+                                })
+                                .collect();
+                            named_fields.sort_by(|a, b| a.0.cmp(&b.0));
+                            named_fields
+                                .iter()
+                                .enumerate()
+                                .find(|(_, (n, _))| *n == field_name)
+                                .map(|(idx, (_, ty))| (idx, *ty))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    drop(type_table);
+
+                    if let Some((sorted_idx, actual_field_ty)) = sorted_result {
+                        // Emit: rayzor_anon_get_field_by_index(handle, sorted_idx) -> u64
+                        let anon_get_id = self.get_or_register_extern_function(
+                            "rayzor_anon_get_field_by_index",
+                            vec![
+                                IrType::Ptr(Box::new(IrType::U8)),
+                                IrType::I32,
+                            ],
+                            IrType::I64,
+                        );
+
+                        let idx_val = self
+                            .builder
+                            .build_const(IrValue::I32(sorted_idx as i32))?;
+                        let raw_val = self.builder.build_call_direct(
+                            anon_get_id,
+                            vec![obj, idx_val],
+                            IrType::I64,
+                        )?;
+
+                        // Convert the raw u64 back to the field's actual type
+                        // Use the anonymous struct's field type (not the expression-level type
+                        // which may be Dynamic)
+                        return self.coerce_from_i64(raw_val, actual_field_ty);
+                    }
+                } else {
+                    drop(type_table);
                 }
             }
         }
@@ -15125,45 +15293,152 @@ impl<'a> HirToMirContext<'a> {
     fn lower_object_literal(&mut self, fields: &[(InternedString, HirExpr)]) -> Option<IrId> {
         // Object literal: { field1: val1, field2: val2, ... }
         //
-        // Lowering strategy:
-        // 1. Allocate object structure
-        // 2. Initialize each field
-        // 3. Return object pointer
-        //
-        // Anonymous objects in Haxe are structural types. For simplicity,
-        // we treat them as a simple array: [field_count, field0_val, field1_val, ...]
+        // Lowering strategy using Arc-based anonymous objects:
+        // 1. Resolve field names and sort alphabetically for canonical ordering
+        // 2. Get or create a shape ID for this field set
+        // 3. Call rayzor_anon_new(shape_id, field_count) → Arc<AnonObject> handle
+        // 4. For each field: call rayzor_anon_set_field_by_index(handle, index, value)
+        // 5. Return the handle pointer (PtrU8)
 
         let field_count = fields.len();
 
-        // Allocate object structure: header + field values
-        let total_slots = field_count + 1; // field count + values
-        let count_val = self.builder.build_int(total_slots as i64, IrType::I64)?;
-        let object_ptr = self
+        // Resolve field names and build sorted (name, index_in_original, expr) list
+        let mut named_fields: Vec<(String, usize)> = Vec::with_capacity(field_count);
+        for (i, (interned_name, _expr)) in fields.iter().enumerate() {
+            let name = self
+                .string_interner
+                .get(*interned_name)
+                .unwrap_or("<unknown>")
+                .to_string();
+            named_fields.push((name, i));
+        }
+        // Sort by field name for canonical ordering (matches runtime shape table)
+        named_fields.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // Build shape key as comma-joined sorted field names
+        let shape_key: String = named_fields
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let shape_id = if let Some(&existing_id) = self.anonymous_shapes.get(&shape_key) {
+            existing_id
+        } else {
+            let id = self.next_anon_shape_id;
+            self.next_anon_shape_id += 1;
+            self.anonymous_shapes.insert(shape_key, id);
+            id
+        };
+
+        // Register rayzor_anon_new extern: (shape_id: u32, field_count: u32) -> *mut u8
+        let anon_new_id = self.get_or_register_extern_function(
+            "rayzor_anon_new",
+            vec![IrType::I32, IrType::I32],
+            IrType::Ptr(Box::new(IrType::U8)),
+        );
+
+        // Register rayzor_anon_set_field_by_index extern: (handle: *mut u8, index: u32, value: u64) -> void
+        let anon_set_id = self.get_or_register_extern_function(
+            "rayzor_anon_set_field_by_index",
+            vec![
+                IrType::Ptr(Box::new(IrType::U8)),
+                IrType::I32,
+                IrType::I64,
+            ],
+            IrType::Void,
+        );
+
+        // Emit: handle = rayzor_anon_new(shape_id, field_count)
+        let shape_id_val = self.builder.build_const(IrValue::I32(shape_id as i32))?;
+        let field_count_val = self
             .builder
-            .build_alloc(IrType::Ptr(Box::new(IrType::Any)), Some(count_val))?;
+            .build_const(IrValue::I32(field_count as i32))?;
+        let handle = self.builder.build_call_direct(
+            anon_new_id,
+            vec![shape_id_val, field_count_val],
+            IrType::Ptr(Box::new(IrType::U8)),
+        )?;
 
-        // Store field count at index 0
-        let count_field = self.builder.build_int(field_count as i64, IrType::I64)?;
-        self.builder.build_store(object_ptr, count_field)?;
-
-        // Store each field value
-        for (i, (_field_name, field_expr)) in fields.iter().enumerate() {
+        // Lower each field value and store at its sorted index
+        for (sorted_idx, (_, orig_idx)) in named_fields.iter().enumerate() {
+            let field_expr = &fields[*orig_idx].1;
             let field_val = self.lower_expression(field_expr)?;
 
-            // For now, we only store values. Production implementation would
-            // need to store field names as well for runtime reflection.
+            // Convert field value to u64 for storage
+            // The runtime stores all values as u64 in the Inline vec
+            let val_as_i64 = self.coerce_to_i64(field_val, field_expr.ty)?;
 
-            // Store at index (i + 1)
-            let index = self.builder.build_int((i + 1) as i64, IrType::I64)?;
-            let field_ptr = self.builder.build_gep(
-                object_ptr,
-                vec![index],
-                IrType::Ptr(Box::new(IrType::Any)),
-            )?;
-            self.builder.build_store(field_ptr, field_val)?;
+            let idx_val = self.builder.build_const(IrValue::I32(sorted_idx as i32))?;
+            self.builder.build_call_direct(
+                anon_set_id,
+                vec![handle, idx_val, val_as_i64],
+                IrType::Void,
+            );
         }
 
-        Some(object_ptr)
+        Some(handle)
+    }
+
+    /// Coerce a value to i64 for anonymous object field storage.
+    /// Ints pass through, floats are bitcast, pointers are cast to i64.
+    fn coerce_to_i64(&mut self, value: IrId, type_id: TypeId) -> Option<IrId> {
+        let ir_type = self.convert_type(type_id);
+        match &ir_type {
+            IrType::I64 => Some(value),
+            IrType::I32 | IrType::U64 | IrType::Bool => {
+                self.builder
+                    .build_cast(value, ir_type.clone(), IrType::I64)
+            }
+            IrType::F64 => {
+                // Float: bitcast f64 to i64 (preserves bits)
+                self.builder.build_bitcast(value, IrType::I64)
+            }
+            IrType::F32 => {
+                let as_f64 = self
+                    .builder
+                    .build_cast(value, IrType::F32, IrType::F64)?;
+                self.builder.build_bitcast(as_f64, IrType::I64)
+            }
+            IrType::Ptr(_) => {
+                self.builder
+                    .build_cast(value, ir_type.clone(), IrType::I64)
+            }
+            _ => {
+                self.builder
+                    .build_cast(value, ir_type.clone(), IrType::I64)
+            }
+        }
+    }
+
+    /// Coerce a raw i64 value from anonymous object storage back to the target type.
+    /// Inverse of coerce_to_i64.
+    fn coerce_from_i64(&mut self, value: IrId, type_id: TypeId) -> Option<IrId> {
+        let ir_type = self.convert_type(type_id);
+        match &ir_type {
+            IrType::I64 => Some(value),
+            IrType::I32 | IrType::U64 | IrType::Bool => {
+                self.builder
+                    .build_cast(value, IrType::I64, ir_type.clone())
+            }
+            IrType::F64 => {
+                // i64 -> f64 bitcast (preserves bits)
+                self.builder.build_bitcast(value, IrType::F64)
+            }
+            IrType::F32 => {
+                let as_f64 = self.builder.build_bitcast(value, IrType::F64)?;
+                self.builder
+                    .build_cast(as_f64, IrType::F64, IrType::F32)
+            }
+            IrType::Ptr(_) => {
+                self.builder
+                    .build_cast(value, IrType::I64, ir_type.clone())
+            }
+            _ => {
+                self.builder
+                    .build_cast(value, IrType::I64, ir_type.clone())
+            }
+        }
     }
 
     fn lower_string_interpolation(&mut self, parts: &[HirStringPart]) -> Option<IrId> {

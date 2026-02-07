@@ -1176,6 +1176,71 @@ register_symbol!(
 );
 
 // ============================================================================
+// Anonymous Object Functions (Arc-based, COW)
+// ============================================================================
+register_symbol!("rayzor_anon_new", crate::anon_object::rayzor_anon_new);
+register_symbol!("rayzor_anon_clone", crate::anon_object::rayzor_anon_clone);
+register_symbol!("rayzor_anon_drop", crate::anon_object::rayzor_anon_drop);
+register_symbol!(
+    "rayzor_anon_get_field_by_index",
+    crate::anon_object::rayzor_anon_get_field_by_index
+);
+register_symbol!(
+    "rayzor_anon_set_field_by_index",
+    crate::anon_object::rayzor_anon_set_field_by_index
+);
+register_symbol!(
+    "rayzor_anon_has_field",
+    crate::anon_object::rayzor_anon_has_field
+);
+register_symbol!(
+    "rayzor_anon_get_field",
+    crate::anon_object::rayzor_anon_get_field
+);
+register_symbol!(
+    "rayzor_anon_set_field",
+    crate::anon_object::rayzor_anon_set_field
+);
+register_symbol!(
+    "rayzor_anon_delete_field",
+    crate::anon_object::rayzor_anon_delete_field
+);
+register_symbol!("rayzor_anon_fields", crate::anon_object::rayzor_anon_fields);
+register_symbol!("rayzor_anon_copy", crate::anon_object::rayzor_anon_copy);
+register_symbol!(
+    "rayzor_register_shape",
+    crate::anon_object::rayzor_register_shape
+);
+
+// ============================================================================
+// Reflect + Type API
+// ============================================================================
+register_symbol!(
+    "haxe_reflect_has_field",
+    crate::reflect::haxe_reflect_has_field
+);
+register_symbol!("haxe_reflect_field", crate::reflect::haxe_reflect_field);
+register_symbol!(
+    "haxe_reflect_set_field",
+    crate::reflect::haxe_reflect_set_field
+);
+register_symbol!(
+    "haxe_reflect_delete_field",
+    crate::reflect::haxe_reflect_delete_field
+);
+register_symbol!("haxe_reflect_fields", crate::reflect::haxe_reflect_fields);
+register_symbol!(
+    "haxe_reflect_is_object",
+    crate::reflect::haxe_reflect_is_object
+);
+register_symbol!(
+    "haxe_reflect_is_function",
+    crate::reflect::haxe_reflect_is_function
+);
+register_symbol!("haxe_reflect_copy", crate::reflect::haxe_reflect_copy);
+register_symbol!("haxe_type_typeof", crate::reflect::haxe_type_typeof);
+
+// ============================================================================
 // Memory Allocation (libc malloc/free for heap allocations)
 // ============================================================================
 register_symbol!("malloc", libc::malloc);
