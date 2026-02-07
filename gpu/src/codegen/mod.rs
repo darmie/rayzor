@@ -4,5 +4,6 @@
 //! strings that are runtime-compiled on the GPU device.
 
 pub mod msl;
+pub mod msl_fused;
 pub mod msl_matmul;
 pub mod msl_reduction;

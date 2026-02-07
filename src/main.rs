@@ -697,26 +697,24 @@ fn run_file(
     let source =
         std::fs::read_to_string(&file).map_err(|e| format!("Failed to read file: {}", e))?;
 
-    // Load GPU compute plugin BEFORE compilation (if --compute flag is set)
-    // so its NativePlugin can register method mappings during MIR generation.
-    let mut gpu_plugin = if compute {
-        match try_load_gpu_plugin() {
-            Some(gpu) => {
-                if verbose {
-                    eprintln!(
-                        "  gpu      loaded {} symbols from rayzor-gpu plugin",
-                        gpu.symbols.len()
-                    );
-                }
-                Some(gpu)
+    // Always try to load the GPU plugin — silently skip if the dylib isn't found.
+    // The --compute flag upgrades a missing dylib from silent skip to a warning.
+    let mut gpu_plugin = match try_load_gpu_plugin() {
+        Some(gpu) => {
+            if verbose {
+                eprintln!(
+                    "  gpu      loaded {} symbols from rayzor-gpu plugin",
+                    gpu.symbols.len()
+                );
             }
-            None => {
-                eprintln!("warning: --compute flag set but rayzor-gpu library not found");
-                None
-            }
+            Some(gpu)
         }
-    } else {
-        None
+        None => {
+            if compute {
+                eprintln!("warning: --compute flag set but rayzor-gpu library not found");
+            }
+            None
+        }
     };
 
     // Extract compiler plugin from GPU (moved into compiler during compilation)

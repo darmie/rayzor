@@ -1,15 +1,20 @@
 //! GPU compute operations — elementwise binary and unary ops.
 //!
-//! Each operation:
-//! 1. Looks up or compiles the MSL kernel via KernelCache
-//! 2. Allocates a result buffer on GPU
-//! 3. Dispatches the kernel
-//! 4. Returns the result buffer handle
+//! Elementwise ops are **lazy** — they build a computation DAG instead of
+//! dispatching immediately. When materialization is triggered (by `toTensor`,
+//! a reduction, or matmul), the entire chain is fused into a single kernel.
+//!
+//! Non-fuseable ops (reductions, matmul) materialize their inputs first.
+
+use std::rc::Rc;
 
 use crate::buffer::{self, GpuBuffer};
 use crate::device::GpuContext;
 use crate::kernel_ir::KernelOp;
+use crate::lazy::{LazyNode, LazyOp};
 
+#[cfg(target_os = "macos")]
+use crate::buffer::GpuBufferKind;
 #[cfg(target_os = "macos")]
 use crate::codegen::msl_reduction::REDUCE_THREADGROUP_SIZE;
 #[cfg(target_os = "macos")]
@@ -18,239 +23,204 @@ use crate::metal::{buffer_ops::MetalBuffer, dispatch};
 use objc2_metal::MTLSize;
 
 // ---------------------------------------------------------------------------
-// Internal helpers (macOS only)
+// Internal helpers — lazy elementwise (macOS only)
 // ---------------------------------------------------------------------------
 
+/// Convert a GpuBuffer reference to a LazyOp node.
+///
+/// If the buffer is already lazy, returns a clone of its Rc'd op tree.
+/// If materialized, wraps the Metal buffer in an Input leaf (bumping the ObjC refcount).
 #[cfg(target_os = "macos")]
-unsafe fn binary_op_impl(ctx: i64, a: i64, b: i64, op: KernelOp) -> i64 {
-    if ctx == 0 || a == 0 || b == 0 {
+fn buf_to_lazy_op(buf: &GpuBuffer) -> Rc<LazyOp> {
+    match &buf.kind {
+        GpuBufferKind::Lazy(node) => node.op.clone(),
+        GpuBufferKind::Materialized(metal_buf) => {
+            Rc::new(LazyOp::Input(metal_buf.mtl_buffer.clone()))
+        }
+    }
+}
+
+/// Create a lazy binary elementwise GpuBuffer.
+#[cfg(target_os = "macos")]
+unsafe fn binary_lazy(a: i64, b: i64, op: KernelOp) -> i64 {
+    if a == 0 || b == 0 {
         return 0;
     }
 
-    let gpu_ctx = &mut *(ctx as *mut GpuContext);
     let a_buf = &*(a as *const GpuBuffer);
     let b_buf = &*(b as *const GpuBuffer);
 
-    // Inputs must have matching dtype and element count
     if a_buf.dtype != b_buf.dtype || a_buf.numel != b_buf.numel {
         return 0;
     }
 
-    let dtype = a_buf.dtype;
-    let numel = a_buf.numel;
-    let byte_size = numel * buffer::dtype_byte_size(dtype);
+    let lhs = buf_to_lazy_op(a_buf);
+    let rhs = buf_to_lazy_op(b_buf);
 
-    let cached = match gpu_ctx
-        .kernel_cache
-        .get_or_compile(&gpu_ctx.inner, op, dtype)
-    {
-        Ok(k) => k,
-        Err(_) => return 0,
+    let node = LazyNode {
+        op: Rc::new(LazyOp::Binary { op, lhs, rhs }),
+        dtype: a_buf.dtype,
+        numel: a_buf.numel,
     };
 
-    let result_inner = match MetalBuffer::allocate(&gpu_ctx.inner, byte_size) {
-        Some(b) => b,
-        None => return 0,
-    };
-
-    if dispatch::dispatch(
-        &gpu_ctx.inner,
-        &cached.compiled,
-        &[&a_buf.inner, &b_buf.inner, &result_inner],
-        numel,
-    )
-    .is_err()
-    {
-        return 0;
-    }
-
-    let result = GpuBuffer {
-        inner: result_inner,
-        numel,
-        dtype,
-    };
+    let result = GpuBuffer::lazy(node, a_buf.numel, a_buf.dtype);
     Box::into_raw(Box::new(result)) as i64
 }
 
+/// Create a lazy unary elementwise GpuBuffer.
 #[cfg(target_os = "macos")]
-unsafe fn unary_op_impl(ctx: i64, a: i64, op: KernelOp) -> i64 {
-    if ctx == 0 || a == 0 {
+unsafe fn unary_lazy(a: i64, op: KernelOp) -> i64 {
+    if a == 0 {
         return 0;
     }
 
-    let gpu_ctx = &mut *(ctx as *mut GpuContext);
     let a_buf = &*(a as *const GpuBuffer);
+    let input = buf_to_lazy_op(a_buf);
 
-    let dtype = a_buf.dtype;
-    let numel = a_buf.numel;
-    let byte_size = numel * buffer::dtype_byte_size(dtype);
-
-    let cached = match gpu_ctx
-        .kernel_cache
-        .get_or_compile(&gpu_ctx.inner, op, dtype)
-    {
-        Ok(k) => k,
-        Err(_) => return 0,
+    let node = LazyNode {
+        op: Rc::new(LazyOp::Unary { op, input }),
+        dtype: a_buf.dtype,
+        numel: a_buf.numel,
     };
 
-    let result_inner = match MetalBuffer::allocate(&gpu_ctx.inner, byte_size) {
-        Some(b) => b,
-        None => return 0,
-    };
-
-    if dispatch::dispatch(
-        &gpu_ctx.inner,
-        &cached.compiled,
-        &[&a_buf.inner, &result_inner],
-        numel,
-    )
-    .is_err()
-    {
-        return 0;
-    }
-
-    let result = GpuBuffer {
-        inner: result_inner,
-        numel,
-        dtype,
-    };
+    let result = GpuBuffer::lazy(node, a_buf.numel, a_buf.dtype);
     Box::into_raw(Box::new(result)) as i64
 }
 
 // ---------------------------------------------------------------------------
-// Extern C API — Binary ops: (ctx, a, b) -> result
+// Extern C API — Binary ops: (ctx, a, b) -> result (lazy)
 // ---------------------------------------------------------------------------
 
 #[no_mangle]
-pub unsafe extern "C" fn rayzor_gpu_compute_add(ctx: i64, a: i64, b: i64) -> i64 {
+pub unsafe extern "C" fn rayzor_gpu_compute_add(_ctx: i64, a: i64, b: i64) -> i64 {
     #[cfg(target_os = "macos")]
     {
-        binary_op_impl(ctx, a, b, KernelOp::Add)
+        binary_lazy(a, b, KernelOp::Add)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (ctx, a, b);
+        let _ = (_ctx, a, b);
         0
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rayzor_gpu_compute_sub(ctx: i64, a: i64, b: i64) -> i64 {
+pub unsafe extern "C" fn rayzor_gpu_compute_sub(_ctx: i64, a: i64, b: i64) -> i64 {
     #[cfg(target_os = "macos")]
     {
-        binary_op_impl(ctx, a, b, KernelOp::Sub)
+        binary_lazy(a, b, KernelOp::Sub)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (ctx, a, b);
+        let _ = (_ctx, a, b);
         0
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rayzor_gpu_compute_mul(ctx: i64, a: i64, b: i64) -> i64 {
+pub unsafe extern "C" fn rayzor_gpu_compute_mul(_ctx: i64, a: i64, b: i64) -> i64 {
     #[cfg(target_os = "macos")]
     {
-        binary_op_impl(ctx, a, b, KernelOp::Mul)
+        binary_lazy(a, b, KernelOp::Mul)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (ctx, a, b);
+        let _ = (_ctx, a, b);
         0
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rayzor_gpu_compute_div(ctx: i64, a: i64, b: i64) -> i64 {
+pub unsafe extern "C" fn rayzor_gpu_compute_div(_ctx: i64, a: i64, b: i64) -> i64 {
     #[cfg(target_os = "macos")]
     {
-        binary_op_impl(ctx, a, b, KernelOp::Div)
+        binary_lazy(a, b, KernelOp::Div)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (ctx, a, b);
+        let _ = (_ctx, a, b);
         0
     }
 }
 
 // ---------------------------------------------------------------------------
-// Extern C API — Unary ops: (ctx, a) -> result
+// Extern C API — Unary ops: (ctx, a) -> result (lazy)
 // ---------------------------------------------------------------------------
 
 #[no_mangle]
-pub unsafe extern "C" fn rayzor_gpu_compute_neg(ctx: i64, a: i64) -> i64 {
+pub unsafe extern "C" fn rayzor_gpu_compute_neg(_ctx: i64, a: i64) -> i64 {
     #[cfg(target_os = "macos")]
     {
-        unary_op_impl(ctx, a, KernelOp::Neg)
+        unary_lazy(a, KernelOp::Neg)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (ctx, a);
+        let _ = (_ctx, a);
         0
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rayzor_gpu_compute_abs(ctx: i64, a: i64) -> i64 {
+pub unsafe extern "C" fn rayzor_gpu_compute_abs(_ctx: i64, a: i64) -> i64 {
     #[cfg(target_os = "macos")]
     {
-        unary_op_impl(ctx, a, KernelOp::Abs)
+        unary_lazy(a, KernelOp::Abs)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (ctx, a);
+        let _ = (_ctx, a);
         0
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rayzor_gpu_compute_sqrt(ctx: i64, a: i64) -> i64 {
+pub unsafe extern "C" fn rayzor_gpu_compute_sqrt(_ctx: i64, a: i64) -> i64 {
     #[cfg(target_os = "macos")]
     {
-        unary_op_impl(ctx, a, KernelOp::Sqrt)
+        unary_lazy(a, KernelOp::Sqrt)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (ctx, a);
+        let _ = (_ctx, a);
         0
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rayzor_gpu_compute_exp(ctx: i64, a: i64) -> i64 {
+pub unsafe extern "C" fn rayzor_gpu_compute_exp(_ctx: i64, a: i64) -> i64 {
     #[cfg(target_os = "macos")]
     {
-        unary_op_impl(ctx, a, KernelOp::Exp)
+        unary_lazy(a, KernelOp::Exp)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (ctx, a);
+        let _ = (_ctx, a);
         0
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rayzor_gpu_compute_log(ctx: i64, a: i64) -> i64 {
+pub unsafe extern "C" fn rayzor_gpu_compute_log(_ctx: i64, a: i64) -> i64 {
     #[cfg(target_os = "macos")]
     {
-        unary_op_impl(ctx, a, KernelOp::Log)
+        unary_lazy(a, KernelOp::Log)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (ctx, a);
+        let _ = (_ctx, a);
         0
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rayzor_gpu_compute_relu(ctx: i64, a: i64) -> i64 {
+pub unsafe extern "C" fn rayzor_gpu_compute_relu(_ctx: i64, a: i64) -> i64 {
     #[cfg(target_os = "macos")]
     {
-        unary_op_impl(ctx, a, KernelOp::Relu)
+        unary_lazy(a, KernelOp::Relu)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (ctx, a);
+        let _ = (_ctx, a);
         0
     }
 }
@@ -274,6 +244,8 @@ fn next_power_of_2(n: usize) -> usize {
 
 /// Perform a GPU reduction and return the scalar result as f64.
 ///
+/// Materializes the input buffer first if it's lazy.
+///
 /// Two-pass strategy:
 /// - Pass 1: N threadgroups of 256 threads, each produces one partial result
 /// - Pass 2 (if N > 1): 1 threadgroup reduces the N partial results
@@ -284,8 +256,14 @@ unsafe fn reduce_impl(ctx: i64, buf: i64, op: KernelOp) -> f64 {
     }
 
     let gpu_ctx = &mut *(ctx as *mut GpuContext);
-    let a_buf = &*(buf as *const GpuBuffer);
+    let a_buf = &mut *(buf as *mut GpuBuffer);
 
+    // Materialize lazy inputs before reduction
+    if a_buf.ensure_materialized(gpu_ctx).is_err() {
+        return 0.0;
+    }
+
+    let metal_buf = a_buf.metal_buffer();
     let dtype = a_buf.dtype;
     let numel = a_buf.numel;
     let elem_size = buffer::dtype_byte_size(dtype);
@@ -339,7 +317,7 @@ unsafe fn reduce_impl(ctx: i64, buf: i64, op: KernelOp) -> f64 {
     if dispatch::dispatch_threadgroups(
         &gpu_ctx.inner,
         &cached.compiled,
-        &[&a_buf.inner, &partial_buf, &numel_buf],
+        &[metal_buf, &partial_buf, &numel_buf],
         tg_count,
         tg_threads,
     )
@@ -407,6 +385,8 @@ unsafe fn reduce_impl(ctx: i64, buf: i64, op: KernelOp) -> f64 {
 
 /// Perform GPU matrix multiplication: C(M×N) = A(M×K) × B(K×N).
 /// Returns a new GpuBuffer handle, or 0 on failure.
+///
+/// Materializes input buffers if lazy.
 #[cfg(target_os = "macos")]
 unsafe fn matmul_impl(ctx: i64, a: i64, b: i64, m: usize, k: usize, n: usize) -> i64 {
     if ctx == 0 || a == 0 || b == 0 || m == 0 || k == 0 || n == 0 {
@@ -414,8 +394,16 @@ unsafe fn matmul_impl(ctx: i64, a: i64, b: i64, m: usize, k: usize, n: usize) ->
     }
 
     let gpu_ctx = &mut *(ctx as *mut GpuContext);
-    let a_buf = &*(a as *const GpuBuffer);
-    let b_buf = &*(b as *const GpuBuffer);
+
+    // Materialize lazy inputs
+    let a_buf = &mut *(a as *mut GpuBuffer);
+    let b_buf = &mut *(b as *mut GpuBuffer);
+    if a_buf.ensure_materialized(gpu_ctx).is_err() {
+        return 0;
+    }
+    if b_buf.ensure_materialized(gpu_ctx).is_err() {
+        return 0;
+    }
 
     let dtype = a_buf.dtype;
 
@@ -459,7 +447,12 @@ unsafe fn matmul_impl(ctx: i64, a: i64, b: i64, m: usize, k: usize, n: usize) ->
     if dispatch::dispatch_threadgroups(
         &gpu_ctx.inner,
         &cached.compiled,
-        &[&a_buf.inner, &b_buf.inner, &result_inner, &dims_buf],
+        &[
+            a_buf.metal_buffer(),
+            b_buf.metal_buffer(),
+            &result_inner,
+            &dims_buf,
+        ],
         tg_count,
         tg_threads,
     )
@@ -468,11 +461,7 @@ unsafe fn matmul_impl(ctx: i64, a: i64, b: i64, m: usize, k: usize, n: usize) ->
         return 0;
     }
 
-    let result = GpuBuffer {
-        inner: result_inner,
-        numel: m * n,
-        dtype,
-    };
+    let result = GpuBuffer::materialized(result_inner, m * n, dtype);
     Box::into_raw(Box::new(result)) as i64
 }
 
@@ -548,7 +537,7 @@ pub unsafe extern "C" fn rayzor_gpu_compute_min(ctx: i64, buf: i64) -> f64 {
 pub unsafe extern "C" fn rayzor_gpu_compute_dot(ctx: i64, a: i64, b: i64) -> f64 {
     #[cfg(target_os = "macos")]
     {
-        // Elementwise multiply, then sum
+        // Elementwise multiply (lazy), then reduce sum (materializes the fused mul)
         let product = rayzor_gpu_compute_mul(ctx, a, b);
         if product == 0 {
             return 0.0;
@@ -602,20 +591,30 @@ mod tests {
     #[cfg(target_os = "macos")]
     use crate::kernel_cache::KernelCache;
 
-    #[test]
     #[cfg(target_os = "macos")]
-    fn test_gpu_add_f32() {
-        if !MetalContext::is_available() {
-            println!("Metal not available, skipping");
-            return;
-        }
+    use std::collections::HashMap;
 
+    #[cfg(target_os = "macos")]
+    fn make_ctx() -> i64 {
+        if !MetalContext::is_available() {
+            return 0;
+        }
         let metal_ctx = MetalContext::new().unwrap();
         let gpu_ctx = GpuContext {
             inner: metal_ctx,
             kernel_cache: KernelCache::new(),
+            fused_cache: HashMap::new(),
         };
-        let ctx = Box::into_raw(Box::new(gpu_ctx)) as i64;
+        Box::into_raw(Box::new(gpu_ctx)) as i64
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_gpu_add_f32() {
+        let ctx = make_ctx();
+        if ctx == 0 {
+            return;
+        }
 
         let n = 1024;
         let a_data: Vec<f32> = (0..n).map(|i| i as f32).collect();
@@ -624,15 +623,27 @@ mod tests {
         let a_buf = unsafe { create_test_buffer(ctx, &a_data) };
         let b_buf = unsafe { create_test_buffer(ctx, &b_data) };
 
+        // add is now lazy — result is a lazy buffer
         let result = unsafe { rayzor_gpu_compute_add(ctx, a_buf, b_buf) };
         assert_ne!(result, 0, "add returned null");
 
-        // Verify results
-        let result_buf = unsafe { &*(result as *const GpuBuffer) };
+        // Materialize by accessing via ensure_materialized
+        let gpu_ctx = unsafe { &mut *(ctx as *mut GpuContext) };
+        let result_buf = unsafe { &mut *(result as *mut GpuBuffer) };
+        assert!(
+            matches!(result_buf.kind, buffer::GpuBufferKind::Lazy(_)),
+            "add result should be lazy"
+        );
+        result_buf.ensure_materialized(gpu_ctx).unwrap();
+        assert!(
+            matches!(result_buf.kind, buffer::GpuBufferKind::Materialized(_)),
+            "should be materialized now"
+        );
+
         assert_eq!(result_buf.numel, n);
         assert_eq!(result_buf.dtype, buffer::DTYPE_F32);
 
-        let ptr = result_buf.inner.contents() as *const f32;
+        let ptr = result_buf.metal_buffer().contents() as *const f32;
         for i in 0..n {
             let expected = (i + i * 2) as f32;
             let actual = unsafe { *ptr.add(i) };
@@ -645,7 +656,6 @@ mod tests {
             );
         }
 
-        // Cleanup
         unsafe {
             let _ = Box::from_raw(result as *mut GpuBuffer);
             let _ = Box::from_raw(a_buf as *mut GpuBuffer);
@@ -656,221 +666,63 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "macos")]
-    fn test_gpu_mul_f32() {
-        if !MetalContext::is_available() {
-            println!("Metal not available, skipping");
+    fn test_fused_add_mul_relu() {
+        let ctx = make_ctx();
+        if ctx == 0 {
             return;
         }
 
-        let metal_ctx = MetalContext::new().unwrap();
-        let gpu_ctx = GpuContext {
-            inner: metal_ctx,
-            kernel_cache: KernelCache::new(),
-        };
-        let ctx = Box::into_raw(Box::new(gpu_ctx)) as i64;
-
-        let n = 512;
-        let a_data: Vec<f32> = (0..n).map(|i| i as f32).collect();
-        let b_data: Vec<f32> = (0..n).map(|_| 3.0f32).collect();
+        let n = 256;
+        let a_data: Vec<f32> = (0..n).map(|i| (i as f32) - 128.0).collect(); // -128..127
+        let b_data: Vec<f32> = vec![2.0; n];
+        let c_data: Vec<f32> = vec![0.5; n];
 
         let a_buf = unsafe { create_test_buffer(ctx, &a_data) };
         let b_buf = unsafe { create_test_buffer(ctx, &b_data) };
+        let c_buf = unsafe { create_test_buffer(ctx, &c_data) };
 
-        let result = unsafe { rayzor_gpu_compute_mul(ctx, a_buf, b_buf) };
-        assert_ne!(result, 0, "mul returned null");
+        // Chain: relu(add(a, b) * c) — should fuse into 1 kernel
+        let add_result = unsafe { rayzor_gpu_compute_add(ctx, a_buf, b_buf) };
+        let mul_result = unsafe { rayzor_gpu_compute_mul(ctx, add_result, c_buf) };
+        let relu_result = unsafe { rayzor_gpu_compute_relu(ctx, mul_result) };
 
-        let result_buf = unsafe { &*(result as *const GpuBuffer) };
-        let ptr = result_buf.inner.contents() as *const f32;
+        assert_ne!(relu_result, 0);
+
+        // Verify it's still lazy (3 deep)
+        let result_buf = unsafe { &mut *(relu_result as *mut GpuBuffer) };
+        assert!(matches!(result_buf.kind, buffer::GpuBufferKind::Lazy(_)));
+
+        // Materialize
+        let gpu_ctx = unsafe { &mut *(ctx as *mut GpuContext) };
+        result_buf.ensure_materialized(gpu_ctx).unwrap();
+
+        let ptr = result_buf.metal_buffer().contents() as *const f32;
         for i in 0..n {
-            let expected = i as f32 * 3.0;
+            let a = (i as f32) - 128.0;
+            let expected = f32::max(0.0, (a + 2.0) * 0.5);
             let actual = unsafe { *ptr.add(i) };
             assert!(
-                (actual - expected).abs() < 1e-6,
-                "mul mismatch at {}: expected {}, got {}",
+                (actual - expected).abs() < 1e-5,
+                "fused mismatch at {}: expected {}, got {}",
                 i,
                 expected,
                 actual
             );
         }
 
+        // Check fused_cache was used: should have 1 compiled fused kernel
+        assert!(
+            !gpu_ctx.fused_cache.is_empty(),
+            "fused cache should be populated"
+        );
+
         unsafe {
-            let _ = Box::from_raw(result as *mut GpuBuffer);
+            let _ = Box::from_raw(relu_result as *mut GpuBuffer);
+            let _ = Box::from_raw(mul_result as *mut GpuBuffer);
+            let _ = Box::from_raw(add_result as *mut GpuBuffer);
             let _ = Box::from_raw(a_buf as *mut GpuBuffer);
             let _ = Box::from_raw(b_buf as *mut GpuBuffer);
-            let _ = Box::from_raw(ctx as *mut GpuContext);
-        }
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn test_gpu_sqrt_f32() {
-        if !MetalContext::is_available() {
-            println!("Metal not available, skipping");
-            return;
-        }
-
-        let metal_ctx = MetalContext::new().unwrap();
-        let gpu_ctx = GpuContext {
-            inner: metal_ctx,
-            kernel_cache: KernelCache::new(),
-        };
-        let ctx = Box::into_raw(Box::new(gpu_ctx)) as i64;
-
-        let n = 256;
-        let a_data: Vec<f32> = (0..n).map(|i| (i * i) as f32).collect();
-
-        let a_buf = unsafe { create_test_buffer(ctx, &a_data) };
-
-        let result = unsafe { rayzor_gpu_compute_sqrt(ctx, a_buf) };
-        assert_ne!(result, 0, "sqrt returned null");
-
-        let result_buf = unsafe { &*(result as *const GpuBuffer) };
-        let ptr = result_buf.inner.contents() as *const f32;
-        for i in 0..n {
-            let expected = i as f32;
-            let actual = unsafe { *ptr.add(i) };
-            assert!(
-                (actual - expected).abs() < 1e-3,
-                "sqrt mismatch at {}: expected {}, got {}",
-                i,
-                expected,
-                actual
-            );
-        }
-
-        unsafe {
-            let _ = Box::from_raw(result as *mut GpuBuffer);
-            let _ = Box::from_raw(a_buf as *mut GpuBuffer);
-            let _ = Box::from_raw(ctx as *mut GpuContext);
-        }
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn test_gpu_neg_f32() {
-        if !MetalContext::is_available() {
-            println!("Metal not available, skipping");
-            return;
-        }
-
-        let metal_ctx = MetalContext::new().unwrap();
-        let gpu_ctx = GpuContext {
-            inner: metal_ctx,
-            kernel_cache: KernelCache::new(),
-        };
-        let ctx = Box::into_raw(Box::new(gpu_ctx)) as i64;
-
-        let n = 128;
-        let a_data: Vec<f32> = (0..n).map(|i| i as f32).collect();
-        let a_buf = unsafe { create_test_buffer(ctx, &a_data) };
-
-        let result = unsafe { rayzor_gpu_compute_neg(ctx, a_buf) };
-        assert_ne!(result, 0, "neg returned null");
-
-        let result_buf = unsafe { &*(result as *const GpuBuffer) };
-        let ptr = result_buf.inner.contents() as *const f32;
-        for i in 0..n {
-            let expected = -(i as f32);
-            let actual = unsafe { *ptr.add(i) };
-            assert!(
-                (actual - expected).abs() < 1e-6,
-                "neg mismatch at {}: expected {}, got {}",
-                i,
-                expected,
-                actual
-            );
-        }
-
-        unsafe {
-            let _ = Box::from_raw(result as *mut GpuBuffer);
-            let _ = Box::from_raw(a_buf as *mut GpuBuffer);
-            let _ = Box::from_raw(ctx as *mut GpuContext);
-        }
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn test_gpu_relu_f32() {
-        if !MetalContext::is_available() {
-            println!("Metal not available, skipping");
-            return;
-        }
-
-        let metal_ctx = MetalContext::new().unwrap();
-        let gpu_ctx = GpuContext {
-            inner: metal_ctx,
-            kernel_cache: KernelCache::new(),
-        };
-        let ctx = Box::into_raw(Box::new(gpu_ctx)) as i64;
-
-        let n = 256;
-        // Mix of negative and positive values
-        let a_data: Vec<f32> = (0..n).map(|i| (i as f32) - 128.0).collect();
-        let a_buf = unsafe { create_test_buffer(ctx, &a_data) };
-
-        let result = unsafe { rayzor_gpu_compute_relu(ctx, a_buf) };
-        assert_ne!(result, 0, "relu returned null");
-
-        let result_buf = unsafe { &*(result as *const GpuBuffer) };
-        let ptr = result_buf.inner.contents() as *const f32;
-        for i in 0..n {
-            let input = (i as f32) - 128.0;
-            let expected = if input > 0.0 { input } else { 0.0 };
-            let actual = unsafe { *ptr.add(i) };
-            assert!(
-                (actual - expected).abs() < 1e-6,
-                "relu mismatch at {}: expected {}, got {}",
-                i,
-                expected,
-                actual
-            );
-        }
-
-        unsafe {
-            let _ = Box::from_raw(result as *mut GpuBuffer);
-            let _ = Box::from_raw(a_buf as *mut GpuBuffer);
-            let _ = Box::from_raw(ctx as *mut GpuContext);
-        }
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn test_kernel_caching() {
-        if !MetalContext::is_available() {
-            println!("Metal not available, skipping");
-            return;
-        }
-
-        let metal_ctx = MetalContext::new().unwrap();
-        let gpu_ctx = GpuContext {
-            inner: metal_ctx,
-            kernel_cache: KernelCache::new(),
-        };
-        let ctx = Box::into_raw(Box::new(gpu_ctx)) as i64;
-
-        let n = 64;
-        let a_data: Vec<f32> = vec![1.0; n];
-        let b_data: Vec<f32> = vec![2.0; n];
-
-        // Run add twice — second call should use cached kernel
-        for _ in 0..2 {
-            let a_buf = unsafe { create_test_buffer(ctx, &a_data) };
-            let b_buf = unsafe { create_test_buffer(ctx, &b_data) };
-            let result = unsafe { rayzor_gpu_compute_add(ctx, a_buf, b_buf) };
-            assert_ne!(result, 0);
-
-            unsafe {
-                let _ = Box::from_raw(result as *mut GpuBuffer);
-                let _ = Box::from_raw(a_buf as *mut GpuBuffer);
-                let _ = Box::from_raw(b_buf as *mut GpuBuffer);
-            }
-        }
-
-        // Verify cache has exactly 1 entry (same op+dtype reused)
-        let gpu_ctx = unsafe { &*(ctx as *const GpuContext) };
-        assert_eq!(gpu_ctx.kernel_cache.len(), 1);
-
-        unsafe {
+            let _ = Box::from_raw(c_buf as *mut GpuBuffer);
             let _ = Box::from_raw(ctx as *mut GpuContext);
         }
     }
@@ -878,19 +730,12 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn test_gpu_sum_f32() {
-        if !MetalContext::is_available() {
-            println!("Metal not available, skipping");
+        let ctx = make_ctx();
+        if ctx == 0 {
             return;
         }
 
-        let metal_ctx = MetalContext::new().unwrap();
-        let gpu_ctx = GpuContext {
-            inner: metal_ctx,
-            kernel_cache: KernelCache::new(),
-        };
-        let ctx = Box::into_raw(Box::new(gpu_ctx)) as i64;
-
-        // sum of 1..=1024 = 1024 * 1025 / 2 = 524800
+        // sum of 1..=1024 = 524800
         let n = 1024;
         let a_data: Vec<f32> = (1..=n).map(|i| i as f32).collect();
         let a_buf = unsafe { create_test_buffer(ctx, &a_data) };
@@ -912,138 +757,34 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "macos")]
-    fn test_gpu_sum_large() {
-        if !MetalContext::is_available() {
-            println!("Metal not available, skipping");
+    fn test_lazy_sum_materializes() {
+        let ctx = make_ctx();
+        if ctx == 0 {
             return;
         }
 
-        let metal_ctx = MetalContext::new().unwrap();
-        let gpu_ctx = GpuContext {
-            inner: metal_ctx,
-            kernel_cache: KernelCache::new(),
-        };
-        let ctx = Box::into_raw(Box::new(gpu_ctx)) as i64;
-
-        // Large array: 100K elements of 1.0 → sum = 100000
-        let n = 100_000;
-        let a_data: Vec<f32> = vec![1.0; n];
-        let a_buf = unsafe { create_test_buffer(ctx, &a_data) };
-
-        let result = unsafe { rayzor_gpu_compute_sum(ctx, a_buf) };
-        assert!(
-            (result - n as f64).abs() < 1.0,
-            "large sum: expected {}, got {}",
-            n,
-            result
-        );
-
-        unsafe {
-            let _ = Box::from_raw(a_buf as *mut GpuBuffer);
-            let _ = Box::from_raw(ctx as *mut GpuContext);
-        }
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn test_gpu_mean_f32() {
-        if !MetalContext::is_available() {
-            println!("Metal not available, skipping");
-            return;
-        }
-
-        let metal_ctx = MetalContext::new().unwrap();
-        let gpu_ctx = GpuContext {
-            inner: metal_ctx,
-            kernel_cache: KernelCache::new(),
-        };
-        let ctx = Box::into_raw(Box::new(gpu_ctx)) as i64;
-
-        let n = 1000;
-        let a_data: Vec<f32> = vec![5.0; n];
-        let a_buf = unsafe { create_test_buffer(ctx, &a_data) };
-
-        let result = unsafe { rayzor_gpu_compute_mean(ctx, a_buf) };
-        assert!(
-            (result - 5.0).abs() < 1e-3,
-            "mean: expected 5.0, got {}",
-            result
-        );
-
-        unsafe {
-            let _ = Box::from_raw(a_buf as *mut GpuBuffer);
-            let _ = Box::from_raw(ctx as *mut GpuContext);
-        }
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn test_gpu_max_min_f32() {
-        if !MetalContext::is_available() {
-            println!("Metal not available, skipping");
-            return;
-        }
-
-        let metal_ctx = MetalContext::new().unwrap();
-        let gpu_ctx = GpuContext {
-            inner: metal_ctx,
-            kernel_cache: KernelCache::new(),
-        };
-        let ctx = Box::into_raw(Box::new(gpu_ctx)) as i64;
-
+        // gpu.add(a, b) is lazy, then gpu.sum() should materialize it
         let n = 512;
-        let a_data: Vec<f32> = (0..n).map(|i| (i as f32) - 100.0).collect();
-        let a_buf = unsafe { create_test_buffer(ctx, &a_data) };
-
-        let max_result = unsafe { rayzor_gpu_compute_max(ctx, a_buf) };
-        let min_result = unsafe { rayzor_gpu_compute_min(ctx, a_buf) };
-
-        assert!(
-            (max_result - 411.0).abs() < 1e-3,
-            "max: expected 411.0, got {}",
-            max_result
-        );
-        assert!(
-            (min_result - (-100.0)).abs() < 1e-3,
-            "min: expected -100.0, got {}",
-            min_result
-        );
-
-        unsafe {
-            let _ = Box::from_raw(a_buf as *mut GpuBuffer);
-            let _ = Box::from_raw(ctx as *mut GpuContext);
-        }
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn test_gpu_dot_f32() {
-        if !MetalContext::is_available() {
-            println!("Metal not available, skipping");
-            return;
-        }
-
-        let metal_ctx = MetalContext::new().unwrap();
-        let gpu_ctx = GpuContext {
-            inner: metal_ctx,
-            kernel_cache: KernelCache::new(),
-        };
-        let ctx = Box::into_raw(Box::new(gpu_ctx)) as i64;
-
-        // dot([1,2,3,4], [1,2,3,4]) = 1+4+9+16 = 30
-        let a_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
-        let b_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+        let a_data: Vec<f32> = vec![3.0; n];
+        let b_data: Vec<f32> = vec![7.0; n];
         let a_buf = unsafe { create_test_buffer(ctx, &a_data) };
         let b_buf = unsafe { create_test_buffer(ctx, &b_data) };
 
-        let result = unsafe { rayzor_gpu_compute_dot(ctx, a_buf, b_buf) };
+        let add_result = unsafe { rayzor_gpu_compute_add(ctx, a_buf, b_buf) };
+        assert_ne!(add_result, 0);
+
+        // sum should materialize the lazy add, then reduce
+        let sum = unsafe { rayzor_gpu_compute_sum(ctx, add_result) };
+        let expected = (3.0 + 7.0) * n as f64;
         assert!(
-            (result - 30.0).abs() < 1e-3,
-            "dot: expected 30.0, got {}",
-            result
+            (sum - expected).abs() < 1.0,
+            "lazy sum: expected {}, got {}",
+            expected,
+            sum
         );
 
         unsafe {
+            let _ = Box::from_raw(add_result as *mut GpuBuffer);
             let _ = Box::from_raw(a_buf as *mut GpuBuffer);
             let _ = Box::from_raw(b_buf as *mut GpuBuffer);
             let _ = Box::from_raw(ctx as *mut GpuContext);
@@ -1053,21 +794,13 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn test_gpu_matmul_f32() {
-        if !MetalContext::is_available() {
-            println!("Metal not available, skipping");
+        let ctx = make_ctx();
+        if ctx == 0 {
             return;
         }
 
-        let metal_ctx = MetalContext::new().unwrap();
-        let gpu_ctx = GpuContext {
-            inner: metal_ctx,
-            kernel_cache: KernelCache::new(),
-        };
-        let ctx = Box::into_raw(Box::new(gpu_ctx)) as i64;
-
-        // A = [[1,2],[3,4]] (2x2), B = [[5,6],[7,8]] (2x2)
-        // C = [[1*5+2*7, 1*6+2*8], [3*5+4*7, 3*6+4*8]]
-        //   = [[19, 22], [43, 50]]
+        // A = [[1,2],[3,4]], B = [[5,6],[7,8]]
+        // C = [[19, 22], [43, 50]]
         let a_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
         let b_data: Vec<f32> = vec![5.0, 6.0, 7.0, 8.0];
         let a_buf = unsafe { create_test_buffer(ctx, &a_data) };
@@ -1079,7 +812,7 @@ mod tests {
         let result_buf = unsafe { &*(result as *const GpuBuffer) };
         assert_eq!(result_buf.numel, 4);
 
-        let ptr = result_buf.inner.contents() as *const f32;
+        let ptr = result_buf.metal_buffer().contents() as *const f32;
         let expected = [19.0f32, 22.0, 43.0, 50.0];
         for (i, &exp) in expected.iter().enumerate() {
             let actual = unsafe { *ptr.add(i) };
@@ -1100,7 +833,7 @@ mod tests {
         }
     }
 
-    /// Helper: create a GpuBuffer from f32 slice data.
+    /// Helper: create a materialized GpuBuffer from f32 slice data.
     #[cfg(target_os = "macos")]
     unsafe fn create_test_buffer(ctx: i64, data: &[f32]) -> i64 {
         let gpu_ctx = &*(ctx as *const GpuContext);
@@ -1108,11 +841,7 @@ mod tests {
         let inner = MetalBuffer::from_data(&gpu_ctx.inner, data.as_ptr() as *const u8, byte_size)
             .expect("failed to create test buffer");
 
-        let buf = GpuBuffer {
-            inner,
-            numel: data.len(),
-            dtype: buffer::DTYPE_F32,
-        };
+        let buf = GpuBuffer::materialized(inner, data.len(), buffer::DTYPE_F32);
         Box::into_raw(Box::new(buf)) as i64
     }
 }

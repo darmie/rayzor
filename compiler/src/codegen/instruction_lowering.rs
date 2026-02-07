@@ -348,7 +348,14 @@ impl CraneliftBackend {
                     builder.ins().ineg(val)
                 }
             }
-            UnaryOp::Not => builder.ins().bnot(val),
+            UnaryOp::Not => {
+                if *ty == IrType::Bool {
+                    // Logical NOT: compare == 0, producing a proper 0/1 result
+                    builder.ins().icmp_imm(IntCC::Equal, val, 0)
+                } else {
+                    builder.ins().bnot(val)
+                }
+            }
             UnaryOp::FNeg => builder.ins().fneg(val),
         };
 
@@ -850,7 +857,14 @@ impl CraneliftBackend {
                     builder.ins().ineg(val)
                 }
             }
-            UnaryOp::Not => builder.ins().bnot(val),
+            UnaryOp::Not => {
+                if *ty == IrType::Bool {
+                    // Logical NOT: compare == 0, producing a proper 0/1 result
+                    builder.ins().icmp_imm(IntCC::Equal, val, 0)
+                } else {
+                    builder.ins().bnot(val)
+                }
+            }
             UnaryOp::FNeg => builder.ins().fneg(val),
         };
 

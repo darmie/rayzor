@@ -18,6 +18,7 @@ pub mod codegen;
 pub mod device;
 pub mod kernel_cache;
 pub mod kernel_ir;
+pub mod lazy;
 pub mod ops;
 
 #[cfg(target_os = "macos")]
@@ -34,7 +35,7 @@ declare_native_methods! {
     GPU_METHODS;
     // GPUCompute lifecycle (static)
     "rayzor_gpu_GPUCompute", "create",       static,   "rayzor_gpu_compute_create",        []              => Ptr;
-    "rayzor_gpu_GPUCompute", "isAvailable",  static,   "rayzor_gpu_compute_is_available",  []              => I64;
+    "rayzor_gpu_GPUCompute", "isAvailable",  static,   "rayzor_gpu_compute_is_available",  []              => Bool;
     // GPUCompute instance methods (self = Ptr is first param)
     "rayzor_gpu_GPUCompute", "destroy",      instance, "rayzor_gpu_compute_destroy",       [Ptr]           => Void;
     "rayzor_gpu_GPUCompute", "createBuffer", instance, "rayzor_gpu_compute_create_buffer", [Ptr, Ptr]      => Ptr;
