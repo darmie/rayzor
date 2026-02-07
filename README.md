@@ -1,4 +1,6 @@
-![200x200](website/rayzor-blade-logo.png)
+
+
+<img style="margin: 0 auto; display: block;" src="website/rayzor-blade-logo.png" alt="Rayzor Blade Logo" width="250"/>
 
 # Rayzor
 
