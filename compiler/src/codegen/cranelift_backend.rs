@@ -2014,11 +2014,9 @@ impl CraneliftBackend {
                             debug!("Std intrinsic: haxe_std_int → {:?} to i32", arg_type);
                             Some(result)
                         }
-                        // Array intrinsics (arm64 only — regresses on x86_64)
+                        // Array intrinsics
                         // HaxeArray layout: { ptr: *mut u8 (0), len: usize (8), cap: usize (16), elem_size: usize (24) }
-                        "haxe_array_length"
-                            if cfg!(target_arch = "aarch64") && arg_values.len() == 1 =>
-                        {
+                        "haxe_array_length" if arg_values.len() == 1 => {
                             let arr_ptr = arg_values[0];
                             let len = builder.ins().load(
                                 types::I64,
