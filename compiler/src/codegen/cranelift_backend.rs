@@ -2621,7 +2621,10 @@ impl CraneliftBackend {
                 // Type casting (e.g., int to float, float to int)
                 let src_val = *value_map
                     .get(src)
-                    .ok_or_else(|| format!("Cast source {:?} not found in value_map", src))?;
+                    .ok_or_else(|| {
+                        let keys: Vec<_> = value_map.keys().collect();
+                        format!("Cast source {:?} not found in value_map (function: {}, from_ty: {:?}, to_ty: {:?}, value_map keys: {:?})", src, function.name, from_ty, to_ty, keys)
+                    })?;
 
                 // Use the ACTUAL Cranelift value type, not the declared MIR from_ty
                 // This handles cases where MIR type is wrong (e.g., Ptr(Void) for generic returns)

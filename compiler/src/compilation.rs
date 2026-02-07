@@ -3012,6 +3012,8 @@ impl CompilationUnit {
             }
 
             mir_module.functions.insert(func_id, func);
+            // Keep next_function_id in sync so alloc_function_id() won't collide
+            mir_module.next_function_id = mir_module.next_function_id.max(func_id.0 + 1);
         }
 
         // Update ALL instructions that reference replaced function IDs
