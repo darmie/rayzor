@@ -991,10 +991,7 @@ impl TieredBackend {
             } else {
                 initial_tier
             };
-            self.function_tiers
-                .write()
-                .unwrap()
-                .insert(*func_id, tier);
+            self.function_tiers.write().unwrap().insert(*func_id, tier);
         }
 
         // Store module for later recompilation/interpretation

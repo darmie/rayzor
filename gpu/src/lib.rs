@@ -16,7 +16,7 @@ pub mod device;
 #[cfg(target_os = "macos")]
 pub mod metal;
 
-use rayzor_plugin::{NativeMethodDesc, declare_native_methods};
+use rayzor_plugin::{declare_native_methods, NativeMethodDesc};
 use std::ffi::c_void;
 
 // ============================================================================
@@ -59,7 +59,9 @@ pub extern "C" fn rayzor_gpu_plugin_init(out_count: *mut usize) -> *const Symbol
     let ptr = symbols.as_ptr();
     std::mem::forget(symbols); // caller does not free — lives for process lifetime
     if !out_count.is_null() {
-        unsafe { *out_count = count; }
+        unsafe {
+            *out_count = count;
+        }
     }
     ptr
 }
@@ -71,7 +73,9 @@ pub extern "C" fn rayzor_gpu_plugin_init(out_count: *mut usize) -> *const Symbol
 #[no_mangle]
 pub extern "C" fn rayzor_gpu_plugin_describe(out_count: *mut usize) -> *const NativeMethodDesc {
     if !out_count.is_null() {
-        unsafe { *out_count = GPU_METHODS.len(); }
+        unsafe {
+            *out_count = GPU_METHODS.len();
+        }
     }
     GPU_METHODS.as_ptr()
 }
@@ -80,16 +84,43 @@ pub extern "C" fn rayzor_gpu_plugin_describe(out_count: *mut usize) -> *const Na
 pub fn get_runtime_symbols() -> Vec<(&'static str, *const u8)> {
     vec![
         // Device lifecycle
-        ("rayzor_gpu_compute_create", device::rayzor_gpu_compute_create as *const u8),
-        ("rayzor_gpu_compute_destroy", device::rayzor_gpu_compute_destroy as *const u8),
-        ("rayzor_gpu_compute_is_available", device::rayzor_gpu_compute_is_available as *const u8),
+        (
+            "rayzor_gpu_compute_create",
+            device::rayzor_gpu_compute_create as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_destroy",
+            device::rayzor_gpu_compute_destroy as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_is_available",
+            device::rayzor_gpu_compute_is_available as *const u8,
+        ),
         // Buffer management
-        ("rayzor_gpu_compute_create_buffer", buffer::rayzor_gpu_compute_create_buffer as *const u8),
-        ("rayzor_gpu_compute_alloc_buffer", buffer::rayzor_gpu_compute_alloc_buffer as *const u8),
-        ("rayzor_gpu_compute_to_tensor", buffer::rayzor_gpu_compute_to_tensor as *const u8),
-        ("rayzor_gpu_compute_free_buffer", buffer::rayzor_gpu_compute_free_buffer as *const u8),
-        ("rayzor_gpu_compute_buffer_numel", buffer::rayzor_gpu_compute_buffer_numel as *const u8),
-        ("rayzor_gpu_compute_buffer_dtype", buffer::rayzor_gpu_compute_buffer_dtype as *const u8),
+        (
+            "rayzor_gpu_compute_create_buffer",
+            buffer::rayzor_gpu_compute_create_buffer as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_alloc_buffer",
+            buffer::rayzor_gpu_compute_alloc_buffer as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_to_tensor",
+            buffer::rayzor_gpu_compute_to_tensor as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_free_buffer",
+            buffer::rayzor_gpu_compute_free_buffer as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_buffer_numel",
+            buffer::rayzor_gpu_compute_buffer_numel as *const u8,
+        ),
+        (
+            "rayzor_gpu_compute_buffer_dtype",
+            buffer::rayzor_gpu_compute_buffer_dtype as *const u8,
+        ),
     ]
 }
 

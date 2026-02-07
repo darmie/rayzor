@@ -3598,7 +3598,10 @@ impl CompilationUnit {
     /// This allows native packages (loaded via dlopen) to provide method mappings
     /// and extern declarations without modifying compiler source code. Must be
     /// called before `lower_to_tast()`.
-    pub fn register_compiler_plugin(&mut self, plugin: Box<dyn crate::compiler_plugin::CompilerPlugin>) {
+    pub fn register_compiler_plugin(
+        &mut self,
+        plugin: Box<dyn crate::compiler_plugin::CompilerPlugin>,
+    ) {
         self.compiler_plugin_registry.register(plugin);
     }
 

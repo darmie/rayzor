@@ -625,12 +625,10 @@ fn try_load_gpu_plugin() -> Option<GpuPlugin> {
                 }
 
                 // Load method descriptors for compiler-side registration
-                type DescribeFn = unsafe extern "C" fn(*mut usize)
-                    -> *const rayzor_plugin::NativeMethodDesc;
+                type DescribeFn =
+                    unsafe extern "C" fn(*mut usize) -> *const rayzor_plugin::NativeMethodDesc;
                 let compiler_plugin = unsafe {
-                    if let Ok(describe_fn) =
-                        lib.get::<DescribeFn>(b"rayzor_gpu_plugin_describe")
-                    {
+                    if let Ok(describe_fn) = lib.get::<DescribeFn>(b"rayzor_gpu_plugin_describe") {
                         let mut count: usize = 0;
                         let descs = describe_fn(&mut count);
                         if !descs.is_null() && count > 0 {
@@ -732,8 +730,11 @@ fn run_file(
     }
 
     // Compile source file to MIR (with GPU plugin registered if available)
-    let mut mir_module =
-        compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"), compiler_plugins)?;
+    let mut mir_module = compile_haxe_to_mir(
+        &source,
+        file.to_str().unwrap_or("unknown"),
+        compiler_plugins,
+    )?;
 
     // Run O0 pass manager to expand Haxe `inline` functions and apply SRA
     {
@@ -972,7 +973,8 @@ fn build_from_manifest(
             // Compile via the standard pipeline
             let source = std::fs::read_to_string(&entry)
                 .map_err(|e| format!("Failed to read {}: {}", entry.display(), e))?;
-            let mir_module = compile_haxe_to_mir(&source, entry.to_str().unwrap_or("unknown"), vec![])?;
+            let mir_module =
+                compile_haxe_to_mir(&source, entry.to_str().unwrap_or("unknown"), vec![])?;
 
             println!("  Compiled {} functions", mir_module.functions.len());
 

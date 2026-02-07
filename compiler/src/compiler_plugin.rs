@@ -398,8 +398,11 @@ impl CompilerPlugin for NativePlugin {
             let has_return = m.return_type != 0; // 0 = Void
 
             // Build param_types descriptor array (includes self for instance methods)
-            let param_descs: Vec<IrTypeDescriptor> =
-                m.param_types.iter().map(|&t| native_type_to_descriptor(t)).collect();
+            let param_descs: Vec<IrTypeDescriptor> = m
+                .param_types
+                .iter()
+                .map(|&t| native_type_to_descriptor(t))
+                .collect();
             let param_types: &'static [IrTypeDescriptor] =
                 Box::leak(param_descs.into_boxed_slice());
 

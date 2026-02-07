@@ -52,7 +52,11 @@ pub unsafe extern "C" fn rayzor_gpu_compute_destroy(ctx: i64) {
 pub extern "C" fn rayzor_gpu_compute_is_available() -> i64 {
     #[cfg(target_os = "macos")]
     {
-        if device_init::MetalContext::is_available() { 1 } else { 0 }
+        if device_init::MetalContext::is_available() {
+            1
+        } else {
+            0
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {

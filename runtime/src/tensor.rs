@@ -306,9 +306,9 @@ pub unsafe extern "C" fn rayzor_tensor_shape(tensor_ptr: i64) -> i64 {
 
     // Fill HaxeArray fields: ptr, len, cap, elem_size
     *arr_ptr.add(0) = data_ptr as usize; // ptr
-    *arr_ptr.add(1) = ndim;              // len
-    *arr_ptr.add(2) = cap;               // cap
-    *arr_ptr.add(3) = elem_size;         // elem_size
+    *arr_ptr.add(1) = ndim; // len
+    *arr_ptr.add(2) = cap; // cap
+    *arr_ptr.add(3) = elem_size; // elem_size
 
     arr_ptr as i64
 }

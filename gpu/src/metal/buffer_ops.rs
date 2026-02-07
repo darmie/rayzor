@@ -42,10 +42,9 @@ impl MetalBuffer {
             return None;
         }
 
-        let mtl_buffer = ctx.device.newBufferWithLength_options(
-            byte_size,
-            MTLResourceOptions::StorageModeShared,
-        )?;
+        let mtl_buffer = ctx
+            .device
+            .newBufferWithLength_options(byte_size, MTLResourceOptions::StorageModeShared)?;
 
         Some(MetalBuffer {
             mtl_buffer,

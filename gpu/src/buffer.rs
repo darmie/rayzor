@@ -65,7 +65,11 @@ pub unsafe extern "C" fn rayzor_gpu_compute_create_buffer(ctx: i64, tensor_ptr: 
     {
         match buffer_ops::MetalBuffer::from_data(&gpu_ctx.inner, data_ptr, byte_size) {
             Some(inner) => {
-                let buf = GpuBuffer { inner, numel, dtype };
+                let buf = GpuBuffer {
+                    inner,
+                    numel,
+                    dtype,
+                };
                 Box::into_raw(Box::new(buf)) as i64
             }
             None => 0,
@@ -80,11 +84,7 @@ pub unsafe extern "C" fn rayzor_gpu_compute_create_buffer(ctx: i64, tensor_ptr: 
 
 /// Allocate an empty GPU buffer with the given element count and dtype.
 #[no_mangle]
-pub unsafe extern "C" fn rayzor_gpu_compute_alloc_buffer(
-    ctx: i64,
-    numel: i64,
-    dtype: i64,
-) -> i64 {
+pub unsafe extern "C" fn rayzor_gpu_compute_alloc_buffer(ctx: i64, numel: i64, dtype: i64) -> i64 {
     if ctx == 0 || numel <= 0 {
         return 0;
     }
@@ -98,7 +98,11 @@ pub unsafe extern "C" fn rayzor_gpu_compute_alloc_buffer(
     {
         match buffer_ops::MetalBuffer::allocate(&gpu_ctx.inner, byte_size) {
             Some(inner) => {
-                let buf = GpuBuffer { inner, numel, dtype };
+                let buf = GpuBuffer {
+                    inner,
+                    numel,
+                    dtype,
+                };
                 Box::into_raw(Box::new(buf)) as i64
             }
             None => 0,
@@ -164,13 +168,13 @@ pub unsafe extern "C" fn rayzor_gpu_compute_to_tensor(ctx: i64, buffer_ptr: i64)
         }
 
         // Write fields
-        *(tensor as *mut *mut u8) = data;                                    // data: offset 0
-        *(tensor.add(8) as *mut *mut usize) = shape;                        // shape: offset 8
-        *(tensor.add(16) as *mut *mut usize) = strides;                     // strides: offset 16
-        *(tensor.add(24) as *mut usize) = 1;                                // ndim: offset 24
-        *(tensor.add(32) as *mut usize) = buf.numel;                        // numel: offset 32
-        *(tensor.add(40) as *mut u8) = buf.dtype;                           // dtype: offset 40
-        *(tensor.add(41) as *mut u8) = 1;                                   // owns_data: offset 41
+        *(tensor as *mut *mut u8) = data; // data: offset 0
+        *(tensor.add(8) as *mut *mut usize) = shape; // shape: offset 8
+        *(tensor.add(16) as *mut *mut usize) = strides; // strides: offset 16
+        *(tensor.add(24) as *mut usize) = 1; // ndim: offset 24
+        *(tensor.add(32) as *mut usize) = buf.numel; // numel: offset 32
+        *(tensor.add(40) as *mut u8) = buf.dtype; // dtype: offset 40
+        *(tensor.add(41) as *mut u8) = 1; // owns_data: offset 41
 
         tensor as i64
     }
