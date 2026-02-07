@@ -2031,9 +2031,7 @@ impl CraneliftBackend {
                         }
                         // Array get_ptr: compute ptr + index * elem_size
                         // Returns pointer to element at given index
-                        "haxe_array_get_ptr"
-                            if cfg!(target_arch = "aarch64") && arg_values.len() == 2 =>
-                        {
+                        "haxe_array_get_ptr" if arg_values.len() == 2 => {
                             let arr_ptr = arg_values[0];
                             let index = arg_values[1];
                             // Load base data pointer (offset 0)

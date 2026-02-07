@@ -16,6 +16,7 @@ pub mod tast_to_hir; // TAST to HIR lowering // Drop point analysis for automati
 // MIR modules (the existing IR serves as MIR)
 pub mod blade; // BLADE format - Blazing Language Artifact Deployment Environment (.blade files)
 pub mod blocks;
+pub mod bounds_check_elimination; // Bounds Check Elimination for array loops
 pub mod builder;
 pub mod dump; // MIR pretty-printer for debugging
 pub mod environment_layout; // Closure environment layout abstraction

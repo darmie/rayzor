@@ -1673,6 +1673,9 @@ impl PassManager {
                 // GlobalLoadCachingPass: caches repeated global loads within functions
                 // Provides ~1.67x speedup on nbody by eliminating redundant HashMap lookups
                 manager.add_pass(GlobalLoadCachingPass::new());
+                // BCE: eliminate redundant bounds checks in for-in loops
+                manager
+                    .add_pass(super::bounds_check_elimination::BoundsCheckEliminationPass::new());
                 // CSE and LICM may contribute to non-determinism, keeping them for now
                 manager.add_pass(CSEPass::new());
                 manager.add_pass(LICMPass::new());
@@ -1689,6 +1692,9 @@ impl PassManager {
                 manager.add_pass(super::scalar_replacement::ScalarReplacementPass::new());
                 manager.add_pass(ConstantFoldingPass::new());
                 manager.add_pass(CopyPropagationPass::new());
+                // BCE: eliminate redundant bounds checks in for-in loops
+                manager
+                    .add_pass(super::bounds_check_elimination::BoundsCheckEliminationPass::new());
                 manager.add_pass(GVNPass::new());
                 manager.add_pass(CSEPass::new());
                 manager.add_pass(LICMPass::new());
