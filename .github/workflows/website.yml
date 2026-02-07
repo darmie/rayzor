@@ -36,8 +36,14 @@ jobs:
           # Include existing benchmark results if available
           if [ -d "compiler/benchmarks/charts" ]; then
             mkdir -p _site/benchmarks
-            cp -r compiler/benchmarks/charts/* _site/benchmarks/
-            cp -r compiler/benchmarks/results _site/benchmarks/results
+            # Only copy if there are actual content files (not just .keep)
+            if find compiler/benchmarks/charts -maxdepth 1 -name '*.html' -o -name '*.json' -o -name '*.png' -o -name '*.svg' | grep -q .; then
+              cp -r compiler/benchmarks/charts/* _site/benchmarks/ 2>/dev/null || true
+            fi
+            # Copy results directory if it exists and has content
+            if [ -d "compiler/benchmarks/results" ] && [ "$(ls -A compiler/benchmarks/results 2>/dev/null)" ]; then
+              cp -r compiler/benchmarks/results _site/benchmarks/results 2>/dev/null || true
+            fi
           fi
 
       - name: Upload artifact
