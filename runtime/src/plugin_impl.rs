@@ -1225,6 +1225,7 @@ register_symbol!(
 register_symbol!("rayzor_tensor_rand", crate::tensor::rayzor_tensor_rand);
 
 // Properties
+register_symbol!("rayzor_tensor_shape", crate::tensor::rayzor_tensor_shape);
 register_symbol!("rayzor_tensor_ndim", crate::tensor::rayzor_tensor_ndim);
 register_symbol!("rayzor_tensor_numel", crate::tensor::rayzor_tensor_numel);
 register_symbol!("rayzor_tensor_dtype", crate::tensor::rayzor_tensor_dtype);

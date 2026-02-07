@@ -2896,6 +2896,9 @@ impl StdlibMapping {
             map_method!(static "rayzor_ds_Tensor", "rand" => "Tensor_rand", params: 2, mir_wrapper,
                 types: &[PtrVoid, I64] => PtrVoid),
             // --- Properties (instance) ---
+            // tensor.shape(): Array<Int>
+            map_method!(instance "rayzor_ds_Tensor", "shape" => "Tensor_shape", params: 0, mir_wrapper,
+                types: &[PtrVoid] => PtrVoid),
             // tensor.ndim(): Int
             map_method!(instance "rayzor_ds_Tensor", "ndim" => "Tensor_ndim", params: 0, mir_wrapper,
                 types: &[PtrVoid] => I64),

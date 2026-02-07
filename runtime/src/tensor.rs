@@ -270,10 +270,50 @@ pub unsafe extern "C" fn rayzor_tensor_dtype(tensor_ptr: i64) -> i64 {
     t.dtype as i64
 }
 
-/// tensor.shape() -> i64 (returns pointer to HaxeArray of Int)
-/// For now, returns a freshly allocated Haxe Array<Int>.
-/// TODO: integrate with HaxeArray runtime once we wire the shape through.
-/// For the MIR wrapper, we'll return shape as (ptr, ndim) pair.
+/// tensor.shape() -> i64 (returns pointer to a heap-allocated HaxeArray of Int)
+///
+/// Allocates a HaxeArray struct + data buffer, copies shape dims as i64 values.
+/// HaxeArray layout: { ptr: *mut u8, len: usize, cap: usize, elem_size: usize }
+#[no_mangle]
+pub unsafe extern "C" fn rayzor_tensor_shape(tensor_ptr: i64) -> i64 {
+    if tensor_ptr == 0 {
+        return 0;
+    }
+    let t = &*(tensor_ptr as *const RayzorTensor);
+    let ndim = t.ndim;
+    let shape_slice = std::slice::from_raw_parts(t.shape, ndim);
+
+    // Allocate HaxeArray struct (4 fields x 8 bytes = 32 bytes)
+    let arr_ptr = malloc(32) as *mut usize;
+    if arr_ptr.is_null() {
+        return 0;
+    }
+
+    // Allocate data buffer for ndim i64 elements
+    let elem_size = std::mem::size_of::<i64>();
+    let cap = ndim.max(8); // match HaxeArray INITIAL_CAPACITY
+    let data_ptr = malloc(cap * elem_size);
+    if data_ptr.is_null() {
+        free(arr_ptr as *mut u8);
+        return 0;
+    }
+
+    // Copy shape values as i64
+    let data_i64 = data_ptr as *mut i64;
+    for i in 0..ndim {
+        *data_i64.add(i) = shape_slice[i] as i64;
+    }
+
+    // Fill HaxeArray fields: ptr, len, cap, elem_size
+    *arr_ptr.add(0) = data_ptr as usize; // ptr
+    *arr_ptr.add(1) = ndim;              // len
+    *arr_ptr.add(2) = cap;               // cap
+    *arr_ptr.add(3) = elem_size;         // elem_size
+
+    arr_ptr as i64
+}
+
+/// tensor.shape_ptr() -> i64 (returns raw pointer to shape data, for internal use)
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_tensor_shape_ptr(tensor_ptr: i64) -> i64 {
     if tensor_ptr == 0 {
@@ -283,7 +323,7 @@ pub unsafe extern "C" fn rayzor_tensor_shape_ptr(tensor_ptr: i64) -> i64 {
     t.shape as i64
 }
 
-/// tensor.shape_ndim() -> i64  (helper: returns ndim for shape access)
+/// tensor.shape_ndim() -> i64 (helper: returns ndim for shape access)
 #[no_mangle]
 pub unsafe extern "C" fn rayzor_tensor_shape_ndim(tensor_ptr: i64) -> i64 {
     rayzor_tensor_ndim(tensor_ptr)

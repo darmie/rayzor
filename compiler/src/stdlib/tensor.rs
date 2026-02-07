@@ -23,6 +23,7 @@ pub fn build_tensor_types(builder: &mut MirBuilder) {
     build_tensor_rand(builder);
 
     // Properties
+    build_tensor_shape(builder);
     build_tensor_ndim(builder);
     build_tensor_numel(builder);
     build_tensor_dtype(builder);
@@ -105,6 +106,15 @@ fn declare_tensor_externs(builder: &mut MirBuilder) {
         .param("data_len", i64_ty.clone())
         .param("shape_ptr", i64_ty.clone())
         .param("ndim", i64_ty.clone())
+        .returns(i64_ty.clone())
+        .calling_convention(CallingConvention::C)
+        .build();
+    builder.mark_as_extern(func_id);
+
+    // shape: (tensor: i64) -> i64 (returns HaxeArray pointer)
+    let func_id = builder
+        .begin_function("rayzor_tensor_shape")
+        .param("tensor", i64_ty.clone())
         .returns(i64_ty.clone())
         .calling_convention(CallingConvention::C)
         .build();
@@ -530,6 +540,7 @@ macro_rules! build_binop_i64 {
 }
 
 // Properties
+build_simple_i64_to_i64!(build_tensor_shape, "Tensor_shape", "rayzor_tensor_shape");
 build_simple_i64_to_i64!(build_tensor_ndim, "Tensor_ndim", "rayzor_tensor_ndim");
 build_simple_i64_to_i64!(build_tensor_numel, "Tensor_numel", "rayzor_tensor_numel");
 build_simple_i64_to_i64!(build_tensor_dtype, "Tensor_dtype", "rayzor_tensor_dtype");
