@@ -185,6 +185,13 @@ impl NamespaceResolver {
         self.source_paths = paths;
     }
 
+    /// Add an additional source path (e.g. from an rpkg package).
+    pub fn add_source_path(&mut self, path: PathBuf) {
+        if !self.source_paths.contains(&path) {
+            self.source_paths.push(path);
+        }
+    }
+
     /// Set standard library paths (checked after source paths)
     pub fn set_stdlib_paths(&mut self, paths: Vec<PathBuf>) {
         self.stdlib_paths = paths;

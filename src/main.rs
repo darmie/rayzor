@@ -74,6 +74,10 @@ enum Commands {
         /// Enable GPU compute support (loads rayzor-gpu dynamic library)
         #[arg(long)]
         compute: bool,
+
+        /// Load .rpkg packages (repeatable)
+        #[arg(long = "rpkg", value_name = "FILE")]
+        rpkg_files: Vec<PathBuf>,
     },
 
     /// JIT compile with interactive REPL
@@ -321,6 +325,40 @@ enum Commands {
         #[arg(long)]
         cfg_only: bool,
     },
+
+    /// Manage .rpkg packages (pack, inspect)
+    Rpkg {
+        #[command(subcommand)]
+        action: RpkgAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum RpkgAction {
+    /// Pack Haxe sources (and optionally a native dylib) into an .rpkg file
+    Pack {
+        /// Path to a native library (.dylib/.so/.dll) — optional for pure Haxe packages
+        #[arg(long)]
+        dylib: Option<PathBuf>,
+
+        /// Directory containing .hx source files to bundle
+        #[arg(long)]
+        haxe_dir: PathBuf,
+
+        /// Output .rpkg path
+        #[arg(short, long)]
+        output: PathBuf,
+
+        /// Package name (defaults to output filename without extension)
+        #[arg(long)]
+        name: Option<String>,
+    },
+
+    /// Inspect the contents of an .rpkg file
+    Inspect {
+        /// Path to the .rpkg file
+        file: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -406,8 +444,10 @@ fn main() {
             cache_dir,
             release,
             compute,
+            rpkg_files,
         } => run_file(
             file, verbose, stats, tier, llvm, preset, cache, cache_dir, release, compute,
+            rpkg_files,
         ),
         Commands::Jit {
             file,
@@ -507,6 +547,15 @@ fn main() {
             function,
             cfg_only,
         } => cmd_dump(file, output, opt_level, function, cfg_only),
+        Commands::Rpkg { action } => match action {
+            RpkgAction::Pack {
+                dylib,
+                haxe_dir,
+                output,
+                name,
+            } => cmd_rpkg_pack(dylib, haxe_dir, output, name),
+            RpkgAction::Inspect { file } => cmd_rpkg_inspect(file),
+        },
     };
 
     if let Err(e) = result {
@@ -522,6 +571,7 @@ fn compile_haxe_to_mir(
     source: &str,
     filename: &str,
     plugins: Vec<Box<dyn compiler::compiler_plugin::CompilerPlugin>>,
+    extra_source_dirs: &[PathBuf],
 ) -> Result<compiler::ir::IrModule, String> {
     use compiler::compilation::{CompilationConfig, CompilationUnit};
 
@@ -536,6 +586,11 @@ fn compile_haxe_to_mir(
     // Register external plugins (e.g., GPU compute) before compilation
     for plugin in plugins {
         unit.register_compiler_plugin(plugin);
+    }
+
+    // Add extra source paths (e.g. from rpkg packages) for import resolution
+    for dir in extra_source_dirs {
+        unit.add_source_path(dir.clone());
     }
 
     // Load the standard library first
@@ -666,6 +721,7 @@ fn run_file(
     _cache_dir: Option<PathBuf>,
     release: bool,
     compute: bool,
+    rpkg_files: Vec<PathBuf>,
 ) -> Result<(), String> {
     use compiler::codegen::tiered_backend::{TieredBackend, TieredConfig};
 
@@ -725,11 +781,61 @@ fn run_file(
         }
     }
 
-    // Compile source file to MIR (with GPU plugin registered if available)
+    // Load .rpkg packages
+    let mut loaded_rpkgs: Vec<compiler::rpkg::install::RpkgPlugin> = Vec::new();
+    let mut rpkg_source_dirs: Vec<PathBuf> = Vec::new();
+    for rpkg_path in &rpkg_files {
+        match compiler::rpkg::install::RpkgPlugin::load(rpkg_path) {
+            Ok(rpkg) => {
+                if verbose {
+                    eprintln!(
+                        "  rpkg     loaded '{}' ({} methods, {} hx files)",
+                        rpkg.package_name,
+                        rpkg.runtime_symbols.len(),
+                        rpkg.haxe_sources.len(),
+                    );
+                }
+                // Write bundled .hx files to temp dir for import resolution
+                if !rpkg.haxe_sources.is_empty() {
+                    let tmp_dir = std::env::temp_dir().join(format!(
+                        "rpkg_hx_{}_{}",
+                        rpkg.package_name,
+                        std::process::id()
+                    ));
+                    for (module_path, source) in &rpkg.haxe_sources {
+                        let dest = tmp_dir.join(module_path);
+                        if let Some(parent) = dest.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        let _ = std::fs::write(&dest, source);
+                    }
+                    rpkg_source_dirs.push(tmp_dir);
+                }
+                loaded_rpkgs.push(rpkg);
+            }
+            Err(e) => {
+                return Err(format!(
+                    "failed to load rpkg {}: {}",
+                    rpkg_path.display(),
+                    e
+                ));
+            }
+        }
+    }
+
+    // Extract compiler plugins from rpkg packages
+    for rpkg in &mut loaded_rpkgs {
+        if let Some(cp) = rpkg.compiler_plugin.take() {
+            compiler_plugins.push(Box::new(cp));
+        }
+    }
+
+    // Compile source file to MIR (with plugins registered)
     let mut mir_module = compile_haxe_to_mir(
         &source,
         file.to_str().unwrap_or("unknown"),
         compiler_plugins,
+        &rpkg_source_dirs,
     )?;
 
     // Run O0 pass manager to expand Haxe `inline` functions and apply SRA
@@ -764,8 +870,21 @@ fn run_file(
     if let Some(ref gpu) = gpu_plugin {
         symbols.extend_from_slice(&gpu.symbols);
     }
-    // Keep GPU dylib alive until backend is done
+
+    // Merge rpkg runtime symbols for JIT linking
+    let rpkg_owned_symbols: Vec<(String, *const u8)> = loaded_rpkgs
+        .iter()
+        .flat_map(|r| r.runtime_symbols.clone())
+        .collect();
+    for (name, ptr) in &rpkg_owned_symbols {
+        // Leak the string to get 'static lifetime (same pattern as GPU plugin)
+        let name: &'static str = Box::leak(name.clone().into_boxed_str());
+        symbols.push((name, *ptr));
+    }
+
+    // Keep dylibs alive until backend is done
     let _gpu_plugin = gpu_plugin;
+    let _loaded_rpkgs = loaded_rpkgs;
 
     let symbols_ref: Vec<(&str, *const u8)> = symbols.iter().map(|(n, p)| (*n, *p)).collect();
 
@@ -806,6 +925,12 @@ fn run_file(
         .map_err(|e| format!("Execution failed: {}", e))?;
 
     backend.shutdown();
+
+    // Clean up temp dirs from rpkg haxe sources
+    for dir in &rpkg_source_dirs {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     println!("✓ Complete");
     Ok(())
 }
@@ -970,7 +1095,7 @@ fn build_from_manifest(
             let source = std::fs::read_to_string(&entry)
                 .map_err(|e| format!("Failed to read {}: {}", entry.display(), e))?;
             let mir_module =
-                compile_haxe_to_mir(&source, entry.to_str().unwrap_or("unknown"), vec![])?;
+                compile_haxe_to_mir(&source, entry.to_str().unwrap_or("unknown"), vec![], &[])?;
 
             println!("  Compiled {} functions", mir_module.functions.len());
 
@@ -1158,12 +1283,13 @@ fn compile_file(
             cached
         } else {
             println!("  cache    miss, compiling...");
-            let module = compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"), vec![])?;
+            let module =
+                compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"), vec![], &[])?;
             unit.save_to_cache(&file, &module)?;
             module
         }
     } else {
-        compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"), vec![])?
+        compile_haxe_to_mir(&source, file.to_str().unwrap_or("unknown"), vec![], &[])?
     };
 
     println!("  mir      {} functions", mir_module.functions.len());
@@ -1713,6 +1839,101 @@ fn cmd_dump(
     } else {
         println!();
         println!("{}", mir_text);
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// rpkg commands
+// ---------------------------------------------------------------------------
+
+fn cmd_rpkg_pack(
+    dylib: Option<PathBuf>,
+    haxe_dir: PathBuf,
+    output: PathBuf,
+    name: Option<String>,
+) -> Result<(), String> {
+    let package_name = name.unwrap_or_else(|| {
+        output
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unnamed".to_string())
+    });
+
+    if let Some(ref dylib_path) = dylib {
+        println!(
+            "Packing rpkg '{}' from {} + {}",
+            package_name,
+            dylib_path.display(),
+            haxe_dir.display()
+        );
+        compiler::rpkg::pack::build_from_dylib(&package_name, dylib_path, &haxe_dir, &output)?;
+    } else {
+        println!(
+            "Packing rpkg '{}' from {} (pure Haxe)",
+            package_name,
+            haxe_dir.display()
+        );
+        compiler::rpkg::pack::build_from_haxe_dir(&package_name, &haxe_dir, &output)?;
+    }
+
+    let size = std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
+    println!(
+        "  wrote {} ({:.1} KB)",
+        output.display(),
+        size as f64 / 1024.0
+    );
+
+    Ok(())
+}
+
+fn cmd_rpkg_inspect(file: PathBuf) -> Result<(), String> {
+    let loaded = compiler::rpkg::load_rpkg(&file)
+        .map_err(|e| format!("failed to load {}: {}", file.display(), e))?;
+
+    println!("RPKG: {}", file.display());
+    println!("  package: {}", loaded.package_name);
+    println!();
+
+    if let Some(ref name) = loaded.plugin_name {
+        println!("  Method Table (plugin: {})", name);
+        for m in &loaded.methods {
+            let kind = if m.is_static { "static" } else { "instance" };
+            println!(
+                "    {} {}.{}  →  {} (params: {}, ret: {})",
+                kind, m.class_name, m.method_name, m.symbol_name, m.param_count, m.return_type
+            );
+        }
+        println!();
+    }
+
+    if !loaded.haxe_sources.is_empty() {
+        println!("  Haxe Sources ({}):", loaded.haxe_sources.len());
+        for path in loaded.haxe_sources.keys() {
+            println!("    {}", path);
+        }
+        println!();
+    }
+
+    if loaded.native_lib_bytes.is_some() {
+        println!(
+            "  Native Library: present for current platform ({}-{})",
+            if cfg!(target_os = "macos") {
+                "macos"
+            } else if cfg!(target_os = "linux") {
+                "linux"
+            } else {
+                "other"
+            },
+            if cfg!(target_arch = "aarch64") {
+                "aarch64"
+            } else {
+                "x86_64"
+            }
+        );
+    } else {
+        println!("  Native Library: not available for current platform");
     }
 
     Ok(())

@@ -354,6 +354,30 @@ impl NativePlugin {
             methods,
         }
     }
+
+    /// Create a NativePlugin from deserialized method entries (rpkg format).
+    ///
+    /// This is the safe counterpart to `from_descriptors` — takes owned Rust
+    /// data from `MethodDescEntry` instead of raw C pointers.
+    pub fn from_method_entries(name: &str, entries: Vec<crate::rpkg::MethodDescEntry>) -> Self {
+        let methods = entries
+            .into_iter()
+            .map(|e| NativeMethodInfo {
+                symbol_name: e.symbol_name,
+                class_name: e.class_name,
+                method_name: e.method_name,
+                is_static: e.is_static,
+                param_count: e.param_count,
+                return_type: e.return_type,
+                param_types: e.param_types,
+            })
+            .collect();
+
+        NativePlugin {
+            plugin_name: name.to_string(),
+            methods,
+        }
+    }
 }
 
 /// Convert a native_type tag to an IrTypeDescriptor.

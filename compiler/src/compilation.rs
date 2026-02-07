@@ -3612,6 +3612,11 @@ impl CompilationUnit {
         self.hdll_symbols.extend(symbols);
     }
 
+    /// Add an additional source path for import resolution (e.g. from an rpkg package).
+    pub fn add_source_path(&mut self, path: PathBuf) {
+        self.namespace_resolver.add_source_path(path);
+    }
+
     /// Scan parsed user files for `@:hlNative` metadata and load corresponding HDLL libraries.
     ///
     /// This should be called after user files have been added (so `user_files` is populated)
